@@ -2249,6 +2249,32 @@
   color: var(--text-tertiary);
 }
 
+/* 可折叠的世代标题行（用户建议"做一个版本折叠功能"） */
+.ver-group-btn {
+  width: 100%;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  border-radius: var(--radius-sm);
+}
+.ver-group-btn:hover {
+  background: var(--bg-hover);
+}
+.fold-caret {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  transition: transform var(--dur-fast) var(--ease);
+}
+.fold-caret.folded {
+  transform: rotate(-90deg);
+}
+:root.reduce-motion .fold-caret {
+  transition: none;
+}
+
 /* 卡片网格：宽屏两列，窄屏一列 */
 .res-grid {
   display: grid;
