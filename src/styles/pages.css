@@ -2071,10 +2071,20 @@
   font-weight: 600;
   color: var(--text-tertiary);
   letter-spacing: 0.03em;
-  background: var(--bg-surface);
-  position: sticky;
-  top: 0;
-  z-index: 1;
+  /*
+   * ★★ **不吸顶**（2026-09-16，用户："叠起来那个 bug 应该是没清除多余的，
+   *   至于那个磨砂的底，我感觉效果不好"）。
+   *
+   *   原来这里是 `position: sticky; top: 0; z-index: 1` —— 于是**每个**分组标题
+   *   都往 `top: 0` 上钉：滚动时后一个压在前一个上面，两个标题叠在同一个位置，
+   *   看起来就是"一堆字糊在一起、没清除多余的"。
+   *   我上一轮给它加磨砂底，**那是在遮症状** —— 底再厚，重叠还在。
+   *
+   *   正解是**根本不让它吸顶**：标题跟着内容滚，就不会和别人抢位置。
+   *   代价是滚动时看不到"当前在哪一组" —— 但这个列表本身就有搜索框，
+   *   为了那一点便利把标题叠成一团并不划算。
+   *   ★ 顺带：去掉吸顶后**也就不需要底了**（用户说磨砂底效果不好），一起删掉。
+   */
 }
 .ver-group-line {
   flex: 1;
@@ -2273,18 +2283,14 @@
   width: 100%;
   border: none;
   /*
-   * ★★ **吸顶的标题行必须有底**（2026-09-16，用户："版本下载这个会叠在一起"）。
-   *
-   *   `.ver-group` 是 `position: sticky`，原来的底色是 `--bg-surface`。
-   *   我上一轮把它改成 `<button>` 时顺手写了 `background: none` ——
-   *   于是吸顶的那一行变**透明**，下面的版本行从它底下透上来，
-   *   看起来就是"一堆字叠在一起"（截图里那个糊掉的 `26.2` + `1 个` 就是它）。
-   *   玻璃改版下正确的填法是**磨砂玻璃**：`--glass` + `backdrop-filter`，
-   *   既能挡住下面的内容，又不会在深色界面里显出一条生硬的色带。
+   * ★★ 2026-09-16：**不需要底了**。
+   *   上一轮我给它加磨砂底，是为了挡住"吸顶时下面透上来的行" ——
+   *   但那是在遮症状（重叠的根因是 `position: sticky`）。
+   *   现在标题行**不吸顶**了（见 `.ver-group` 的注释），底自然就不需要，
+   *   用户也说磨砂底效果不好。留着 `transparent` 是有意的：
+   *   它说明"这一行不再需要遮挡任何东西"。
    */
-  background: var(--glass);
-  backdrop-filter: blur(12px) saturate(140%);
-  -webkit-backdrop-filter: blur(12px) saturate(140%);
+  background: transparent;
   cursor: pointer;
   text-align: left;
   border-radius: var(--radius-sm);

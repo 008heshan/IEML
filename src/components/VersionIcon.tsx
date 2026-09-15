@@ -64,7 +64,14 @@ export function versionFamily(version: string): VersionFamily {
   if (!m) return { key: 'other', label: '其他', tone: 'classic', rank: 0 };
   const major = Number(m[1]);
   const minor = Number(m[2]);
-  if (major >= 2) return { key: `${major}.${minor}`, label: v, tone: 'modern', rank: 10000 + minor };
+  /*
+   * ★★ 2026-09-16（用户："比如 26.2 和 26.1，在 26.2 就显示 26.2，在 26.1 就显示 26.1"）：
+   *   这一支以前写的是 `label: v`（**整串版本号**），而 `key` 是世代。
+   *   于是分组的标题会取到组里第一行的完整 id —— `26.2-rc-2`、`26.2-pre-6`
+   *   这种当标题，看着像"这一组是 rc"，其实它和 `26.2` 是同一组。
+   *   现在**标签就用世代号**，与其它分支一致（`1.21` / `1.7` 本来就是这样）。
+   */
+  if (major >= 2) return { key: `${major}.${minor}`, label: `${major}.${minor}`, tone: 'modern', rank: 10000 + minor };
   if (minor >= 21) return { key: `${major}.${minor}`, label: `${major}.${minor}`, tone: 'modern', rank: 10000 + minor };
   if (minor >= 16) return { key: `${major}.${minor}`, label: `${major}.${minor}`, tone: 'mid', rank: 5000 + minor };
   if (minor >= 13) return { key: `${major}.${minor}`, label: `${major}.${minor}`, tone: 'classic', rank: 3000 + minor };
