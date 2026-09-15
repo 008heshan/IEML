@@ -128,6 +128,24 @@ const POPULAR_VERSIONS = ['1.21.1', '1.20.1', '1.19.2', '1.18.2', '1.16.5', '1.1
 
 type Channel = 'release' | 'snapshot' | 'all';
 
+/**
+ * **最终发布版**的版本号形状：只有 `x.y` / `x.y.z` 两种。
+ *
+ * ★★ 2026-09-15（用户第二次报"正式版里还有 rc/pre"，并说"学学 PCL 怎么做的"）：
+ *   真机实测确认**上游数据是对的** —— 用 CDP 直接调 `fetch_version_manifest` 读原始行，
+ *   `26.2-rc-2` 就是 `release_type: "snapshot"`。可界面上「正式版」那一档照样出现 rc/pre。
+ *   这说明**只看 `release_type` 不够**：数据链路上任何一处把它丢了或默认成 release
+ *   （缓存、老版本写下的清单、以后新增的某个来源），筛选就会失效，而且**一点提示都没有**。
+ *
+ *   所以判据改成**两个条件都满足才算正式版**：
+ *     ① 上游 `type === "release"`；
+ *     ② 版本号**长得像**最终版（这条正则）。
+ *   ② 是纯本地兜底：`26.2-rc-2` / `26.2-pre-6` / `24w14a` 永远过不了。
+ *   两个都成立才放行 —— 上游字段再出任何问题，预发布版都不会混进正式版。
+ *   （PCL 判断版本类型时也是同时看清单的 type 和版本号本身。）
+ */
+const FINAL_RELEASE_RE = /^\d+\.\d+(\.\d+)?$/;
+
 export interface InstallComposerProps {
   /** page = 整页（下载页）；modal = 创建版本弹窗内部 */
   variant?: 'page' | 'modal';
@@ -915,9 +933,9 @@ export function InstallComposer({
     const q = query.trim();
     return rows.filter((r) => {
       if (q && !r.id.toLowerCase().includes(q.toLowerCase())) return false;
-      const snap = r.release_type !== 'release';
-      if (channel === 'release') return !snap;
-      if (channel === 'snapshot') return snap;
+      const finalRelease = r.release_type === 'release' && FINAL_RELEASE_RE.test(r.id);
+      if (channel === 'release') return finalRelease;
+      if (channel === 'snapshot') return !finalRelease;
       return true;
     });
   }, [rows, query, channel]);
