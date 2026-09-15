@@ -536,12 +536,20 @@ pub fn all_api_libraries(mc_version: &str) -> Vec<ApiLibrary> {
 }
 
 /// 某个基础加载器该自动装哪个 API 包。
-/// ★ 只返回**一个** —— Fabric → Fabric API；Quilt → QFAPI；其余 → 无。
+///
+/// ★ 只返回**一个** —— Fabric → Fabric API；其余 → 无。
 ///   两者同时装会导致 Mod 重复加载。
+///
+/// ★★ 2026-09-15（用户："**不给 Quilt 装 API 了**"）：Quilt 原来会自动装
+///   Quilted Fabric API（QFAPI）。用户明确不要 —— 所以 Quilt 现在**不返回任何 API 包**，
+///   要装由玩家自己决定（Quilt 本身不装 QFAPI 也能跑，只是依赖它的 Mod 会失败，
+///   那种情况会在 Mod 管理里如实报"缺前置"）。
+///   ★ 这条规则只写在**这一个地方**：`quilt_gets_qfapi_not_fabric_api` 那两条测试
+///     也一起改成"Quilt 什么都不自动装"。
 pub fn api_for_base(base: Option<BaseLoaderKind>, mc_version: &str) -> Vec<ApiLibrary> {
     let want = match base {
         Some(BaseLoaderKind::Fabric) => "fabric-api",
-        Some(BaseLoaderKind::Quilt) => "quilted-fabric-api",
+        // ★ Quilt：不自动装（用户 2026-09-15 的决定）
         _ => return vec![],
     };
     all_api_libraries(mc_version)
@@ -718,10 +726,10 @@ mod tests {
     }
 
     #[test]
-    fn quilt_gets_qfapi_not_fabric_api() {
+    fn quilt_gets_no_api_library() {
+        // ★ 2026-09-15 用户决定："不给 Quilt 装 API 了"（原来会自动装 QFAPI）
         let libs = api_for_base(Some(BaseLoaderKind::Quilt), "1.20.1");
-        assert_eq!(libs.len(), 1);
-        assert_eq!(libs[0].kind, "quilted-fabric-api");
+        assert!(libs.is_empty(), "Quilt 不该自动装任何 API 包：{libs:?}");
     }
 
     /// ★ 这条测试原来断言「1.20.6 没有 OptiFine」—— **实测是错的**。
