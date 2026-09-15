@@ -217,6 +217,15 @@
   width: 100%;
   min-height: 40px;
   padding: 0 var(--space-4);
+  /*
+   * ★★ 侧栏文字**永远不换行**（用户 2026-09-15：
+   *   "限制启动器最小窗口大小，保证左侧文字最长的也能一字排开"）。
+   *   侧栏是固定宽度（196px），但文字一换行整条就变两行高、
+   *   侧栏高度跟着跳，看起来像"排版坏了"。最长的一项是「关于与设置」。
+   *   配合窗口 `minWidth: 1040`（见 tauri.conf.json）：那个下限保证
+   *   侧栏 196px + 内容区最小 ~840px 都放得下，谁都不挤谁。
+   */
+  white-space: nowrap;
   border: none;
   border-radius: var(--radius-md);
   background: none;
@@ -712,7 +721,18 @@
 /* ---------- 侧栏下半部分：最近玩过 + 直达动作（0.1.0-beta.1） ----------
    用户："左侧栏设置以下空缺太多，可以想想加什么"。
    加的是真东西：最近两个版本（点一下直接进）+ 两个直达动作。 */
+/* ★ 侧栏里的文字**一律不换行**（见 .nav-item 上的说明）：一换行整条变两行高，
+   侧栏高度跟着跳。长名字用省略号（配合 title 显示全名）。 */
+.side-recent,
+.side-recent-title,
+.side-link {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .side-recent {
+  /* 上面那三行只管文字；这一条是容器自己的布局，别被 overflow 影响 */
+  overflow: visible;
   margin-top: var(--space-4);
   padding-top: var(--space-3);
   border-top: 1px solid var(--border-subtle);
