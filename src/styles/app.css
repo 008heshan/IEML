@@ -1,0 +1,1922 @@
+/* ==========================================================================
+   IEML 应用样式
+   规则：所有尺寸走 4px 基数，所有字号走 tokens 阶梯，所有颜色走语义变量。
+   ========================================================================== */
+
+/* ============================ 布局骨架 ============================ */
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  height: 48px;
+  padding: 0 var(--space-4);
+  background: var(--glass);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--border-subtle);
+  flex: 0 0 auto;
+  user-select: none;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 600;
+  font-size: var(--text-md);
+  letter-spacing: -0.01em;
+}
+.brand-mark {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: #fff;
+}
+.brand-mark svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+}
+
+.titlebar-spacer {
+  flex: 1;
+}
+
+/* ---------- 面包屑（只在二级页出现） ---------- */
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  font-size: var(--text-sm);
+  color: var(--text-tertiary);
+}
+.crumbs svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.crumb-link {
+  border: none;
+  background: none;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.crumb-link:hover {
+  color: var(--accent);
+  background: var(--bg-hover);
+}
+.crumb-cur {
+  color: var(--text-primary);
+  font-weight: 600;
+  max-width: 240px;
+}
+
+.icon-btn {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color var(--dur-fast), border-color var(--dur-fast), background var(--dur-fast);
+  position: relative;
+}
+.icon-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--border-default);
+  background: var(--bg-hover);
+}
+.icon-btn svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.icon-btn .badge-dot {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  display: grid;
+  place-items: center;
+  font-style: normal;
+}
+
+.main {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ============================ 侧边栏 ============================
+   一级与二级共用同一条 218px 侧栏 —— 二级页把整条替换掉，
+   而不是并排成"两栏导航"。理由见 AppShell.tsx 顶部注释。
+   ============================================================== */
+.sidebar {
+  width: 218px;
+  flex: 0 0 218px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border-subtle);
+  padding: var(--space-3) var(--space-2);
+  gap: var(--space-1);
+  overflow-y: auto;
+}
+
+.nav-label {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+  padding: var(--space-3) var(--space-3) var(--space-1);
+  text-transform: uppercase;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--text-secondary);
+  font-size: var(--text-base);
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--dur-fast), color var(--dur-fast);
+}
+.nav-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.nav-item[aria-current='page'] {
+  background: var(--accent-subtle);
+  color: var(--accent);
+  font-weight: 600;
+}
+.nav-item svg {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.nav-item .nav-badge {
+  margin-left: auto;
+  font-size: 10px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  background: var(--bg-active);
+  color: var(--text-tertiary);
+}
+
+/* ---------- 二级页：返回按钮 + 当前版本卡 + 底部主操作 ---------- */
+.back-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-2);
+  border: none;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  text-align: left;
+}
+.back-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.back-btn svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.side-inst {
+  padding: var(--space-3);
+  margin-bottom: var(--space-2);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-subtle);
+  min-width: 0;
+}
+.side-inst-name {
+  font-size: var(--text-base);
+  font-weight: 600;
+  margin-bottom: var(--space-2);
+}
+.side-inst-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  flex-wrap: wrap;
+}
+
+.side-foot {
+  margin-top: auto;
+  padding-top: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.side-launch {
+  width: 100%;
+}
+
+/* 运行中实例卡 —— 这东西在主页与侧栏都出现，是全局状态 */
+.running-chip {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--success-subtle);
+  border: 1px solid transparent;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  font-family: inherit;
+}
+.running-chip:hover {
+  border-color: var(--success);
+}
+.running-chip .pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--success);
+  flex: 0 0 auto;
+  animation: pulse 2s var(--ease-in-out) infinite;
+}
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(0.82);
+  }
+}
+.running-chip .t {
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--success);
+}
+.running-chip .s {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  margin-top: 1px;
+}
+
+/* ============================ 内容区 ============================ */
+/* ★ 密度收敛：原稿的 24/32/40 三档内边距在 1366×768 上会吃掉近半屏高度，
+   这里压到 20/24/32，并把所有页面级间距统一交给 .stack / .page-head 控制 */
+.content {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: var(--space-5) var(--space-6) var(--space-10);
+}
+
+/* ★ 标题区固定不滚动（原稿缺失，规范第 8 章要求） */
+.page-head {
+  position: sticky;
+  top: calc(-1 * var(--space-5));
+  z-index: var(--z-sticky);
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-4) 0 var(--space-3);
+  margin-top: calc(-1 * var(--space-5));
+  /* ★ 实底而不是渐变：渐变会让滚上来的内容"透"出标题区，看起来糊成一片 */
+  background: var(--bg-base);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.page-head > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.page-title {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.page-desc {
+  font-size: var(--text-sm);
+  color: var(--text-tertiary);
+  margin-top: 3px;
+}
+.page-actions {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* ============================ 列表 ============================
+ * dev.15 起列表只有一个容器 + 分隔线，行本身不再是一张张卡片。
+ * 之前每行一张带圆角和边框的小卡：一屏 4 行就有 4 个边框 + 4 个圆角，
+ * 视觉噪音大、还把行高压到两行文字都挤在一起。
+ * 现在 `.list` 是那一个盒子，`.list-row` 只是它里面的一行。
+ */
+.list {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--bg-raised);
+  overflow: hidden;
+}
+.list-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--row-min-h);
+  padding: var(--row-pad-y) var(--row-pad-x);
+  cursor: pointer;
+  transition: background var(--dur-fast);
+}
+.list-row + .list-row {
+  border-top: 1px solid var(--border-subtle);
+}
+.list-row:hover {
+  background: var(--bg-hover);
+}
+.list-row:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.list-row.static {
+  cursor: default;
+}
+.list-row.static:hover {
+  background: transparent;
+}
+.list-row.running {
+  background: var(--success-subtle);
+}
+.list-main {
+  flex: 1;
+  min-width: 0;
+}
+.list-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.list-title-name {
+  font-size: var(--text-md);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.list-sub {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-top: 2px;
+  font-size: var(--text-sm);
+  color: var(--text-tertiary);
+}
+.list-side {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex: 0 0 auto;
+}
+
+/* 操作条：一屏里"能做的事"集中成一行，而不是散成四张卡片 */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.toolbar-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--border-default);
+  margin: 0 var(--space-1);
+  flex: 0 0 auto;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: var(--space-5) 0 var(--space-2);
+}
+.section-title {
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+/* ---------- 撑满剩余高度的页面（下载页） ----------
+   ★ 用户报"下载页下面还有大片空区"：以前内容高度是 `calc(100vh - 290px)`
+   这种**猜出来的**减法 —— 窗口一变就不准，剩下的空白就只能干瞪着。
+   现在改成真正的弹性链：`.content` → `.page-fill`(100%) → 主区域(flex:1)。
+   ★ `height: 100%` 而不是 `min-height`：主区域必须**被约束**在视口内，
+   否则它会一直长高、把底部那条常驻摘要挤出屏幕（截图里就是这么坏的）。 */
+.page-fill {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* ---------- 行内小链接按钮（"改 / 管 / 查看"这类） ---------- */
+.link-btn {
+  border: none;
+  background: none;
+  padding: 0 2px;
+  color: var(--accent);
+  font: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  border-bottom: 1px solid transparent;
+}
+.link-btn:hover {
+  border-bottom-color: currentColor;
+}
+.link-btn svg {
+  width: 13px;
+  height: 13px;
+  vertical-align: -2px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* ============================ 按钮 ============================ */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  font-family: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast),
+    transform var(--dur-instant);
+}
+.btn:active:not(:disabled) {
+  transform: scale(0.985);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.btn svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* ★ 图标作为 flex 子项必须 flex:0 0 auto。
+   默认的 flex-shrink:1 在窄容器里会把 svg 压成 0 宽 —— 表现出来就是
+   "图标不见了、旁边的文字被挤成竖排"（下载页签踩过这个坑）。
+   这里给全站兜一条底线规则，各组件自己的尺寸规则优先级更高。 */
+.btn svg,
+.page-actions svg,
+.field-control svg,
+.note-actions svg,
+.crumbs svg {
+  flex: 0 0 auto;
+}
+/* 图标包一层时的容器（见 ui/index.tsx 的 IconWrap） */
+.ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+.ico svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.btn-sm {
+  height: 28px;
+  padding: 0 var(--space-3);
+  font-size: var(--text-sm);
+}
+.btn-md {
+  height: 34px;
+  padding: 0 var(--space-4);
+  font-size: var(--text-base);
+}
+.btn-lg {
+  height: 42px;
+  padding: 0 var(--space-6);
+  font-size: var(--text-md);
+}
+.btn-icon {
+  width: 30px;
+  padding: 0;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+.btn-secondary {
+  background: var(--bg-raised);
+  border-color: var(--border-default);
+  color: var(--text-primary);
+}
+.btn-secondary:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+}
+.btn-ghost {
+  background: none;
+  color: var(--text-secondary);
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.btn-danger {
+  background: var(--danger-subtle);
+  border-color: var(--danger-border);
+  color: var(--danger);
+}
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger);
+  color: #fff;
+}
+
+.spinner {
+  width: 13px;
+  height: 13px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: var(--radius-full);
+  animation: spin 0.7s linear infinite;
+  flex: 0 0 auto;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- 侧栏下半部分：最近玩过 + 直达动作（0.1.0-beta.1） ----------
+   用户："左侧栏设置以下空缺太多，可以想想加什么"。
+   加的是真东西：最近两个版本（点一下直接进）+ 两个直达动作。 */
+.side-recent {
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.side-recent-title {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  padding: 0 var(--space-2) var(--space-1);
+}
+.side-recent-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-secondary);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.side-recent-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.sri-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.sri-name {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.sri-sub {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+.side-links {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}
+.side-link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-tertiary);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.side-link:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.side-link svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+}
+
+/* ---------- 顶栏账号入口（0.1.0-beta.3） ----------
+   用户："正版登录界面应该放在显眼位置，而不是藏起来"。
+   账号是**状态**（我现在是谁、能不能进正版服务器），所以它待在顶栏，
+   和任务中心、主题开关并排 —— 不埋进设置页第三屏。 */
+.acct-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 190px;
+  height: 30px;
+  padding: 0 var(--space-2) 0 var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+  transition: border-color var(--dur-fast), background var(--dur-fast);
+}
+.acct-chip:hover {
+  border-color: var(--accent-border);
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.acct-chip-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: var(--radius-full);
+  background: var(--text-disabled);
+}
+/* 已登录正版 → 点变绿：一眼看得出"现在是正版身份" */
+.acct-chip.on .acct-chip-dot {
+  background: var(--success);
+  box-shadow: 0 0 0 3px var(--success-subtle);
+}
+.acct-chip-text {
+  min-width: 0;
+  font-weight: 600;
+}
+.acct-chip-tag {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--bg-active);
+  color: var(--text-tertiary);
+}
+.acct-chip.on .acct-chip-tag {
+  background: var(--success-subtle);
+  color: var(--success);
+}
+
+/* ---------- 账号面板（顶栏弹窗 + 设置页共用） ---------- */
+.acct {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.acct-now {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--card-pad);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-raised);
+}
+.acct-avatar {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-md);
+  background: var(--bg-active);
+  color: var(--text-tertiary);
+}
+.acct-avatar.on {
+  background: var(--success-subtle);
+  color: var(--success);
+}
+.acct-avatar svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.acct-who {
+  min-width: 0;
+}
+.acct-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+.acct-sub {
+  margin-top: 2px;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  line-height: 1.5;
+}
+/* 弹窗里少一层内边距（外面已经有模态框的 padding） */
+.acct-compact .acct-now {
+  background: var(--bg-surface);
+}
+
+/* ---------- 应用 ID 那一块（账号面板内） ---------- */
+.acct-id {
+  padding: var(--card-pad);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-raised);
+}
+.acct-id-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  font-size: var(--text-sm);
+}
+.acct-id-k {
+  color: var(--text-tertiary);
+}
+.acct-id-v {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.acct-id-note {
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  line-height: 1.65;
+}
+.acct-id-reason {
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--warning-subtle);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  line-height: 1.7;
+}
+/* 设备码阶段那句"别关掉启动器" */
+.dc-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--warning-subtle);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+.dc-warn svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  margin-top: 2px;
+  fill: none;
+  stroke: var(--warning);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+/* ============================ 卡片 ============================ */
+.card {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+}
+.card-padded {
+  padding: var(--card-pad);
+}
+.card-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-base);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--text-secondary);
+  padding-bottom: var(--space-2);
+  margin-bottom: var(--space-2);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.card-title-ic {
+  display: grid;
+  place-items: center;
+  color: var(--text-tertiary);
+}
+.card-title-ic svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.card-tail {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-weight: 400;
+}
+.card-hint {
+  font-size: var(--text-xs);
+  font-weight: 400;
+  color: var(--text-tertiary);
+}
+.card-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* ============================ 徽标 ============================ */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-size: var(--text-xs);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+.chip-neutral {
+  background: var(--bg-active);
+  color: var(--text-secondary);
+}
+.chip-accent {
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+.chip-success {
+  background: var(--success-subtle);
+  color: var(--success);
+}
+.chip-warning {
+  background: var(--warning-subtle);
+  color: var(--warning);
+}
+.chip-danger {
+  background: var(--danger-subtle);
+  color: var(--danger);
+}
+/* ★ "可更新"用信息色而非 accent —— 原稿用 accent，与规范 7.15 的六态定义不符 */
+.chip-info {
+  background: var(--info-subtle);
+  color: var(--info);
+}
+.chip-btn {
+  cursor: pointer;
+  font-family: inherit;
+  border-color: transparent;
+}
+.chip-btn:hover {
+  border-color: currentColor;
+}
+
+/* 状态点 */
+.dt {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  flex: 0 0 auto;
+  background: var(--text-disabled);
+}
+
+/* ============================ 提示条 ============================
+ * ★ dev.15：改成"左侧色条 + 一行文字"的告示样式。
+ *   以前是整块带底色的圆角框 + 16px 图标 + 1.6 行高，
+ *   一屏放两条就把正文挤没了（下载页实测：首屏 1/4 高度全是提示条）。
+ *   现在底色更淡、左边一条 3px 色条承载语义，正文按 12.5px/1.5 排版。
+ */
+.note {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  border-left-width: 3px;
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  align-items: flex-start;
+}
+.note-ic {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  opacity: 0.9;
+}
+.note-ic svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.note-body {
+  flex: 1;
+  min-width: 0;
+}
+/* ★ 标题与正文分开会让"只有正文"的提示条多出一层无意义的 div，
+   这里把正文的排版规则收在 .note-text 上，两行间距统一 */
+.note-text {
+  line-height: 1.55;
+}
+.note-text ol,
+.note-text ul {
+  margin: var(--space-1) 0 0;
+  padding-left: var(--space-4);
+}
+.note-title {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.note-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex: 0 0 auto;
+  align-items: center;
+}
+.note-info {
+  background: var(--info-subtle);
+  border-color: var(--info-border);
+  color: var(--text-primary);
+}
+.note-info .note-ic {
+  color: var(--info);
+}
+/* 左侧那条 3px 色条用**实色**承载语义（底色仍然很淡，避免整块糊成一片） */
+.note-info {
+  border-left-color: var(--info);
+}
+.note-warning {
+  background: var(--warning-subtle);
+  border-color: var(--warning-border);
+  border-left-color: var(--warning);
+}
+.note-warning .note-ic {
+  color: var(--warning);
+}
+.note-danger {
+  background: var(--danger-subtle);
+  border-color: var(--danger-border);
+  border-left-color: var(--danger);
+}
+.note-danger .note-ic {
+  color: var(--danger);
+}
+.note-success {
+  background: var(--success-subtle);
+  border-color: var(--border-subtle);
+  border-left-color: var(--success);
+}
+.note-success .note-ic {
+  color: var(--success);
+}
+
+/* ============================ 进度条 ============================ */
+.progress {
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--progress-track);
+  overflow: hidden;
+}
+.progress > i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--progress-bar);
+  transition: width var(--dur-slow) linear;
+}
+.progress.indeterminate > i {
+  width: 34%;
+  animation: slide 1.4s var(--ease-in-out) infinite;
+}
+@keyframes slide {
+  0% {
+    margin-left: -34%;
+  }
+  100% {
+    margin-left: 100%;
+  }
+}
+
+/* ============================ 空状态 / 骨架 ============================ */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-12) var(--space-6);
+  text-align: center;
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-lg);
+}
+.empty-ic {
+  color: var(--text-tertiary);
+}
+.empty-ic svg {
+  width: 40px;
+  height: 40px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+.empty h3 {
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+.empty p {
+  font-size: var(--text-base);
+  color: var(--text-secondary);
+  max-width: 46ch;
+  line-height: 1.65;
+}
+.empty-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.skeleton-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.skeleton {
+  border-radius: var(--radius-md);
+  background: linear-gradient(
+    90deg,
+    var(--bg-raised) 25%,
+    var(--bg-hover) 37%,
+    var(--bg-raised) 63%
+  );
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+@keyframes shimmer {
+  0% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0 50%;
+  }
+}
+
+/* ============================ 开关 / 分段器 ============================ */
+.switch {
+  width: 40px;
+  height: 23px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-default);
+  background: var(--bg-active);
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  transition: background var(--dur-fast), border-color var(--dur-fast);
+  flex: 0 0 auto;
+}
+.switch.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.switch-knob {
+  width: 17px;
+  height: 17px;
+  border-radius: var(--radius-full);
+  background: #fff;
+  transition: transform var(--dur-fast) var(--ease-out);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+.switch.on .switch-knob {
+  transform: translateX(17px);
+}
+.switch:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.seg {
+  display: inline-flex;
+  gap: 3px;
+  padding: 3px;
+  border-radius: var(--radius-md);
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+}
+.seg button {
+  height: 27px;
+  padding: 0 var(--space-3);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: background var(--dur-fast), color var(--dur-fast);
+  white-space: nowrap;
+}
+.seg button:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.seg button.on {
+  background: var(--bg-active);
+  color: var(--accent);
+  font-weight: 600;
+}
+.seg button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.seg-sm button {
+  height: 23px;
+  font-size: var(--text-xs);
+  padding: 0 var(--space-2);
+}
+
+/* ============================ 表单 ============================ */
+/* ★ 标签列宽度是"挤不挤"的关键：132px 会把提示挤成三行、156px 还有两条两行。
+   200px 让绝大多数标签 + 一行提示放得下；值列仍然弹性，
+   窄窗口下退化为单列（见媒体查询）。 */
+.field-row {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.field-row:last-child {
+  border-bottom: none;
+}
+.field-label {
+  font-size: var(--text-base);
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.field-hint {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  font-weight: 400;
+  line-height: 1.5;
+}
+.field-control {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+/* 值列里的滑块不该铺满整行 —— 那是"一整条全是可点区域"的过头设计 */
+.field-control > .range {
+  flex: 0 1 320px;
+}
+
+/* 输入框 + 它下面那行解释（例如服务器地址的"已自动换成半角"）。
+   为什么单独包一层：`Field` 内部是 grid，解释行放进去会挤到标签列，
+   而它说的是**这个输入值**的事，必须紧贴输入框。 */
+.field-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.srv-hint {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+}
+.srv-hint svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+.srv-hint span {
+  min-width: 0;
+  word-break: break-all;
+}
+/* 三种语气各有明确语义：改了（需要用户知道）/ 有问题（要拦住）/ 正常 */
+.srv-fix {
+  border-color: var(--accent-border);
+  background: var(--accent-subtle);
+  color: var(--text-primary);
+}
+.srv-warn {
+  border-color: var(--warning-border);
+  background: var(--warning-subtle);
+  color: var(--text-primary);
+}
+.srv-ok {
+  color: var(--text-tertiary);
+}
+
+/* 下载源健康报告（设置 → 下载）：一行一个源，数字用等宽字体对齐 */
+.src-report {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.src-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.src-row .mono {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.input {
+  width: 100%;
+  height: 32px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--bg-base);
+  border: 1px solid var(--border-default);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--text-base);
+  transition: border-color var(--dur-fast);
+}
+.input:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+select.input {
+  cursor: pointer;
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-tertiary) 50%),
+    linear-gradient(135deg, var(--text-tertiary) 50%, transparent 50%);
+  background-position: calc(100% - 15px) 14px, calc(100% - 10px) 14px;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: var(--space-8);
+}
+
+.src-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  font-family: inherit;
+  cursor: pointer;
+  border: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+.src-tag::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: var(--radius-full);
+  flex: 0 0 auto;
+}
+.src-inherit {
+  background: var(--bg-base);
+  color: var(--text-tertiary);
+}
+.src-inherit::before {
+  background: var(--text-disabled);
+}
+.src-over {
+  background: var(--accent-subtle);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+.src-over::before {
+  background: var(--accent);
+}
+.src-tag:hover {
+  border-color: var(--border-strong);
+}
+
+.searchbox {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 34px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--bg-base);
+  border: 1px solid var(--border-default);
+  transition: border-color var(--dur-fast), box-shadow var(--dur-fast);
+}
+.searchbox:focus-within {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+.searchbox svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: var(--text-tertiary);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.searchbox input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  outline: none;
+  color: inherit;
+  font: inherit;
+  font-size: var(--text-base);
+}
+.searchbox input::placeholder {
+  color: var(--text-tertiary);
+}
+
+/* ============================ 表格 ============================ */
+.table-wrap {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  /* ★ overflow:hidden 会让窄窗口下的表格被裁切且无法横向滚动（原稿的问题） */
+  overflow-x: auto;
+  background: var(--bg-surface);
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-base);
+}
+thead th {
+  text-align: left;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-tertiary);
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+tbody td {
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  vertical-align: middle;
+}
+tbody tr:last-child td {
+  border-bottom: none;
+}
+tbody tr {
+  transition: background var(--dur-fast);
+}
+tbody tr:hover {
+  background: var(--bg-hover);
+}
+/* 整行可点 —— 这修掉了原稿"只有小按钮能点"的问题 */
+tbody tr.clickable {
+  cursor: pointer;
+}
+tbody tr.clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* ============================ 转圈（等待一个结论） ============================
+   照用户的要求做（"像 Windows 开机的那个转圈圈"）：
+   一段缺口圆弧匀速转，配一句"在查什么"。比骨架屏更适合"查在线清单"这种
+   **还没有任何数据**的等待 —— 骨架屏会让人以为数据已经在了。
+   ========================================================================== */
+.spinner-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+}
+.spinner-ring {
+  flex: 0 0 auto;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  /* ★ 复用上面那个 `@keyframes spin`（按钮的忙碌态用的是同一个转动）——
+     不重复定义，否则同一个动画名会有两份定义、改一份不生效。 */
+  animation: spin 0.9s linear infinite;
+}
+/* 尊重"减少动效"：不转，改成呼吸 */
+:root.reduce-motion .spinner-ring {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* ============================ 模态框 ============================ */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(3px);
+  display: grid;
+  place-items: center;
+  padding: var(--space-6);
+  animation: fade var(--dur-base) var(--ease-out);
+}
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.modal {
+  width: min(560px, 94vw);
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-overlay);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-xl);
+  animation: pop var(--dur-base) var(--ease-out);
+}
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.modal-lg {
+  width: min(960px, 96vw);
+}
+/* 资源中心：两列卡片 + 展开的版本列表，960px 不够用 */
+.modal-xl {
+  width: min(1160px, 97vw);
+  max-height: 92vh;
+}
+.modal-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+  padding: var(--space-5) var(--space-5) var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+  flex: 0 0 auto;
+}
+.modal-head > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.modal-title {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.modal-sub {
+  font-size: var(--text-base);
+  color: var(--text-secondary);
+  margin-top: 3px;
+  line-height: 1.55;
+}
+.modal-body {
+  padding: var(--space-5);
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+.modal-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-5);
+  border-top: 1px solid var(--border-subtle);
+  flex: 0 0 auto;
+}
+.modal-foot .spacer {
+  flex: 1;
+}
+
+/* ============================ Toast ============================
+   ★ 0.1.0-beta.1：从**右下角**挪到**顶部居中**。
+
+   为什么：下载页的主按钮（「安装 xxx」）就在右下角，而安装过程会连发好几条
+   提示 —— 用户报的"下载栏会被奇怪的一些 UI 遮住"就是它。
+   顶部居中只在页头下方一条很窄的带子里，永远不会压住任何主操作，
+   也不会和左下角的「启动这个版本」打架。
+   ============================================================== */
+.toasts {
+  position: fixed;
+  top: calc(var(--topbar-h, 48px) + var(--space-3));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--z-toast, 100);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: min(520px, 92vw);
+  pointer-events: none;
+}
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--bg-overlay);
+  border: 1px solid var(--border-default);
+  box-shadow: var(--shadow-lg);
+  pointer-events: auto;
+  animation: toastIn var(--dur-base) var(--ease-out);
+}
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.toast-ic {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+.toast-ic svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.toast-ok .toast-ic {
+  color: var(--success);
+}
+.toast-info .toast-ic {
+  color: var(--info);
+}
+.toast-warning .toast-ic {
+  color: var(--warning);
+}
+.toast-err .toast-ic {
+  color: var(--danger);
+}
+/* ★ 错误与警告用左边框强调，且不自动消失（规范 7.6） */
+.toast-err {
+  border-left: 3px solid var(--danger);
+}
+.toast-warning {
+  border-left: 3px solid var(--warning);
+}
+.toast-body {
+  flex: 1;
+  min-width: 0;
+}
+.toast-t {
+  font-size: var(--text-base);
+  font-weight: 600;
+}
+.toast-d {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  margin-top: 2px;
+  line-height: 1.55;
+  word-break: break-word;
+}
+/* 长报错默认折叠两三行，点开看全 —— 这样它就不必"永久挂在屏幕上" */
+.toast-d.clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  cursor: pointer;
+}
+.toast-d.clamped:hover {
+  color: var(--text-primary);
+}
+.toast-more {
+  margin-left: 6px;
+  color: var(--accent);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.toast-x {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+.toast-x:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.toast-x svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+}
+
+/* ============================ 启动遮罩 ============================ */
+.boot {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: var(--bg-base);
+  z-index: var(--z-boot);
+}
+.boot-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4);
+  color: var(--text-secondary);
+  font-size: var(--text-base);
+}
+.boot-mark {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-lg);
+  background: var(--accent);
+  color: #fff;
+  display: grid;
+  place-items: center;
+}
+.boot-mark svg {
+  width: 26px;
+  height: 26px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+}
+
+/* ============================ 栅格 ============================ */
+.grid-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(224px, 1fr));
+  gap: var(--space-4);
+}
+.split {
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr);
+  gap: var(--space-5);
+  align-items: start;
+}
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: var(--space-4);
+}
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.row-wrap {
+  flex-wrap: wrap;
+}
+.spacer {
+  flex: 1;
+}
+
+/* ============================ 响应式（原稿只有 2 个断点且 980 以下无处理） ============================ */
+@media (max-width: 1150px) {
+  .split {
+    grid-template-columns: 1fr;
+  }
+  .content {
+    padding: var(--space-4) var(--space-4) var(--space-8);
+  }
+  .page-head {
+    top: calc(-1 * var(--space-4));
+    padding: var(--space-4) 0 var(--space-3);
+    margin-top: calc(-1 * var(--space-4));
+  }
+}
+
+/* 窄窗口：侧栏收成图标条。二级页此时会丢掉文字，所以返回按钮保留图标 + 卡只留名字首字 */
+@media (max-width: 980px) {
+  .sidebar {
+    width: 60px;
+    flex: 0 0 60px;
+    padding: var(--space-2) var(--space-1);
+    align-items: center;
+  }
+  .nav-item {
+    justify-content: center;
+    padding: var(--space-2);
+  }
+  /* ★ 文字隐藏时必须补 aria-label，否则导航项全变成无名按钮（AppShell 已补 aria-label） */
+  .nav-item .nav-text,
+  .nav-label,
+  .nav-item .nav-badge {
+    display: none;
+  }
+  .back-btn {
+    justify-content: center;
+    font-size: 0;
+  }
+  .side-inst {
+    display: none;
+  }
+  .side-launch {
+    font-size: 0;
+    padding: 0;
+    width: 36px;
+  }
+  .running-chip .txt {
+    display: none;
+  }
+  .field-row {
+    grid-template-columns: 1fr;
+    gap: var(--space-2);
+  }
+  .crumbs {
+    display: none;
+  }
+}
+
+/* ============================ 小件 ============================ */
+/* 一行元信息之间的分隔点（原名 .dot 只在页面里散用，这里收成一条规则） */
+.dot {
+  width: 3px;
+  height: 3px;
+  border-radius: var(--radius-full);
+  background: var(--text-disabled);
+  flex: 0 0 auto;
+  display: inline-block;
+}
+
+/* 滚动条与选中 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb) transparent;
+}

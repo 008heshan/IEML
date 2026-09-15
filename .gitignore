@@ -1,0 +1,33 @@
+# ============================ 不入库的东西 ============================
+# 判据只有一条：**能不能由仓库里的东西重新生成**。能，就不入库。
+
+# --- Rust / Tauri 构建产物（2026-09-15 实测：光 target/debug 就有 47 GB）---
+/src-tauri/target/
+
+# --- 前端依赖与产物 ---
+/node_modules/
+/dist/
+
+# --- 运行期产物 ---
+*.log
+/tmp/
+.vite/
+
+# --- 编辑器 / 系统 ---
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+
+# --- ★ 本地数据与密钥：**永远不许进仓库** ---
+#   ms_client_id.txt / prefs.json / instances.json 都住在数据目录里
+#   （默认 `D:\IEML`，不在仓库内）。这里再挡一道，防止有人把数据目录
+#   拷进仓库后误提交。
+ms_client_id.txt
+prefs.json
+instances.json
+*.part
+*.part.*
+
+# --- 打包出来的安装程序不进仓库（体积大、且随时能重建）---
+/src-tauri/target/release/bundle/

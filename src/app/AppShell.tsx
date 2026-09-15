@@ -1,0 +1,589 @@
+/**
+ * 应用外壳
+ * ------------------------------------------------------------------
+ * 导航层级参照 PCL2 的「正副级页面」：
+ *
+ *   一级（侧边栏 4 项，永远是这 4 项）
+ *     启动 │ 版本列表 │ 下载 │ 设置
+ *
+ *   二级（进入某个版本后，侧边栏整体替换）
+ *     ← 返回 │ 概览 │ 设置 │ Mod 管理 │ 日志
+ *
+ * 为什么二级**替换**一级而不是并排：
+ *   并排会变成"左侧两栏导航"，220px 的侧边栏塞不下，而且用户分不清哪一栏
+ *   是全局、哪一栏属于当前版本。替换后"我现在在哪一层"一目了然。
+ */
+import { useEffect, useMemo, useState } from 'react';
+import { useApp } from '../state/AppContext';
+import type { PageId, SubPageId } from '../state/store';
+import { Button, Chip, Modal, ToastRegion } from '../ui';
+import {
+  IconChevronRight,
+  IconDownload,
+  IconDrive,
+  IconGear,
+  IconGrid,
+  IconHome,
+  IconLayers,
+  IconMoon,
+  IconPlay,
+  IconPuzzle,
+  IconStop,
+  IconSun,
+  IconTerminal,
+} from '../ui/Icons';
+import { VersionIcon } from '../components/VersionIcon';
+import { LaunchPage } from '../pages/LaunchPage';
+import { VersionsPage } from '../pages/VersionsPage';
+import { DownloadPage } from '../pages/DownloadPage';
+import { SettingsPage } from '../pages/SettingsPage';
+import { InstanceOverview } from '../pages/InstanceOverview';
+import { InstanceSetup } from '../pages/InstanceSetup';
+import { ModsPanel } from '../pages/ModsPanel';
+import { LogsPanel } from '../pages/LogsPanel';
+import { CreateInstanceModal } from '../pages/CreateInstanceModal';
+import { CrashModal } from '../pages/CrashModal';
+import { TaskCenter } from '../components/TaskCenter';
+import { AccountPanel } from '../components/AccountPanel';
+import { getRealApi } from '../bridge';
+
+interface NavEntry {
+  id: PageId;
+  label: string;
+  icon: typeof IconHome;
+}
+
+const PRIMARY_NAV: NavEntry[] = [
+  { id: 'launch', label: '启动', icon: IconPlay },
+  { id: 'versions', label: '版本列表', icon: IconLayers },
+  { id: 'download', label: '下载', icon: IconDownload },
+  { id: 'settings', label: '设置', icon: IconGear },
+];
+
+const SUB_NAV: Array<{ id: SubPageId; label: string; icon: typeof IconHome }> = [
+  { id: 'overview', label: '概览', icon: IconHome },
+  { id: 'setup', label: '设置', icon: IconGrid },
+  { id: 'mods', label: 'Mod 管理', icon: IconPuzzle },
+  { id: 'logs', label: '日志', icon: IconTerminal },
+];
+
+/** 提示文案超过这个长度就折叠（大概两三行的量） */
+const TOAST_LONG = 90;
+function isLong(text: string): boolean {
+  return text.length > TOAST_LONG || text.includes('\n');
+}
+
+export function App() {
+  const { state, go, setTheme, dismissToast, closeVersion, setSubPage, open, openVersion } = useApp();
+  const [stopping, setStopping] = useState(false);
+  /** 顶栏的账号弹窗（正版登录入口） */
+  const [accountOpen, setAccountOpen] = useState(false);
+
+  /**
+   * 把一条提示交给顶层的 toast 区域。
+   *
+   * ★ 为什么要这一层：`AccountPanel` 是**通用组件**，它不该直接引用 AppContext 的
+   *   toast 实现（那样它就没法在别的壳里复用）。这里做一个最小的适配器。
+   */
+  function dispatchToast(
+    kind: 'ok' | 'warning' | 'err' | 'info',
+    title: string,
+    desc?: string,
+  ) {
+    window.dispatchEvent(new CustomEvent('ieml:toast', { detail: { kind, title, desc } }));
+  }
+
+  /** 最近玩过的两个版本（侧栏"最近玩过"用，真的按时间排） */
+  const recent = useMemo(
+    () =>
+      state.instances
+        .filter((i) => i.lastPlayedAt)
+        .sort((a, b) => (b.lastPlayedAt ?? '').localeCompare(a.lastPlayedAt ?? ''))
+        .slice(0, 2),
+    [state.instances],
+  );
+
+  /** 打开数据目录（走 Rust 命令，不经 opener 插件的 scope，见设置页那段注释） */
+  async function openDataDir() {
+    const api = await getRealApi();
+    if (!api) {
+      window.dispatchEvent(
+        new CustomEvent('ieml:toast', {
+          detail: { kind: 'info', title: '数据目录', desc: state.machine?.dataDir ?? '未知' },
+        }),
+      );
+      return;
+    }
+    try {
+      const dir = await api.launcher.openDir('data');
+      window.dispatchEvent(
+        new CustomEvent('ieml:toast', { detail: { kind: 'ok', title: '已打开数据目录', desc: dir } }),
+      );
+    } catch (e) {
+      window.dispatchEvent(
+        new CustomEvent('ieml:toast', {
+          detail: {
+            kind: 'err',
+            title: '打不开数据目录',
+            desc: e instanceof Error ? e.message : String(e),
+          },
+        }),
+      );
+    }
+  }
+  /** 哪条提示被展开了（长文本默认折叠，点开看全） */
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  const runningInstance = useMemo(
+    () => state.instances.find((i) => i.id === state.running?.instanceId) ?? null,
+    [state.instances, state.running],
+  );
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.key === ',') {
+        e.preventDefault();
+        go('settings');
+      }
+      if (mod && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        go('versions');
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [go]);
+
+  async function handleStop() {
+    if (!runningInstance) return;
+    setStopping(true);
+    try {
+      /*
+       * ★ 审计发现：这里先派发 `stop-request`（前端据此立刻清掉"运行中"状态）、
+       *   再等后端停 —— 于是**后端停失败时界面已经显示停好了**，
+       *   而且失败被完全吞掉（只有 try/finally，没有 catch）。
+       *   顺序反过来：先让后端真的停，成功了再改界面状态。
+       *   （LaunchPage 的停止按钮本来就是对的顺序，两处终于一致了。）
+       */
+      const api = await getRealApi();
+      if (api) {
+        await api.launcher.stop();
+      } else {
+        // 浏览器演示模式：没有真实进程，直接通知前端清状态
+        window.dispatchEvent(new CustomEvent('ieml:stop-request'));
+      }
+    } catch (e) {
+      window.dispatchEvent(
+        new CustomEvent('ieml:toast', {
+          detail: {
+            kind: 'err',
+            title: '停止失败',
+            desc: `游戏进程可能还在运行：${e instanceof Error ? e.message : String(e)}`,
+          },
+        }),
+      );
+    } finally {
+      setStopping(false);
+    }
+  }
+
+  if (!state.ready) {
+    return (
+      <div className="boot">
+        <div className="boot-inner">
+          <div className="boot-mark">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+              <path d="m3.3 7 8.7 5 8.7-5M12 22V12" />
+            </svg>
+          </div>
+          <div>正在准备…</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (state.bootError) {
+    return (
+      <div className="boot">
+        <div className="boot-inner">
+          <Chip tone="danger">启动失败</Chip>
+          <div>{state.bootError}</div>
+          <Button variant="primary" onClick={() => location.reload()}>
+            重新加载
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  const inInstance = state.page === 'versions' && open !== null;
+
+  return (
+    <div className="app">
+      {/* ==================== 顶栏（只有品牌、面包屑、任务、主题） ==================== */}
+      <header className="titlebar">
+        <div className="brand">
+          <span className="brand-mark">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+              <path d="m3.3 7 8.7 5 8.7-5M12 22V12" />
+            </svg>
+          </span>
+          <span>IEML</span>
+        </div>
+
+        {inInstance && open ? (
+          <nav className="crumbs" aria-label="位置">
+            <button type="button" className="crumb-link" onClick={() => closeVersion()}>
+              版本列表
+            </button>
+            <IconChevronRight />
+            <span className="crumb-cur truncate">{open.config.name}</span>
+          </nav>
+        ) : null}
+
+        <div className="titlebar-spacer" />
+
+        {/*
+          ★★ 账号入口放在**顶栏**（用户："正版登录界面应该放在显眼位置，而不是藏起来"）。
+          理由：账号不是"设置"，是**状态** —— "我现在是谁、能不能进正版服务器"
+          应该一直看得见。点开就是完整的登录面板（`AccountPanel`，与设置页同一份实现）。
+        */}
+        <button
+          type="button"
+          className={`acct-chip${state.prefs.accountUuid ? ' on' : ''}`}
+          aria-haspopup="dialog"
+          title={
+            state.prefs.accountUuid
+              ? `已登录正版：${state.prefs.offlineUsername} —— 点开看账号信息`
+              : '还没登录正版账号（当前是离线模式）—— 点这里登录'
+          }
+          onClick={() => setAccountOpen(true)}
+        >
+          <span className="acct-chip-dot" aria-hidden="true" />
+          <span className="acct-chip-text truncate">
+            {state.prefs.accountUuid ? state.prefs.offlineUsername : '离线模式'}
+          </span>
+          <span className="acct-chip-tag">
+            {state.prefs.accountUuid ? '正版' : '登录'}
+          </span>
+        </button>
+
+        <TaskCenter />
+
+        <Button
+          variant="ghost"
+          iconOnly
+          aria-label={state.theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'}
+          title={state.theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'}
+          onClick={() => setTheme(state.theme === 'dark' ? 'light' : 'dark')}
+        >
+          {state.theme === 'dark' ? <IconSun /> : <IconMoon />}
+        </Button>
+      </header>
+
+      <div className="main">
+        {/* ==================== 侧边栏：一级 or 二级 ==================== */}
+        <aside className="sidebar">
+          {inInstance && open ? (
+            <>
+              <button type="button" className="back-btn" onClick={() => closeVersion()}>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m15 18-6-6 6-6" />
+                </svg>
+                返回版本列表
+              </button>
+
+              <div className="side-inst">
+                <div className="side-inst-name truncate" title={open.config.name}>
+                  {open.config.name}
+                </div>
+                <div className="side-inst-meta">
+                  <span className="mono">{open.mcVersion}</span>
+                  {open.loader ? (
+                    <Chip tone="accent">{loaderName(open.loader.kind)}</Chip>
+                  ) : (
+                    <Chip tone="neutral">原版</Chip>
+                  )}
+                </div>
+              </div>
+
+              <nav aria-label="版本内导航">
+                {SUB_NAV.map((item) => {
+                  const Icon = item.icon;
+                  const current = state.subPage === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className="nav-item"
+                      aria-current={current ? 'page' : undefined}
+                      onClick={() => setSubPage(item.id)}
+                    >
+                      <Icon />
+                      <span className="nav-text">{item.label}</span>
+                      {item.id === 'mods' && state.mods.entries.length > 0 ? (
+                        <em className="nav-badge">{state.mods.entries.length}</em>
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </nav>
+
+              <div className="side-foot">
+                <Button
+                  variant="primary"
+                  className="side-launch"
+                  loading={stopping}
+                  onClick={async () => {
+                    if (state.running?.instanceId === open.id) {
+                      await handleStop();
+                    } else {
+                      window.dispatchEvent(
+                        new CustomEvent('ieml:launch-request', { detail: open.id }),
+                      );
+                    }
+                  }}
+                >
+                  {state.running?.instanceId === open.id ? (
+                    <>
+                      <IconStop /> 停止游戏
+                    </>
+                  ) : (
+                    <>
+                      <IconPlay /> 启动这个版本
+                    </>
+                  )}
+                </Button>
+              </div>
+            </>
+          ) : (
+            <nav aria-label="主导航">
+              {PRIMARY_NAV.map((item) => {
+                const Icon = item.icon;
+                const current = state.page === item.id;
+                const badge =
+                  item.id === 'versions'
+                    ? state.instances.length
+                    : item.id === 'download'
+                      ? state.tasks.filter(
+                          (t) => t.status === 'running' || t.status === 'pending',
+                        ).length
+                      : undefined;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className="nav-item"
+                    aria-current={current ? 'page' : undefined}
+                    onClick={() => go(item.id)}
+                  >
+                    <Icon />
+                    <span className="nav-text">{item.label}</span>
+                    {badge !== undefined && badge > 0 ? (
+                      <em className="nav-badge">{badge}</em>
+                    ) : null}
+                  </button>
+                );
+              })}
+
+              {/*
+                ★★ 侧栏下半部分别再空着（用户："左侧栏设置以下空缺太多，
+                  可以想想加什么"）。
+
+                这里放的都是**真东西**，不是装饰：
+                  · 「最近玩过」—— 最近两个版本，点一下直接进它（省掉
+                    "版本列表 → 找 → 双击"三步）
+                  · 三个直达动作 —— 打开数据目录 / 全部版本 / 关于
+                一个版本都没有时整块不渲染（不留空标题）。
+              */}
+              {recent.length > 0 ? (
+                <div className="side-recent">
+                  <div className="side-recent-title">最近玩过</div>
+                  {recent.map((i) => (
+                    <button
+                      key={i.id}
+                      type="button"
+                      className="side-recent-item"
+                      title={`打开「${i.config.name}」`}
+                      onClick={() => openVersion(i.id)}
+                    >
+                      <VersionIcon version={i.mcVersion} size={24} />
+                      <span className="sri-main">
+                        <span className="sri-name truncate">{i.config.name}</span>
+                        <span className="sri-sub mono">
+                          {i.mcVersion}
+                          {i.loader ? ` · ${i.loader.kind}` : ''}
+                        </span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+
+              <div className="side-links">
+                <button type="button" className="side-link" onClick={() => void openDataDir()}>
+                  <IconDrive /> 数据目录
+                </button>
+                <button type="button" className="side-link" onClick={() => go('settings')}>
+                  <IconGear /> 关于与设置
+                </button>
+              </div>
+
+              <div className="side-foot">
+                {runningInstance ? (
+                  <div className="running-chip" role="group" aria-label="正在运行的游戏">
+                    <span className="pulse" aria-hidden="true" />
+                    <div className="txt" style={{ flex: 1, minWidth: 0 }}>
+                      <div className="t truncate">{runningInstance.config.name}</div>
+                      <div className="s">
+                        已运行 {formatElapsed(Date.now() - (state.running?.startedAt ?? 0))}
+                      </div>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      iconOnly
+                      aria-label="停止游戏"
+                      title="停止游戏"
+                      loading={stopping}
+                      onClick={handleStop}
+                    >
+                      <IconStop />
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
+            </nav>
+          )}
+        </aside>
+
+        {/* ==================== 内容区 ==================== */}
+        <main className="content">
+          {state.page === 'launch' && <LaunchPage />}
+          {state.page === 'versions' &&
+            (open ? (
+              <>
+                {state.subPage === 'overview' && <InstanceOverview />}
+                {state.subPage === 'setup' && <InstanceSetup />}
+                {state.subPage === 'mods' && <ModsPanel />}
+                {state.subPage === 'logs' && <LogsPanel />}
+              </>
+            ) : (
+              <VersionsPage />
+            ))}
+          {state.page === 'download' && <DownloadPage />}
+          {state.page === 'settings' && <SettingsPage />}
+        </main>
+      </div>
+
+      <CreateInstanceModal />
+      <CrashModal />
+
+      {/* ★ 账号弹窗：顶栏那个按钮打开它（内容与设置页的账号卡是同一个组件） */}
+      <Modal
+        open={accountOpen}
+        onClose={() => setAccountOpen(false)}
+        title="账号"
+        subtitle="正版登录后可以进正版验证的服务器；离线模式不影响单机与局域网"
+        footer={
+          <Button variant="ghost" onClick={() => setAccountOpen(false)}>
+            关闭
+          </Button>
+        }
+      >
+        <AccountPanel
+          compact
+          toast={(kind, title, desc) =>
+            dispatchToast(kind, title, desc)
+          }
+          onLoggedIn={() => setAccountOpen(false)}
+        />
+      </Modal>
+
+      <ToastRegion>
+        {state.toasts.map((t) => (
+          <div key={t.id} className={`toast toast-${t.kind}`}>
+            <span className="toast-ic" aria-hidden="true">
+              {t.kind === 'ok' ? (
+                <svg viewBox="0 0 24 24">
+                  <path d="M20 6 9 17l-5-5" />
+                </svg>
+              ) : t.kind === 'err' ? (
+                <svg viewBox="0 0 24 24">
+                  <circle cx="12" cy="12" r="10" />
+                  <path d="M15 9l-6 6M9 9l6 6" />
+                </svg>
+              ) : t.kind === 'warning' ? (
+                <svg viewBox="0 0 24 24">
+                  <path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24">
+                  <circle cx="12" cy="12" r="10" />
+                  <path d="M12 16v-4M12 8h.01" />
+                </svg>
+              )}
+            </span>
+            <div className="toast-body">
+              <div className="toast-t">{t.title}</div>
+              {t.desc ? (
+                /*
+                 * 长文本**默认折叠**，需要时点开看全。
+                 *
+                 * 为什么不是"长文本就一直挂着"（以前的做法）：
+                 * 一次启动失败的报错有七八行，永久占着右下角，
+                 * 用户报"提示不会自动消失"。折叠 + 定时消失
+                 * 既保住了"能看到全部内容"，又不留常驻垃圾。
+                 */
+                <div
+                  className={`toast-d${isLong(t.desc ?? '') && expanded !== t.id ? ' clamped' : ''}`}
+                  onClick={() =>
+                    isLong(t.desc ?? '') && setExpanded(expanded === t.id ? null : t.id)
+                  }
+                  title={isLong(t.desc ?? '') ? '点击展开 / 收起' : undefined}
+                >
+                  {t.desc}
+                  {isLong(t.desc ?? '') ? (
+                    <span className="toast-more">{expanded === t.id ? '收起' : '展开'}</span>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+            <button
+              type="button"
+              className="toast-x"
+              aria-label="关闭提示"
+              onClick={() => dismissToast(t.id)}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        ))}
+      </ToastRegion>
+    </div>
+  );
+}
+
+function loaderName(kind: string): string {
+  const map: Record<string, string> = {
+    forge: 'Forge',
+    neoforge: 'NeoForge',
+    fabric: 'Fabric',
+    quilt: 'Quilt',
+  };
+  return map[kind] ?? kind;
+}
+
+function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  if (h > 0) return `${h} 小时 ${m} 分`;
+  if (m > 0) return `${m} 分钟`;
+  return `${total} 秒`;
+}
