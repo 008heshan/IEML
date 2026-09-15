@@ -22,7 +22,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../state/AppContext';
 import { Button, Chip, Note, SearchBox, Segmented, Skeleton, Spinner } from '../ui';
-import { IconAlert, IconCheck, IconInfo, IconPlus, IconRefresh } from '../ui/Icons';
+import { IconAlert, IconCheck, IconChevronDown, IconInfo, IconPlus, IconRefresh } from '../ui/Icons';
 import {
   BASE_LOADER_DESC,
   BASE_LOADER_NAME,
@@ -175,6 +175,14 @@ export function InstallComposer({
     state.prefs.downloadSource === 'mojang' ? 'mojang' : 'bmclapi',
   );
   const [channel, setChannel] = useState<Channel>('release');
+  /**
+   * 世代分组的折叠状态（用户建议："做一个版本折叠功能"）。
+   *
+   * ★ 只记**用户手动点过的**那些组：没点过的按规则算
+   *   （含当前选中版本 → 展开；搜索中 → 全展开；其余 → 收起）。
+   *   这样"默认收起"既能随选中版本走动，又不会在清单刷新后把用户的展开状态冲掉。
+   */
+  const [foldOverride, setFoldOverride] = useState<Record<string, boolean>>({});
   const [query, setQuery] = useState('');
 
   const loadManifest = useCallback(async () => {
@@ -929,6 +937,8 @@ export function InstallComposer({
   }
 
   /* ====================== 过滤后的版本列表 ====================== */
+  /** 搜索中：全部展开（搜了却看不到结果是最气人的） */
+  const searching = query.trim().length > 0;
   const filtered = useMemo(() => {
     const q = query.trim();
     return rows.filter((r) => {
@@ -1063,20 +1073,34 @@ export function InstallComposer({
                *   世代的方块图标。清单顺序**保持上游给的新→旧**，分组只负责
                *   "切开"，不自己造一份顺序。
                */
-              groupByFamily(filtered.slice(0, 200), (v) => v.id).map((g) => (
+              groupByFamily(filtered.slice(0, 200), (v) => v.id).map((g) => {
+                const holdsSelected = g.rows.some((r) => r.id === mcVersion);
+                const folded = foldOverride[g.fam.key] ?? !(holdsSelected || searching);
+                return (
                 /*
                  * ★ 分组 key 也要**唯一**：`g.fam.key` 是世代键，
                  *   而 `26.2` 与 `26.2-rc-2` 的世代键相同 —— 只用它会让
                  *   两个不同筛选结果里的分组"撞 key"（上面那段注释记的就是这个坑）。
                  */
                 <div key={`${channel}|${g.fam.key}|${g.rows[0]?.id ?? ''}`} className="wz-group">
-                  <div className="ver-group">
+                  {/*
+                    ★★ 标题行可点 = 折叠这一世代（用户建议："做一个版本折叠功能"）。
+                      清单 900+ 个版本铺开是一堵墙；默认只展开含当前选中版本的那组，
+                      搜索时全部展开（搜了看不到结果最气人）。
+                  */}
+                  <button
+                    type="button"
+                    className="ver-group ver-group-btn"
+                    aria-expanded={!folded}
+                    onClick={() => setFoldOverride((o) => ({ ...o, [g.fam.key]: !folded }))}
+                  >
+                    <IconChevronDown className={`fold-caret${folded ? ' folded' : ''}`} />
                     <VersionIcon version={g.rows[0]?.id ?? ''} size={18} title={g.fam.label} />
                     <span>{g.fam.label}</span>
                     <span className="ver-group-line" />
                     <span className="dim">{g.rows.length} 个</span>
-                  </div>
-                  {g.rows.map((v) => (
+                  </button>
+                  {folded ? null : g.rows.map((v) => (
                     <button
                       key={v.id}
                       type="button"
@@ -1137,7 +1161,8 @@ export function InstallComposer({
                     </button>
                   ))}
                 </div>
-              ))
+                );
+              })
             )}
             {filtered.length > 200 ? (
               <div className="empty-note" style={{ padding: 'var(--space-2)' }}>
