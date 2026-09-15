@@ -134,12 +134,13 @@
 .launch-hero {
   display: flex;
   align-items: center;
-  gap: var(--space-4);
+  gap: var(--space-5);
   width: 100%;
-  padding: var(--card-pad);
+  padding: 22px 24px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
-  background: var(--bg-raised);
+  background: var(--card-bg);
+  box-shadow: var(--shadow-card);
 }
 .lh-main {
   flex: 1;
@@ -377,9 +378,10 @@
  *   （具体原因在 `title` 里，鼠标停一下就看得见，实例页里也有完整说明）。
  */
 .ver-list {
-  border: 1px solid var(--border-default);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
-  background: var(--bg-raised);
+  background: var(--card-bg);
+  box-shadow: var(--shadow-card);
   overflow: hidden;
 }
 .ver-item {
@@ -1599,7 +1601,7 @@
   padding: var(--space-3);
   border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
-  background: var(--bg-base);
+  background: var(--bg-hover);
 }
 .java-main {
   flex: 1;
@@ -1747,7 +1749,7 @@
   height: 15px;
   border-radius: var(--radius-full);
   background: var(--accent);
-  border: 2px solid var(--bg-raised);
+  border: 2px solid #fff;
   box-shadow: var(--shadow-sm);
   cursor: pointer;
 }
@@ -1763,7 +1765,7 @@
   height: 13px;
   border-radius: var(--radius-full);
   background: var(--accent);
-  border: 2px solid var(--bg-raised);
+  border: 2px solid #fff;
   cursor: pointer;
 }
 
@@ -2152,6 +2154,16 @@
   font-size: var(--text-sm);
 }
 .res-target .input {
+  max-width: 420px;
+}
+/*
+  ★★ 自定义下拉的外层也要一起限宽（2026-09-15 实测出来的）。
+  `.cs` 默认 `width:100%`，而这一行是 flex：外层被拉到 880px、
+  触发按钮被 `.input{max-width:420px}` 卡在 420px、
+  菜单却是按**外层**定位的（left:0/right:0）→ 菜单 880px、按钮 420px，
+  同一条下拉的两半分成了两个宽度。给外层加上同样的上限就对齐了。
+*/
+.res-target .cs {
   max-width: 420px;
 }
 

@@ -157,6 +157,8 @@ version: env!("CARGO_PKG_VERSION").into(),
 | `0.1.0-beta.2` | 2026-09-14 | 第十四轮：**资源中心重做**（ADR-055）—— 列出 / 翻页 / 封面 / **玩家自选资源版本**（先用 `tools/probe/probe-browse.mjs` 实测"空关键词真的返回内容"，五类全过、翻页零重复）；下载页六格一字排开（Mod / 资源包 / 光影 / 数据包）；修掉"大对勾"（图标没有默认尺寸）与"下载栏被 toast 遮住"（层级收成令牌）；**随程序附带 HarmonyOS Sans SC Medium** 并在「关于」声明；版本命名规范 `{mc}-{loader}-{version}`（显示名与目录名同一套）；MC 版本自绘世代方块图标 + 分组；启动页与侧栏补真数据；版本设置页加只读摘要条并按改动频率重排；删掉多余提示与 CurseForge Key 输入框。**用户指定的微软 client_id 实测不可用（AADSTS700016）**，改用可用的公开 id 并留下证据 |
 | `0.1.0-beta.3` | 2026-09-15 | 第十五轮：**瘦身 · 数据布局 · 账号提顶栏**（ADR-056）—— 删掉 47.4 GB 构建缓存（`target/debug`，仓库 50.77 → 3.36 GB）并改 dev/test profile 免得长回来；**去掉随程序附带的字体，改用系统字体栈**（前端 8.67 MB → 442 kB，exe 13.17 → 8.03 MB）；游戏数据 `shared/` → **`.minecraft/`**（同卷 rename + 迁移测试；真机验证抓到"跨根补齐排在布局迁移前面 → 把 C 盘旧数据复制成假的新布局"这个 bug 并修好）；新增 `clean_caches`（安装器 / 元数据 / 旧日志，**不碰游戏文件**）；正版登录提到**顶栏**（`AccountPanel` 一份实现）+ 拦截占位符 client_id（本机那个 `1111…` 假 GUID 会把可用 id 挤掉） |
 
+| `0.1.0-beta.4` | 2026-09-15 | 第十六轮：**深色主题重做 + 自绘标题栏**（用户自己改的界面 + 我修 5 处 + 补标题栏）—— 用户把深色主题换成「实色边框 + 明度分层 + 组件令牌」那一套，并新增 `CustomSelect` 替换原生 `<select>`；我修掉类型检查红（无用 import）、`DownloadPage.tsx` 的 BOM、**下拉菜单比按钮宽一倍**（量到 880 vs 420）、换掉原生 select 时丢掉的无障碍（aria-label / Esc / 方向键）、**浅色主题下氛围渐变变成一块蓝污渍**；`decorations:false` + `data-tauri-drag-region` + `WindowControls` 把 Windows 那条白色原生标题栏并进软件（真机验证：顶栏 y=0、三个按钮可见可点、点最小化 `IsIconic` 真的变 True、`WS_THICKFRAME` 仍在所以还能拖大小） |
+
 > 规则：**每完成一轮对话就加一行**，不要事后补。`dev.1` / `dev.2` 是回溯补记的
 > （当时的 `package.json` 写的是 `0.2.0`，与阶段不符，见第一节）。
 > ★ `dev.12` 这一行与 `CHANGELOG.md` 最新一节的标题由

@@ -17,7 +17,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../state/AppContext';
-import { Button, Chip, EmptyState, Note, SearchBox, Segmented, Skeleton } from '../ui';
+import { Button, Chip, CustomSelect, EmptyState, Note, SearchBox, Segmented, Skeleton } from '../ui';
 import { IconAlert, IconBox, IconDownload, IconLayers, IconPuzzle, IconRefresh, IconImage, IconGrid, IconPackage } from '../ui/Icons';
 import { useRealApi } from '../hooks/useRealApi';
 import type { DownloadTab } from '../state/store';
@@ -136,19 +136,15 @@ export function DownloadPage() {
             <>
               <div className="res-target">
                 <span className="dim">装到</span>
-                <select
-                  className="input"
-                  aria-label="装到哪个版本"
+                <CustomSelect
                   value={target?.id ?? ''}
-                  onChange={(e) => setTargetId(e.target.value)}
-                >
-                  {state.instances.map((i) => (
-                    <option key={i.id} value={i.id}>
-                      {i.config.name}（{i.mcVersion}
-                      {i.loader ? ` + ${i.loader.kind}` : ' · 原版'}）
-                    </option>
-                  ))}
-                </select>
+                  onChange={setTargetId}
+                  ariaLabel="装到哪个版本"
+                  options={state.instances.map((i) => ({
+                    value: i.id,
+                    label: `${i.config.name}（${i.mcVersion}${i.loader ? ` + ${i.loader.kind}` : ' · 原版'}）`,
+                  }))}
+                />
                 {target ? (
                   <button
                     type="button"

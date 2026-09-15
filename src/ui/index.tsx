@@ -10,6 +10,7 @@ import {
   useEffect,
   useId,
   useRef,
+  useState,
   type ButtonHTMLAttributes,
   type InputHTMLAttributes,
   type ReactNode,
@@ -446,6 +447,124 @@ export function Select({
         {children}
       </select>
     </Field>
+  );
+}
+
+/* ====================== 自定义下拉（替换原生 select） ====================== */
+/**
+ * 原生 <select> 的下拉菜单是浏览器画的，CSS 改不了 —— 选项挤在一起、
+ * 灰底选中态，在深色主题下非常丑。这个组件用 div+button 模拟，
+ * 样式完全可控。
+ *
+ * ★ 2026-09-15 补了两处被换掉时丢掉的东西：
+ *   ① `ariaLabel` —— 原生 select 上写的 `aria-label="装到哪个版本"` 换成
+ *      button 之后没有地方放了，屏幕阅读器只能读到当前值，读不到"这是什么"；
+ *   ② 键盘：Esc 关闭、方向键在选项间移动（原生 select 本来就有，
+ *      自绘的必须自己补回来，否则又是一个"键盘用户用不了"的控件）。
+ */
+export function CustomSelect({
+  value,
+  onChange,
+  options,
+  disabled,
+  placeholder = '请选择',
+  className = '',
+  ariaLabel,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: { value: string; label: string }[];
+  disabled?: boolean;
+  placeholder?: string;
+  className?: string;
+  /** 无障碍名称（原生 select 的 aria-label 位置） */
+  ariaLabel?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const current = options.find((o) => o.value === value);
+  /** 键盘高亮的那一项（-1 = 没在用键盘走） */
+  const [cursor, setCursor] = useState(-1);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [open]);
+
+  /** 打开时把光标放到当前项上 */
+  useEffect(() => {
+    if (open) setCursor(options.findIndex((o) => o.value === value));
+  }, [open, options, value]);
+
+  function onKeyDown(e: React.KeyboardEvent) {
+    if (disabled) return;
+    if (e.key === 'Escape') {
+      setOpen(false);
+      return;
+    }
+    if (!open && (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ')) {
+      e.preventDefault();
+      setOpen(true);
+      return;
+    }
+    if (!open) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const dir = e.key === 'ArrowDown' ? 1 : -1;
+      const next = Math.min(options.length - 1, Math.max(0, cursor + dir));
+      setCursor(next);
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      const pick = options[cursor];
+      if (pick) {
+        onChange(pick.value);
+        setOpen(false);
+      }
+    }
+  }
+
+  return (
+    <div className={`cs ${className}`} ref={ref} data-open={open} onKeyDown={onKeyDown}>
+      <button
+        type="button"
+        className="cs-trigger input"
+        disabled={disabled}
+        aria-label={ariaLabel}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span className="cs-label">{current?.label ?? placeholder}</span>
+        <svg className="cs-arrow" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+          <path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+      </button>
+      {open ? (
+        <div className="cs-menu" role="listbox" aria-label={ariaLabel}>
+          {options.map((o, i) => (
+            <div
+              key={o.value}
+              className="cs-option"
+              role="option"
+              aria-selected={o.value === value}
+              data-active={o.value === value}
+              data-cursor={i === cursor}
+              onMouseEnter={() => setCursor(i)}
+              onClick={() => {
+                onChange(o.value);
+                setOpen(false);
+              }}
+            >
+              {o.label}
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
