@@ -201,6 +201,27 @@ system-ui → Segoe UI Variable Text → Segoe UI → Microsoft YaHei UI
   不会丢一句英文报错给用户。想自己确认随时可以跑
   `tools/probe/probe-ms-clientids.ps1`。
 
+### 十、建了 git 仓库并推到 GitHub（私有，GPL-3.0）
+
+用户要求"像 PCL 一样，创建并上传 GitHub 库"。
+
+* **git 是便携版**（这台机器 PATH 里没有 git）：用
+  `C:\Users\Administrator\AppData\Local\Programs\PortableGit\cmd\git.exe`；
+  `gh` 已装且已登录（账号 `008heshan`）。
+* 写了 `.gitignore`，判据只有一条 —— **能不能由仓库里的东西重新生成**：
+  `src-tauri/target/`（本机实测 **3.2 GB**，光 `debug/` 就曾是 47 GB）、
+  `node_modules/`、`dist/`、`*.log`、安装包，另外把
+  `ms_client_id.txt` / `prefs.json` / `instances.json` 也挡在外面（那是数据目录里的东西）。
+  → 提交 **243 个文件 / 5.03 MB**，云端树核验 **278 个 blob，没有 target / node_modules /
+  dist / pdb / exe**。
+* **协议选 GPL-3.0**（用户定的，与 PCL2 同一系）：LICENSE 用的是**本地现成的官方全文**
+  （PortableGit 附带的 `COPYING3`，35,147 字节），不是凭记忆敲的。
+* 仓库：`https://github.com/008heshan/IEML` —— **私有**。
+* ★ **为什么私有，以及公开前必须先做什么**：源码里内置着 CurseForge API Key
+  （实测仍有效，接口 200）。公开仓库会把它一起发出去。README 的「许可」一节写了
+  转公开的三步（置空常量 → 处理历史里的旧 key → 过一遍 `.workbuddy/memory`）。
+  **这一条是决策，不是提醒**：私有是这件事的当前状态，不是"以后再说"。
+
 ---
 
 ## 0.1.0-beta.2 — 2026-09-14（第十四轮：资源中心重做 · 字体 · 命名规范 · 首页与侧栏）
