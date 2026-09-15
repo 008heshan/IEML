@@ -134,8 +134,19 @@ export function DownloadPage() {
             />
           ) : (
             <>
+              {/*
+                ★ 「装到哪个版本」这一行（用户要求："选择游戏版本的那个栏可以再大一点，
+                尤其是版本那里，很费眼，太小了"）。
+
+                ★★ 同时去掉两样东西（用户："下载页上下重复，还有这里的『管理这个版本的资源』
+                也去掉，这是无意义的"）：
+                  · 「管理这个版本的资源」—— 它只把人送回版本列表，而**上面那排页签
+                    已经能做同一件事**（选版本就在这一行），是个绕路按钮；
+                  · 内层的 Mod / 资源包 / 光影 / 数据包 四个页签 —— 与最外层那排**完全重复**。
+                    所以给 ResourceCenterBody 传 `hideKindTabs`，只留来源切换（Modrinth/CurseForge）。
+              */}
               <div className="res-target">
-                <span className="dim">装到</span>
+                <span className="res-target-k">装到</span>
                 <CustomSelect
                   value={target?.id ?? ''}
                   onChange={setTargetId}
@@ -145,17 +156,6 @@ export function DownloadPage() {
                     label: `${i.config.name}（${i.mcVersion}${i.loader ? ` + ${i.loader.kind}` : ' · 原版'}）`,
                   }))}
                 />
-                {target ? (
-                  <button
-                    type="button"
-                    className="link-btn"
-                    onClick={() => {
-                      go('versions');
-                    }}
-                  >
-                    管理这个版本的资源
-                  </button>
-                ) : null}
               </div>
               <ResourceCenterBody
                 kind={resourceTab.kind}
@@ -166,6 +166,7 @@ export function DownloadPage() {
                 instance={target}
                 toast={toast}
                 compactHead
+                hideKindTabs
               />
             </>
           )}

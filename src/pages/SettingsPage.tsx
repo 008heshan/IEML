@@ -30,8 +30,8 @@ import {
 } from '../domain/delete.ts';
 import type { DownloadSourcesPayload } from '../bridge/tauri';
 import { APP_VERSION, STAGE_LABEL, versionStage } from '../domain/version-info.ts';
-// ★ 账号面板与顶栏那个入口是**同一个组件**（一份实现，两处使用）
-import { AccountPanel } from '../components/AccountPanel';
+// ★ 账号面板**只在顶栏**（用户："设置这里的账号一栏可以删除了"）。
+//   一份实现仍然只有那一处（`components/AccountPanel.tsx`），这里不再重复摆一遍。
 
 type ThemeChoice = 'system' | 'dark' | 'light';
 
@@ -51,6 +51,21 @@ export function SettingsPage() {
   const { state, setTheme, rescanJava, toast, backend, refreshJava, prefsSaveFailed } = useApp();
   const { api } = useRealApi();
   const [themeChoice, setThemeChoice] = useState<ThemeChoice>(state.theme);
+
+  /*
+   * ★★ 主题选择要**跟着真实主题走**（用户报的："白色模式和深色模式在右上角切换时，
+   *   设置页不会同步"）。
+   *
+   *   原因：`useState(state.theme)` 只在**首次挂载**时取一次值。用户点顶栏那个
+   *   太阳/月亮图标切换主题时，`state.theme` 变了，而这一页的 `themeChoice`
+   *   还停在旧值 —— 于是分段控件高亮的还是上一个主题，"跟随系统"也显示不出来。
+   *
+   *   ★ 只在**真实主题变化**时同步：不监听 `themeChoice`，否则用户点"跟随系统"
+   *     又会被立刻改回去（那是个两向绑定的经典坑）。
+   */
+  useEffect(() => {
+    setThemeChoice(state.theme);
+  }, [state.theme]);
   const [downloaded, setDownloaded] = useState<Array<{ major: number; path: string; bytes: number; usable: boolean }>>([]);
   const [busy, setBusy] = useState(false);
   /** 清理缓存的两段式流程（先算再删）的忙碌态 */
@@ -122,47 +137,97 @@ export function SettingsPage() {
           </Note>
         ) : null}
 
-        {/* ==================== 外观 ==================== */}
+        {/* ==================== 外观 ====================
+            ★★ 一卡两栏（用户："这个外观 UI 有点浪费地方，从中间劈开，然后在右边塞个别的东西"）。
+            左边：主题 + 减少动效（都是"看得见"的偏好）。
+            右边：**窗口尺寸** —— 它从「新版本的默认值」搬过来的，因为"启动器窗口多大"
+                  本来就属于外观，而不是"新版本的默认值"（放在那边一直是错位的）。
+            ============================================== */}
         <Card>
           <CardTitle icon={<IconGear />}>外观</CardTitle>
 
-          <div className="field-row">
-            <span className="field-label">
-              主题
-              <span className="field-hint">默认深色</span>
-            </span>
-            <div className="field-control">
-              <Segmented
-                label="主题"
-                value={themeChoice}
-                onChange={applyTheme}
-                options={[
-                  { value: 'system', label: '跟随系统' },
-                  { value: 'dark', label: '深色' },
-                  { value: 'light', label: '浅色' },
-                ]}
-              />
-            </div>
-            <span />
-          </div>
+          <div className="set-cols">
+            <div className="set-col">
+              <div className="field-row">
+                <span className="field-label">
+                  主题
+                  <span className="field-hint">默认深色</span>
+                </span>
+                <div className="field-control">
+                  <Segmented
+                    label="主题"
+                    value={themeChoice}
+                    onChange={applyTheme}
+                    options={[
+                      { value: 'system', label: '跟随系统' },
+                      { value: 'dark', label: '深色' },
+                      { value: 'light', label: '浅色' },
+                    ]}
+                  />
+                </div>
+                <span />
+              </div>
 
-          <div className="field-row">
-            <span className="field-label">
-              减少动效
-              <span className="field-hint">关闭过渡动画</span>
-            </span>
-            <div className="field-control">
-              <Switch
-                label="减少动效"
-                checked={state.prefs.reducedMotion}
-                onChange={(v) => {
-                  window.dispatchEvent(new CustomEvent('ieml:prefs', { detail: { reducedMotion: v } }));
-                  document.documentElement.classList.toggle('reduce-motion', v);
-                  toast('ok', v ? '已开启减少动效' : '已关闭减少动效');
-                }}
-              />
+              <div className="field-row">
+                <span className="field-label">
+                  减少动效
+                  <span className="field-hint">关闭过渡动画</span>
+                </span>
+                <div className="field-control">
+                  <Switch
+                    label="减少动效"
+                    checked={state.prefs.reducedMotion}
+                    onChange={(v) => {
+                      window.dispatchEvent(
+                        new CustomEvent('ieml:prefs', { detail: { reducedMotion: v } }),
+                      );
+                      document.documentElement.classList.toggle('reduce-motion', v);
+                      toast('ok', v ? '已开启减少动效' : '已关闭减少动效');
+                    }}
+                  />
+                </div>
+                <span />
+              </div>
             </div>
-            <span />
+
+            <div className="set-col">
+              <div className="field-row">
+                <span className="field-label">
+                  窗口尺寸
+                  <span className="field-hint">启动时的初始大小</span>
+                </span>
+                <div className="field-control">
+                  <input
+                    className="input mono"
+                    style={{ width: 76 }}
+                    value={state.prefs.windowWidth}
+                    aria-label="窗口宽度"
+                    onChange={(e) =>
+                      window.dispatchEvent(
+                        new CustomEvent('ieml:prefs', {
+                          detail: { windowWidth: Number(e.target.value) || 1280 },
+                        }),
+                      )
+                    }
+                  />
+                  <span className="dim">×</span>
+                  <input
+                    className="input mono"
+                    style={{ width: 76 }}
+                    value={state.prefs.windowHeight}
+                    aria-label="窗口高度"
+                    onChange={(e) =>
+                      window.dispatchEvent(
+                        new CustomEvent('ieml:prefs', {
+                          detail: { windowHeight: Number(e.target.value) || 720 },
+                        }),
+                      )
+                    }
+                  />
+                </div>
+                <span />
+              </div>
+            </div>
           </div>
         </Card>
 
@@ -383,43 +448,6 @@ export function SettingsPage() {
 
           <div className="field-row">
             <span className="field-label">
-              窗口尺寸
-              <span className="field-hint">启动游戏时的初始窗口大小</span>
-            </span>
-            <div className="field-control">
-              <input
-                className="input mono"
-                style={{ width: 76 }}
-                value={state.prefs.windowWidth}
-                aria-label="窗口宽度"
-                onChange={(e) =>
-                  window.dispatchEvent(
-                    new CustomEvent('ieml:prefs', {
-                      detail: { windowWidth: Number(e.target.value) || 1280 },
-                    }),
-                  )
-                }
-              />
-              <span className="dim">×</span>
-              <input
-                className="input mono"
-                style={{ width: 76 }}
-                value={state.prefs.windowHeight}
-                aria-label="窗口高度"
-                onChange={(e) =>
-                  window.dispatchEvent(
-                    new CustomEvent('ieml:prefs', {
-                      detail: { windowHeight: Number(e.target.value) || 720 },
-                    }),
-                  )
-                }
-              />
-            </div>
-            <span />
-          </div>
-
-          <div className="field-row">
-            <span className="field-label">
               离线玩家名
               <span className="field-hint">没有正版账号时用这个名字进游戏</span>
             </span>
@@ -538,19 +566,6 @@ export function SettingsPage() {
             <span />
           </div>
 
-        </Card>
-
-        {/* ==================== 账号 ====================
-            ★★ 0.1.0-beta.3：这一块的内容搬进了**共用组件** `AccountPanel`
-              （原先的实现在这里，顶栏的账号入口没法复用一份 → 就成了两份实现，
-               而"同一个判据写两遍"是这个仓库吃过最多亏的一类）。
-            现在顶栏点一下就能登录，这一页保留同一份面板，方便在设置里找。
-            ==================================================== */}
-        <Card>
-          <CardTitle icon={<IconShield />} hint="顶栏那个账号按钮打开的是同一个面板">
-            账号
-          </CardTitle>
-          <AccountPanel toast={toast} />
         </Card>
 
         {/* ==================== 存储 ==================== */}
@@ -797,45 +812,6 @@ export function SettingsPage() {
                   ⚠ 与后端不一致
                 </span>
               ) : null}
-            </div>
-            <span />
-          </div>
-          {/*
-            ★★ 字体声明（用户要求"要在关于里面声明用的是……字体"，2026-09-15 改成系统字体）。
-
-            原来这里声明的是随程序附带的 HarmonyOS Sans SC Medium；现在改成
-            **系统自带字体栈**，所以这一行必须一起改 —— 否则「关于」里写着
-            一个程序里根本没带的字体，那就是最典型的一句假话。
-
-            顺带把"为什么不带"写清：那个字体一个文件 8.2 MB，而本体一共才 8 MB 出头。
-          */}
-          <div className="field-row">
-            <span className="field-label">
-              界面字体
-              <span className="field-hint">用系统自带的字体，不随程序附带</span>
-            </span>
-            <div className="field-control">
-              <span className="field-hint">
-                按系统字体栈取：<span className="mono">system-ui</span> →
-                <span className="mono"> Segoe UI Variable Text</span> →
-                <span className="mono"> Microsoft YaHei UI</span> →
-                <span className="mono"> PingFang SC</span>（macOS）→
-                <span className="mono"> Noto Sans CJK SC</span>（Linux）。
-                装了 <span className="mono">HarmonyOS Sans SC</span> 的机器会自动用它。
-              </span>
-            </div>
-            <span />
-          </div>
-          <div className="field-row">
-            <span className="field-label">
-              为什么不带字体文件
-              <span className="field-hint">体积取舍</span>
-            </span>
-            <div className="field-control">
-              <span className="field-hint">
-                附带一个中文字重就要 <b>8.2 MB</b>，而本体（exe）一共才 8 MB 出头 ——
-                字体一个人占掉近一半。所以改用系统字体：零字节，且和系统其它窗口一致。
-              </span>
             </div>
             <span />
           </div>

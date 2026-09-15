@@ -1,6 +1,6 @@
 [package]
 name = "ieml"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 description = "IEML - 极简 Minecraft 启动器"
 authors = ["IEML"]
 edition = "2021"

@@ -35,7 +35,7 @@
  *   是这个仓库反复栽过的坑）。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Chip, Modal, Note, Segmented, Skeleton, Spinner } from '../ui';
+import { Button, Chip, Modal, Note, Segmented, Spinner } from '../ui';
 import { IconDownload, IconRefresh, IconSearch } from '../ui/Icons';
 import { useRealApi } from '../hooks/useRealApi';
 import type { Instance } from '../domain';
@@ -244,6 +244,14 @@ export interface ResourceCenterBodyProps {
   toast: (kind: 'ok' | 'warning' | 'err' | 'info', title: string, desc?: string) => void;
   /** 页面形态下由外面给标题（弹窗形态下写在 Modal 上） */
   compactHead?: boolean;
+  /**
+   * 隐藏种类页签（下载页用）。
+   *
+   * ★ 下载页**最外层**已经有「Mod / 资源包 / 光影 / 数据包」四个页签了，
+   *   再在里面长一排一模一样的四格，就是用户说的"下载页上下重复"。
+   *   这里只留需要的东西：来源切换 + 搜索 + 结果。
+   */
+  hideKindTabs?: boolean;
 }
 
 export function ResourceCenterBody({
@@ -253,6 +261,7 @@ export function ResourceCenterBody({
   onInstalled,
   toast,
   compactHead = false,
+  hideKindTabs = false,
 }: ResourceCenterBodyProps) {
   const { api } = useRealApi();
 
@@ -474,20 +483,22 @@ export function ResourceCenterBody({
         以前是"来源两个大按钮在上、种类页签在下"两行，占了首屏两条。
       */}
       <div className="res-bar">
-        <div className="tabs res-tabs" role="tablist" aria-label="资源种类">
-          {kinds.map((k) => (
-            <button
-              key={k.key}
-              type="button"
-              role="tab"
-              aria-selected={k.key === kind}
-              className={`tab${k.key === kind ? ' on' : ''}`}
-              onClick={() => onKindChange(k.key)}
-            >
-              <span>{k.display}</span>
-            </button>
-          ))}
-        </div>
+        {hideKindTabs ? null : (
+          <div className="tabs res-tabs" role="tablist" aria-label="资源种类">
+            {kinds.map((k) => (
+              <button
+                key={k.key}
+                type="button"
+                role="tab"
+                aria-selected={k.key === kind}
+                className={`tab${k.key === kind ? ' on' : ''}`}
+                onClick={() => onKindChange(k.key)}
+              >
+                <span>{k.display}</span>
+              </button>
+            ))}
+          </div>
+        )}
         <div className="spacer" />
         {/* ★ 来源用现成的 Segmented —— 别再造一套"看起来像分段控件"的东西 */}
         <Segmented
@@ -545,7 +556,35 @@ export function ResourceCenterBody({
         </Note>
       ) : null}
 
-      {loading ? <Skeleton rows={5} height={64} /> : null}
+      {/*
+        ★★ 加载骨架要**长成卡片的样子**（用户："这里 mod，资源包，数据包，光影，还有整合包，
+        这种都是卡片，为什么加载动画是连成一片的"）。
+
+        原来这里是 `<Skeleton rows={5} height={64}/>` —— 五行等宽长条铺满整行，
+        在卡片网格里看就是一整块灰板；而加载完之后是**卡片**，于是"等待"和"结果"
+        是两种完全不同的形状，内容到位时界面会整体跳一下。
+
+        现在骨架排成**同一套网格**（同样列宽 + 封面方块 + 三行文字），
+        内容到位是"填进去"，不是"换了一种布局"。
+      */}
+      {loading ? (
+        <div className="res-grid" aria-busy="true" aria-label="正在加载">
+          {Array.from({ length: 6 }, (_, i) => (
+            <div key={i} className="res-card res-card-sk">
+              <div className="res-card-head">
+                <span className="sk sk-cover" />
+                <span className="res-card-title">
+                  <span className="sk sk-line w70" />
+                  <span className="sk sk-line w45" />
+                </span>
+              </div>
+              <span className="sk sk-line w95" />
+              <span className="sk sk-line w80" />
+              <span className="sk sk-line w35" />
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       {!loading && hits.length === 0 && !error ? (
         <div className="res-none">

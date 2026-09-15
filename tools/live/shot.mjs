@@ -141,6 +141,37 @@ for (const step of plan) {
     writeFileSync(file, Buffer.from(r.data, 'base64'));
     console.log(`  ▣ ${file}`);
   }
+  /*
+   * ★ 限速（2026-09-15 加）：用来拍**加载中的那一帧**。
+   *
+   *   背景：用户报"加载动画是连成一片的"，而资源中心在本地演示数据下
+   *   120ms 就加载完了 —— 骨架屏那 100 多毫秒根本截不到，
+   *   于是"改没改好"只能靠读代码猜。给网络加 2 秒延迟就能把它钉住。
+   *
+   *   用法：{ "throttle": { "latency": 2000, "download": 200000 } }
+   *         { "throttle": null }   ← 解除
+   */
+  if ('throttle' in step) {
+    const t = step.throttle;
+    await send('Network.emulateNetworkConditions', {
+      offline: false,
+      latency: t ? (t.latency ?? 0) : 0,
+      downloadThroughput: t ? (t.download ?? -1) : -1,
+      uploadThroughput: t ? (t.upload ?? -1) : -1,
+    });
+    console.log(`  ⇄ 限速：${t ? `${t.latency ?? 0}ms / ${t.download ?? -1} Bps` : '已解除'}`);
+  }
+  if (step.await) {
+    // 等某个选择器出现（限速时比固定 sleep 可靠）
+    for (let i = 0; i < 60; i++) {
+      const r = await send('Runtime.evaluate', {
+        expression: `!!document.querySelector(${JSON.stringify(step.await)})`,
+        returnByValue: true,
+      });
+      if (r.result?.value) break;
+      await sleep(200);
+    }
+  }
 }
 
 ws.close();

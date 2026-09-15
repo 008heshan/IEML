@@ -1866,31 +1866,8 @@
 }
 
 /* ============================ Mod 管理 ============================ */
-/* 一行立场提示（"不会自动更新 + 原地覆盖"）——不是 Note 块，因为它是
-   **一句必须说的真话**，不是一个需要用户决策的提示条。 */
-.mp-note {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  margin-top: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm);
-  background: var(--bg-raised);
-  border: 1px solid var(--border-subtle);
-  color: var(--text-secondary);
-  font-size: var(--text-xs);
-  line-height: 1.6;
-}
-.mp-note svg {
-  width: 13px;
-  height: 13px;
-  flex: 0 0 auto;
-  margin-top: 2px;
-  fill: none;
-  stroke: var(--text-tertiary);
-  stroke-width: 2;
-  stroke-linecap: round;
-}
+/* ★ 2026-09-15：`.mp-note` 那条声明被用户要求删掉了（"这个声明去掉，是没必要的"），
+   样式一起删，不留死规则。 */
 .filter-list {
   display: flex;
   flex-direction: column;
@@ -2149,22 +2126,76 @@
 .res-target {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-3);
   margin: var(--space-3) 0;
-  font-size: var(--text-sm);
+  font-size: var(--text-md);
 }
-.res-target .input {
-  max-width: 420px;
+.res-target-k {
+  color: var(--text-tertiary);
 }
-/*
-  ★★ 自定义下拉的外层也要一起限宽（2026-09-15 实测出来的）。
-  `.cs` 默认 `width:100%`，而这一行是 flex：外层被拉到 880px、
-  触发按钮被 `.input{max-width:420px}` 卡在 420px、
-  菜单却是按**外层**定位的（left:0/right:0）→ 菜单 880px、按钮 420px，
-  同一条下拉的两半分成了两个宽度。给外层加上同样的上限就对齐了。
-*/
+/* ★ 版本号要看得清（用户："版本那里很费眼，太小了"）：
+   下拉的触发按钮在这一行放大一档，宽度上限也跟着放宽。 */
 .res-target .cs {
-  max-width: 420px;
+  max-width: 520px;
+}
+.res-target .cs-trigger {
+  height: 40px;
+  font-size: var(--text-md);
+}
+.res-target .cs-label {
+  font-weight: 600;
+}
+
+/* 卡片的加载骨架：与真卡片同一套网格与结构（用户："加载动画连成一片"不太好） */
+.res-card-sk {
+  gap: var(--space-3);
+  pointer-events: none;
+}
+.sk {
+  display: block;
+  border-radius: var(--radius-sm);
+  background: var(--bg-active);
+  animation: sk-pulse 1.4s ease-in-out infinite;
+}
+.sk-cover {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  border-radius: 8px;
+}
+.sk-line {
+  height: 11px;
+}
+.w30 {
+  width: 30%;
+}
+.w35 {
+  width: 35%;
+}
+.w45 {
+  width: 45%;
+}
+.w70 {
+  width: 70%;
+}
+.w80 {
+  width: 80%;
+}
+.w95 {
+  width: 95%;
+}
+@keyframes sk-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+/* 尊重"减少动效" */
+:root.reduce-motion .sk {
+  animation: none;
 }
 
 /* 卡片网格：宽屏两列，窄屏一列 */

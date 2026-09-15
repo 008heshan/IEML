@@ -77,9 +77,33 @@ export function WindowControls() {
 
   if (!isDesktop) return null;
 
-  async function withWindow(fn: (w: Awaited<ReturnType<typeof import('@tauri-apps/api/window')['getCurrentWindow']>>) => Promise<void>) {
-    const { getCurrentWindow } = await import('@tauri-apps/api/window');
-    await fn(getCurrentWindow());
+  /**
+   * 调窗口 API，**失败要说话**。
+   *
+   * ★★ 这一条是用户报上来的 bug 换来的（"右上角的放大、缩小功能没做，
+   *   最小化和关闭是正常的"）：`toggleMaximize()` 实际调的是
+   *   `plugin:window|toggle_maximize`，而 capabilities 里当时没有
+   *   `core:window:allow-toggle-maximize` —— 权限拒绝，**而我把 Promise
+   *   `void` 掉了**，于是按钮点下去什么都不发生，也没人知道为什么。
+   *   这是这个项目里最不该出现的一类：**静默失败**。
+   */
+  async function withWindow(
+    fn: (w: Awaited<ReturnType<typeof import('@tauri-apps/api/window')['getCurrentWindow']>>) => Promise<void>,
+  ) {
+    try {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      await fn(getCurrentWindow());
+    } catch (e) {
+      window.dispatchEvent(
+        new CustomEvent('ieml:toast', {
+          detail: {
+            kind: 'err',
+            title: '窗口操作失败',
+            desc: e instanceof Error ? e.message : String(e),
+          },
+        }),
+      );
+    }
   }
 
   return (
