@@ -418,20 +418,20 @@
   margin-bottom: var(--space-4);
   margin-top: calc(-1 * var(--space-5));
   /*
-   * ★★ 2026-09-16（把页头改成透明之后**必须**补的一条）。
+   * ★★ 2026-09-16 用户要求："页面标题区去掉黑底，然后做一个磨砂玻璃的底，
+   *   这样没有割裂感还能作遮挡"。
    *
-   *   页头是 `position: sticky` —— 内容会从它下面滚过去。透明（或只有半透明底色
-   *   而没有模糊）时，滚上来的正文会**透过标题区**显示，两段文字叠在一起糊成一片。
-   *   这个坑这个文件里踩过一次，上一版注释写的"实底而不是渐变"就是从那儿来的。
-   *
-   *   玻璃改版下正确的解法不是退回实底，而是**给它自己的模糊**：
-   *   底用 `--glass`（半透明）+ `backdrop-filter` → 滚过去的内容被磨砂掉，
-   *   玻璃观感在，两段字不会叠。
+   *   上一版我给它填了 `--glass`（深色下是 rgba(15,18,23,0.45)）——
+   *   在玻璃卡片旁边看就是**一条黑带**，与周围割裂。
+   *   现在：**完全不填色**，只靠 `backdrop-filter` 磨砂。
+   *     · 遮挡照样有（滚过去的内容被磨掉，不会两段字叠在一起 —— 这条必须保住）；
+   *     · 没有色带，和底下的光晕连成一片，不割裂。
+   *   分隔线也去掉：磨砂本身已经形成边界，再加一条线就是"又一道缝"。
    */
-  background: var(--glass);
-  backdrop-filter: blur(14px) saturate(140%);
-  -webkit-backdrop-filter: blur(14px) saturate(140%);
-  border-bottom: 1px solid var(--border-subtle);
+  background: transparent;
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  border-bottom: none;
 }
 .page-head > div:first-child {
   flex: 1;
