@@ -25,6 +25,7 @@ import type {
   ModStateResult,
   ReleaseType,
 } from '../domain';
+import type { RunningGameInfo } from '../bridge/tauri';
 import type { ModFilter } from '../domain/mods.ts';
 
 /* ====================== 领域侧的数据形状 ====================== */
@@ -146,7 +147,16 @@ export interface AppState {
   /* --- 运行时 --- */
   tasks: TaskItem[];
   toasts: ToastItem[];
-  running: { instanceId: string; startedAt: number; pid: number | null } | null;
+  /*
+   * ★★ 正在运行的游戏：**按实例 id 索引的一张表**（2026-09-15，多开实例）。
+   *
+   *   以前是 `{instanceId, startedAt, pid} | null` —— 一个槽。于是"同一个时刻
+   *   只能有一个在跑"这件事被**写死在状态模型里**：界面即便想显示两个也装不下。
+   *
+   *   判据只有一处（`isInstanceRunning`），下面所有地方都从它取结论，
+   *   不许各自写 `running?.instanceId === x`（那正是"两套判据迟早打架"的老路）。
+   */
+  running: Record<string, { startedAt: number; pid: number | null }>;
 
   /* --- 弹窗 --- */
   createOpen: boolean;
@@ -212,7 +222,7 @@ export const initialState: AppState = {
 
   tasks: [],
   toasts: [],
-  running: null,
+  running: {},
 
   createOpen: false,
   crashReport: null,
@@ -294,9 +304,11 @@ export type Action =
   | { type: 'task/add'; task: TaskItem }
   | { type: 'task/patch'; id: string; patch: Partial<TaskItem> }
   | { type: 'task/remove'; id: string }
-  /* 运行态 */
-  | { type: 'game/start'; instanceId: string; pid: number | null }
-  | { type: 'game/stop' }
+  /* 运行态（多开实例：都带实例 id） */
+  | { type: 'game/start'; instanceId: string; pid: number | null; startedAt?: number }
+  | { type: 'game/stop'; instanceId: string }
+  | { type: 'game/stop-all' }
+  | { type: 'game/sync'; list: RunningGameInfo[] }
   /* Toast */
   | { type: 'toast/add'; toast: ToastItem }
   | { type: 'toast/remove'; id: string }
@@ -504,16 +516,38 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'task/remove':
       return { ...state, tasks: state.tasks.filter((t) => t.id !== action.id) };
 
-    /* ---------- 运行态 ---------- */
+    /* ---------- 运行态（多开实例：一张表，按实例 id 增删） ---------- */
     case 'game/start':
       return {
         ...state,
-        running: { instanceId: action.instanceId, startedAt: Date.now(), pid: action.pid },
+        running: {
+          ...state.running,
+          [action.instanceId]: {
+            // ★ 传了 startedAt 就用它（后端知道真实的启动时刻，界面重新加载后靠它对表）
+            startedAt: action.startedAt ?? Date.now(),
+            pid: action.pid,
+          },
+        },
         lastInstanceId: action.instanceId,
       };
 
-    case 'game/stop':
-      return { ...state, running: null };
+    case 'game/stop': {
+      const { [action.instanceId]: _gone, ...rest } = state.running;
+      return { ...state, running: rest };
+    }
+
+    /** 全停：后端退出收尾用（例如"停止全部"按钮 / 界面重新加载后对不上表） */
+    case 'game/stop-all':
+      return { ...state, running: {} };
+
+    /** 用后端的事实**覆盖**本地的表（重新加载后对表；判据不猜，以后端为准） */
+    case 'game/sync':
+      return {
+        ...state,
+        running: Object.fromEntries(
+          action.list.map((g) => [g.instance_id, { startedAt: g.started_at * 1000, pid: g.pid }]),
+        ),
+      };
 
     /* ---------- Toast ---------- */
     case 'toast/add':
@@ -563,6 +597,52 @@ export function launchTarget(state: AppState): Instance | null {
     if (found) return found;
   }
   return state.instances[0] ?? null;
+}
+
+/*
+ * ====================== 运行态（多开实例）======================
+ *
+ * ★★ **判据只有这一处**（ADR-050 的老规矩）。界面里任何"这个版本在不在跑"
+ *   都必须问 `isInstanceRunning`，不许再写
+ *   `state.running?.instanceId === inst.id` —— 那种写法在单槽时代是对的，
+ *   改成表之后每一处都得跟着改，漏一处就是"这个页面说在跑、那个页面说没跑"。
+ */
+
+/** 这个实例**现在**在不在跑 */
+export function isInstanceRunning(state: AppState, instanceId: string | null | undefined): boolean {
+  return !!instanceId && instanceId in state.running;
+}
+
+/** 这个实例的运行信息（不在跑 = null） */
+export function runningInfo(
+  state: AppState,
+  instanceId: string | null | undefined,
+): { startedAt: number; pid: number | null } | null {
+  if (!instanceId) return null;
+  return state.running[instanceId] ?? null;
+}
+
+/** 一共几个在跑（顶栏的"运行中"角标用） */
+export function runningCount(state: AppState): number {
+  return Object.keys(state.running).length;
+}
+
+/**
+ * 正在跑的那些实例（按启动时间排序，早的在前）。
+ *
+ * ★ 为什么要它：顶栏只说"3 个在运行"是不够的 —— 用户得能点开看到**是哪几个**、
+ *   并且**逐个**停。这条返回的就是那个列表（实例对象 + 运行信息）。
+ */
+export function runningInstances(
+  state: AppState,
+): { inst: Instance; startedAt: number; pid: number | null }[] {
+  return Object.entries(state.running)
+    .map(([id, info]) => {
+      const inst = state.instances.find((i) => i.id === id);
+      return inst ? { inst, startedAt: info.startedAt, pid: info.pid } : null;
+    })
+    .filter((x): x is { inst: Instance; startedAt: number; pid: number | null } => x !== null)
+    .sort((a, b) => a.startedAt - b.startedAt);
 }
 
 export function isForgeLike(instance: Instance | null): boolean {

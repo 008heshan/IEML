@@ -13,6 +13,7 @@
  */
 import { useMemo, useState } from 'react';
 import { useApp } from '../state/AppContext';
+import { isInstanceRunning } from '../state/store';
 import { Button, Note } from '../ui';
 import {
   IconAlert,
@@ -74,7 +75,8 @@ export function InstanceOverview() {
     return <Note tone="warning">没有选中的版本。</Note>;
   }
 
-  const isRunning = state.running?.instanceId === inst.id;
+  // ★ 多开实例：判据只有一份（`isInstanceRunning`）—— 别的版本在跑不影响这一个
+  const isRunning = isInstanceRunning(state, inst.id);
   /*
    * ★★ 用**唯一的**入口算"需要 Java 几"，不要在这里再写一遍。
    *
@@ -219,8 +221,11 @@ export function InstanceOverview() {
             <Button
               variant="danger"
               onClick={() => {
-                window.dispatchEvent(new CustomEvent('ieml:stop-request'));
-                void api?.launcher.stop();
+                // ★ 多开实例：停的是**这个**版本（不带 id 就等于"随机停一个"）
+                window.dispatchEvent(
+                  new CustomEvent('ieml:stop-request', { detail: { instanceId: inst.id } }),
+                );
+                void api?.launcher.stop(inst.id);
               }}
             >
               停止游戏

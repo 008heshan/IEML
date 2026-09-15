@@ -11,6 +11,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../state/AppContext';
+import { isInstanceRunning } from '../state/store';
 import { EmptyState, Button, Chip, Note, SearchBox, Segmented } from '../ui';
 // ★ 版本图标（自绘方块，按世代配色）—— 与下载页、启动页用的是同一个组件
 import { VersionIcon } from '../components/VersionIcon';
@@ -255,7 +256,8 @@ export function VersionsPage() {
       {/* ==================== 列表 ==================== */}
       <div className="ver-list">
         {rows.map((inst) => {
-          const isRunning = state.running?.instanceId === inst.id;
+          // ★ 多开实例：判据只有一份（`isInstanceRunning`）
+          const isRunning = isInstanceRunning(state, inst.id);
           const openMenu = menuFor === inst.id;
           /*
            * ★ 盘上与实例记录的**冲突判据**（只在列表行里用，且只产出一个徽标）。

@@ -46,6 +46,7 @@ import { CrashModal } from '../pages/CrashModal';
 import { TaskCenter } from '../components/TaskCenter';
 import { AccountPanel } from '../components/AccountPanel';
 import { WindowControls } from '../components/WindowControls';
+import { isInstanceRunning, runningInstances } from '../state/store';
 import { getRealApi } from '../bridge';
 
 interface NavEntry {
@@ -135,10 +136,13 @@ export function App() {
   /** 哪条提示被展开了（长文本默认折叠，点开看全） */
   const [expanded, setExpanded] = useState<string | null>(null);
 
-  const runningInstance = useMemo(
-    () => state.instances.find((i) => i.id === state.running?.instanceId) ?? null,
-    [state.instances, state.running],
-  );
+  /*
+   * ★★ 多开实例（2026-09-15）：顶栏原来只认**一个**"当前在跑的版本"。
+   *   现在同时可能有好几个，所以这里拿的是**一张表**：
+   *     · `runningList` 用来在侧栏/底栏列出"哪几个在跑"，每个都能单独停；
+   *     · 判据只有一份（`runningInstances` 在 store 里，按启动时间排序）。
+   */
+  const runningList = useMemo(() => runningInstances(state), [state]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -156,8 +160,8 @@ export function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [go]);
 
-  async function handleStop() {
-    if (!runningInstance) return;
+  /** 停某一个实例（多开时每个都要能单独停） */
+  async function handleStopOne(instanceId: string) {
     setStopping(true);
     try {
       /*
@@ -166,14 +170,15 @@ export function App() {
        *   而且失败被完全吞掉（只有 try/finally，没有 catch）。
        *   顺序反过来：先让后端真的停，成功了再改界面状态。
        *   （LaunchPage 的停止按钮本来就是对的顺序，两处终于一致了。）
+       *
+       * ★★ 多开实例：必须**点名停哪个**。以前不带参数（只有一个能停），
+       *   现在不带就等于"随机停一个" —— 那是最难查的一类错。
        */
       const api = await getRealApi();
       if (api) {
-        await api.launcher.stop();
-      } else {
-        // 浏览器演示模式：没有真实进程，直接通知前端清状态
-        window.dispatchEvent(new CustomEvent('ieml:stop-request'));
+        await api.launcher.stop(instanceId);
       }
+      window.dispatchEvent(new CustomEvent('ieml:stop-request', { detail: { instanceId } }));
     } catch (e) {
       window.dispatchEvent(
         new CustomEvent('ieml:toast', {
@@ -357,8 +362,8 @@ export function App() {
                   className="side-launch"
                   loading={stopping}
                   onClick={async () => {
-                    if (state.running?.instanceId === open.id) {
-                      await handleStop();
+                    if (isInstanceRunning(state, open.id)) {
+                      await handleStopOne(open.id);
                     } else {
                       window.dispatchEvent(
                         new CustomEvent('ieml:launch-request', { detail: open.id }),
@@ -366,7 +371,7 @@ export function App() {
                     }
                   }}
                 >
-                  {state.running?.instanceId === open.id ? (
+                  {isInstanceRunning(state, open.id) ? (
                     <>
                       <IconStop /> 停止游戏
                     </>
@@ -452,26 +457,47 @@ export function App() {
               </div>
 
               <div className="side-foot">
-                {runningInstance ? (
-                  <div className="running-chip" role="group" aria-label="正在运行的游戏">
-                    <span className="pulse" aria-hidden="true" />
-                    <div className="txt" style={{ flex: 1, minWidth: 0 }}>
-                      <div className="t truncate">{runningInstance.config.name}</div>
-                      <div className="s">
-                        已运行 {formatElapsed(Date.now() - (state.running?.startedAt ?? 0))}
+                {/*
+                  ★★ 多开实例（2026-09-15）：底栏列**每一个**在跑的版本，
+                  每个都能单独停。
+                  以前这里只显示"那一个"（`runningInstance`）—— 多开之后
+                  那个写法会让另外几个"隐身"：用户既看不到它们，
+                  也没法从界面上停掉它们，只能去任务管理器。
+                */}
+                {runningList.length > 0 ? (
+                  <div className="running-list" role="group" aria-label="正在运行的游戏">
+                    {runningList.length > 1 ? (
+                      <div className="running-head">
+                        <span className="pulse" aria-hidden="true" />
+                        <span>{runningList.length} 个在运行</span>
                       </div>
-                    </div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      iconOnly
-                      aria-label="停止游戏"
-                      title="停止游戏"
-                      loading={stopping}
-                      onClick={handleStop}
-                    >
-                      <IconStop />
-                    </Button>
+                    ) : null}
+                    {runningList.map(({ inst, startedAt }) => (
+                      <div className="running-chip" key={inst.id}>
+                        {runningList.length === 1 ? (
+                          <span className="pulse" aria-hidden="true" />
+                        ) : null}
+                        <div className="txt" style={{ flex: 1, minWidth: 0 }}>
+                          <div className="t truncate" title={inst.config.name}>
+                            {inst.config.name}
+                          </div>
+                          <div className="s">
+                            已运行 {formatElapsed(Date.now() - startedAt)}
+                          </div>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          iconOnly
+                          aria-label={`停止 ${inst.config.name}`}
+                          title={`停止 ${inst.config.name}`}
+                          loading={stopping}
+                          onClick={() => void handleStopOne(inst.id)}
+                        >
+                          <IconStop />
+                        </Button>
+                      </div>
+                    ))}
                   </div>
                 ) : null}
               </div>

@@ -21,13 +21,27 @@ pub mod modrinth;
 pub mod net;
 pub mod platform;
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 /// 应用全局状态
 pub struct AppState {
     pub paths: platform::AppPaths,
-    /// 正在运行的游戏进程
-    pub running: Mutex<Option<launch::RunningGame>>,
+    /*
+     * ★★ 正在运行的游戏进程：**按实例 id 索引的一张表**（2026-09-15，多开实例）。
+     *
+     *   以前这里是 `Mutex<Option<RunningGame>>` —— 一个槽。于是"同时开两个版本"
+     *   在**三个层面**都被挡住：后端拒绝、前端状态只装得下一个、
+     *   界面上的按钮也只为"那一个"设计。
+     *
+     *   为什么用 HashMap 而不是 Vec：**同一条判据只写一遍** ——
+     *   "这个实例在不在跑"是 `contains_key`，"哪几个在跑"是遍历，
+     *   "停哪一个"是 `remove`。用 Vec 就得在每个调用点各写一遍查找。
+     *
+     *   键是 `instance_id`（不是 slug、不是目录名）：退出事件、日志文件名、
+     *   前端的实例表都认它，**一处对齐处处对齐**。
+     */
+    pub running: Mutex<HashMap<String, launch::RunningGame>>,
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -161,7 +175,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .manage(AppState {
             paths,
-            running: Mutex::new(None),
+            running: Mutex::new(HashMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
             /* -------- 领域规则（前端只呈现结论，规则在这里） -------- */
@@ -248,6 +262,7 @@ pub fn run() {
             commands_real::preview_launch,
             commands_real::launch_minecraft,
             commands_real::stop_minecraft,
+            commands_real::running_games,
             commands_real::read_latest_log,
             commands_real::open_instance_folder,
             /* ★ 设置页的「打开数据目录」走这条 —— 前端的 opener 插件

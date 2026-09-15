@@ -9,6 +9,8 @@
  *   先用浏览器把功能跑通，工具链到位后无缝切换。
  */
 import type { Instance, JavaRuntime } from '../domain';
+import type { RunningGameInfo } from './tauri.ts';
+export type { RunningGameInfo };
 
 export interface BackendInfo {
   kind: 'web' | 'tauri';
@@ -126,7 +128,16 @@ export interface Backend {
 
   /* --- 启动 --- */
   launch(instanceId: string): Promise<LaunchResult>;
+  /** ★ 停**这一个**实例（多开时同时可能有好几个在跑，不许含糊） */
   stopGame(instanceId: string): Promise<void>;
+  /**
+   * ★ 现在有哪些实例在跑。
+   *
+   * 存在的理由是"界面可能被重新加载"：那一刻本地状态是空的、而后端的
+   * 子进程还活着。不问后端，界面就会说"没有游戏在运行"，用户再点一次启动，
+   * 同一个存档被两个进程写。
+   */
+  runningGames(): Promise<RunningGameInfo[]>;
 
   /* --- 目录 --- */
   openFolder(path: string): Promise<void>;

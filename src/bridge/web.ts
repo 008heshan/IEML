@@ -387,8 +387,21 @@ export function createWebBackend(): Backend {
       };
     },
 
-    async stopGame() {
+    async stopGame(instanceId) {
+      void instanceId; // 网页版没有真进程，参数只是契约的一部分
       await sleep(300);
+    },
+
+    /*
+     * 网页版**没有真进程**，所以"谁在跑"这件事它答不了。
+     *
+     * ★ 返回空数组是**诚实**的（不是"没有游戏在运行"这个结论，而是
+     *   "这个后端不掌握这件事"）。演示模式里运行态由 `game/start` /
+     *   `game/stop` 自己攒 —— 它与真机一致的部分是：判据只有一份，
+     *   这个接口只是"界面重新加载后对表"的兜底。
+     */
+    async runningGames() {
+      return [];
     },
 
     async openFolder(path) {
