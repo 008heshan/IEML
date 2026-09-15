@@ -85,10 +85,10 @@
      侧栏/顶栏比内容区**稍深**（#0f1217 vs #12151a），
      这样层次靠明度递进而不是白透明叠加，更干净。 */
   --bg-base: #12151a;
-  --bg-surface: #0f1217;
-  --bg-raised: #1e232c;
-  --bg-overlay: #232a34;
-  --bg-hover: #262d38;
+  --bg-surface: rgba(18, 21, 28, 0.45);
+  --bg-raised: rgba(30, 35, 44, 0.42);
+  --bg-overlay: rgba(35, 42, 52, 0.92);
+  --bg-hover: rgba(38, 45, 56, 0.6);
   --bg-active: #303846;
 
   /* 实色边框——不再用白色透明，避免在不同底色上偏色。
@@ -133,7 +133,7 @@
   --shadow-lg: 0 8px 28px rgba(0, 0, 0, 0.4);
   --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.5);
 
-  --glass: rgba(15, 18, 23, 0.78);
+  --glass: rgba(15, 18, 23, 0.45);
   --scroll-thumb: #2d3440;
   --scroll-thumb-hover: #3a4252;
 
@@ -150,6 +150,16 @@
   /* 氛围渐变（body::before 用）—— 深色下可以给足，浅色下要收得很小 */
   --ambient-a: rgba(91, 141, 239, 0.1);
   --ambient-b: rgba(91, 141, 239, 0.06);
+  /*
+   * ★★ 2026-09-16：底光晕换成三团彩色（紫 / 绿 / 蓝）—— 但**强度仍然按主题取值**，
+   *   否则又会踩回同一个坑：浅色主题下 0.18 的紫铺在白底上就是一块明显的污渍。
+   *   所以三种颜色也做成令牌，深色给足、浅色收到约 1/4。
+   */
+  --ambient-violet: rgba(139, 92, 246, 0.18);
+  --ambient-violet-soft: rgba(139, 92, 246, 0.08);
+  --ambient-green: rgba(34, 197, 94, 0.13);
+  --ambient-green-soft: rgba(34, 197, 94, 0.05);
+  --ambient-blue: rgba(91, 141, 239, 0.08);
   color-scheme: dark;
 }
 
@@ -218,6 +228,12 @@
      深色下同一组值才是"氛围"。实测见 body::before 的注释。 */
   --ambient-a: rgba(91, 141, 239, 0.035);
   --ambient-b: rgba(91, 141, 239, 0.02);
+  /* ★ 浅色下三团光晕同样收到约 1/4（白底上一点点就够，再多就是污渍） */
+  --ambient-violet: rgba(139, 92, 246, 0.05);
+  --ambient-violet-soft: rgba(139, 92, 246, 0.02);
+  --ambient-green: rgba(34, 197, 94, 0.04);
+  --ambient-green-soft: rgba(34, 197, 94, 0.015);
+  --ambient-blue: rgba(91, 141, 239, 0.025);
   color-scheme: light;
 }
 
@@ -271,12 +287,18 @@ body,
 #root {
   height: 100%;
 }
+html {
+  background: transparent;
+}
 
 body {
   font-family: var(--font-sans);
   font-size: var(--text-md);
   line-height: 1.55;
   color: var(--text-primary);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   /*
    * ★★ 默认**不可选中文字**（用户 2026-09-15："启动器上的文字，要默认不可被选取，
    *   除非是报告类的"）。
@@ -311,16 +333,10 @@ body::before {
   position: fixed;
   inset: 0;
   pointer-events: none;
-  /*
-   * ★★ 强度必须**按主题取值**（2026-09-15 实测出来的）：
-   *   同一组 rgba(91,141,239,0.10/0.06) 在深色 (#12151a) 上是一层几乎看不见的
-   *   氛围，但在浅色 (#f7f8fa) 上就是右下角**一块明显的蓝污渍** ——
-   *   因为浅色底的对比基数完全不同，同一个 alpha 不是同一个观感。
-   *   → 两个主题各给一组（浅色取深色的约 1/3），要调只改令牌，不碰这条规则。
-   */
   background:
-    radial-gradient(80% 60% at 50% -10%, var(--ambient-a) 0%, transparent 60%),
-    radial-gradient(60% 50% at 100% 100%, var(--ambient-b) 0%, transparent 70%);
+    radial-gradient(60% 55% at 12% 12%, var(--ambient-violet) 0%, var(--ambient-violet-soft) 45%, transparent 85%),
+    radial-gradient(55% 50% at 88% 88%, var(--ambient-green) 0%, var(--ambient-green-soft) 45%, transparent 85%),
+    radial-gradient(40% 35% at 70% 15%, var(--ambient-blue) 0%, transparent 80%);
   z-index: 0;
 }
 #root {

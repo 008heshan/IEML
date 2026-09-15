@@ -247,9 +247,9 @@ export function App() {
       <header className="titlebar" data-tauri-drag-region>
         <div className="brand" data-tauri-drag-region>
           <span className="brand-mark">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
-              <path d="m3.3 7 8.7 5 8.7-5M12 22V12" />
+            <svg viewBox="0 0 24 24" aria-hidden="true" fill="none">
+              <path d="M12 2 21 7v10l-9 5-9-5V7l9-5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+              <path d="M12 12 21 7M12 12v10M12 12 3 7" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
             </svg>
           </span>
           <span data-tauri-drag-region>IEML</span>
