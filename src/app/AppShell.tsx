@@ -45,6 +45,7 @@ import { CreateInstanceModal } from '../pages/CreateInstanceModal';
 import { CrashModal } from '../pages/CrashModal';
 import { TaskCenter } from '../components/TaskCenter';
 import { AccountPanel } from '../components/AccountPanel';
+import { WindowControls } from '../components/WindowControls';
 import { getRealApi } from '../bridge';
 
 interface NavEntry {
@@ -223,15 +224,30 @@ export function App() {
   return (
     <div className="app">
       {/* ==================== 顶栏（只有品牌、面包屑、任务、主题） ==================== */}
-      <header className="titlebar">
-        <div className="brand">
+      {/*
+        ★★ 顶栏现在**就是**窗口标题栏（2026-09-15）。
+
+        背景：`tauri.conf.json` 里把 `decorations` 关掉了 —— 原来那条 Windows
+        原生标题栏是白色的，压在深色界面顶上非常突兀，而且和系统主题各走各的
+        （用户："这个白色的条，并进软件里，这个额外的在外面，很丑"）。
+
+        于是这条顶栏要自己承担原生标题栏的两件事：
+          ① **拖动**：`data-tauri-drag-region`。Windows 上 Tauri 走的是
+             `WM_NCLBUTTONDOWN + HTCAPTION`，所以双击最大化、拖到屏幕边缘吸附
+             这些**原生行为都是白送的** —— 不用自己实现，自己实现反而会打架。
+          ② **窗口按钮**：最小化 / 最大化-还原 / 关闭，见 `WindowControls`。
+
+        ★ 浏览器演示模式没有窗口可管，那三个按钮**不渲染**（不能摆着骗人）。
+      */}
+      <header className="titlebar" data-tauri-drag-region>
+        <div className="brand" data-tauri-drag-region>
           <span className="brand-mark">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
               <path d="m3.3 7 8.7 5 8.7-5M12 22V12" />
             </svg>
           </span>
-          <span>IEML</span>
+          <span data-tauri-drag-region>IEML</span>
         </div>
 
         {inInstance && open ? (
@@ -282,6 +298,9 @@ export function App() {
         >
           {state.theme === 'dark' ? <IconSun /> : <IconMoon />}
         </Button>
+
+        {/* 窗口按钮（最小化 / 最大化-还原 / 关闭）——见上面那段说明 */}
+        <WindowControls />
       </header>
 
       <div className="main">

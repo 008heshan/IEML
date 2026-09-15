@@ -21,11 +21,10 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../state/AppContext';
-import { Button, Chip, EmptyState, Modal, Note } from '../ui';
+import { Button, Chip, CustomSelect, EmptyState, Modal, Note } from '../ui';
 import {
   IconAlert,
   IconBox,
-  IconChevronDown,
   IconClock,
   IconCpu,
   IconDownload,
@@ -382,25 +381,19 @@ export function LaunchPage() {
         */}
         {target ? (
           <div className="launch-hero">
-            <VersionIcon version={target.mcVersion} size={56} />
+            <VersionIcon version={target.mcVersion} size={72} />
             <div className="lh-main">
               <div className="lh-name">{target.config.name}</div>
               <div className="lh-meta">
                 <Chip tone="accent">{target.mcVersion}</Chip>
-                <Chip tone="neutral">
+                <span className="dim">
                   {target.loader ? loaderName(target.loader.kind) : '原版'}
-                </Chip>
-                {target.loader?.version ? (
-                  <span className="dim mono">{target.loader.version}</span>
-                ) : null}
-                {target.addons.map((a) => (
-                  <Chip key={a.kind} tone="neutral">
-                    {a.kind === 'optifine' ? 'OptiFine' : 'LiteLoader'}
-                  </Chip>
-                ))}
-                {target.config.isolation !== 'off' ? (
-                  <Chip tone="neutral">已隔离</Chip>
-                ) : null}
+                  {target.loader?.version ? ' ' : ''}
+                  {target.loader?.version ? <span className="mono">{target.loader.version}</span> : null}
+                  {target.addons.length > 0 ? ' · ' : ''}
+                  {target.addons.map((a) => (a.kind === 'optifine' ? 'OptiFine' : 'LiteLoader')).join(' · ')}
+                  {target.config.isolation !== 'off' ? ' · 已隔离' : ''}
+                </span>
               </div>
               <div className="lh-sub">
                 <span>
@@ -419,7 +412,7 @@ export function LaunchPage() {
             </div>
             <div className="lh-actions">
               <Button
-                variant="secondary"
+                variant="ghost"
                 size="sm"
                 onClick={async () => {
                   const p = await api?.launcher.openFolder(target.config.slug);
@@ -432,10 +425,10 @@ export function LaunchPage() {
               >
                 <IconFolder /> 打开目录
               </Button>
-              <Button variant="secondary" size="sm" onClick={() => openVersion(target.id, 'logs')}>
+              <Button variant="ghost" size="sm" onClick={() => openVersion(target.id, 'logs')}>
                 <IconTerminal /> 日志
               </Button>
-              <Button variant="secondary" size="sm" onClick={() => openVersion(target.id, 'mods')}>
+              <Button variant="ghost" size="sm" onClick={() => openVersion(target.id, 'mods')}>
                 <IconPuzzle /> Mod 管理
               </Button>
               <Button variant="ghost" size="sm" onClick={() => openVersion(target.id, 'setup')}>
@@ -447,26 +440,19 @@ export function LaunchPage() {
 
         {/* 版本下拉 */}
         <div className="launch-version">
-          <label className="launch-version-label" htmlFor="launch-ver">
+          <label className="launch-version-label">
             要启动的版本
           </label>
-          <div className="launch-select">
-            <select
-              id="launch-ver"
-              className="input"
-              value={target?.id ?? ''}
-              onChange={(e) => setLaunchTarget(e.target.value)}
-              disabled={isRunning}
-            >
-              {state.instances.map((i) => (
-                <option key={i.id} value={i.id}>
-                  {i.config.name} — {i.mcVersion}
-                  {i.loader ? ` + ${loaderName(i.loader.kind)}` : ' 原版'}
-                </option>
-              ))}
-            </select>
-            <IconChevronDown />
-          </div>
+          <CustomSelect
+            value={target?.id ?? ''}
+            onChange={setLaunchTarget}
+            disabled={isRunning}
+            ariaLabel="要启动的版本"
+            options={state.instances.map((i) => ({
+              value: i.id,
+              label: `${i.config.name} — ${i.mcVersion}${i.loader ? ` + ${loaderName(i.loader.kind)}` : ' 原版'}`,
+            }))}
+          />
         </div>
 
         {/* 启动按钮 */}
