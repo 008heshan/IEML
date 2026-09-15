@@ -171,10 +171,20 @@ export function DownloadPage() {
                   value={target?.id ?? ''}
                   onChange={setTargetId}
                   ariaLabel="装到哪个版本"
-                  options={state.instances.map((i) => ({
-                    value: i.id,
-                    label: `${i.config.name}（${i.mcVersion}${i.loader ? ` + ${i.loader.kind}` : ' · 原版'}）`,
-                  }))}
+                  /*
+                   * ★★ **原版实例不出现在这里**（用户 2026-09-15：
+                   *   "下载页的 MOD 分区，选择版本里，不应出现原版"）。
+                   *   纯原版不加载 mods/ —— 把 Mod 装进去等于**装了个必然不生效的东西**，
+                   *   而它在列表里和别的版本长得一模一样。想装 Mod 就先加加载器。
+                   *   ★ 顺带：这里以前给原版实例写的后缀是「 · 原版」，现在过滤掉了，
+                   *     每个选项都是「名字（版本 + 加载器）」，不会有歧义。
+                   */
+                  options={state.instances
+                    .filter((i) => i.loader !== null)
+                    .map((i) => ({
+                      value: i.id,
+                      label: `${i.config.name}（${i.mcVersion} + ${i.loader?.kind}）`,
+                    }))}
                 />
               </div>
               <ResourceCenterBody

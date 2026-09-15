@@ -2299,11 +2299,46 @@
   color: var(--text-tertiary);
   transition: transform var(--dur-fast) var(--ease);
 }
+/* 收起时列出的版本号（最多 4 个）—— 比世代号有用得多，见 InstallComposer 里的说明 */
+.ver-group-ids {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--text-secondary);
+}
 .fold-caret.folded {
   transform: rotate(-90deg);
 }
 :root.reduce-motion .fold-caret {
   transition: none;
+}
+
+/*
+ * 翻页（用户 2026-09-16："整合包底部的这个翻页太丑了"）。
+ *
+ * 原来它紧贴着最后一行卡片、文字又大又密，看着像"卡片下面粘了块东西"。
+ * 重做：**居中的一条细工具栏** —— 两个小按钮夹一句小字，
+ * 上面留出间距、下面不再贴边，字用 tertiary 色（它是辅助信息，不该抢卡片）。
+ */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  margin: var(--space-5) 0 var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}
+.pager-info {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  min-width: 148px;
+  text-align: center;
 }
 
 /* 卡片网格：宽屏两列，窄屏一列 */

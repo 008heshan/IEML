@@ -280,8 +280,8 @@ export function VersionsPage() {
           onChange={setFilter}
           options={[
             { value: 'all', label: `全部 ${state.instances.length}` },
-            { value: 'modded', label: '带加载器' },
-            { value: 'vanilla', label: '纯原版' },
+            { value: 'modded', label: '可装 Mod' },
+            { value: 'vanilla', label: '原版' },
           ]}
         />
         <div style={{ flex: 1 }} />
