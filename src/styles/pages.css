@@ -1671,10 +1671,14 @@
   justify-content: flex-end;
 }
 .row-menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
-  z-index: var(--z-dropdown);
+  /*
+   * ★★ 用 `fixed` 而不是 `absolute`（用户报："这个栏的图层层级不对"）。
+   *   它住在 `.ver-list` 里，而那个容器有 `overflow: hidden`（圆角需要）——
+   *   absolute 的菜单会被**裁掉**，看起来像层级问题，其实是剪裁。
+   *   坐标由按钮的 `getBoundingClientRect()` 算好传进来（见 VersionsPage）。
+   */
+  position: fixed;
+  z-index: var(--z-menu);
   width: 176px;
   padding: var(--space-1);
   border-radius: var(--radius-md);

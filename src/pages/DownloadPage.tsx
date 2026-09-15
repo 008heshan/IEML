@@ -17,7 +17,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApp } from '../state/AppContext';
-import { Button, Chip, CustomSelect, EmptyState, Note, SearchBox, Segmented, Skeleton } from '../ui';
+import { Button, Chip, CustomSelect, EmptyState, Note, SearchBox, Segmented } from '../ui';
 import { IconAlert, IconBox, IconDownload, IconLayers, IconPuzzle, IconRefresh, IconImage, IconGrid, IconPackage } from '../ui/Icons';
 import { useRealApi } from '../hooks/useRealApi';
 import type { DownloadTab } from '../state/store';
@@ -35,6 +35,9 @@ const RESOURCE_TABS: Array<{ tab: DownloadTab; kind: ResourceKindName; label: st
   { tab: 'shader', kind: 'shader', label: '光影' },
   { tab: 'datapack', kind: 'datapack', label: '数据包' },
 ];
+
+/** 整合包每页几个（写死的 20 个 = "没有翻页"，见 `load`） */
+const PAGE_SIZE = 20;
 
 export function DownloadPage() {
   const { state, go, toast, setDownloadTab } = useApp();
@@ -187,6 +190,14 @@ interface PackCard {
   loader: string;
   downloads: string;
   weight: 'light' | 'medium' | 'heavy';
+  /**
+   * ★ 封面图 URL（2026-09-15 补）。
+   *
+   *   用户报："整合包还没有封面"。实测：Modrinth 的搜索结果里**本来就有**
+   *   `icon_url`，而这里只画了一个按 `weight` 变色的方块（`pack-cover`）——
+   *   数据一直是有的，是这一页没接。现在有图用图、没图退回那个色块。
+   */
+  icon: string | null;
 }
 
 function ModpackTab({
@@ -209,6 +220,9 @@ function ModpackTab({
   const [selected, setSelected] = useState<PackCard | null>(null);
   const [name, setName] = useState('');
   const [installing, setInstalling] = useState(false);
+  /** 页码与总数（0 基）—— 翻页靠它俩，不再写死前 20 个 */
+  const [page, setPage] = useState(0);
+  const [total, setTotal] = useState(0);
 
   /** 从 Modrinth 拉真实整合包（project_type=modpack） */
   const load = useCallback(async () => {
@@ -216,11 +230,19 @@ function ModpackTab({
     setLoading(true);
     setError(null);
     try {
+      /*
+       * ★ 翻页（2026-09-15）：用户报"整合包还没有翻页"。
+       *   实测确认：这里写死 `limit: 20` 且**没有 offset** ——
+       *   于是整合包永远只有前 20 个，翻不动。现在按页取，总数用上游的
+       *   `total_hits`（自己数出来的总数没有意义，也不是"全部"）。
+       */
       const r = await api.modrinth.search({
         query: query || '',
         projectType: 'modpack',
-        limit: 20,
+        limit: PAGE_SIZE,
+        offset: page * PAGE_SIZE,
       });
+      setTotal(r.total_hits ?? 0);
       setPacks(
         r.hits.map((h) => ({
           id: h.slug || h.project_id,
@@ -231,6 +253,7 @@ function ModpackTab({
           loader: h.categories.find((c) => ['fabric', 'forge', 'neoforge', 'quilt'].includes(c)) ?? '—',
           downloads: h.downloads > 1000 ? `${Math.round(h.downloads / 1000)}k` : String(h.downloads),
           weight: 'medium' as const,
+          icon: h.icon_url ?? null,
         })),
       );
     } catch (e) {
@@ -238,11 +261,16 @@ function ModpackTab({
     } finally {
       setLoading(false);
     }
-  }, [api, query]);
+  }, [api, query, page]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  /* ★ 搜索词变了要回到第 1 页（不然会停在一个"搜出来只有 3 个"的第 7 页上） */
+  useEffect(() => {
+    setPage(0);
+  }, [query]);
 
   const sorted = useMemo(() => {
     const list = [...packs];
@@ -450,7 +478,26 @@ function ModpackTab({
         </Note>
       ) : null}
 
-      {loading ? <Skeleton rows={4} height={110} /> : null}
+      {/*
+        ★ 骨架要**长成卡片的样子**（与资源中心同一条规矩）：
+          原来这里是 `<Skeleton rows={4} height={110}/>` —— 四条通栏长条，
+          加载完却是一格一格的卡片，用户看到的就是"大长条"。
+      */}
+      {loading ? (
+        <div className="grid-cards" aria-busy="true" aria-label="正在加载">
+          {Array.from({ length: 6 }, (_, i) => (
+            <div key={i} className="pack-card pack-card-sk">
+              <span className="sk sk-cover-lg" />
+              <div className="pack-body">
+                <span className="sk sk-line w70" />
+                <span className="sk sk-line w45" />
+                <span className="sk sk-line w95" />
+                <span className="sk sk-line w35" />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       {!loading && sorted.length === 0 && !error ? (
         <EmptyState
@@ -470,7 +517,19 @@ function ModpackTab({
               setName(p.name);
             }}
           >
-            <div className="pack-cover" aria-hidden="true" data-weight={p.weight} />
+            {/* ★ 有封面就用真封面；没有才退回按"分量"变色的方块（不再假装有图） */}
+            <div className="pack-cover" data-weight={p.weight}>
+              {p.icon ? (
+                <img
+                  src={p.icon}
+                  alt=""
+                  loading="lazy"
+                  onError={(e) => {
+                    (e.currentTarget as HTMLImageElement).style.display = 'none';
+                  }}
+                />
+              ) : null}
+            </div>
             <div className="pack-body">
               <div className="pack-name truncate">{p.name}</div>
               <div className="pack-author">by {p.author}</div>
@@ -483,6 +542,31 @@ function ModpackTab({
           </button>
         ))}
       </div>
+
+      {/* ★ 翻页（原来写死前 20 个，翻不动） */}
+      {!loading && total > PAGE_SIZE ? (
+        <div className="pager">
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={page === 0}
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+          >
+            上一页
+          </Button>
+          <span className="pager-info">
+            第 {page + 1} / {Math.max(1, Math.ceil(total / PAGE_SIZE))} 页 · 共 {total} 个
+          </span>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={(page + 1) * PAGE_SIZE >= total}
+            onClick={() => setPage((p) => p + 1)}
+          >
+            下一页
+          </Button>
+        </div>
+      ) : null}
 
       {/* 配置面板（内联展开，不用弹窗 —— 弹窗会遮住刚选的包） */}
       {selected ? (

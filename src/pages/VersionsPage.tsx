@@ -9,7 +9,7 @@
  *   * 不做左侧筛选 + 右侧面板的两栏布局 —— 一行够放下所有信息
  *   * 不做"当前实例"概念 —— 打开哪个就编辑哪个，没有隐藏状态
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../state/AppContext';
 import { isInstanceRunning } from '../state/store';
 import { EmptyState, Button, Chip, Note, SearchBox, Segmented } from '../ui';
@@ -48,6 +48,37 @@ export function VersionsPage() {
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
   const [menuFor, setMenuFor] = useState<string | null>(null);
+  /** 菜单的屏幕坐标（面板是 `position: fixed`，见按钮上的注释） */
+  const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  /*
+   * ★★ 点空白处要关掉菜单，滚动/按 Esc 也要关（用户报：
+   *   "不会点空白位置后消失"）。
+   *
+   *   三个都要，因为三种都真的会发生：
+   *     · 点别处 → 用户以为关掉了，结果它还挂在那儿；
+   *     · 滚动   → 菜单是 fixed，不跟着滚，会**浮在错的位置**上；
+   *     · Esc    → 键盘用户唯一的"取消"手势就是这个。
+   */
+  useEffect(() => {
+    if (!menuFor) return;
+    const onDown = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuFor(null);
+    };
+    const onScroll = () => setMenuFor(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuFor(null);
+    };
+    document.addEventListener('mousedown', onDown);
+    window.addEventListener('scroll', onScroll, true);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [menuFor]);
 
   /* ====================== 盘上到底装了什么（实时） ====================== */
   /**
@@ -371,12 +402,37 @@ export function VersionsPage() {
                     iconOnly
                     aria-label={`${inst.config.name} 的更多操作`}
                     aria-expanded={openMenu}
-                    onClick={() => setMenuFor(openMenu ? null : inst.id)}
+                    onClick={(e) => {
+                      /*
+                       * ★★ 菜单位置按**按钮的屏幕坐标**算，面板用 `position: fixed`
+                       *   （用户报："这个栏的图层层级不对"）。
+                       *
+                       *   原因：菜单原来是 `absolute`，而它住在 `.ver-list` 里，
+                       *   而那个容器有 `overflow: hidden`（为了圆角）——
+                       *   于是**最后一行的菜单会被列表容器裁掉**，
+                       *   看起来就像"层级不对"（其实是"被剪掉了"）。
+                       *   用 fixed + 坐标算：既躲开裁剪，也不受任何祖先的
+                       *   stacking context 影响。代价是滚动时要关掉它 ——
+                       *   下面那个 effect 就是干这个的。
+                       */
+                      const r = e.currentTarget.getBoundingClientRect();
+                      setMenuPos({
+                        top: Math.round(r.bottom + 4),
+                        // 贴右边缘：菜单右对齐到按钮右边缘
+                        right: Math.round(window.innerWidth - r.right),
+                      });
+                      setMenuFor(openMenu ? null : inst.id);
+                    }}
                   >
                     <IconMore />
                   </Button>
                   {openMenu ? (
-                    <div className="row-menu" role="menu">
+                    <div
+                      className="row-menu"
+                      role="menu"
+                      ref={menuRef}
+                      style={menuPos ? { top: menuPos.top, right: menuPos.right } : undefined}
+                    >
                       <button
                         type="button"
                         role="menuitem"

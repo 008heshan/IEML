@@ -527,17 +527,17 @@ export function App() {
       <CreateInstanceModal />
       <CrashModal />
 
-      {/* ★ 账号弹窗：顶栏那个按钮打开它（内容与设置页的账号卡是同一个组件） */}
+      {/*
+        ★ 账号弹窗：顶栏那个按钮打开它（内容与设置页的账号卡是同一个组件）。
+        ★★ 用户报："正版登录有两个关闭键" —— 一个是模态框右上角那个 ✕，
+          另一个是这里 footer 里的「关闭」按钮。**同一个动作不该有两个入口**，
+          去掉 footer 那个（✕ 和点遮罩都能关，键盘还有 Esc）。
+      */}
       <Modal
         open={accountOpen}
         onClose={() => setAccountOpen(false)}
         title="账号"
         subtitle="正版登录后可以进正版验证的服务器；离线模式不影响单机与局域网"
-        footer={
-          <Button variant="ghost" onClick={() => setAccountOpen(false)}>
-            关闭
-          </Button>
-        }
       >
         <AccountPanel
           compact

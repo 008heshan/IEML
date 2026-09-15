@@ -69,7 +69,9 @@
      （右下角的 toast 压住下载页的主按钮）。
      现在按"谁必须在谁上面"排一条链，任何新组件都从这里取值。 */
   --z-sticky: 20;      /* 页头（sticky） */
-  --z-dropdown: 60;    /* 行内菜单 / 任务中心下拉 */
+  --z-dropdown: 60;    /* 行内下拉（CustomSelect 的菜单） */
+  --z-menu: 80;        /* ★ 版本行的「更多操作」菜单：它会被列表容器裁掉，
+                          所以用 fixed + 更高的层级（见 .row-menu 的注释） */
   --z-modal: 90;       /* 模态框遮罩 */
   --z-toast: 100;      /* 提示条（要能盖住模态框） */
   --z-boot: 200;       /* 启动闪屏 */
@@ -275,11 +277,34 @@ body {
   font-size: var(--text-md);
   line-height: 1.55;
   color: var(--text-primary);
-  /* 一道极微妙的氛围渐变：从左上稍亮到右下稍暗，制造纵深而不是平墙。
-     用 fixed 定位的伪元素实现，不影响布局。 */
+  /*
+   * ★★ 默认**不可选中文字**（用户 2026-09-15："启动器上的文字，要默认不可被选取，
+   *   除非是报告类的"）。
+   *
+   *   桌面应用不是网页：随手一拖就把界面上的字刷成蓝色，看着像坏了；
+   *   而真正需要复制的东西只有三类 —— **日志、崩溃报告、输入框里的值**。
+   *   那三类在下面用 `user-select: text` 单独放开。
+   *   （这也是"默认禁止、例外放行"而不是反过来：反过来一定会漏掉某个角落。）
+   */
+  user-select: none;
   background: var(--bg-base);
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
+}
+
+/* 可复制的三类：输入框 / 代码（日志、命令、路径）/ 报告 */
+input,
+textarea,
+select,
+[contenteditable='true'],
+pre,
+code,
+kbd,
+.mono,
+.selectable,
+.crash-report,
+.log-view {
+  user-select: text;
 }
 body::before {
   content: '';

@@ -68,10 +68,8 @@ export function SettingsPage() {
   }, [state.theme]);
   const [downloaded, setDownloaded] = useState<Array<{ major: number; path: string; bytes: number; usable: boolean }>>([]);
   const [busy, setBusy] = useState(false);
-  /** 清理缓存的两段式流程（先算再删）的忙碌态 */
+  /** 清理缓存的两段式流程（先算再删）的忙碌态 —— 两条清理已合并，所以只有一个状态 */
   const [cleaning, setCleaning] = useState(false);
-  /** 第二类清理（缓存 / 旧日志）的忙碌态 —— 与上面那条判据不同，所以是两个状态 */
-  const [cleaningCaches, setCleaningCaches] = useState(false);
   /** 下载源健康报告的按需快照（null = 还没查过） */
   const [sources, setSources] = useState<DownloadSourcesPayload | null>(null);
 
@@ -137,99 +135,205 @@ export function SettingsPage() {
           </Note>
         ) : null}
 
+        {/* ★ 外观与存储并排（用户要求："把存储移到外观的右侧"） */}
+        <div className="set-cols">
         {/* ==================== 外观 ====================
-            ★★ 一卡两栏（用户："这个外观 UI 有点浪费地方，从中间劈开，然后在右边塞个别的东西"）。
-            左边：主题 + 减少动效（都是"看得见"的偏好）。
-            右边：**窗口尺寸** —— 它从「新版本的默认值」搬过来的，因为"启动器窗口多大"
-                  本来就属于外观，而不是"新版本的默认值"（放在那边一直是错位的）。
+            ★ 与「存储」并排（用户："把存储移到外观的右侧"），所以这一卡只放
+              "看得见"的偏好：主题 + 减少动效。
+            ★ 「窗口尺寸」**已经搬回「新版本的默认值」**（用户要求）。
+              它上一次被我挪进来，理由是"窗口多大算外观"——用户不认这个理由，
+              而且它确实更像"新开一个游戏窗口用多大"，搬回去。
             ============================================== */}
         <Card>
           <CardTitle icon={<IconGear />}>外观</CardTitle>
 
-          <div className="set-cols">
-            <div className="set-col">
-              <div className="field-row">
-                <span className="field-label">
-                  主题
-                  <span className="field-hint">默认深色</span>
-                </span>
-                <div className="field-control">
-                  <Segmented
-                    label="主题"
-                    value={themeChoice}
-                    onChange={applyTheme}
-                    options={[
-                      { value: 'system', label: '跟随系统' },
-                      { value: 'dark', label: '深色' },
-                      { value: 'light', label: '浅色' },
-                    ]}
-                  />
-                </div>
-                <span />
-              </div>
-
-              <div className="field-row">
-                <span className="field-label">
-                  减少动效
-                  <span className="field-hint">关闭过渡动画</span>
-                </span>
-                <div className="field-control">
-                  <Switch
-                    label="减少动效"
-                    checked={state.prefs.reducedMotion}
-                    onChange={(v) => {
-                      window.dispatchEvent(
-                        new CustomEvent('ieml:prefs', { detail: { reducedMotion: v } }),
-                      );
-                      document.documentElement.classList.toggle('reduce-motion', v);
-                      toast('ok', v ? '已开启减少动效' : '已关闭减少动效');
-                    }}
-                  />
-                </div>
-                <span />
-              </div>
+          <div className="field-row">
+            <span className="field-label">
+              主题
+              <span className="field-hint">默认深色</span>
+            </span>
+            <div className="field-control">
+              <Segmented
+                label="主题"
+                value={themeChoice}
+                onChange={applyTheme}
+                options={[
+                  { value: 'system', label: '跟随系统' },
+                  { value: 'dark', label: '深色' },
+                  { value: 'light', label: '浅色' },
+                ]}
+              />
             </div>
+            <span />
+          </div>
 
-            <div className="set-col">
-              <div className="field-row">
-                <span className="field-label">
-                  窗口尺寸
-                  <span className="field-hint">启动时的初始大小</span>
-                </span>
-                <div className="field-control">
-                  <input
-                    className="input mono"
-                    style={{ width: 76 }}
-                    value={state.prefs.windowWidth}
-                    aria-label="窗口宽度"
-                    onChange={(e) =>
-                      window.dispatchEvent(
-                        new CustomEvent('ieml:prefs', {
-                          detail: { windowWidth: Number(e.target.value) || 1280 },
-                        }),
-                      )
-                    }
-                  />
-                  <span className="dim">×</span>
-                  <input
-                    className="input mono"
-                    style={{ width: 76 }}
-                    value={state.prefs.windowHeight}
-                    aria-label="窗口高度"
-                    onChange={(e) =>
-                      window.dispatchEvent(
-                        new CustomEvent('ieml:prefs', {
-                          detail: { windowHeight: Number(e.target.value) || 720 },
-                        }),
-                      )
-                    }
-                  />
-                </div>
-                <span />
-              </div>
+          <div className="field-row">
+            <span className="field-label">
+              减少动效
+              <span className="field-hint">关闭过渡动画</span>
+            </span>
+            <div className="field-control">
+              <Switch
+                label="减少动效"
+                checked={state.prefs.reducedMotion}
+                onChange={(v) => {
+                  window.dispatchEvent(
+                    new CustomEvent('ieml:prefs', { detail: { reducedMotion: v } }),
+                  );
+                  document.documentElement.classList.toggle('reduce-motion', v);
+                  toast('ok', v ? '已开启减少动效' : '已关闭减少动效');
+                }}
+              />
             </div>
+            <span />
           </div>
         </Card>
+
+        {/* ==================== 存储 ==================== */}
+        <Card>
+          <CardTitle icon={<IconAlert />}>存储</CardTitle>
+          <div className="field-row">
+            <span className="field-label">
+              数据目录
+              <span
+                className="field-hint mono truncate"
+                title={state.machine?.dataDir ?? '未知'}
+                style={{ maxWidth: 280 }}
+              >
+                {shortPath(state.machine?.dataDir ?? '未知')}
+              </span>
+            </span>
+            <div className="field-control">
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={async () => {
+                  /*
+                   * ★ 走 Rust 命令，**不要**在前端调 @tauri-apps/plugin-opener 的
+                   *   `openPath`。那个命令会先过 opener 插件的 scope 白名单，而
+                   *   `opener:allow-open-path` 只授权"可以调用这个命令"、不含任何
+                   *   路径；于是 `openPath(数据目录)` 必然返回 `forbidden path`，
+                   *   老代码的 `catch {}` 把它吞掉，用户看到的就是"点了没反应"。
+                   *   `open_data_dir` 在 Rust 侧直接调 `app.opener().open_path(...)`，
+                   *   不经过插件命令的 scope，所以一定打得开。
+                   */
+                  if (!api) {
+                    toast('info', '数据目录', state.machine?.dataDir ?? '未知');
+                    return;
+                  }
+                  try {
+                    const dir = await api.launcher.openDir('data');
+                    toast('ok', '已打开数据目录', dir);
+                  } catch (e) {
+                    toast('err', '打不开目录', e instanceof Error ? e.message : String(e));
+                  }
+                }}
+              >
+                打开
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={async () => {
+                  const dir = state.machine?.dataDir ?? '';
+                  try {
+                    await navigator.clipboard.writeText(dir);
+                    toast('ok', '已复制路径', dir);
+                  } catch {
+                    toast('info', '数据目录', dir);
+                  }
+                }}
+              >
+                复制路径
+              </Button>
+            </div>
+            <span />
+          </div>
+          {/*
+            ★★ 两条清理合并成一条（用户 2026-09-15：
+              "清理未使用的缓存 和 清理缓存与旧日志 功能重复，可以合并"）。
+
+            确实是同一件事（"把可再生的东西删掉换空间"），只是后端两个命令：
+              · `clean_unused`  —— 没有版本引用的共享库/资源文件
+              · `clean_caches`  —— 安装器、元数据缓存、旧日志
+            合并成**一次 dry run → 一次确认 → 一次执行**：两条命令各算各的，
+            把数字合起来给用户看；确认后一起删。
+
+            ★ 合并时**没有**丢掉各自的说明：确认框里逐类列出来（分别是多少、
+              哪些绝对不动）—— 合并的是"入口"，不是"信息"。
+          */}
+          <div className="field-row">
+            <span className="field-label">
+              清理缓存
+              <span className="field-hint">没有版本引用的共享文件 + 安装器 / 清单缓存 / 旧日志</span>
+            </span>
+            <div className="field-control">
+              <Button
+                size="sm"
+                variant="secondary"
+                loading={cleaning}
+                onClick={async () => {
+                  if (!api) {
+                    toast('info', '演示模式', '桌面版才能清理缓存');
+                    return;
+                  }
+                  setCleaning(true);
+                  try {
+                    /*
+                     * 两段式：先算（dry run）再删。
+                     * 清理是不可逆的破坏性操作，**先让用户看到"能释放多少"**
+                     * 再让他确认 —— 直接开删是不负责任的。
+                     */
+                    const [unused, caches] = await Promise.all([
+                      api.installer.cleanUnused(true),
+                      api.installer.cleanCaches(true),
+                    ]);
+                    const bytes = unused.total_bytes + caches.total_bytes;
+                    if (unused.candidates === 0 && caches.installer_files + caches.metadata_files + caches.log_files === 0) {
+                      toast(
+                        'ok',
+                        '没有可清理的东西',
+                        `扫了 ${unused.version_jsons_scanned} 份版本描述，每个库和资源文件都还有版本在用。`,
+                      );
+                      return;
+                    }
+                    const ok = confirm(
+                      `可以释放约 ${humanBytes(bytes)}：\n\n` +
+                        `· 没有版本引用的共享文件 ${unused.candidates} 个` +
+                        `（保留 ${unused.kept_libraries} 个库、${unused.kept_assets} 个资源文件）\n` +
+                        `· 缓存的安装器 ${caches.installer_files} 个（Forge / OptiFine，要用时会重新下载）\n` +
+                        `· 元数据缓存 ${caches.metadata_files} 个（版本清单 / 加载器列表，联网即可重建）\n` +
+                        `· 旧启动日志 ${caches.log_files} 份（保留最近 ${caches.logs_kept} 份，崩溃分析不受影响）\n\n` +
+                        `不动：断点续传的 .part 临时文件；游戏文件（libraries / assets / 已装版本）一个都不动。\n` +
+                        `注意：这些是缓存，会直接永久删除（不进回收站 —— 几百上千个碎文件进回收站反而会把回收站塞爆）。\n\n` +
+                        `确定清理？`,
+                    );
+                    if (!ok) return;
+                    const [doneUnused, doneCaches] = await Promise.all([
+                      api.installer.cleanUnused(false),
+                      api.installer.cleanCaches(false),
+                    ]);
+                    toast(
+                      'ok',
+                      '已清理',
+                      `释放 ${humanBytes(doneUnused.total_bytes + doneCaches.removed_bytes)}` +
+                        `（共享文件 ${doneUnused.removed} 个 / 缓存 ${doneCaches.installer_files + doneCaches.metadata_files + doneCaches.log_files} 个）`,
+                    );
+                  } catch (e) {
+                    toast('err', '清理失败', e instanceof Error ? e.message : String(e));
+                  } finally {
+                    setCleaning(false);
+                  }
+                }}
+              >
+                立即清理
+              </Button>
+            </div>
+            <span />
+          </div>
+
+        </Card>
+        </div>
 
         {/* ==================== Java ==================== */}
         <Card>
@@ -448,6 +552,43 @@ export function SettingsPage() {
 
           <div className="field-row">
             <span className="field-label">
+              窗口尺寸
+              <span className="field-hint">启动游戏时的初始窗口大小</span>
+            </span>
+            <div className="field-control">
+              <input
+                className="input mono"
+                style={{ width: 76 }}
+                value={state.prefs.windowWidth}
+                aria-label="窗口宽度"
+                onChange={(e) =>
+                  window.dispatchEvent(
+                    new CustomEvent('ieml:prefs', {
+                      detail: { windowWidth: Number(e.target.value) || 1280 },
+                    }),
+                  )
+                }
+              />
+              <span className="dim">×</span>
+              <input
+                className="input mono"
+                style={{ width: 76 }}
+                value={state.prefs.windowHeight}
+                aria-label="窗口高度"
+                onChange={(e) =>
+                  window.dispatchEvent(
+                    new CustomEvent('ieml:prefs', {
+                      detail: { windowHeight: Number(e.target.value) || 720 },
+                    }),
+                  )
+                }
+              />
+            </div>
+            <span />
+          </div>
+
+          <div className="field-row">
+            <span className="field-label">
               离线玩家名
               <span className="field-hint">没有正版账号时用这个名字进游戏</span>
             </span>
@@ -568,184 +709,6 @@ export function SettingsPage() {
 
         </Card>
 
-        {/* ==================== 存储 ==================== */}
-        <Card>
-          <CardTitle icon={<IconAlert />}>存储</CardTitle>
-          <div className="field-row">
-            <span className="field-label">
-              数据目录
-              <span
-                className="field-hint mono truncate"
-                title={state.machine?.dataDir ?? '未知'}
-                style={{ maxWidth: 280 }}
-              >
-                {shortPath(state.machine?.dataDir ?? '未知')}
-              </span>
-            </span>
-            <div className="field-control">
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={async () => {
-                  /*
-                   * ★ 走 Rust 命令，**不要**在前端调 @tauri-apps/plugin-opener 的
-                   *   `openPath`。那个命令会先过 opener 插件的 scope 白名单，而
-                   *   `opener:allow-open-path` 只授权"可以调用这个命令"、不含任何
-                   *   路径；于是 `openPath(数据目录)` 必然返回 `forbidden path`，
-                   *   老代码的 `catch {}` 把它吞掉，用户看到的就是"点了没反应"。
-                   *   `open_data_dir` 在 Rust 侧直接调 `app.opener().open_path(...)`，
-                   *   不经过插件命令的 scope，所以一定打得开。
-                   */
-                  if (!api) {
-                    toast('info', '数据目录', state.machine?.dataDir ?? '未知');
-                    return;
-                  }
-                  try {
-                    const dir = await api.launcher.openDir('data');
-                    toast('ok', '已打开数据目录', dir);
-                  } catch (e) {
-                    toast('err', '打不开目录', e instanceof Error ? e.message : String(e));
-                  }
-                }}
-              >
-                打开
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={async () => {
-                  const dir = state.machine?.dataDir ?? '';
-                  try {
-                    await navigator.clipboard.writeText(dir);
-                    toast('ok', '已复制路径', dir);
-                  } catch {
-                    toast('info', '数据目录', dir);
-                  }
-                }}
-              >
-                复制路径
-              </Button>
-            </div>
-            <span />
-          </div>
-          <div className="field-row">
-            <span className="field-label">
-              清理未使用的缓存
-              <span className="field-hint">删除没有版本引用的共享文件</span>
-            </span>
-            <div className="field-control">
-              <Button
-                size="sm"
-                variant="secondary"
-                loading={cleaning}
-                onClick={async () => {
-                  if (!api) {
-                    toast('info', '演示模式', '桌面版才能清理缓存');
-                    return;
-                  }
-                  setCleaning(true);
-                  try {
-                    /*
-                     * 两段式：先算（dry run）再删。
-                     * 清理是不可逆的破坏性操作，**先让用户看到"能释放多少"**
-                     * 再让他确认 —— 直接开删是不负责任的。
-                     */
-                    const plan = await api.installer.cleanUnused(true);
-                    if (plan.candidates === 0) {
-                      toast(
-                        'ok',
-                        '没有可清理的东西',
-                        `扫了 ${plan.version_jsons_scanned} 份版本描述，每个库和资源文件都还有版本在用。`,
-                      );
-                      return;
-                    }
-                    const ok = confirm(
-                      `可以清理 ${plan.candidates} 个文件，释放 ${humanBytes(plan.total_bytes)}。\n\n` +
-                        `保留：${plan.kept_libraries} 个库、${plan.kept_assets} 个资源文件（仍被已装版本引用）\n` +
-                        `不动：断点续传的 .part 临时文件\n\n` +
-                        `注意：这些是下载缓存，会直接永久删除（不进回收站 —— ` +
-                        `几百上千个碎文件进回收站反而会把回收站塞爆）。\n` +
-                        `清理后如果还有版本需要它们，重新安装或"补全文件"时会自动下回来。\n\n` +
-                        `确定清理？`,
-                    );
-                    if (!ok) return;
-                    const done = await api.installer.cleanUnused(false);
-                    toast(
-                      'ok',
-                      '已清理',
-                      `删掉 ${done.removed} 个文件，释放 ${humanBytes(done.total_bytes)}${
-                        done.sample.length > 0 ? `（例如 ${done.sample.slice(0, 2).join('、')}）` : ''
-                      }`,
-                    );
-                  } catch (e) {
-                    toast('err', '清理失败', e instanceof Error ? e.message : String(e));
-                  } finally {
-                    setCleaning(false);
-                  }
-                }}
-              >
-                立即清理
-              </Button>
-            </div>
-            <span />
-          </div>
-
-          {/*
-            ★★ 第二类清理：**可再生的东西**（0.1.0-beta.3）。
-
-            用户："启动器数据也很大，应该优化一下启动器数据的大小"。
-            量过之后（实测 1.73 GB）真正的垃圾只有两类：`cache/` 里的安装器与
-            元数据缓存、`logs/` 里每次启动一份的日志。**大头 assets+libraries
-            是游戏文件本身**，删了就得重下 —— 所以这一行刻意只碰那两类，
-            并把"保留最近 5 份日志"写在界面上（崩溃分析要读最近那份）。
-
-            两段式（先算再删）与上面那条一样：先把能释放多少告诉用户。
-          */}
-          <div className="field-row">
-            <span className="field-label">
-              清理缓存与旧日志
-              <span className="field-hint">安装器、清单缓存、每次启动的日志（会重新下载）</span>
-            </span>
-            <div className="field-control">
-              <Button
-                variant="secondary"
-                loading={cleaningCaches}
-                onClick={async () => {
-                  if (!api) {
-                    toast('info', '演示模式', '桌面版才能清理');
-                    return;
-                  }
-                  setCleaningCaches(true);
-                  try {
-                    const plan = await api.installer.cleanCaches(true);
-                    const ok = confirm(
-                      `可释放 ${humanBytes(plan.total_bytes)}：\n\n` +
-                        `· 缓存的安装器 ${plan.installer_files} 个（Forge / OptiFine，要用时会重新下载）\n` +
-                        `· 元数据缓存 ${plan.metadata_files} 个（版本清单 / 加载器列表，联网即可重建）\n` +
-                        `· 旧启动日志 ${plan.log_files} 份（保留最近 ${plan.logs_kept} 份，崩溃分析不受影响）\n\n` +
-                        `★ 游戏文件（libraries / assets / 已装版本）**一个都不动**。\n\n确定清理？`,
-                    );
-                    if (!ok) return;
-                    const done = await api.installer.cleanCaches(false);
-                    toast(
-                      'ok',
-                      '已清理',
-                      `释放 ${humanBytes(done.removed_bytes)}` +
-                        (done.sample.length > 0 ? `（例如 ${done.sample.slice(0, 2).join('、')}）` : ''),
-                    );
-                  } catch (e) {
-                    toast('err', '清理失败', e instanceof Error ? e.message : String(e));
-                  } finally {
-                    setCleaningCaches(false);
-                  }
-                }}
-              >
-                清理
-              </Button>
-            </div>
-            <span />
-          </div>
-        </Card>
 
         {/*
           ==================== 关于 ====================
