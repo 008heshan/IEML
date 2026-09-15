@@ -574,26 +574,6 @@ export function InstallComposer({
   const baseOpts = caps.baseLoaders.find((b) => b.kind === base);
   const availableBaseVersions = baseOpts?.versions ?? [];
 
-  /**
-   * OptiFine 被当前加载器判成不兼容了吗（界面上要用它压掉"会自动装"的说明）。
-   *
-   * ★ 两处文案必须**互斥**：不能一边红字写"不兼容"、
-   *   一边蓝字写"会在装完原版后自动安装"。
-   */
-  const removedOf = verdict.removed.some((r) => r.kind === 'optifine');
-
-  /*
-   * ★★ 桥接包**要用户自己下**吗？（第九轮真机验证抓到的第二处文案打架）
-   *
-   *   `validateCombination` 对手动桥接包只会往 `warnings` 里放一句
-   *   「需要桥接包 OptiFabric —— **要你自己下载**后放进 mods/ 目录：<地址>」。
-   *   界面直接读那句结论，**不自己再判一遍区间**（判两遍必然漂移）。
-   *
-   *   用途：压掉「OptiFine 会在装完原版后自动安装」那句 ——
-   *   否则同屏出现"自动装"和"要你自己下"，用户不知道该信哪句。
-   */
-  const needManualBridge = verdict.warnings.some((w) => w.includes('要你自己下载'));
-
   /* 切版本/切加载器后，把加载器版本收敛到一个合法值 */
   useEffect(() => {
     if (!base) {
@@ -1566,49 +1546,6 @@ export function InstallComposer({
               </Note>
             ) : null}
 
-            {/*
-              ★★ dev.4：OptiFine 的自动安装**已经实装**，这段提示从
-                「还需要你手动装一步」改成如实说明它会怎么装。
-                （以前那段警告是对的：当时后端确实没有 OptiFine 那一步。
-                  现在有了 —— 留着旧文案就是让用户去做一件不必要的事。）
-
-              ★ 2026-09-14：加 `!removedOf` 这个条件。
-                勾了 OptiFine 但**它其实装不了**（例如 Fabric 1.20.5+ 没有桥接包）
-                时，原来这里照样写着「会在装完原版后自动安装」——
-                和上面那条"不兼容"的红字**互相打架**。
-                界面不能同时说"会自动装"和"装不了"。
-
-              ★★ 2026-09-14 第九轮：再加 `!needManualBridge`。
-                真机验证抓到的第二处打架（同一个毛病换了个地方）：
-                Fabric 1.14~1.20.4 上桥接包**要用户自己下**（上面那条已经写清了
-                「要你自己下载 + CurseForge 地址」），而这里仍然写着
-                「OptiFine 会在装完原版后自动安装」——
-                于是同屏出现"自动装"和"要你自己下"。
-
-                事实是：**OptiFine 本体确实会自动装**（`net::optifine` 跑官方
-                Patcher，有真机测试），**但光有它游戏起不来** ——
-                缺桥接包时会崩（MC百科原话：「二者必须同时加载，否则游戏将崩溃」）。
-                所以桥接包要手动时，这句"自动安装"就不能说得像是装完就能玩，
-                改成如实说明"会自动装，但还差一个桥接包"。
-            */}
-            {addons.includes('optifine') && !removedOf ? (
-              needManualBridge ? (
-                <Note tone="warning" title="OptiFine 会自动装，但还差一个桥接包">
-                  Fabric 上 OptiFine 必须和桥接包 <b>OptiFabric 一起加载</b>，
-                  缺一个游戏会崩 —— 而这个包 IEML 不会替你下（地址见上）。
-                  OptiFine 本体（<b className="mono">{addonVersions.optifine || '最新版'}</b>
-                  ）会自动装好。
-                </Note>
-              ) : (
-                <Note tone="info" title="OptiFine 会在装完原版后自动安装">
-                  IEML 会用 OptiFine 自带的 Patcher 在临时目录里给原版 jar 打补丁
-                  （不动你的原版文件），装出来的版本直接出现在「版本列表」里。
-                  <br />
-                  选中的是 <b className="mono">{addonVersions.optifine || '最新版'}</b>
-                  ，原版由安装流程一起装好。
-                </Note>
-              )
-            ) : null}
           </div>
 
           {/* ============ 底部常驻摘要 + 唯一的按钮 ============ */}
