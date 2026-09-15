@@ -1327,11 +1327,23 @@ export function InstallComposer({
                   const online = isOf ? optifine : null;
                   const ofVersionsKnown =
                     !!online && online.status === 'ok' && online.versions.length > 0;
+                  /*
+                   * ★★ 「与当前加载器不兼容」必须**直接不让选**（用户 2026-09-15）：
+                   *   「既然 Fabric 和高清修复不兼容，为什么还要选了再警告，
+                   *     而不是直接不让选来的实在」。
+                   *
+                   *   原来 `verdict.removed`（组合校验的结论）只被用来**画一个红角标**，
+                   *   开关本身照旧点得动 —— 于是用户可以"勾上它、再读一句它不行"。
+                   *   现在把 `removed` 也算进 `disabled`：结论只有一个，界面照它执行。
+                   *   理由仍然显示（灰掉 + 说明为什么），不让选但**不瞒着**。
+                   */
                   const disabled = !a.implemented
                     ? true
-                    : isOf && online
-                      ? !ofVersionsKnown
-                      : !a.available;
+                    : !!removed
+                      ? true
+                      : isOf && online
+                        ? !ofVersionsKnown
+                        : !a.available;
                   const reason = !a.implemented
                     ? (a.unavailableReason ??
                       // ★ 不可达的分支（两个附加组件都实装了），但留着是**故意的**：
@@ -1429,7 +1441,13 @@ export function InstallComposer({
                             )}
                           </span>
                         ) : null}
-                        {!disabled && removed ? (
+                        {/*
+                          ★ 不兼容的理由**要照常显示**（以前这里是 `!disabled && removed`）：
+                            现在 `removed` 会让这一项直接 `disabled`，如果还按老条件写，
+                            用户就会看到一个灰掉、又完全不说为什么的开关 ——
+                            "不让选"和"说清为什么"是两件事，都要做。
+                        */}
+                        {removed ? (
                           <span className="a-note bad">
                             <IconAlert /> {removed.reason}
                           </span>

@@ -301,7 +301,8 @@ export function InstanceSetup() {
         </div>
       </div>
 
-      <div className="stack">
+      {/* ★ `stack-roomy`：这一页几乎全是设置行，行距要给够（用户："都快贴一块儿了"） */}
+      <div className="stack stack-roomy">
         {/* ==================== 作用域提示条 ====================
             ★ 一行说完（0.1.0-beta.1）：这句话的作用是让用户知道"改这里不会
               动到别的版本"，三个标签的含义本来就写在各自那一行的右端。

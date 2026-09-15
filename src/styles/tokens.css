@@ -353,22 +353,44 @@ a:focus-visible,
   scroll-behavior: auto !important;
 }
 
+/*
+ * ★★ 滚动条（用户 2026-09-15："所有拖动条的上下两个三角似的那个去掉，然后拖动条边缘化"）。
+ *
+ *   「上下两个三角」= **滚动条两端的箭头按钮**。这是 Chromium 的一个坑：
+ *   一旦你用 `::-webkit-scrollbar` 自绘滚动条，**没被显式关掉的
+ *   `::-webkit-scrollbar-button` 就会按系统样式画出来** —— 于是每条滚动条
+ *   最上面和最下面各出现一个小箭头（Windows 上尤其明显）。
+ *   我们之前只样式化了 bar / track / thumb，这三个箭头就一直在那儿。
+ *
+ *   「边缘化」= 滑块贴到边缘、方角：原来 thumb 用了
+ *   `border: 2px solid transparent` + `background-clip: padding-box`，
+ *   于是它在 8px 的槽里被两侧各缩进 2px，看起来是"浮在中间的一条细胶囊"。
+ *   现在去掉缩进与圆角，让它成为一条**贴边的方条**（悬停时才显色）。
+ */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
+}
+/* ★ 这条必须单独写：不写就等于"让浏览器自己决定箭头长什么样" */
+::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
   background: var(--scroll-thumb);
-  border-radius: var(--radius-full);
-  border: 2px solid transparent;
-  background-clip: padding-box;
+  /* 方角 + 无内缩 = 贴边的一条（"边缘化"） */
+  border-radius: 2px;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--scroll-thumb-hover);
-  background-clip: padding-box;
+}
+/* 左上角那个小方块（横竖滚动条交汇处）也一并去掉，它同样会自己冒出来 */
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 ::selection {

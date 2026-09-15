@@ -49,10 +49,6 @@ export function AccountPanel({ compact = false, toast, onLoggedIn }: AccountPane
   const { api } = useRealApi();
 
   const [msStatus, setMsStatus] = useState<MsLoginStatus | null>(null);
-  const [clientIdInput, setClientIdInput] = useState('');
-  const [savingCid, setSavingCid] = useState(false);
-  /** 是否展开"换成自己的应用 ID"输入框（有内置 id 时默认收起，但**随时可换**） */
-  const [editId, setEditId] = useState(false);
   const [busy, setBusy] = useState(false);
   const [device, setDevice] = useState<DeviceCode | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
@@ -166,104 +162,6 @@ export function AccountPanel({ compact = false, toast, onLoggedIn }: AccountPane
               : `离线玩家名：${state.prefs.offlineUsername} —— 单机、局域网联机都能玩，进不了正版验证的服务器`}
           </div>
         </div>
-      </div>
-
-      {/*
-        ---------- 应用 ID（client_id）：**谁是"那个应用"** ----------
-
-        ★★ 用户实测出来的事实（2026-09-15）：授权成功后微软的页面写着
-          「大功告成！你现在已登录到 **Prism Launcher**」。
-
-        这不是 bug，是 client_id 的定义：**它标识的是"哪个应用在请求授权"**，
-        微软会把那个应用注册时的**名字**显示给用户看。
-        我们内置的是 Prism Launcher 的公开 id（它实测可用），所以授权页显示它的名字。
-
-        两件事必须说清，而且**任何时候都能换**：
-          ① 现在用的是哪个 id（内置 / 你自己填的 / 环境变量）；
-          ② 授权页会显示谁的名字 —— 想显示"IEML"就得注册自己的应用。
-        ★ 以前这里只在"完全没有可用 id"时才显示输入框，于是"有内置 id"就等于
-          "用户没法换" —— 那是个真实的功能缺口。
-      */}
-      <div className="acct-id">
-        <div className="acct-id-row">
-          <span className="acct-id-k">登录用的应用 ID</span>
-          <span className="acct-id-v">
-            {msStatus?.source === 'settings'
-              ? '你自己填的'
-              : msStatus?.source === 'env'
-                ? '环境变量里的'
-                : '内置的（Prism Launcher 公开 id）'}
-            {msStatus?.client_id_preview ? (
-              <span className="mono dim"> {msStatus.client_id_preview}</span>
-            ) : null}
-          </span>
-          <button type="button" className="link-btn" onClick={() => setEditId((v) => !v)}>
-            {editId ? '收起' : '换成自己的'}
-          </button>
-        </div>
-        <div className="acct-id-note">
-          微软的授权页会显示**这个 ID 所属应用的名字** —— 现在内置的是 Prism Launcher 的公开
-          id，所以页面上写的是它。要显示「IEML」，就在
-          <span className="mono"> portal.azure.com → 应用注册 </span>
-          免费建一个，把「应用程序(客户端) ID」填进来（一次填好，长期有效）。
-        </div>
-
-        {(editId || (msStatus && !msStatus.available)) && (
-          <div className="row row-wrap" style={{ marginTop: 'var(--space-2)' }}>
-            <input
-              className="input mono"
-              style={{ flex: 1, minWidth: 240 }}
-              placeholder="粘贴你的 client_id（形如 12345678-1234-1234-1234-123456789abc）"
-              value={clientIdInput}
-              onChange={(e) => setClientIdInput(e.target.value)}
-            />
-            <Button
-              size="sm"
-              variant="primary"
-              loading={savingCid}
-              onClick={async () => {
-                if (!api) return;
-                setSavingCid(true);
-                try {
-                  await api.account.setClientId(clientIdInput);
-                  setMsStatus(await api.account.msStatus());
-                  setClientIdInput('');
-                  setEditId(false);
-                  toast('ok', '已保存', '之后的登录会用这把 id，授权页也会显示它的名字');
-                } catch (e) {
-                  toast('err', '保存失败', e instanceof Error ? e.message : String(e));
-                } finally {
-                  setSavingCid(false);
-                }
-              }}
-            >
-              保存
-            </Button>
-            {msStatus?.source === 'settings' ? (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={async () => {
-                  if (!api) return;
-                  try {
-                    await api.account.setClientId('');
-                    setMsStatus(await api.account.msStatus());
-                    toast('info', '已恢复内置', '回到随程序附带的那把 id');
-                  } catch (e) {
-                    toast('err', '恢复失败', e instanceof Error ? e.message : String(e));
-                  }
-                }}
-              >
-                恢复内置
-              </Button>
-            ) : null}
-          </div>
-        )}
-
-        {/* 真的缺 id 时，后端那句"缺什么、去哪弄"要原样显示（不缩成一行小字） */}
-        {msStatus && !msStatus.available && msStatus.reason ? (
-          <div className="acct-id-reason">{msStatus.reason}</div>
-        ) : null}
       </div>
 
       {/* ---------- 设备码：拿到就显示，轮询自动进行 ---------- */}

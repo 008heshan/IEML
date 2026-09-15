@@ -14,6 +14,8 @@ import { useApp } from '../state/AppContext';
 import { EmptyState, Button, Chip, Note, SearchBox, Segmented } from '../ui';
 // ★ 版本图标（自绘方块，按世代配色）—— 与下载页、启动页用的是同一个组件
 import { VersionIcon } from '../components/VersionIcon';
+// ★ 行菜单的图标：每个菜单项都要有，视觉效果才统一（用户要求）
+import { IconCopy, IconPencil, IconTrash } from '../ui/Icons';
 import {
   IconAlert,
   IconBox,
@@ -443,7 +445,7 @@ export function VersionsPage() {
                           toast('ok', '已重命名', '目录名不变，只改显示名');
                         }}
                       >
-                        重命名
+                        <IconPencil /> 重命名
                       </button>
                       <button
                         type="button"
@@ -466,7 +468,7 @@ export function VersionsPage() {
                             );
                         }}
                       >
-                        创建副本
+                        <IconCopy /> 创建副本
                       </button>
                       <button
                         type="button"
@@ -548,7 +550,7 @@ export function VersionsPage() {
                             });
                         }}
                       >
-                        删除
+                        <IconTrash /> 删除
                       </button>
                     </div>
                   ) : null}

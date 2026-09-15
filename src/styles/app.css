@@ -190,8 +190,8 @@
    而不是并排成"两栏导航"。理由见 AppShell.tsx 顶部注释。
    ============================================================== */
 .sidebar {
-  width: 218px;
-  flex: 0 0 218px;
+  width: 196px;
+  flex: 0 0 196px;
   display: flex;
   flex-direction: column;
   background: var(--bg-surface);
@@ -959,6 +959,37 @@
   stroke: var(--warning);
   stroke-width: 2;
   stroke-linecap: round;
+}
+
+/* ---------- 卡片内的两栏（外观） ----------
+   用户："这个外观 UI 有点浪费地方，从中间劈开，然后在右边塞个别的东西"。
+   两栏各自排自己的 `.field-row`，中间一条分隔线；窄窗口退化成单栏。 */
+.set-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 var(--space-6);
+}
+.set-col {
+  min-width: 0;
+}
+.set-col + .set-col {
+  border-left: 1px solid var(--border-subtle);
+  padding-left: var(--space-6);
+}
+/* 每栏自己的最后一行不该再画一条横线（两栏高度不同时看着最明显） */
+.set-col .field-row:last-child {
+  border-bottom: none;
+}
+@media (max-width: 1100px) {
+  .set-cols {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  .set-col + .set-col {
+    border-left: none;
+    padding-left: 0;
+    border-top: 1px solid var(--border-subtle);
+  }
 }
 
 /* ============================ 卡片 ============================ */
@@ -1896,6 +1927,18 @@ tbody tr.clickable:focus-visible {
   flex-direction: column;
   gap: var(--space-3);
 }
+/*
+ * ★★ 「版本设置页里，这都快贴一块儿了」（用户 2026-09-15）。
+ *   这一页几乎全是 `.field-row`，而它的上下内边距只有 12px —— 一屏十几行排下来
+ *   像一堵墙。这里只给这一页放宽（其它页保持紧凑，不然设置页会变得很长）。
+ */
+.stack-roomy .field-row {
+  padding: var(--space-4) 0;
+}
+.stack-roomy .card + .card,
+.stack-roomy .card {
+  padding: 18px 20px;
+}
 .row {
   display: flex;
   align-items: center;
@@ -1976,11 +2019,28 @@ tbody tr.clickable:focus-visible {
   display: inline-block;
 }
 
-/* 滚动条与选中 */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--scroll-thumb) transparent;
-}
+/*
+ * 滚动条与选中
+ * ------------------------------------------------------------------
+ * ★★ 2026-09-15：这里原来是
+ *
+ *     * { scrollbar-width: thin; scrollbar-color: var(--scroll-thumb) transparent; }
+ *
+ *   这两行是**标准属性**。Chromium 的规矩是：**一旦元素上设了标准属性，
+ *   该元素的 `::-webkit-scrollbar-*` 全部失效**，改走标准渲染 ——
+ *   而 Windows 的标准渲染会**画出两端的箭头按钮**（就是用户说的
+ *   "拖动条的上下两个三角"）。
+ *
+ *   实测过程（值得记下来）：我先把 `::-webkit-scrollbar-button{display:none}`
+ *   加进 tokens.css，重新构建部署后用桌面版拍右边缘放大 5 倍 ——
+ *   **三角还在**。原因就在这两行：规则根本没生效，因为选择器另一侧被
+ *   标准属性接管了。删掉它们之后 `::-webkit-scrollbar` 那一套（连同
+ *   `-button{display:none}`）才真正接管。
+ *
+ *   代价：Firefox 不再有细滚动条（它只认标准属性）。这个启动器只发布
+ *   Windows（Tauri + WebView2 = Chromium），不值得为它保留一条会让
+ *   Chromium 退回原生渲染的规则。
+ */
 
 /* ==================== 自定义下拉（替换原生 select） ==================== */
 .cs {

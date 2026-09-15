@@ -459,6 +459,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ).detail;
       dispatch({ type: 'game/stop' });
       if (!d) return;
+      /*
+       * ★★ **把这一局的时长落到实例记录上**（用户报的："版本这里的从未启动是纯属骗人，
+       *   这个记录的功能根本没做或者没生效"）。
+       *
+       *   实测确认用户说得对：`lastPlayedAt` / `totalPlaySeconds` 这两个字段
+       *   在 Rust 侧**只有类型定义**、在浏览器演示数据里有假值，**真机上从来没被写过**
+       *   —— 于是每个版本永远显示「从未启动 / 累计时长 –」。
+       *
+       *   落账点选在这里，而不是"点停止游戏"那条路径上，因为：
+       *     · 后端退出监测线程**两条路都会推** `game-exit`（自己关掉 / 崩溃 / 被停止），
+       *       所以这里是**唯一**的收口；写在别处就会漏掉"用户自己关游戏"这一半。
+       *     · 时长由后端算（`played_seconds`），前端只负责记下来，不自己算。
+       */
+      dispatch({
+        type: 'instances/update',
+        id: d.instanceId,
+        patch: {
+          lastPlayedAt: new Date().toISOString(),
+          totalPlaySeconds: (state.instances.find((i) => i.id === d.instanceId)?.totalPlaySeconds ?? 0) + Math.max(0, d.playedSeconds),
+        },
+      });
       const mins = Math.max(0, Math.round(d.playedSeconds / 60));
       if (d.crashed) {
         /*
