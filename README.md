@@ -820,5 +820,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/env/cargo.ps1 `
 
 ## 许可
 
-本项目仅用于学习与研究。Minecraft 是 Mojang Studios 的商标，
-本项目与 Mojang / Microsoft 无任何关联，不含任何游戏资源文件。
+**GPL-3.0**（全文见 [`LICENSE`](LICENSE)）—— 与 PCL2 同一个协议：
+可以用、可以改、可以再发布，但**衍生作品必须同样开源**。
+
+> ★ 为什么选它：这个项目的很多结论来自对 PCL2 / HMCL 源码的研读
+> （见 `docs/LAUNCHER_SOURCE_STUDY.md`、`docs/MS-LOGIN-PCL-STUDY.md`），
+> 而它们都是 GPL 系。用同一个协议，是这份"站在别人肩膀上"的关系里最省事的做法。
+
+Minecraft 是 Mojang Studios 的商标，本项目与 Mojang / Microsoft 无任何关联，
+**不含任何游戏资源文件**（界面里的版本图标是按世代配色**自绘**的方块形状，
+不是官方贴图 —— 见 `src/components/VersionIcon.tsx` 的说明）。
