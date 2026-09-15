@@ -2955,6 +2955,33 @@ pub async fn launch_minecraft(
     let game_dir = spec.game_dir.clone();
     std::fs::create_dir_all(&game_dir).map_err(|e| format!("创建游戏目录失败：{e}"))?;
 
+    /*
+     * ★★ 首次启动把游戏语言设成中文（用户 2026-09-15：
+     *   "我希望在玩家首次启动游戏时，游戏语言默认是中文"）。
+     *
+     *   原版**永远**默认英文（它不跟随系统语言），新玩家进去看到的是
+     *   Singleplayer / Multiplayer —— PCL 也是启动器替玩家写好这一项。
+     *
+     *   ★ 判据全在 `game::locale` 里（那边有 5 条测试），这里只负责调用：
+     *     · **只在玩家还没选过语言时写**（`options.txt` 里已有 `lang:` → 一个字节不动）；
+     *     · 语言代码跟着版本走（1.11 起是 `zh_cn`，之前是 `zh_CN`）。
+     *   写失败**不拦启动** —— 这是锦上添花，不该因为它启动不了游戏；
+     *   但要说出来（日志与 stderr），否则"语言没变成中文"就成了查不到原因的现象。
+     */
+    match crate::game::locale::ensure_chinese_language(&game_dir, &req.mc_version) {
+        Ok(crate::game::locale::LocaleAction::Created) => {
+            eprintln!("[IEML/launch] 首次启动：已写入 options.txt（语言=中文）");
+        }
+        Ok(crate::game::locale::LocaleAction::Appended) => {
+            eprintln!("[IEML/launch] options.txt 里没有语言设置，已补上中文");
+        }
+        // 玩家已经选过语言 —— 这是最常见的情况，不需要任何输出
+        Ok(crate::game::locale::LocaleAction::LeftAlone) => {}
+        Err(e) => {
+            eprintln!("[IEML/launch] 写 options.txt（中文语言）失败，不影响启动：{e}");
+        }
+    }
+
     let log_path = state
         .paths
         .logs
