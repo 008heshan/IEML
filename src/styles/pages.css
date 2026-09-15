@@ -879,6 +879,25 @@
 .pack-cover {
   height: 6px;
   background: var(--bg-active);
+  /*
+   * ★★ 2026-09-15（用户："封面显示位置不对"）：`<img>` 是这一轮才加进来的，
+   *   而 `.pack-cover` 本来是**一条 6px 高的色条**（`data-weight` 决定颜色，
+   *   用来表示整合包"分量"）。图进去之后没有任何尺寸约束，就按原图大小
+   *   （512×512 之类）**溢出整张卡片** —— 截图里那些糊满卡片的图就是这个。
+   *   改成：封面区固定高度、图片等比裁切填满。
+   */
+  overflow: hidden;
+}
+.pack-cover img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+/* 有真封面时不再用"分量色条"那套（两者同时出现只会互相打架） */
+.pack-cover:has(img) {
+  height: 96px;
+  background: var(--bg-surface);
 }
 .pack-cover[data-weight='heavy'] {
   background: var(--warning);

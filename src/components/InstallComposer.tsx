@@ -36,6 +36,8 @@ import {
   knownVersions,
   resolveJavaRequirement,
   validateCombination,
+  // ★ 单个附加组件的兼容性判据（与 validateCombination 同一套规则，见它上面的注释）
+  addonCompatibility,
 } from '../domain';
 import type {
   AddonKind,
@@ -1418,9 +1420,35 @@ export function InstallComposer({
                    *   现在把 `removed` 也算进 `disabled`：结论只有一个，界面照它执行。
                    *   理由仍然显示（灰掉 + 说明为什么），不让选但**不瞒着**。
                    */
+                  /*
+                   * ★★ **不管选没选，都先问一次"这个组件跟当前组合兼容吗"**
+                   *   （2026-09-15，用户："选了 Fabric 之后还能点，还是能点，
+                   *     就不能黑了，然后显示不兼容吗"）。
+                   *
+                   *   以前 `disabled` 只看 `verdict.removed` —— 而 `removed` 里
+                   *   **只有已经勾上的组件**（`validateCombination` 是遍历选中项算的）。
+                   *   于是没勾的高清修复永远"点得动"：用户点上去，它才变成
+                   *   "不兼容"、才被禁用、安装按钮才被拦 —— 正是用户说的
+                   *   "选了才知道不行"。
+                   *
+                   *   现在用 `addonCompatibility`（**同一个判据**，只是提前问）：
+                   *   不兼容的**从一开始就是灰的**，并把理由显示出来。
+                   */
+                  const compat = addonCompatibility(
+                    mcVersion,
+                    base,
+                    a.kind,
+                    {
+                      baseVersion: baseVersion || undefined,
+                      addonVersion: isOf ? optifineFirst?.version : undefined,
+                    },
+                    // 与 `validateCombination` 拿到的是**同一个** online（判据只有一份）
+                    online as never,
+                  );
+                  const blockedReason = compat.ok ? null : (compat.reason ?? '与当前组合不兼容');
                   const disabled = !a.implemented
                     ? true
-                    : !!removed
+                    : !!removed || !!blockedReason
                       ? true
                       : isOf && online
                         ? !ofVersionsKnown
@@ -1431,15 +1459,23 @@ export function InstallComposer({
                       //   万一将来新增一个没做安装的组件，这里必须仍然说真话，
                       //   而不是显示一个点得动却什么也不做的开关。
                       `${a.name} 的安装 IEML 还没做 —— 可以先用别的启动器装好，再用 IEML 启动`)
-                    : isOf && online
-                      ? online.status === 'loading'
-                        ? '正在查询 OptiFine 版本清单…'
-                        : online.status === 'error'
-                          ? `没查到 OptiFine 的版本清单（${online.message}）—— 这不等于没有，可以点上面「重新查询」`
-                          : online.versions.length === 0
-                            ? `OptiFine 确实没有发布 ${mcVersion} 的版本`
-                            : undefined
-                      : a.unavailableReason;
+                    /*
+                     * ★★ **"与当前组合不兼容"排在最前面**（2026-09-15）：
+                     *   灰掉一个选项必须同时说清为什么 —— 否则用户只会觉得
+                     *   "这个功能坏了"。而且它比"清单没查到"更确定：
+                     *   前者是**怎么都装不了**，后者只是这次没问到。
+                     */
+                    : blockedReason
+                      ? blockedReason
+                      : isOf && online
+                        ? online.status === 'loading'
+                          ? '正在查询 OptiFine 版本清单…'
+                          : online.status === 'error'
+                            ? `没查到 OptiFine 的版本清单（${online.message}）—— 这不等于没有，可以点上面「重新查询」`
+                            : online.versions.length === 0
+                              ? `OptiFine 确实没有发布 ${mcVersion} 的版本`
+                              : undefined
+                        : a.unavailableReason;
                   /*
                    * ★★ 短状态（0.1.0-beta.1，用户对着截图说"这个下面的提示，
                    *   还有诸如此类的提示可以直接简写一个'无'，所有人就知道啥意思了"）。
@@ -1452,13 +1488,21 @@ export function InstallComposer({
                   const addonLoading = isOf && online?.status === 'loading';
                   const shortReason = addonLoading
                     ? null
-                    : isOf && online?.status === 'error'
-                      ? '查不到'
-                      : isOf && online?.status === 'ok' && online.versions.length === 0
-                        ? '无'
-                        : disabled
+                    /*
+                     * ★★ **不兼容要单独一档**（2026-09-15）：
+                     *   以前所有"灰掉的"都显示「无」—— 于是"这个组合装不了"
+                     *   和"上游确实没有"看起来一模一样。用户看不出是**我们的限制**
+                     *   还是**上游没有**，而这两件事的下一步动作完全不同。
+                     */
+                    : blockedReason
+                      ? '不兼容'
+                      : isOf && online?.status === 'error'
+                        ? '查不到'
+                        : isOf && online?.status === 'ok' && online.versions.length === 0
                           ? '无'
-                          : null;
+                          : disabled
+                            ? '无'
+                            : null;
                   return (
                     <button
                       key={a.kind}
@@ -1502,8 +1546,13 @@ export function InstallComposer({
                             ★★ **和当前加载器不兼容** → 明确标出来（用户要求）。
                               只写一句原因容易被当成"说明文字"划过去；
                               一个红角标才让人一眼看到"这个组合有问题"。
+                            ★ 2026-09-15：`blockedReason` 也要标 —— 那是**没勾上**
+                              但已经判定不兼容的（勾都没勾就更需要角标，否则用户
+                              只会觉得"这个选项怎么点不动"）。
                           */}
-                          {removed ? <Chip tone="danger">与当前加载器不兼容</Chip> : null}
+                          {removed || blockedReason ? (
+                            <Chip tone="danger">与当前加载器不兼容</Chip>
+                          ) : null}
                         </span>
                         <span className="a-desc">{ADDON_DESC[a.kind]}</span>
                         {/* 在线清单的第一项就是最新版 —— 直接把"会装哪个"写出来 */}
