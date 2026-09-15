@@ -4,7 +4,7 @@
 
 一个从零构建的 Minecraft 启动器。不做"功能最多"，做"最快、最小、最好用"。
 
-**当前版本：`0.1.0-beta.15`（公开测试版）** —— 版本号规则见
+**当前版本：`0.1.0-beta.16`（公开测试版）** —— 版本号规则见
 [`docs/VERSIONING.md`](docs/VERSIONING.md)，改动见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 > ★ **进阶到 beta 是用户的决定，不是"三条判据全满足"的自然结果**：
@@ -62,7 +62,7 @@ pnpm desktop:dev
 # 打包成 exe 与 NSIS 安装程序
 pnpm desktop:build
 #   → src-tauri/target/release/ieml.exe                                 （绿色版）
-#   → src-tauri/target/release/bundle/nsis/IEML_0.1.0-beta.15_x64-setup.exe（安装程序）
+#   → src-tauri/target/release/bundle/nsis/IEML_0.1.0-beta.16_x64-setup.exe（安装程序）
 #   并把绿色版**逐字节复制**到桌面「IEML 启动器.exe」（见 tools/env/deploy-desktop.ps1）
 #
 # ★ 为什么打包脚本必须顺手更新桌面那份：真实事故 —— 用户双击桌面图标测修复，
@@ -807,7 +807,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/env/cargo.ps1 `
 | 8 | **总内存约 359 MB** | ℹ️ 其中约 331 MB 是系统 WebView2 的多进程开销，Tauri 结构决定 |
 | 9 | **内置的 client_id 是一次性的、且未实测** | ⚠️ 2026-09-15 按用户要求换成他自己提供的那把（**没有验证过** —— 用户明确说"不要验证，只换上"）。它的状态只有第一次真的点登录才知道：不认时界面会把 `AADSTS700016` 翻成人话。想稳就在界面里填自己注册的 id，或设 `IEML_MS_CLIENT_ID` |
 | 10 | **没有做真机启动验证** | ⚠️ `0.1.0-beta.2` 这一轮改的是界面 + 一个 client_id 常量 + 命名规范，用 CDP 截图逐页看过，但**没有点一次"启动游戏"**、也没有真的装一次资源。交付到桌面请先 `pnpm desktop:build`（构建 + 部署 + SHA256 证明两份一致） |
-| 11 | **资源中心没有"已装"标记** | ⚠️ `0.1.0-beta.2` 新增：列表里不会标出"这个项目你已经装了"—— 需要跨项目 id 与本地文件名/哈希比对，本轮没做。装重复了不会拦你 |
+| 11 | **资源中心没有"已装"标记** —— **按用户决定不做**（2026-09-15，用户原话"明确不做"） | ⚠️ `0.1.0-beta.2` 新增：列表里不会标出"这个项目你已经装了"—— 需要跨项目 id 与本地文件名/哈希比对，本轮没做。装重复了不会拦你 |
 
 ### 已经清掉的（留个记录，别再当成 ❌）
 

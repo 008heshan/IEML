@@ -131,6 +131,25 @@ export function addonCompatibility(
     /* --- Fabric / Quilt --- */
     if (base === 'fabric' || base === 'quilt') {
       /*
+       * ★★ **Quilt 上根本不支持 OptiFine —— 直接不让选**（用户 2026-09-15：
+       *   "Quilt 完全不兼容，所以选了这个也得不让选高清修复"）。
+       *
+       *   与 Fabric 不同：Fabric 在 1.20.4 及以前有 OptiFabric 桥接包
+       *   （只是要用户自己下），而 **Quilt 没有对应的桥接包** ——
+       *   上游从来没有过，不是"我们没做"。所以这里不查区间、不给"最新版"，
+       *   直接返回不兼容：选 Quilt 时 OptiFine 那个选项会被禁用。
+       */
+      if (base === 'quilt') {
+        return {
+          ok: false,
+          reason:
+            'Quilt 与高清修复（OptiFine）不兼容：Quilt 没有可用的桥接包' +
+            '（Fabric 那边有 OptiFabric，Quilt 没有对应的东西）。' +
+            '想要高清修复请改用 Forge（官方支持），' +
+            '或留在 Fabric 上用 Iris + Sodium。',
+        };
+      }
+      /*
        * ★★ 这里**只有一条**规则：`bridgeFor`。
        *
        *   以前还有第二条 —— 开头写着
