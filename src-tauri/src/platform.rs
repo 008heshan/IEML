@@ -1,0 +1,1556 @@
+//! 平台相关：数据目录、Java 探测、机器信息
+//!
+//! 这里的原则：**能探测就探测，探测不到就给出可行动的说明**，
+//! 绝不假装知道（例如本机没有 Java 时，要告诉用户"需要 Java 21"而不是"启动失败"）。
+
+use crate::domain::java::JavaRuntime;
+use std::path::{Path, PathBuf};
+
+/// 应用数据目录
+#[derive(Debug, Clone)]
+pub struct AppPaths {
+    /// 数据根目录
+    pub root: PathBuf,
+    /// 共享游戏文件（原版库、assets、已装版本）—— 多实例复用。
+    ///
+    /// ★★ 2026-09-15：它的**名字**从 `shared` 改成了 `.minecraft`
+    ///   （用户要求"游戏文件应该和启动器数据绑定在一块，在启动器数据内部来个
+    ///   `.minecraft` 这么个文件夹来存游戏数据，就像 PCL 那样"）。
+    ///
+    ///   字段名仍叫 `shared`（"共享"是它的**职责**，`.minecraft` 是它的**位置**）——
+    ///   全仓库 45 处引用都走这个字段，所以换位置只需要改这一行。
+    pub shared: PathBuf,
+    /// 实例目录
+    pub instances: PathBuf,
+    /// 自动下载的 Java
+    pub java: PathBuf,
+    /// 缓存
+    pub cache: PathBuf,
+    /// 日志
+    pub logs: PathBuf,
+}
+
+/// 游戏数据目录的名字（PCL 同款：数据根目录下的 `.minecraft`）
+pub const GAME_DIR_NAME: &str = ".minecraft";
+
+/// 老布局的名字（0.1.0-beta.2 及以前叫 `shared`）
+pub const LEGACY_SHARED_NAME: &str = "shared";
+
+impl AppPaths {
+    pub fn resolve() -> Self {
+        Self::from_root(resolve_data_root())
+    }
+
+    /// 从一个已知根目录拼出全部子路径（测试与"数据目录迁移"复用）
+    pub fn from_root(root: PathBuf) -> Self {
+        Self {
+            shared: root.join(GAME_DIR_NAME),
+            instances: root.join("instances"),
+            java: root.join("java"),
+            cache: root.join("cache"),
+            logs: root.join("logs"),
+            root,
+        }
+    }
+
+    /// ★ 数据根目录的**选址记录文件**（放在数据根目录旁边，不在里面）。
+    ///
+    ///   为什么不能放在数据目录里：选址记录本身就是"数据目录在哪"的答案，
+    ///   放进被它决定的目录里是循环依赖 —— 一旦用户搬走数据目录，
+    ///   启动器就再也找不到那条记录了。
+    ///
+    ///   位置：`dirs_data_dir()/IEML/datadir.txt`（也就是**旧的默认位置**）。
+    ///   那个位置永远可写，而且与平台无关。
+    pub fn location_file() -> PathBuf {
+        legacy_data_roots()[0].join("datadir.txt")
+    }
+
+    pub fn ensure(&self) -> std::io::Result<()> {
+        for p in [
+            &self.root,
+            &self.shared,
+            &self.instances,
+            &self.java,
+            &self.cache,
+            &self.logs,
+        ] {
+            std::fs::create_dir_all(p)?;
+        }
+        Ok(())
+    }
+
+    /// 某个实例的目录
+    pub fn instance_dir(&self, slug: &str) -> PathBuf {
+        self.instances.join(slug)
+    }
+
+    /// ★ 实例的**游戏目录** —— 也就是游戏进程的工作目录。
+    ///   `saves/`、`mods/`、`config/`、`options.txt` 全都在这里，
+    ///   启动时作为 `--gameDir` 传给游戏（见 commands_real::prepare_spec）。
+    ///
+    ///   为什么单独抽成方法：这个路径原来在三个地方各写了一遍
+    ///   （启动 / 扫 Mod / 装 Mod），而其中两处写的是 `instance_dir`
+    ///   而不是 `instance_dir/game` —— 结果是 Mod 下到了一个游戏永远不读的目录。
+    ///   路径只允许有一个来源。
+    pub fn instance_game_dir(&self, slug: &str) -> PathBuf {
+        self.instance_dir(slug).join("game")
+    }
+
+    /// 实例的 mods 目录（属于游戏目录，不是实例目录）
+    pub fn instance_mods_dir(&self, slug: &str) -> PathBuf {
+        self.instance_game_dir(slug).join("mods")
+    }
+
+    /// ★★ **任意一种社区资源的安装目录**（Mod / 资源包 / 光影 / 数据包）。
+    ///
+    /// 与 `instance_mods_dir` 同源（都在**游戏目录**下，不是实例目录下）——
+    /// 这是唯一会让"装好了但游戏读不到"出错的点：
+    /// 游戏进程的工作目录是 `instances/{slug}/game`，
+    /// 它只会在 `<gameDir>/resourcepacks` 里找资源包，别处一律看不见。
+    ///
+    /// `kind` 用 `domain::resources::ResourceKind`，目录名由它给
+    /// （**只有一份**描述，见那个模块的说明）。
+    pub fn instance_resource_dir(
+        &self,
+        slug: &str,
+        kind: crate::domain::resources::ResourceKind,
+    ) -> PathBuf {
+        self.instance_game_dir(slug).join(kind.install_dir())
+    }
+}
+
+fn dirs_data_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            return PathBuf::from(appdata);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join("Library/Application Support");
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home).join(".local/share");
+    }
+    PathBuf::from(".")
+}
+
+/* ====================== 数据目录选址（ADR：默认避开系统盘） ====================== */
+
+/// 旧的（也是"记录文件"所在的）数据根目录。
+///
+/// ★ 顺序有意义：**第一个**就是记录文件的宿主目录，也是迁移的源目录。
+pub fn legacy_data_roots() -> Vec<PathBuf> {
+    vec![dirs_data_dir().join("IEML")]
+}
+
+/// 一个候选磁盘上，我们打算用的子目录名
+const DATA_DIR_NAME: &str = "IEML";
+
+/// ★ 解析数据根目录。
+///
+/// 优先级（高 → 低），**每一步都留下证据，绝不猜**：
+///   ① 环境变量 `IEML_DATA_DIR` —— 给"绿色版/多份配置"用的显式覆盖
+///   ② 启动器 exe 旁边的 `ieml-portable.txt` —— 便携模式（内容是目录名）
+///   ③ `datadir.txt` 记录 —— 上次选定/用户手选的结果
+///   ④ `%APPDATA%\IEML` —— **只有在它不是系统盘时才用它**（老用户无感升级）
+///   ⑤ 自动选址：**空闲空间最大的非系统盘**（本机是 D:）
+///   ⑥ 实在找不到非系统盘 → 老实回到 `%APPDATA%\IEML`（并在记录里写明原因）
+///
+/// ## 为什么要做这件事
+///
+/// 用户的诉求：「数据目录应该默认避开系统盘」。
+/// 一个装了十几个整合包的启动器，`libraries` + `assets` + 实例很容易超过
+/// 20 GB；而系统盘通常是最小、最满、也最不该被写满的那一块（写满会
+/// 让整个 Windows 出问题）。所以默认选址必须落在数据盘上。
+pub fn resolve_data_root() -> PathBuf {
+    // ① 环境变量覆盖
+    if let Some(v) = std::env::var_os("IEML_DATA_DIR") {
+        let p = PathBuf::from(v);
+        if !p.as_os_str().is_empty() {
+            return p;
+        }
+    }
+
+    // ② 便携模式：exe 旁边放一个 ieml-portable.txt
+    if let Some(exe_dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    {
+        let flag = exe_dir.join("ieml-portable.txt");
+        if flag.is_file() {
+            return exe_dir.join(DATA_DIR_NAME);
+        }
+    }
+
+    let location_file = AppPaths::location_file();
+
+    // ③ 记录文件：只有"这一行确实指向一个我们能写的地方"才采信
+    if let Ok(text) = std::fs::read_to_string(&location_file) {
+        let line = text.lines().next().unwrap_or("").trim().to_string();
+        if !line.is_empty() {
+            let p = PathBuf::from(line);
+            if is_usable_data_root(&p) {
+                return p;
+            }
+            eprintln!(
+                "[IEML/paths] 记录里的数据目录不可用（{}），重新选址",
+                p.display()
+            );
+        }
+    }
+
+    let legacy = legacy_data_roots()[0].clone();
+
+    // ④ 老位置不在系统盘 → 保持原样（老用户升级后完全无感）
+    if !is_on_system_drive(&legacy) {
+        write_location(&location_file, &legacy);
+        return legacy;
+    }
+
+    // ⑤ 自动选址：空闲空间最大的非系统盘
+    if let Some(best) = pick_best_volume() {
+        let root = best.path.join(DATA_DIR_NAME);
+        if ensure_writable(&root) {
+            eprintln!(
+                "[IEML/paths] 默认数据目录在系统盘上，已改到 {}（空闲 {:.1} GB）",
+                root.display(),
+                best.free_gb
+            );
+            write_location(&location_file, &root);
+            return root;
+        }
+    }
+
+    // ⑥ 兜底：没有别的盘可用（单盘机器）
+    eprintln!(
+        "[IEML/paths] 没有可用的非系统盘，数据目录仍放在 {}",
+        legacy.display()
+    );
+    write_location(&location_file, &legacy);
+    legacy
+}
+
+fn write_location(file: &Path, root: &Path) {
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(file, format!("{}\n", root.display()));
+}
+
+/// 这个路径能不能当数据根目录：能建、能写。
+fn is_usable_data_root(p: &Path) -> bool {
+    if p.as_os_str().is_empty() {
+        return false;
+    }
+    ensure_writable(p)
+}
+
+fn ensure_writable(dir: &Path) -> bool {
+    if std::fs::create_dir_all(dir).is_err() {
+        return false;
+    }
+    let probe = dir.join(".ieml-write-probe");
+    match std::fs::write(&probe, b"ok") {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// 系统盘（Windows 上是 `%SystemRoot%` 所在的盘符）—— 默认不该往上写游戏数据。
+pub fn is_on_system_drive(p: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let Some(sys) = std::env::var_os("SystemRoot") else {
+            return false;
+        };
+        let sys_drive = PathBuf::from(sys)
+            .components()
+            .next()
+            .map(|c| c.as_os_str().to_string_lossy().to_uppercase());
+        let p_drive = p
+            .components()
+            .next()
+            .map(|c| c.as_os_str().to_string_lossy().to_uppercase());
+        match (sys_drive, p_drive) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = p;
+        false
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Volume {
+    path: PathBuf,
+    free_gb: f64,
+}
+
+/// 挑一个非系统盘：**先看空闲空间**，同分再看盘符顺序（结果稳定，便于复现）。
+fn pick_best_volume() -> Option<Volume> {
+    #[cfg(windows)]
+    {
+        use sysinfo::Disks;
+        let disks = Disks::new_with_refreshed_list();
+        let mut best: Option<Volume> = None;
+        let mut all: Vec<Volume> = Vec::new();
+        for d in disks.list() {
+            let mount = d.mount_point().to_path_buf();
+            if is_on_system_drive(&mount) {
+                continue;
+            }
+            let free_gb = d.available_space() as f64 / 1024.0 / 1024.0 / 1024.0;
+            // 太空的盘（可移动介质）不当默认：至少要能装下两份游戏
+            if free_gb < 5.0 {
+                continue;
+            }
+            all.push(Volume { path: mount, free_gb });
+        }
+        all.sort_by(|a, b| {
+            b.free_gb
+                .partial_cmp(&a.free_gb)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.path.cmp(&b.path))
+        });
+        if let Some(first) = all.into_iter().next() {
+            best = Some(first);
+        }
+        best
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// ★★ 把老布局的 `shared/` 挪成 `.minecraft/`（**同盘改名，秒完成**）。
+///
+/// ## 为什么用 `rename` 而不是像 `migrate_data_root` 那样逐个复制
+///
+///   `migrate_data_root` 处理的是**跨目录（可能跨盘）**的搬家，所以只能复制。
+///   而这里两边都在同一个数据根目录下 —— 同一卷上的 `rename` 是**原子**的：
+///   要么完全没动，要么一步到位，不存在"复制到一半"的中间态。
+///   这也让 1.4 GB 的游戏文件**瞬间**完成，而不是复制几分钟再删源。
+///
+/// ## 四种情况
+///
+///   · `shared/` 在、`.minecraft/` **不存在**   → 改名（唯一会动手的情况）
+///   · `shared/` 在、`.minecraft/` 是**空目录**  → 删掉空壳再改名
+///     （`AppPaths::ensure()` 在任何一次启动里都会把 `.minecraft/` 建出来，
+///       所以"空壳"是**常态**而不是异常 —— 不处理它，迁移就永远不会发生）
+///   · `.minecraft/` 里**有东西**               → 什么都不做：已经是新布局，
+///     那个 `shared/` 可能是用户自己放的东西，也可能是上次没搬完的残留 —— 不猜、不动
+///   · 两个都不在                               → 什么都不做（全新安装）
+///
+/// 返回 `Some(路径)` = 这次真的搬了（调用方要如实打印出来）。
+pub fn migrate_shared_into_game_dir(root: &Path) -> std::io::Result<Option<PathBuf>> {
+    let old = root.join(LEGACY_SHARED_NAME);
+    let new = root.join(GAME_DIR_NAME);
+    if !old.is_dir() {
+        return Ok(None);
+    }
+    if new.exists() {
+        // 空目录 = `ensure()` 建的空壳，可以安全删掉；有内容就一律不动
+        let empty = std::fs::read_dir(&new)?.next().is_none();
+        if !empty {
+            return Ok(None);
+        }
+        std::fs::remove_dir(&new)?;
+    }
+    std::fs::rename(&old, &new)?;
+    /*
+     * ★ 改完名**必须验一下**：`rename` 成功后目标一定在，但这里再确认一次
+     *   是有意的 —— 这一步之后我们会在界面上说"游戏数据在 .minecraft 里"，
+     *   说出口的东西得有证据。
+     */
+    if !new.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("改名后没找到 {}", new.display()),
+        ));
+    }
+    Ok(Some(new))
+}
+
+/// ★★ 把老位置的数据搬到新位置（**只补齐，绝不删改**）。
+///
+/// ## 两条铁律
+///
+///   ① **只复制、绝不删除源** —— 搬家中途断电/被杀，用户不能同时失去两边。
+///   ② **目标已有的东西一个字节都不动** —— 目标上的数据是用户
+///      "现在正在用的那份"，源那边是"以前那份"。任何情况下都该以目标为准。
+///
+/// ## 为什么是"补齐"而不是"搬一次就完事"
+///
+///   实测踩到过一个**真的丢了用户数据**的 bug（由本函数与前端一起造成）：
+///   某次启动后 `instances.json` 被写成了 `{"instances":[],...}`
+///   （前端"读失败也允许写"的锅，已在那边修好），
+///   而这里当时只按"目标存在就跳过"处理 → 用户建的三个版本
+///   从界面上消失了，而老位置的文件明明还好好地躺在那里。
+///
+///   所以现在：**目标缺什么就补什么**。
+///   · 目标没有的目录/文件 → 从源复制过去（能自动修好上面那种损坏）
+///   · 目标已有 → 一个字节都不碰
+///   · 目标的 `instances.json` 是**空列表**而源里有人 → 用源的（见下）
+///
+///   这一条与"用户主动删掉某个版本后它会不会复活"不冲突：
+///   复制是**单向**的（源 → 目标），用户删的只是目标那一份，
+///   源那份动不了目标。所以最多是"老位置还留着一份尸体"，
+///   不会把删掉的东西变回来。
+///
+/// 返回复制了多少字节；`Ok(0)` = 什么都不需要做。
+pub fn migrate_data_root(old: &Path, new: &Path) -> std::io::Result<u64> {
+    if !old.is_dir() || old == new {
+        return Ok(0);
+    }
+    // 只认真正的数据子目录，别把用户的杂物搬过去
+    let mut copied = 0u64;
+    for name in ["instances", "java", "cache", "logs"] {
+        let from = old.join(name);
+        if from.is_dir() {
+            copied += copy_tree(&from, &new.join(name))?;
+        }
+    }
+
+    /*
+     * ★★ 游戏文件这一项：**按目标根目录当前的布局决定往哪儿放**。
+     *
+     *   0.1.0-beta.3 实测踩到的真 bug（教训写在这里）：
+     *   一开始这里写的是死映射 `old/shared → new/.minecraft`。结果某次启动时，
+     *   目标根目录**自己还停在老布局**（`new/shared` 在、`new/.minecraft` 不在），
+     *   于是这一步把几个月前留在 C 盘的老数据复制进了 `new/.minecraft/` ——
+     *   凭空造出一个"新布局"目录，而真正的数据还在 `new/shared/` 里。
+     *   之后布局迁移看到 `.minecraft` 已有内容就按规矩跳过（它不能猜）——
+     *   用户下次打开就会觉得"我的版本都不见了"。
+     *
+     *   判据改成"看目标现在是什么布局"：
+     *     · 目标已有 `.minecraft`（或根本没有 `shared`）→ 新布局 → 放进 `.minecraft`
+     *     · 目标还有 `shared`                        → 老布局 → 放进 `shared`
+     *   两边都试一遍源（老根的 `shared` 与新根的 `.minecraft`），因为源根自己
+     *   也可能已经是新布局。
+     */
+    let dest_name = if new.join(GAME_DIR_NAME).exists() || !new.join(LEGACY_SHARED_NAME).exists() {
+        GAME_DIR_NAME
+    } else {
+        LEGACY_SHARED_NAME
+    };
+    for from_name in [LEGACY_SHARED_NAME, GAME_DIR_NAME] {
+        let from = old.join(from_name);
+        if from.is_dir() {
+            copied += copy_tree(&from, &new.join(dest_name))?;
+        }
+    }
+
+    for name in ["instances.json", "prefs.json"] {
+        let from = old.join(name);
+        if !from.is_file() {
+            continue;
+        }
+        let to = new.join(name);
+        if should_take_record(&from, &to)? {
+            if let Some(p) = to.parent() {
+                std::fs::create_dir_all(p)?;
+            }
+            std::fs::copy(&from, &to)?;
+            copied += std::fs::metadata(&to).map(|m| m.len()).unwrap_or(0);
+        }
+    }
+    Ok(copied)
+}
+
+/// 目标上的那份记录要不要用源那份替换？
+///
+/// 判据只有一条：**目标不存在，或者目标是个"空壳"而源里有东西**。
+/// 其余情况一律**不动目标** —— 目标上的记录是用户当下正在用的那份。
+fn should_take_record(from: &Path, to: &Path) -> std::io::Result<bool> {
+    if !to.is_file() {
+        return Ok(true);
+    }
+    let dst = std::fs::read_to_string(to).unwrap_or_default();
+    let src = std::fs::read_to_string(from).unwrap_or_default();
+
+    // 只在 **数组元素个数** 上比较，不看别的字段 —— 判据越窄越安全。
+    let count = |t: &str| -> Option<usize> {
+        let v: serde_json::Value = serde_json::from_str(t).ok()?;
+        v.get("instances")?.as_array().map(|a| a.len())
+    };
+    match (count(&dst), count(&src)) {
+        // 目标 0 条、源有人 → 这几乎一定是被写坏了，补回来
+        (Some(0), Some(n)) if n > 0 => Ok(true),
+        _ => Ok(false),
+    }
+}
+
+/// 递归复制：**目标已有的文件一个字节都不动**，缺什么补什么。
+///
+/// 为什么不是"目标存在就整体跳过"：那样目标上任何一处损坏
+/// （例如被写空的 `instances.json`）都永远修不回来。见
+/// `migrate_data_root` 的说明 —— 这是实测丢过用户数据之后改的。
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<u64> {
+    std::fs::create_dir_all(to)?;
+    let mut bytes = 0u64;
+    for e in std::fs::read_dir(from)? {
+        let e = e?;
+        let src = e.path();
+        let dst = to.join(e.file_name());
+        let meta = e.metadata()?;
+        if meta.is_dir() {
+            bytes += copy_tree(&src, &dst)?;
+        } else if meta.is_file() {
+            if dst.is_file() {
+                continue; // 目标已有 → 绝不覆盖（那是用户正在用的那份）
+            }
+            // 半截的 .part 不该跟着搬家：新家会用新路径重新下
+            if src
+                .file_name()
+                .map(|n| {
+                    let s = n.to_string_lossy();
+                    s.contains(".part") || s.ends_with(".tmp")
+                })
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            std::fs::copy(&src, &dst)?;
+            bytes += meta.len();
+        }
+    }
+    Ok(bytes)
+}
+
+/* ====================== 机器信息 ====================== */
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MachineInfo {
+    pub total_memory_gb: f64,
+    pub available_memory_gb: f64,
+    pub cpu_count: usize,
+    pub os: String,
+    pub arch: String,
+    pub data_dir: String,
+}
+
+pub fn machine_info(paths: &AppPaths) -> MachineInfo {
+    use sysinfo::System;
+    let mut sys = System::new();
+    sys.refresh_memory();
+    sys.refresh_cpu_all();
+
+    let total = sys.total_memory() as f64 / 1024.0 / 1024.0 / 1024.0;
+    let avail = sys.available_memory() as f64 / 1024.0 / 1024.0 / 1024.0;
+
+    MachineInfo {
+        total_memory_gb: (total * 10.0).round() / 10.0,
+        available_memory_gb: (avail * 10.0).round() / 10.0,
+        cpu_count: sys.cpus().len(),
+        os: System::long_os_version().unwrap_or_else(|| std::env::consts::OS.to_string()),
+        arch: std::env::consts::ARCH.to_string(),
+        data_dir: paths.root.to_string_lossy().to_string(),
+    }
+}
+
+/* ====================== 子进程：别弹控制台窗口 ====================== */
+
+/*
+ * ★★ Windows 上，启动一个**控制台子系统**程序（java.exe / tar.exe /
+ *    taskkill.exe / cmd.exe）而不传 `CREATE_NO_WINDOW`，系统会**弹出一个
+ *    控制台窗口**。
+ *
+ *    用户报的原话：「安装 Forge 调出来个啥也没有的 cmd 是何意味」——
+ *    那个"啥也没有"的黑框就是 Forge 安装器的 java 进程：
+ *    它的输出被启动器接走了（我们要拿它判断成功失败、给用户看进度），
+ *    窗口里自然什么都没有，只剩一个空壳挂在屏幕上。
+ *    对用户来说这就是"启动器怎么突然弹了个黑框"。
+ *
+ *    这与"要不要用命令行安装"无关 —— 我们本来就必须用命令行跑 Forge 的
+ *    installer jar（那是 Forge 官方唯一的无人值守接口：
+ *    `java -jar forge-installer.jar --installClient <dir>`）。
+ *    问题只在于**窗口不该露出来**。静默地跑，然后把结果如实报告，
+ *    这才是"自动安装"该有的样子。
+ *
+ *    所以这里提供**唯一**的抑制入口。新增任何创建子进程的代码都应该用它，
+ *    不要再各处手写 `0x0800_0000` —— 那个数字抄错一次就是一个新黑框，
+ *    而且不会有任何报错提示你。
+ */
+
+/// `CREATE_NO_WINDOW`：不为新进程创建控制台窗口。
+#[cfg(windows)]
+pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// 给 `std::process::Command` 加上"不弹窗"标志（非 Windows 上是空操作）。
+pub fn hide_console(cmd: &mut std::process::Command) -> &mut std::process::Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
+/// 给 `tokio::process::Command` 加上"不弹窗"标志（非 Windows 上是空操作）。
+///
+/// ★ 异步侧必须单独有一个：`tokio::process::Command` 与 `std::process::Command`
+///   是两个不同的类型，trait 也不通用。**Forge 安装器走的正是这一条** ——
+///   老代码只给 `std::process::Command` 加了标志，异步那处漏了，
+///   于是唯一一处会弹黑框的地方恰好就是用户天天要点的"安装 Forge"。
+pub fn hide_console_async(cmd: &mut tokio::process::Command) -> &mut tokio::process::Command {
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
+/* ====================== Java 探测 ====================== */
+
+/// 跑一次 `java -version`，拿它的主版本号（拿不到返回 `None`）。
+///
+/// 用途：**给某个具体的 java.exe 判版本**，而不是走整条扫描。
+/// 典型场景是"跑第三方安装器之前先确认这个 Java 支持它要的参数"——
+/// 实测踩过：OptiFine 的安装器要 `--add-exports`，那是 **Java 9+** 才有的选项，
+/// 拿 Java 8 去跑会得到 `Unrecognized option: --add-exports` 加
+/// `Could not create the Java Virtual Machine`，安装器一行都没执行。
+pub fn java_major_of(exe: &Path) -> Option<u32> {
+    if !exe.is_file() {
+        return None;
+    }
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("-version");
+    hide_console(&mut cmd);
+    let out = cmd.output().ok()?;
+    let text = String::from_utf8_lossy(&out.stderr).to_string()
+        + &String::from_utf8_lossy(&out.stdout);
+    parse_java_version(&text).map(|(_, major)| major)
+}
+
+/// 扫描本机的 Java 运行时。
+///
+/// ## 这一版为什么重写（用户报"它根本不知道去哪里找 java"）
+///
+/// 用户的原话：「IEML 管我要 java21，但我的电脑里确实有 java21，还有 25，
+/// 也就是说它根本不知道去哪里找 java」。**他是对的**：
+///
+///   · 他的 Java 21 是 **Minecraft 官方启动器**下的，躺在
+///     `%APPDATA%\.minecraft\runtime\java-runtime-delta`（真实存在，`release`
+///     文件写着 `JAVA_VERSION="21.0.7"`）；
+///   · 他的 Java 8 也在那儿：`%APPDATA%\.minecraft\runtime\jre-legacy`（`1.8.0_51`）；
+///   · 而老版 `scan_java` 只看四处：`JAVA_HOME` / `PATH` / `Program Files\*` /
+///     自己下载的 `data/java`。
+///
+///   于是启动器眼里本机"只有 Java 25"，1.12.2（需要 Java 8）也就没有 Java 8 可用。
+///
+/// ## 现在的来源（按可信度排序，全部保留 provenance）
+///
+///   ① IEML 自己下载的 —— `downloaded`
+///   ② 用户手动指定的 —— `manual`
+///   ③ Mojang 官方运行时 —— `mojang`（`.minecraft/runtime/*`，**这次补上的关键一处**）
+///   ④ Windows 注册表登记的 JRE/JDK —— `registry`
+///   ⑤ 其它启动器记下来的（PCL2 的 `config.json`）—— `launcher`
+///   ⑥ `JAVA_HOME` / `PATH` —— `system`
+///   ⑦ 常见安装根目录（Adoptium / Oracle / Zulu / Microsoft / Temurin …）—— `system`
+///   ⑧ 根目录浅扫描（`C:\jdk*`、`D:\java*` …）—— `scan`
+///
+/// ## 为什么要"先把候选路径收集完，再去并行探测"
+///
+///   `probe_java` 要真的跑一次 `java -version`（50~300 ms）。
+///   老实现是**边发现边探测**、一个一个串行跑 —— 一次扫描能卡好几秒，
+///   而 `scan_java` 是 IPC 命令，卡住的是整个界面。
+///   现在先做零成本的路径收集 + 去重，再并行探测（最多 8 路）。
+pub fn scan_java(paths: &AppPaths) -> Vec<JavaRuntime> {
+    scan_java_with_extra(paths, &[])
+}
+
+/// 同上，外加**用户手动指定**的 java.exe 路径（设置页里挑的）。
+pub fn scan_java_with_extra(paths: &AppPaths, manual: &[String]) -> Vec<JavaRuntime> {
+    let mut by_path: Vec<(String, PathBuf)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    let mut push = |path: PathBuf, source: &str, by_path: &mut Vec<(String, PathBuf)>| {
+        let key = canonical_key(&path);
+        if seen.insert(key) {
+            by_path.push((source.to_string(), path));
+        }
+    };
+
+    // ③ Mojang 官方运行时（这次补上的关键一处）
+    for exe in mojang_runtime_javas() {
+        push(exe, "mojang", &mut by_path);
+    }
+
+    // ④ 注册表（Windows）
+    for exe in registry_javas() {
+        push(exe, "registry", &mut by_path);
+    }
+
+    // ⑤ 其它启动器缓存
+    for exe in other_launcher_javas() {
+        push(exe, "launcher", &mut by_path);
+    }
+
+    // ①② 自己下载的 + 用户手选（最可信，排最前）
+    let mut preferred: Vec<(String, PathBuf)> = Vec::new();
+    for s in manual {
+        let p = PathBuf::from(s);
+        let exe = if p.is_file() { p } else { java_exe_in(&p) };
+        push(exe, "manual", &mut preferred);
+    }
+    if let Ok(entries) = std::fs::read_dir(&paths.java) {
+        for e in entries.flatten() {
+            push(java_exe_in(&e.path()), "downloaded", &mut preferred);
+        }
+    }
+    // ⑥ JAVA_HOME
+    if let Ok(home) = std::env::var("JAVA_HOME") {
+        push(java_exe_in(Path::new(&home)), "system", &mut by_path);
+    }
+    // ⑥ PATH
+    if let Some(path_var) = std::env::var_os("PATH") {
+        let name = if cfg!(windows) { "java.exe" } else { "java" };
+        for dir in std::env::split_paths(&path_var) {
+            let exe = dir.join(name);
+            if exe.is_file() {
+                push(exe, "system", &mut by_path);
+            }
+        }
+    }
+    // ⑦ 常见安装根目录
+    for root in common_java_roots() {
+        if let Ok(entries) = std::fs::read_dir(&root) {
+            for e in entries.flatten() {
+                let exe = java_exe_in(&e.path());
+                if exe.is_file() {
+                    push(exe, "system", &mut by_path);
+                }
+            }
+        }
+    }
+    // ⑧ 根目录浅扫描
+    for exe in shallow_drive_javas() {
+        push(exe, "scan", &mut by_path);
+    }
+
+    preferred.extend(by_path);
+
+    // 并行探测：先做零成本收集，再一次性花钱
+    let results = probe_many(preferred);
+
+    let mut found: Vec<JavaRuntime> = Vec::new();
+    for rt in results {
+        push_unique(&mut found, rt);
+    }
+    // 主版本高的排前面；同版本按路径稳定排序（界面每次看到同样的顺序）
+    found.sort_by(|a, b| {
+        b.major
+            .cmp(&a.major)
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    found
+}
+
+/// 探测结果的上限：防止某个病态的 PATH 把扫描拖成分钟级
+const MAX_JAVA_CANDIDATES: usize = 64;
+/// 并行度：`java -version` 是进程启动，8 路足够快也不至于把机器打满
+const PROBE_CONCURRENCY: usize = 8;
+
+fn probe_many(candidates: Vec<(String, PathBuf)>) -> Vec<JavaRuntime> {
+    let candidates: Vec<(String, PathBuf)> =
+        candidates.into_iter().take(MAX_JAVA_CANDIDATES).collect();
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let slots: Vec<std::sync::Mutex<Option<JavaRuntime>>> =
+        (0..candidates.len()).map(|_| std::sync::Mutex::new(None)).collect();
+
+    let workers = PROBE_CONCURRENCY.min(candidates.len());
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if i >= candidates.len() {
+                    break;
+                }
+                let (source, exe) = &candidates[i];
+                if let Some(rt) = probe_java(exe, source) {
+                    if let Ok(mut slot) = slots[i].lock() {
+                        *slot = Some(rt);
+                    }
+                }
+            });
+        }
+    });
+
+    slots
+        .into_iter()
+        .filter_map(|s| s.into_inner().ok().flatten())
+        .collect()
+}
+
+/// 路径去重用的键：**不要求路径真实存在**（`canonicalize` 会失败），
+/// 所以先把能解析的解析掉，再统一大小写与分隔符。
+fn canonical_key(p: &Path) -> String {
+    let resolved = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    resolved
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_lowercase()
+}
+
+/// Mojang 官方启动器的运行时目录。
+///
+/// 实测（本机）：`%APPDATA%\.minecraft\runtime\` 下有
+/// `java-runtime-delta`（**Java 21.0.7**）与 `jre-legacy`（**Java 8.0_51**）。
+/// 这两份是"用户确实有 java21/java8"的真相所在 —— 老版完全没扫。
+#[cfg(windows)]
+fn mojang_runtime_javas() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        roots.push(PathBuf::from(appdata).join(".minecraft").join("runtime"));
+    }
+    if let Ok(home) = std::env::var("USERPROFILE") {
+        roots.push(PathBuf::from(home).join(".minecraft").join("runtime"));
+    }
+    // 官方启动器允许自定义游戏目录，常见的几处也认一下
+    for d in ["D:", "E:", "F:"] {
+        roots.push(PathBuf::from(format!("{d}\\.minecraft\\runtime")));
+        roots.push(PathBuf::from(format!("{d}\\Minecraft\\.minecraft\\runtime")));
+    }
+    for root in roots {
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let exe = java_exe_in(&e.path());
+            if exe.is_file() {
+                out.push(exe);
+            }
+        }
+    }
+    out
+}
+
+#[cfg(not(windows))]
+fn mojang_runtime_javas() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+/// Windows 注册表里登记的 Java。
+///
+/// 覆盖三种登记方式（装机量都不小）：
+///   · `HKLM\SOFTWARE\JavaSoft\JDK\<ver>\JavaHome`
+///   · `HKLM\SOFTWARE\JavaSoft\JRE\<ver>\JavaHome`
+///   · `HKLM\SOFTWARE\JavaSoft\Java Development Kit\<ver>\JavaHome`（老式）
+/// 32 位视图（`WOW6432Node`）也要看。
+#[cfg(windows)]
+fn registry_javas() -> Vec<PathBuf> {
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ};
+    use winreg::RegKey;
+
+    let mut out = Vec::new();
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let bases = [
+        r"SOFTWARE\JavaSoft",
+        r"SOFTWARE\WOW6432Node\JavaSoft",
+        r"SOFTWARE\Eclipse Adoptium",
+        r"SOFTWARE\WOW6432Node\Eclipse Adoptium",
+        r"SOFTWARE\Microsoft\JDK",
+        r"SOFTWARE\Azul Systems\Zulu",
+        r"SOFTWARE\BellSoft",
+    ];
+    for base in bases {
+        let Ok(key) = hklm.open_subkey_with_flags(base, KEY_READ) else {
+            continue;
+        };
+        collect_java_homes(&key, &mut out, 0);
+    }
+    out
+}
+
+#[cfg(windows)]
+fn collect_java_homes(key: &winreg::RegKey, out: &mut Vec<PathBuf>, depth: u32) {
+    use winreg::enums::KEY_READ;
+    if depth > 3 {
+        return;
+    }
+    for name in key.enum_keys().flatten() {
+        let Ok(child) = key.open_subkey_with_flags(&name, KEY_READ) else {
+            continue;
+        };
+        // 有的厂商直接把 JavaHome 写在版本键上，有的多一层（MSI 的 MSIReg 之类）
+        for value_name in ["JavaHome", "Path", "InstallationPath"] {
+            if let Ok(v) = child.get_value::<String, _>(value_name) {
+                if !v.trim().is_empty() {
+                    let p = PathBuf::from(v.trim());
+                    let exe = java_exe_in(&p);
+                    if exe.is_file() {
+                        out.push(exe);
+                    }
+                }
+            }
+        }
+        collect_java_homes(&child, out, depth + 1);
+    }
+}
+
+#[cfg(not(windows))]
+fn registry_javas() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+/// 别的启动器记下来的 Java 位置。
+///
+/// 实测本机：`%APPDATA%\PCL\config.json` 的 `JavaList` 里正好列着三份
+/// （Java 8 / 21 / 25）—— PCL 已经帮我们探测过一遍了，直接采信它的**路径**，
+/// 但**版本号仍然由我们自己跑 `java -version` 得出**（别人的结论会过期）。
+#[cfg(windows)]
+fn other_launcher_javas() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(appdata) = std::env::var("APPDATA") else {
+        return out;
+    };
+    let mut configs: Vec<(PathBuf, &[&str])> = vec![
+        (
+            PathBuf::from(&appdata).join("PCL").join("config.json"),
+            &["JavaList", "Folder"][..],
+        ),
+        (
+            // HMCL 的 java 列表在 `%APPDATA%\HMCL\java.txt`（每行一个目录）
+            PathBuf::from(&appdata).join("HMCL").join("java.txt"),
+            &[][..],
+        ),
+    ];
+    // 便携版常见的几个位置
+    configs.push((
+        PathBuf::from(&appdata)
+            .join(".minecraft")
+            .join("PCL")
+            .join("config.json"),
+        &["JavaList", "Folder"][..],
+    ));
+
+    for (file, _hint) in configs {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        if file.extension().map(|e| e == "txt").unwrap_or(false) {
+            for line in text.lines() {
+                let line = line.trim();
+                if !line.is_empty() {
+                    let exe = java_exe_in(Path::new(line));
+                    if exe.is_file() {
+                        out.push(exe);
+                    }
+                }
+            }
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        walk_json_for_java_dirs(&v, &mut out, 0);
+    }
+    out
+}
+
+#[cfg(not(windows))]
+fn other_launcher_javas() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+/// 在 JSON 里找形如 `"C:\\...\\bin\\"`（或 `...\\bin`）的字符串。
+///
+/// 刻意**不写死字段名**：PCL 的字段（`JavaList[].Folder`）在版本之间改过名，
+/// 而"以 `bin` 结尾的路径"这件事本身就是判据 —— 认它比认字段名耐用。
+fn walk_json_for_java_dirs(v: &serde_json::Value, out: &mut Vec<PathBuf>, depth: u32) {
+    if depth > 6 {
+        return;
+    }
+    match v {
+        serde_json::Value::String(s) => {
+            let t = s.trim();
+            if t.len() < 4 {
+                return;
+            }
+            let looks_like_bin = t
+                .trim_end_matches(['\\', '/'])
+                .to_lowercase()
+                .ends_with("\\bin")
+                || t.to_lowercase().ends_with("/bin");
+            if !looks_like_bin {
+                return;
+            }
+            let dir = PathBuf::from(t);
+            let exe = dir.join(if cfg!(windows) { "java.exe" } else { "java" });
+            if exe.is_file() {
+                out.push(exe);
+            }
+        }
+        serde_json::Value::Array(a) => {
+            for x in a {
+                walk_json_for_java_dirs(x, out, depth + 1);
+            }
+        }
+        serde_json::Value::Object(o) => {
+            for (_, x) in o {
+                walk_json_for_java_dirs(x, out, depth + 1);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 根目录浅扫描：`C:\jdk25\jdk-25.0.3+9`、`D:\java\jdk-21` 这种手装布局。
+///
+/// ★ 实测本机就有一个：`JAVA_HOME` 指向 `C:\jdk25\jdk-25.0.3+9`。
+///   深度限制 3 层 —— 再深就不是"用户手装的 JDK"，而是某个软件自带的运行时，
+///   扫进来只会让列表变脏。
+#[cfg(windows)]
+fn shallow_drive_javas() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let drives: Vec<String> = ('C'..='Z')
+        .map(|c| format!("{c}:\\"))
+        .filter(|d| Path::new(d).is_dir())
+        .collect();
+    for drive in drives {
+        let Ok(entries) = std::fs::read_dir(&drive) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().to_lowercase();
+            if !looks_like_java_dir(&name) {
+                continue;
+            }
+            // 这一层可能直接就是 JAVA_HOME，也可能再套一层（`C:\jdk25\jdk-25.0.3+9`）
+            let direct = java_exe_in(&e.path());
+            if direct.is_file() {
+                out.push(direct);
+            }
+            if let Ok(inner) = std::fs::read_dir(e.path()) {
+                for i in inner.flatten() {
+                    let exe = java_exe_in(&i.path());
+                    if exe.is_file() {
+                        out.push(exe);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+#[cfg(not(windows))]
+fn shallow_drive_javas() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+fn looks_like_java_dir(name: &str) -> bool {
+    const KEYS: [&str; 14] = [
+        "jdk", "jre", "java", "adoptium", "temurin", "zulu", "corretto", "graal", "liberica",
+        "semeru", "bellsoft", "openjdk", "microsoft-jdk", "dragonwell",
+    ];
+    KEYS.iter().any(|k| name.contains(k))
+}
+
+fn common_java_roots() -> Vec<PathBuf> {
+    #[cfg(windows)]
+    {
+        vec![
+            PathBuf::from(r"C:\Program Files\Eclipse Adoptium"),
+            PathBuf::from(r"C:\Program Files\Java"),
+            PathBuf::from(r"C:\Program Files\Zulu"),
+            PathBuf::from(r"C:\Program Files\Microsoft"),
+            PathBuf::from(r"C:\Program Files\BellSoft"),
+            PathBuf::from(r"C:\Program Files (x86)\Java"),
+        ]
+    }
+    #[cfg(target_os = "macos")]
+    {
+        vec![PathBuf::from("/Library/Java/JavaVirtualMachines")]
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        vec![
+            PathBuf::from("/usr/lib/jvm"),
+            PathBuf::from("/usr/java"),
+        ]
+    }
+}
+
+fn java_exe_in(dir: &Path) -> PathBuf {
+    let name = if cfg!(windows) { "java.exe" } else { "java" };
+    // 常见布局：<root>/bin/java、<root>/jre/bin/java、<root>/Contents/Home/bin/java
+    let candidates = [
+        dir.join("bin").join(name),
+        dir.join("jre").join("bin").join(name),
+        dir.join("Contents").join("Home").join("bin").join(name),
+    ];
+    for c in &candidates {
+        if c.is_file() {
+            return c.clone();
+        }
+    }
+    candidates[0].clone()
+}
+
+/// 跑 `java -version` 读出真实版本信息。
+/// 探测失败返回 None —— 宁可少列一个，也不列一个用不了的。
+fn probe_java(exe: &Path, source: &str) -> Option<JavaRuntime> {
+    if !exe.is_file() {
+        return None;
+    }
+
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("-version");
+    // ★ 不弹黑框（唯一入口，见上面的 `hide_console`）
+    hide_console(&mut cmd);
+    let out = cmd.output().ok()?;
+    // java -version 把版本写到 stderr
+    let text = String::from_utf8_lossy(&out.stderr).to_string()
+        + &String::from_utf8_lossy(&out.stdout);
+
+    let (version, major) = parse_java_version(&text)?;
+    let vendor = detect_vendor(&text, exe);
+    // 官方 Oracle JDK 在启动器里默认禁用（授权限制）—— 必须在 move 之前算出来
+    let disabled_by_default = vendor.contains("Oracle");
+
+    Some(JavaRuntime {
+        path: exe.to_string_lossy().to_string(),
+        major,
+        version,
+        vendor,
+        arch: std::env::consts::ARCH.to_string(),
+        source: source.to_string(),
+        disabled_by_default,
+        bytes: dir_size(exe.parent().and_then(|p| p.parent()).unwrap_or(Path::new("."))),
+    })
+}
+
+/// 从 `java -version` 的输出里解析版本号。
+/// 形如：openjdk version "17.0.10" 2024-01-16 / java version "1.8.0_402"
+pub fn parse_java_version(text: &str) -> Option<(String, u32)> {
+    let re = regex::Regex::new(r#"version "([^"]+)""#).ok()?;
+    let caps = re.captures(text)?;
+    let raw = caps.get(1)?.as_str().to_string();
+
+    // 1.8.0_402 → 8 ; 17.0.10 → 17 ; 21 → 21
+    let mut parts = raw.split(['.', '_', '-']);
+    let first: u32 = parts.next()?.parse().ok()?;
+    let major = if first == 1 {
+        parts.next()?.parse().ok()?
+    } else {
+        first
+    };
+    Some((raw, major))
+}
+
+fn detect_vendor(text: &str, exe: &Path) -> String {
+    let lower = text.to_lowercase();
+    let path_lower = exe.to_string_lossy().to_lowercase();
+    let mut hay = format!("{lower} {path_lower}");
+
+    /*
+     * ★★ 老 JRE 的 `java -version` 输出里**没有厂商信息**。
+     *
+     *   实测（本机 `%APPDATA%\.minecraft\runtime\jre-legacy\bin\java.exe`）：
+     *   `java version "1.8.0_51"` 一行，前两行是 `java version` + `Java(TM) SE
+     *   Runtime Environment`。于是路径里也没有 "oracle" 字样时就会落到
+     *   "未知厂商"。
+     *
+     *   为什么这不只是"显示不好看"：`disabled_by_default` 判的是
+     *   `vendor.contains("Oracle")` —— Oracle 的 JDK 因授权限制默认禁用。
+     *   识别不出厂商，一个装在自选目录（`D:\java\jdk-8u401`）的 Oracle JDK
+     *   就会被**当成普通 Java 正常使用**，用户可能莫名其妙吃授权问题。
+     *
+     *   可靠得多的办法：JDK 9+ 与 Mojang 的运行时都在版本目录里放一个
+     *   `release` 文件，里面写着 `JAVA_VENDOR="Oracle Corporation"` 这类事实。
+     *   它是**盘上的证据**，比字符串猜谜准。
+     */
+    if let Some(home) = exe.parent().and_then(|p| p.parent()) {
+        if let Ok(release) = std::fs::read_to_string(home.join("release")) {
+            hay.push(' ');
+            hay.push_str(&release.to_lowercase());
+        }
+        // 老 JRE 没有 release 文件，但 `lib/rt.jar` 的时代有 COPYRIGHT
+        if let Ok(c) = std::fs::read_to_string(home.join("COPYRIGHT")) {
+            let head: String = c.chars().take(600).collect();
+            hay.push(' ');
+            hay.push_str(&head.to_lowercase());
+        }
+    }
+
+    if hay.contains("temurin") || hay.contains("adoptium") {
+        "Temurin".into()
+    } else if hay.contains("zulu") || hay.contains("azul") {
+        "Zulu".into()
+    } else if hay.contains("oracle") {
+        "Oracle".into()
+    } else if hay.contains("microsoft") {
+        "Microsoft".into()
+    } else if hay.contains("liberica") || hay.contains("bellsoft") {
+        "Liberica".into()
+    } else if hay.contains("graalvm") || hay.contains("graal") {
+        "GraalVM".into()
+    } else if hay.contains("corretto") || hay.contains("amazon") {
+        "Corretto".into()
+    } else if hay.contains("semeru") || hay.contains("ibm") {
+        "Semeru".into()
+    } else if hay.contains("openjdk") {
+        "OpenJDK".into()
+    } else {
+        "未知厂商".into()
+    }
+}
+
+fn push_unique(list: &mut Vec<JavaRuntime>, rt: JavaRuntime) {
+    if !list.iter().any(|x| x.path == rt.path) {
+        list.push(rt);
+    }
+}
+/// 目录占用（用于让用户看到"自动下载的 Java 占了多大"）
+fn dir_size(dir: &Path) -> u64 {
+    let mut total = 0u64;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if let Ok(meta) = e.metadata() {
+            if meta.is_dir() {
+                total += dir_size(&p);
+            } else {
+                total += meta.len();
+            }
+        }
+    }
+    total
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_modern_version() {
+        let t = r#"openjdk version "17.0.10" 2024-01-16"#;
+        assert_eq!(parse_java_version(t), Some(("17.0.10".into(), 17)));
+    }
+
+    #[test]
+    fn parse_legacy_18_version() {
+        let t = r#"java version "1.8.0_402""#;
+        assert_eq!(parse_java_version(t), Some(("1.8.0_402".into(), 8)));
+    }
+
+    #[test]
+    fn parse_major_only() {
+        let t = r#"openjdk version "21" 2023-09-19"#;
+        assert_eq!(parse_java_version(t), Some(("21".into(), 21)));
+    }
+
+    #[test]
+    fn parse_garbage_returns_none() {
+        assert_eq!(parse_java_version("no version here"), None);
+    }
+
+    #[test]
+    fn app_paths_shape() {
+        let p = AppPaths::resolve();
+        assert!(p.root.to_string_lossy().contains("IEML"));
+        assert!(p.instances.ends_with("instances"));
+        // ★ 游戏数据在数据根目录内的 `.minecraft`（PCL 同款布局）
+        assert!(
+            p.shared.ends_with(GAME_DIR_NAME),
+            "游戏数据目录应该是 .minecraft：{:?}",
+            p.shared
+        );
+        assert_eq!(p.shared.parent().unwrap(), p.root);
+    }
+
+    /* ---------- 游戏数据布局：shared/ → .minecraft/（0.1.0-beta.3） ---------- */
+
+    /// 老布局（`shared/`）要**整体改名**成 `.minecraft/`，内容一个不少。
+    #[test]
+    fn legacy_shared_becomes_minecraft() {
+        let root = tmp("layout1");
+        std::fs::create_dir_all(root.join("shared").join("libraries")).unwrap();
+        std::fs::write(root.join("shared").join("libraries").join("a.jar"), b"JAR").unwrap();
+
+        let moved = migrate_shared_into_game_dir(&root).unwrap();
+        assert!(moved.is_some(), "应该真的搬了");
+        assert!(!root.join("shared").exists(), "旧目录应该已经不在了");
+        assert_eq!(
+            std::fs::read(root.join(".minecraft").join("libraries").join("a.jar")).unwrap(),
+            b"JAR"
+        );
+    }
+
+    /// ★ 目标是个**空壳目录**时也要搬。
+    ///
+    ///   `AppPaths::ensure()` 每次启动都会把 `.minecraft/` 建出来，所以"空壳"
+    ///   是常态。如果不处理它，迁移就永远不会发生 —— 而日志还会说"不用搬"。
+    #[test]
+    fn empty_shell_is_replaced_by_the_legacy_dir() {
+        let root = tmp("layout2");
+        std::fs::create_dir_all(root.join("shared").join("assets")).unwrap();
+        std::fs::write(root.join("shared").join("assets").join("x.bin"), b"X").unwrap();
+        std::fs::create_dir_all(root.join(".minecraft")).unwrap(); // ensure() 建的空壳
+
+        let moved = migrate_shared_into_game_dir(&root).unwrap();
+        assert!(moved.is_some(), "空壳不算数，应该照搬");
+        assert!(root.join(".minecraft").join("assets").join("x.bin").is_file());
+    }
+
+    /// ★ 目标里**已经有东西** → 一个字节都不动（用户的 `shared/` 可能是别的东西）。
+    #[test]
+    fn non_empty_minecraft_is_never_touched() {
+        let root = tmp("layout3");
+        std::fs::create_dir_all(root.join("shared")).unwrap();
+        std::fs::write(root.join("shared").join("old.txt"), b"OLD").unwrap();
+        std::fs::create_dir_all(root.join(".minecraft")).unwrap();
+        std::fs::write(root.join(".minecraft").join("new.txt"), b"NEW").unwrap();
+
+        assert!(migrate_shared_into_game_dir(&root).unwrap().is_none());
+        assert!(root.join("shared").join("old.txt").is_file(), "旧目录必须原样保留");
+        assert_eq!(
+            std::fs::read(root.join(".minecraft").join("new.txt")).unwrap(),
+            b"NEW"
+        );
+    }
+
+    /// 全新安装：两个都没有 → 什么都不做（不报错、不建目录）。
+    #[test]
+    fn fresh_install_does_nothing() {
+        let root = tmp("layout4");
+        assert!(migrate_shared_into_game_dir(&root).unwrap().is_none());
+        assert!(!root.join(".minecraft").exists());
+    }
+
+    /// 重复调用是安全的（第二次已经没有 `shared/` 了）。
+    #[test]
+    fn migration_is_idempotent() {
+        let root = tmp("layout5");
+        std::fs::create_dir_all(root.join("shared")).unwrap();
+        std::fs::write(root.join("shared").join("f.txt"), b"F").unwrap();
+        assert!(migrate_shared_into_game_dir(&root).unwrap().is_some());
+        assert!(migrate_shared_into_game_dir(&root).unwrap().is_none());
+        assert!(root.join(".minecraft").join("f.txt").is_file());
+    }
+
+    /* ---------- 数据目录迁移：**绝不丢用户数据** ---------- */
+
+    fn tmp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("ieml-migrate-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// ★★ 目标已有的文件**一个字节都不许动**。
+    ///
+    ///   这是"绝不丢用户数据"的第一条。目标那份是用户**当下正在用**的，
+    ///   源那份是"以前那份" —— 任何情况下都该以目标为准。
+    #[test]
+    fn migration_never_overwrites_existing_destination_files() {
+        let old = tmp("old1");
+        let new = tmp("new1");
+
+        std::fs::create_dir_all(old.join("instances")).unwrap();
+        std::fs::create_dir_all(new.join("instances")).unwrap();
+        std::fs::write(old.join("instances").join("a.txt"), "OLD").unwrap();
+        std::fs::write(new.join("instances").join("a.txt"), "NEW").unwrap();
+        // 源里还有一个目标没有的文件 → 应该补过去
+        std::fs::write(old.join("instances").join("b.txt"), "ONLY-IN-OLD").unwrap();
+
+        migrate_data_root(&old, &new).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(new.join("instances").join("a.txt")).unwrap(),
+            "NEW",
+            "★ 目标已有的文件被源覆盖了 —— 这就是丢用户数据"
+        );
+        assert_eq!(
+            std::fs::read_to_string(new.join("instances").join("b.txt")).unwrap(),
+            "ONLY-IN-OLD",
+            "目标缺的文件应该补齐"
+        );
+        // 源必须原样留着（只复制、绝不删源）
+        assert!(old.join("instances").join("a.txt").is_file());
+        assert!(old.join("instances").join("b.txt").is_file());
+    }
+
+    /// ★★ 目标的 `instances.json` 被写成了空列表、而源里有人 → 必须补回来。
+    ///
+    ///   这条是**实测事故**的回归测试：
+    ///   某次启动后 `instances.json` 变成 `{"instances":[],"active_id":null}`，
+    ///   用户建的三个版本从界面上消失了 —— 而老位置的文件明明还在。
+    ///   当时这里只按"目标存在就跳过"处理，于是永远修不回来。
+    #[test]
+    fn migration_repairs_an_emptied_instance_list() {
+        let old = tmp("old2");
+        let new = tmp("new2");
+
+        let three = r#"{"instances":[{"id":"a"},{"id":"b"},{"id":"c"}],"active_id":"a"}"#;
+        std::fs::write(old.join("instances.json"), three).unwrap();
+        // 目标被写坏了
+        std::fs::write(new.join("instances.json"), r#"{"instances":[],"active_id":null}"#).unwrap();
+
+        migrate_data_root(&old, &new).unwrap();
+
+        let got = std::fs::read_to_string(new.join("instances.json")).unwrap();
+        assert!(
+            got.contains("\"id\": \"a\"") || got.contains("\"id\":\"a\""),
+            "★ 被写空的实例列表没有补回来，实际内容：{got}"
+        );
+    }
+
+    /// 反过来：目标里**有**用户自己的实例，源里也有别的 →
+    /// **不许**用源的替换目标的（否则用户新装的版本会消失）。
+    #[test]
+    fn migration_does_not_replace_a_healthy_instance_list() {
+        let old = tmp("old3");
+        let new = tmp("new3");
+
+        std::fs::write(old.join("instances.json"), r#"{"instances":[{"id":"old"}],"active_id":null}"#)
+            .unwrap();
+        std::fs::write(
+            new.join("instances.json"),
+            r#"{"instances":[{"id":"mine-1"},{"id":"mine-2"}],"active_id":null}"#,
+        )
+        .unwrap();
+
+        migrate_data_root(&old, &new).unwrap();
+
+        let got = std::fs::read_to_string(new.join("instances.json")).unwrap();
+        assert!(got.contains("mine-1"), "目标里的实例被源覆盖了：{got}");
+        assert!(!got.contains("\"old\""), "源里那条不该被塞进来：{got}");
+    }
+
+    /// 目标完全不存在 → 源整份搬过去。
+    #[test]
+    fn migration_copies_everything_when_destination_is_empty() {
+        let old = tmp("old4");
+        let new = tmp("new4");
+
+        std::fs::create_dir_all(old.join("shared").join("assets")).unwrap();
+        std::fs::write(old.join("shared").join("assets").join("x.bin"), vec![7u8; 64]).unwrap();
+        std::fs::create_dir_all(old.join("instances").join("saves")).unwrap();
+        std::fs::write(old.join("instances").join("saves").join("level.dat"), b"save").unwrap();
+        std::fs::write(old.join("instances.json"), r#"{"instances":[{"id":"z"}],"active_id":null}"#)
+            .unwrap();
+
+        let copied = migrate_data_root(&old, &new).unwrap();
+        assert!(copied > 0, "应该真的复制了东西");
+        // ★ 老根的 `shared/` 落到新根的 `.minecraft/`（布局在 0.1.0-beta.3 改过）
+        assert!(new.join(GAME_DIR_NAME).join("assets").join("x.bin").is_file());
+        assert!(new.join("instances").join("saves").join("level.dat").is_file());
+        assert!(new.join("instances.json").is_file());
+    }
+
+    /// ★ 目标根**还停在老布局**（`shared/` 在）时，跨根补齐必须放进 `shared/`，
+    ///   **绝不能**凭空造一个 `.minecraft/`。
+    ///
+    ///   这是 0.1.0-beta.3 实测踩到的真 bug 的回归测试：当时那一步把 C 盘的老数据
+    ///   复制进了新根的 `.minecraft/`，而真数据还在 `shared/` —— 之后布局迁移
+    ///   看到 `.minecraft` 有内容就跳过，用户会以为版本都丢了。
+    #[test]
+    fn migration_respects_the_destination_layout() {
+        let old = tmp("old4c");
+        let new = tmp("new4c");
+        std::fs::create_dir_all(old.join(LEGACY_SHARED_NAME).join("assets")).unwrap();
+        std::fs::write(
+            old.join(LEGACY_SHARED_NAME).join("assets").join("legacy.bin"),
+            vec![3u8; 16],
+        )
+        .unwrap();
+        // 目标根**还在老布局**：有 shared/，没有 .minecraft/
+        std::fs::create_dir_all(new.join(LEGACY_SHARED_NAME)).unwrap();
+
+        migrate_data_root(&old, &new).unwrap();
+
+        assert!(
+            new.join(LEGACY_SHARED_NAME).join("assets").join("legacy.bin").is_file(),
+            "补齐应该落在目标当前的布局里（shared/）"
+        );
+        assert!(
+            !new.join(GAME_DIR_NAME).exists(),
+            "不许凭空造出一个 .minecraft/ —— 那会让真数据看起来不见了"
+        );
+    }
+
+    /// 新根如果已经是新布局（`.minecraft/`），跨根搬家也要照搬，别再去找 `shared/`。
+    #[test]
+    fn migration_reads_the_new_layout_too() {
+        let old = tmp("old4b");
+        let new = tmp("new4b");
+        std::fs::create_dir_all(old.join(GAME_DIR_NAME).join("libraries")).unwrap();
+        std::fs::write(
+            old.join(GAME_DIR_NAME).join("libraries").join("y.jar"),
+            vec![1u8; 32],
+        )
+        .unwrap();
+
+        migrate_data_root(&old, &new).unwrap();
+        assert!(new.join(GAME_DIR_NAME).join("libraries").join("y.jar").is_file());
+    }
+
+    /// 半截的下载残留不该跟着搬家（新位置会用新路径重下）。
+    #[test]
+    fn migration_skips_partial_downloads() {
+        let old = tmp("old5");
+        let new = tmp("new5");
+        std::fs::create_dir_all(old.join("cache")).unwrap();
+        std::fs::write(old.join("cache").join("a.jar.part.3"), b"junk").unwrap();
+        std::fs::write(old.join("cache").join("b.jar"), b"good").unwrap();
+
+        migrate_data_root(&old, &new).unwrap();
+
+        assert!(
+            !new.join("cache").join("a.jar.part.3").exists(),
+            "半截的分片不该搬过去"
+        );
+        assert!(new.join("cache").join("b.jar").is_file());
+    }
+
+    /// 系统盘判定：`%SystemRoot%` 所在的盘就是系统盘。
+    #[test]
+    #[cfg(windows)]
+    fn system_drive_detection_is_sane() {
+        let sys = std::env::var("SystemRoot").expect("Windows 一定有 SystemRoot");
+        assert!(
+            is_on_system_drive(Path::new(&sys)),
+            "{sys} 应该在系统盘上"
+        );
+        // 别的盘符不该被判成系统盘（本机 C 是系统盘、D/E 不是）
+        let sys_drive = Path::new(&sys)
+            .components()
+            .next()
+            .unwrap()
+            .as_os_str()
+            .to_string_lossy()
+            .to_uppercase();
+        for d in ['D', 'E', 'F'] {
+            let p = format!("{d}:\\");
+            if !Path::new(&p).is_dir() {
+                continue;
+            }
+            if format!("{d}:") == sys_drive {
+                continue;
+            }
+            assert!(
+                !is_on_system_drive(Path::new(&p)),
+                "{p} 不是系统盘却被判成系统盘"
+            );
+        }
+    }
+}

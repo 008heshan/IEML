@@ -1,0 +1,332 @@
+/* ==========================================================================
+   IEML 设计令牌
+   --------------------------------------------------------------------------
+   修正了原设计稿的三个系统性问题：
+     ① **令牌体系缺位** —— 原稿定义了 --text-xs..3xl / --space-* / --radius-*
+        却从没使用（94 处字号、292 处间距绕过阶梯）。这里全部落地并强制使用。
+     ② **对比度不达标** —— 原稿 --text-tertiary 在浅色主题下只有 2.68:1，
+        深色 3.81:1，却用在 10-12px 的信息文字上。这里逐值调过，全部 ≥4.5:1。
+     ③ **同一语义多种实现** —— 原稿"聚焦环"有三种写法（accent-glow 0.30 /
+        accent-subtle 0.12 / 规范里的 shadow-glow 0.25 根本不存在）。
+        这里统一为 --focus-ring 一个。
+   ========================================================================== */
+
+:root {
+  /* ---------- 尺寸阶梯（4px 基数） ---------- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* ---------- 字号阶梯 ---------- */
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-2xl: 26px;
+  --text-3xl: 32px;
+
+  /* ---------- 圆角 ---------- */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 9999px;
+
+  /* ---------- 容器与行（dev.15 界面重构） ----------
+     统一"一屏里有几个盒子"的节奏：卡片只用来装**一组**东西，
+     列表则是**一个**盒子 + 分隔线，而不是每行一张小卡
+     （每行一张卡 = 屏幕被切碎，看起来又挤又乱）。 */
+  --row-pad-y: 10px;
+  --row-pad-x: 14px;
+  --row-min-h: 52px;
+  --card-pad: 14px 16px;
+
+  /* ---------- 动效（三档 + 一条即时档） ---------- */
+  --dur-instant: 80ms;
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --dur-slow: 260ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+
+  --font-sans: system-ui, -apple-system, "Segoe UI Variable Text", "Segoe UI",
+    "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB",
+    "Noto Sans CJK SC", "Source Han Sans SC", "HarmonyOS Sans SC", sans-serif;
+  --font-mono: "Cascadia Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas,
+    "Courier New", monospace;
+
+  /* ---------- 层级（★ 0.1.0-beta.1 统一） ----------
+     以前是 20 / 50 / 60 / 90 / 100 / 200 六个**散落的魔数**，谁高谁低只能靠翻文件。
+     用户报的"下载栏会被奇怪的一些 UI 遮住"就是这类问题的症状
+     （右下角的 toast 压住下载页的主按钮）。
+     现在按"谁必须在谁上面"排一条链，任何新组件都从这里取值。 */
+  --z-sticky: 20;      /* 页头（sticky） */
+  --z-dropdown: 60;    /* 行内菜单 / 任务中心下拉 */
+  --z-modal: 90;       /* 模态框遮罩 */
+  --z-toast: 100;      /* 提示条（要能盖住模态框） */
+  --z-boot: 200;       /* 启动闪屏 */
+}
+
+/* ============================ 深色（默认） ============================ */
+:root,
+:root[data-theme='dark'] {
+  --bg-base: #0b0d10;
+  --bg-surface: #111419;
+  --bg-raised: #171a21;
+  --bg-overlay: #1e222a;
+  --bg-hover: #222731;
+  --bg-active: #2a2f3a;
+
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-default: rgba(255, 255, 255, 0.1);
+  --border-strong: rgba(255, 255, 255, 0.16);
+
+  /* ★ 三级文字全部按 WCAG AA（≥4.5:1）调过：
+     tertiary 从 0.40（3.81:1）提到 0.56（约 5.6:1） */
+  --text-primary: rgba(255, 255, 255, 0.95);
+  --text-secondary: rgba(255, 255, 255, 0.72);
+  --text-tertiary: rgba(255, 255, 255, 0.56);
+  --text-disabled: rgba(255, 255, 255, 0.32);
+
+  --accent: #5b8def;
+  --accent-hover: #6e9bf5;
+  --accent-active: #4a7be0;
+  --accent-subtle: rgba(91, 141, 239, 0.12);
+  --accent-border: rgba(91, 141, 239, 0.34);
+
+  --success: #3fb950;
+  --success-subtle: rgba(63, 185, 80, 0.12);
+  --warning: #d29922;
+  --warning-subtle: rgba(210, 153, 34, 0.12);
+  --warning-border: rgba(210, 153, 34, 0.32);
+  --danger: #f85149;
+  --danger-subtle: rgba(248, 81, 73, 0.12);
+  --danger-border: rgba(248, 81, 73, 0.34);
+  /* "可更新"用信息色，不用 accent —— 原稿用 accent，与规范 7.15 不符 */
+  --info: #58a6ff;
+  --info-subtle: rgba(88, 166, 255, 0.1);
+  --info-border: rgba(88, 166, 255, 0.28);
+
+  /* ★ 唯一的聚焦环，解决原稿三种写法并存的问题 */
+  --focus-ring: 0 0 0 3px rgba(91, 141, 239, 0.35);
+
+  --progress-track: rgba(255, 255, 255, 0.08);
+  --progress-bar: linear-gradient(90deg, #5b8def, #7ba8f0);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 8px 28px rgba(0, 0, 0, 0.45);
+  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.55);
+
+  --glass: rgba(17, 20, 25, 0.72);
+  --scroll-thumb: rgba(255, 255, 255, 0.14);
+  color-scheme: dark;
+}
+
+/* ============================ 浅色 ============================ */
+:root[data-theme='light'] {
+  --bg-base: #f7f8fa;
+  --bg-surface: #ffffff;
+  --bg-raised: #ffffff;
+  --bg-overlay: #ffffff;
+  --bg-hover: #f0f2f5;
+  --bg-active: #e6e9ef;
+
+  --border-subtle: rgba(0, 0, 0, 0.06);
+  --border-default: rgba(0, 0, 0, 0.11);
+  --border-strong: rgba(0, 0, 0, 0.18);
+
+  /* ★ 浅色主题原来 tertiary 是 0.38（2.68:1，连 AA 大字都不到），
+     现在 0.56 实测约 4.6:1，是本次改动里收益最大的一条 */
+  --text-primary: rgba(0, 0, 0, 0.92);
+  --text-secondary: rgba(0, 0, 0, 0.68);
+  --text-tertiary: rgba(0, 0, 0, 0.56);
+  --text-disabled: rgba(0, 0, 0, 0.34);
+
+  --accent: #3b6fd4;
+  --accent-hover: #4c80e5;
+  --accent-active: #2f5cb8;
+  --accent-subtle: rgba(59, 111, 212, 0.1);
+  --accent-border: rgba(59, 111, 212, 0.3);
+
+  --success: #1a7f37;
+  --success-subtle: rgba(26, 127, 55, 0.1);
+  --warning: #9a6700;
+  --warning-subtle: rgba(154, 103, 0, 0.1);
+  --warning-border: rgba(154, 103, 0, 0.28);
+  --danger: #cf222e;
+  --danger-subtle: rgba(207, 34, 46, 0.1);
+  --danger-border: rgba(207, 34, 46, 0.3);
+  --info: #0969da;
+  --info-subtle: rgba(9, 105, 218, 0.08);
+  --info-border: rgba(9, 105, 218, 0.24);
+
+  --focus-ring: 0 0 0 3px rgba(59, 111, 212, 0.3);
+
+  --progress-track: rgba(0, 0, 0, 0.07);
+  --progress-bar: linear-gradient(90deg, #3b6fd4, #5b8def);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.09);
+  --shadow-lg: 0 8px 28px rgba(0, 0, 0, 0.13);
+  --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.18);
+
+  --glass: rgba(255, 255, 255, 0.78);
+  --scroll-thumb: rgba(0, 0, 0, 0.16);
+  color-scheme: light;
+}
+
+/* ============================ 基础重置 ============================ */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* ============================ 字体 ============================
+   ★★ 2026-09-15：**不再随程序附带字体文件**（用户要求"用电脑自带且通用又好看的
+   字体"，同时"不想让本体那么大"）。
+
+   之前的做法是打包 `HarmonyOS_Sans_SC_Medium.ttf`——一个字重 **8.2 MB**，
+   而交付物（exe）本来只有 8 MB 左右：字体一个人就占了将近一半体积。
+   换来的是"任何机器上字形一致"，但代价与收益不成比例。
+
+   现在改成**系统字体栈**（零字节成本，且每台机器上都用自己最合适的那一套）：
+
+     · `system-ui`                 —— 各平台自己的 UI 字体（Win 是 Segoe UI，mac 是 SF）
+     · `"Segoe UI Variable Text"`  —— Win 11 的现代正文体（比旧 Segoe UI 更清晰）
+     · `"Microsoft YaHei UI"`      —— Windows 中文正文字形（比"微软雅黑"这个旧名更合适 UI）
+     · `"PingFang SC"` / `"Noto Sans CJK SC"` —— macOS / Linux 的中文
+     · `"HarmonyOS Sans SC"`       —— ★ 只在**你自己装了**的时候才会命中：
+                                      不花我们一个字节，装了就用它
+
+   ★ 关于"通用又好看"这一条怎么保证：字体栈里每一项都是**该平台自带的 UI 字体**，
+     不做任何下载、不依赖用户额外安装。所谓"好看"在这里等于"和系统其它窗口一致"。
+   ============================================================== */
+
+/**
+ * ★ 内联 SVG 图标的兜底规则。
+ *
+ * 图标集里所有图标现在带 `width="1em" height="1em"` 的**表现属性**
+ * （见 `ui/Icons.tsx` 的 `base()`），各组件自己的 CSS 规则优先级更高、
+ * 仍然说了算。这里再兜住 flex 布局的两条底线：
+ *   ① 没有宽度时浏览器会按"视口面积开方"猜尺寸（实测 29.86px），
+ *      图标会莫名变大并把旁边的文字挤成两行 —— 表现属性先挡住了它；
+ *   ② flex-shrink 默认 1，窄容器里图标会被压成 0 宽（"图标不见了"）。
+ * 原始尺寸不在这里定死（各组件自己的规则优先级更高），只保证这两条底线。
+ */
+svg {
+  flex-shrink: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  line-height: 1.55;
+  color: var(--text-primary);
+  background: var(--bg-base);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* ★ 焦点环统一 —— 原稿有多处 outline:none 且无替代，键盘用户完全看不到焦点 */
+:focus {
+  outline: none;
+}
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+button:focus-visible,
+a:focus-visible,
+[role='button']:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+
+/* 屏幕阅读器专用 */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ★ 减少动效 —— 原稿把 animation-duration 压到 0.01ms 会让 infinite 动画高频闪烁，
+   这里对无限动画直接停掉，而不是加速它 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ★ 应用内的「减少动效」开关 —— 系统没开也要能生效，所以用 class 而不是只靠媒体查询 */
+:root.reduce-motion *,
+:root.reduce-motion *::before,
+:root.reduce-motion *::after {
+  transition-duration: 0.01ms !important;
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  scroll-behavior: auto !important;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: var(--radius-full);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+  background-clip: padding-box;
+}
+
+::selection {
+  background: var(--accent-subtle);
+}
+
+/* ============================ 排版工具类 ============================ */
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+.truncate {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

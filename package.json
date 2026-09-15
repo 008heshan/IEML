@@ -1,0 +1,50 @@
+{
+  "name": "ieml",
+  "private": true,
+  "version": "0.1.0-beta.3",
+  "description": "IEML - 极简跨平台 Minecraft 启动器（Rust + Tauri 2 · React 18 + TS）",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/domain.test.js tests/loader-catalog.test.mjs tests/delete-semantics.test.mjs tests/server-address.test.mjs tests/java-rules.test.mjs",
+    "test:e2e": "node tests/e2e-check.mjs",
+    "test:loaders": "node --test tests/loader-catalog.test.mjs",
+    "test:delete": "node --test tests/delete-semantics.test.mjs",
+    "test:server": "node --test tests/server-address.test.mjs",
+    "test:java": "node --test tests/java-rules.test.mjs",
+    "test:cf": "node tools/gen-curseforge-fingerprint-cases.mjs --verify",
+    "probe:cf": "node tools/probe/probe-curseforge.mjs && node tools/probe/probe-curseforge-deep.mjs",
+    "test:cf-live": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/env/cargo.ps1 test --manifest-path src-tauri/Cargo.toml --test live_curseforge -- --ignored --nocapture --test-threads=1",
+    "test:416": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/env/cargo.ps1 test --manifest-path src-tauri/Cargo.toml --test diag_clientjar stale_part_larger_than_file_recovers -- --ignored --nocapture",
+    "test:fresh": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/env/cargo.ps1 test --manifest-path src-tauri/Cargo.toml --test fresh_install -- --ignored --nocapture",
+    "test:apilib": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/env/cargo.ps1 test --manifest-path src-tauri/Cargo.toml --test live_apilib -- --ignored --nocapture --test-threads=1",
+    "test:neoforge": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/env/cargo.ps1 test --manifest-path src-tauri/Cargo.toml --test live_neoforge -- --ignored --nocapture --test-threads=1",
+    "test:forge": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/env/cargo.ps1 test --manifest-path src-tauri/Cargo.toml --test live_forge_diag -- --ignored --nocapture --test-threads=1",
+    "test:live": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/env/cargo.ps1 test --manifest-path src-tauri/Cargo.toml --test live_loaders -- --ignored --nocapture --test-threads=1",
+    "test:rust": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/env/cargo.ps1 test --manifest-path src-tauri/Cargo.toml --lib",
+    "verify": "node tools/verify.mjs",
+    "icons": "node tools/make-icons.mjs",
+    "tauri": "tauri",
+    "desktop:dev": "tauri dev",
+    "desktop:build": "tauri build && powershell -NoProfile -ExecutionPolicy Bypass -File tools/env/deploy-desktop.ps1",
+    "desktop:deploy": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/env/deploy-desktop.ps1"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.3",
+    "@tauri-apps/plugin-opener": "^2.5.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}

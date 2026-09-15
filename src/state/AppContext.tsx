@@ -1,0 +1,879 @@
+/**
+ * 应用上下文
+ * ------------------------------------------------------------------
+ * 把 store、backend、以及一批跨页共用的动作集中在这里。
+ *
+ * ★ 导航模型（参照 PCL2 的正副级页面）：
+ *   * `launchTarget` —— "启动"页要启动的那个实例（上次启动的，或第一个）
+ *   * `openInstance` —— 二级页面的上下文（双击某个版本后才有）
+ *   两者刻意分开：启动页的选中项不该影响你正在编辑哪个版本。
+ */
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
+import type { Instance, InstanceConfig, JavaRuntime } from '../domain';
+import { MC_PROFILES } from '../domain/loader-caps.ts';
+import type { ModEntry, ModFilter, ModStateResult } from '../domain/mods.ts';
+// ★ 输入校验只有一份规则（与 Rust 侧逐条一致，见 domain/validate.rs）
+import { instanceNameRules, validate } from '../domain/validate.ts';
+import { getBackend } from '../bridge';
+import type { Backend } from '../bridge';
+import {
+  initialState,
+  isForgeLike,
+  launchTarget as selectLaunchTarget,
+  openInstance as selectOpenInstance,
+  reducer,
+  type AppState,
+  type DownloadTab,
+  type PageId,
+  type SubPageId,
+  type TaskItem,
+  type ToastItem,
+} from './store';
+import { syncWindowTitle } from '../bridge/web';
+
+/* ====================== Toast 的存活策略 ====================== */
+
+/**
+ * 这条提示要不要**一直留着直到用户手动关**？
+ *
+ * ★ 曾经的策略是「错误和警告一律 sticky」，结果是：一次启动失败之后，
+ *   那条错误横幅**永远挂在右下角**，用户报"提示不会自动消失"。
+ *   反思：错误恰恰是最该被看一眼就走的 —— 需要细看的内容应该进日志页 /
+ *   崩溃弹窗，而不是把提示条当成常驻状态栏。
+ *
+ * 现在：**只有真正需要用户做决定/去别处查看的提示才是 sticky**，
+ * 由调用方显式声明（`toast(..., {sticky:true})`）—— 默认一律自动消失。
+ * 详见 `armToastDismiss` 里的时长。
+ */
+function toastSticky(_kind: ToastItem['kind']): boolean {
+  return false;
+}
+
+/** 各类提示停留多久（毫秒） */
+function toastLifetime(kind: ToastItem['kind']): number {
+  switch (kind) {
+    case 'ok':
+      return 3200;
+    case 'info':
+      return 4500;
+    case 'warning':
+      return 6000;
+    case 'err':
+      // 错误要留够读完的时间，但**不该永久占位**。
+      // 长文本在提示条里是可展开的（见 AppShell 的 toast-more），
+      // 所以 9 秒足够；真要细看有日志页与崩溃弹窗。
+      return 9000;
+  }
+}
+
+/* ====================== 全局偏好的恢复与落盘 ====================== */
+
+/**
+ * 把磁盘上读到的偏好**逐字段校验**后合并。
+ *
+ * ★ 为什么不能直接 spread：`prefs.json` 是纯文本，用户可能手改过、
+ *   也可能是旧版本写的（字段语义变了）。一个非法值（比如
+ *   `concurrentDownloads: "abc"`）会让 `clamp` 之类的地方算出 NaN，
+ *   进而把并发数传给后端 —— 那是一次莫名其妙的安装失败。
+ *   所以：**只认认识的键，且类型必须对**；不认识的直接丢掉。
+ */
+function sanitizePrefs(raw: unknown): Partial<AppState['prefs']> {
+  if (!raw || typeof raw !== 'object') return {};
+  const r = raw as Record<string, unknown>;
+  const out: Partial<AppState['prefs']> = {};
+  const str = (k: string, allow: string[]) => {
+    const v = r[k];
+    if (typeof v === 'string' && allow.includes(v)) {
+      (out as Record<string, unknown>)[k] = v;
+    }
+  };
+  const num = (k: string, min: number, max: number) => {
+    const v = r[k];
+    if (typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max) {
+      (out as Record<string, unknown>)[k] = Math.round(v);
+    }
+  };
+  const bool = (k: string) => {
+    const v = r[k];
+    if (typeof v === 'boolean') (out as Record<string, unknown>)[k] = v;
+  };
+
+  str('globalIsolation', ['isolated', 'shared']);
+  str('downloadSource', ['bmclapi', 'mojang']);
+  str('modSource', ['modrinth', 'both']);
+  num('globalMemoryMb', 512, 262144);
+  num('concurrentDownloads', 1, 512);
+  num('windowWidth', 320, 7680);
+  num('windowHeight', 240, 4320);
+  bool('particleEffects');
+  bool('reducedMotion');
+  if (typeof r.offlineUsername === 'string' && r.offlineUsername.trim()) {
+    out.offlineUsername = r.offlineUsername.trim().slice(0, 32);
+  }
+  // 账号 uuid：只有形态合法才认（挡住手改出来的垃圾值）
+  if (typeof r.accountUuid === 'string' && /^[0-9a-fA-F-]{32,36}$/.test(r.accountUuid)) {
+    out.accountUuid = r.accountUuid;
+  }
+  if (typeof r.globalJvmArgs === 'string') out.globalJvmArgs = r.globalJvmArgs;
+  if (typeof r.globalGameArgs === 'string') out.globalGameArgs = r.globalGameArgs;
+  return out;
+}
+
+interface AppContextValue {  state: AppState;
+  backend: Backend;
+
+  /* --- 导航 --- */
+  go: (page: PageId) => void;
+  /** 进入某个版本的二级页（版本列表里双击） */
+  openVersion: (id: string, sub?: SubPageId) => void;
+  /** 退出二级页，回到版本列表 */
+  closeVersion: () => void;
+  setSubPage: (sub: SubPageId) => void;
+  setDownloadTab: (tab: DownloadTab) => void;
+  /** ★ 切到下载页并指定页签（一次派发，不依赖事件时序） */
+  goDownloadTab: (tab: DownloadTab) => void;
+  setTheme: (t: 'dark' | 'light') => void;
+
+  /* --- 实例 --- */
+  /** "启动"页的目标实例 */
+  target: Instance | null;
+  /** 二级页面正在编辑的实例 */
+  open: Instance | null;
+  setLaunchTarget: (id: string | null) => void;
+  createInstance: (inst: Instance) => Promise<void>;
+  updateConfig: (id: string, patch: Partial<InstanceConfig>) => void;
+  /**
+   * 删除实例（含磁盘目录）。
+   *
+   * `permanent = false`（默认）进系统回收站；true 才是永久删除。
+   */
+  removeInstance: (id: string, permanent?: boolean) => Promise<number>;
+  /**
+   * 改显示名。**返回 `null` = 成功**，否则是给用户看的原因（校验在这里做，
+   * 三个调用点不需要各写一遍）。见实现处的说明。
+   */
+  renameInstance: (id: string, name: string) => string | null;
+  duplicateInstance: (id: string) => Promise<number>;
+
+  /* --- Java --- */
+  rescanJava: () => Promise<void>;
+  refreshJava: (list: JavaRuntime[]) => void;
+
+  /**
+   * ★ 偏好写盘失败的原因（null = 正常）。
+   *
+   * 为什么要有它：偏好存不上时用户看到的是"改完设置、重启就没了"，
+   * 而原来的空 catch 让它毫无痕迹。界面据此显示一条提示条。
+   */
+  prefsSaveFailed: string | null;
+
+  /* --- Toast --- */
+  toast: (kind: ToastItem['kind'], title: string, desc?: string) => void;
+  dismissToast: (id: string) => void;
+
+  /* --- 任务 --- */
+  upsertTask: (task: TaskItem) => void;
+  patchTask: (id: string, patch: Partial<TaskItem>) => void;
+
+  /* --- Mod --- */
+  setMods: (entries: ModEntry[], states: Map<string, ModStateResult['state']>) => void;
+  setModFilter: (f: ModFilter) => void;
+  setModQuery: (q: string) => void;
+  toggleModSelect: (path: string) => void;
+  clearModSelect: () => void;
+  toggleModEnabled: (path: string) => void;
+}
+
+const Ctx = createContext<AppContextValue | null>(null);
+
+export function AppProvider({ children }: { children: ReactNode }) {
+  const [state, dispatch] = useReducer(reducer, initialState);
+  const backend = useMemo(() => getBackend(), []);
+  const bootedRef = useRef(false);
+  /** 是否已经读过磁盘上的偏好（读过之后才允许写回，否则会用默认值覆盖用户设置） */
+  const prefsLoadedRef = useRef(false);
+  /**
+   * ★★ **实例列表有没有真的从磁盘读出来过？**
+   *
+   *   这条阈值很重要，它挡的是一个**会丢用户数据的真 bug**（实测踩到）：
+   *
+   *   老代码：`Promise.all([machineInfo, loadInstances, scanJava, loadPrefs])`
+   *   里**任何一条失败**（网络、读盘、扫描 Java 出异常）就整体进 catch →
+   *   `boot/fail` → `state.instances` 留在 `[]`。
+   *   而"实例变更时落盘"那个 effect 只看 `state.ready`（fail 也把 ready 置真），
+   *   于是 250ms 后把**空列表写回了 instances.json**。
+   *
+   *   实测后果：`instances.json` 变成 `{"instances":[],"active_id":null}` ——
+   *   用户建的三个版本从界面上消失了（游戏文件还在，但记录没了）。
+   *   现场留下的证据是文件修改时间：启动器刚起 1 秒，它就被写空了。
+   *
+   *   所以：**没成功读到过，就绝不允许写。** 读一次成功之后才放开。
+   */
+  const instancesLoadedRef = useRef(false);
+  /**
+   * 偏好写盘失败的原因（null = 一切正常）。
+   *
+   * ★ 为什么要暴露出来：偏好存不上时用户的体验是"改完设置、重启就没了"，
+   *   而原来的空 catch 让它**完全没有痕迹**。这类"静默失败"是 ADR-041
+   *   点名的缺陷类型，所以至少要能被界面读到。
+   */
+  const [prefsSaveFailed, setPrefsSaveFailed] = useState<string | null>(null);
+
+  /* ====================== 启动 ====================== */
+  useEffect(() => {
+    if (bootedRef.current) return;
+    bootedRef.current = true;
+
+    (async () => {
+      /*
+       * ★★ 四条启动请求**各自独立**，任何一条失败都不能连累其它三条。
+       *
+       *   老代码是 `Promise.all([...])`：一条失败 → 整体 catch →
+       *   `boot/fail` → 实例、Java、偏好**全部落回默认值**，
+       *   然后被落盘 effect 写成空 —— 用户的版本列表就没了（见
+       *   `instancesLoadedRef` 的说明）。
+       *
+       *   现在：每条给一个安全的兜底值，只有"机器信息"失败才算真的启动失败
+       *   （没有它就渲染不出任何东西）。
+       */
+      const [machineR, instR, javaR, prefsR, infoR] = await Promise.allSettled([
+        backend.machineInfo(),
+        backend.loadInstances(),
+        backend.scanJava(),
+        backend.loadPrefs(),
+        /*
+         * ★ 后端版本号（`app_info`）。拿不到不影响启动 —— 它只用于「关于」显示。
+         *   单独一条 promise 是为了不让它拖垮整次 boot（与上面同一条纪律：
+         *   每条给一个安全的兜底值）。
+         */
+        backend.info(),
+      ]);
+
+      if (machineR.status === 'rejected') {
+        dispatch({
+          type: 'boot/fail',
+          error:
+            machineR.reason instanceof Error
+              ? machineR.reason.message
+              : String(machineR.reason),
+        });
+        return;
+      }
+
+      const machine = machineR.value;
+      const inst =
+        instR.status === 'fulfilled' ? instR.value : { instances: [], activeId: null };
+      const java = javaR.status === 'fulfilled' ? javaR.value : [];
+      const prefs = prefsR.status === 'fulfilled' ? prefsR.value : {};
+
+      /*
+       * 只有**真的读到了**才放开写权限。
+       * 读失败时如实说出来（不能假装"一个版本都没有"——
+       * 那正是丢数据的那个 bug 的外观）。
+       */
+      if (instR.status === 'fulfilled') {
+        instancesLoadedRef.current = true;
+      } else {
+        const why =
+          instR.reason instanceof Error ? instR.reason.message : String(instR.reason);
+        console.error('[IEML] 读取实例列表失败，本次不会写回 instances.json：', why);
+        window.dispatchEvent(
+          new CustomEvent('ieml:toast', {
+            detail: {
+              kind: 'err',
+              title: '读不到版本列表',
+              message: `${why} —— 这一页现在是空的，但**磁盘上的记录没有被清掉**。修好后重启即可。`,
+              sticky: true,
+            },
+          }),
+        );
+      }
+      if (javaR.status === 'rejected') {
+        console.error('[IEML] Java 扫描失败：', javaR.reason);
+      }
+      if (prefsR.status === 'rejected') {
+        console.error('[IEML] 读取偏好失败：', prefsR.reason);
+      }
+
+      const installedIds = new Set(inst.instances.map((i) => i.mcVersion));
+      const versions = Object.entries(MC_PROFILES).map(([id, p]) => ({
+        id,
+        releaseType: /^\d{2}w/.test(id) ? ('snapshot' as const) : ('release' as const),
+        releasedAt: p.releasedAt,
+        javaMajor: p.javaMajor,
+        bytes: p.vanillaBytes,
+        installed: installedIds.has(id),
+        instanceCount: inst.instances.filter((i) => i.mcVersion === id).length,
+      }));
+
+      // 把存下来的偏好合并进初始状态（只认认识的键，脏数据不影响启动）
+      const restored = sanitizePrefs(prefs);
+      const savedTheme = (prefs as Record<string, unknown>).theme;
+
+      dispatch({
+        type: 'boot/ok',
+        machine,
+        backendVersion: infoR.status === 'fulfilled' ? infoR.value.version : '',
+        versions,
+        instances: inst.instances,
+        java,
+        lastInstanceId: inst.activeId ?? null,
+        prefs: restored,
+        ...(savedTheme === 'light' || savedTheme === 'dark' ? { theme: savedTheme } : {}),
+      });
+    })();
+  }, [backend]);
+
+  /* ====================== 偏好落盘 ====================== */
+  /**
+   * 偏好一变就写盘（去抖 400ms，避免拖动滑块时狂写）。
+   *
+   * ★ 只在 boot 完成之后写：否则会把"默认值"覆盖掉刚读出来的用户设置。
+   *
+   * ★★ 但**第一次也要写**（这条是补的，审计发现了一个真 bug）：
+   *   原来的逻辑是"boot 后的第一次 effect 直接 return，什么都不写"，
+   *   意图是"别用默认值覆盖磁盘"。可它同时导致：
+   *   **用户只是打开启动器、什么都没改、然后关掉 —— `prefs.json` 根本不会被创建。**
+   *   实测证据：`%APPDATA%\IEML` 下 `instances.json` 与 cache 都有，
+   *   唯独没有 `prefs.json` —— 也就是说"偏好会持久化"这件事
+   *   **在"不改任何设置"的路径上从来没被验证过**。
+   *
+   *   现在改成：boot 之后**立即写一次**（此时 `state.prefs` 已经是磁盘上的值
+   *   合并后的结果，写回去是幂等的），这样整条读→写链路每次启动都真的跑一遍。
+   */
+  useEffect(() => {
+    if (!state.ready) return;
+    const first = !prefsLoadedRef.current;
+    prefsLoadedRef.current = true;
+    const t = setTimeout(() => {
+      // 主题和偏好一起存（主题是顶层字段，但用户当然希望它记住）
+      const payload = { ...state.prefs, theme: state.theme } as unknown as Record<string, unknown>;
+      void backend.savePrefs(payload).then(
+        () => {
+          if (first) {
+            // 只记一次，用来确认"启动时那份偏好确实落盘了"
+            console.info('[IEML] 偏好已写入 prefs.json（启动基线）');
+          }
+        },
+        (e) => {
+          /*
+           * ★ 存不上要**留下痕迹**（原来这里是空 catch）：
+           *   用户的体验是"设置改完重启就没了"，而日志里一个字都没有。
+           *   现在至少 console 里有，设置页也会显示一条提示（见 saveFailed）。
+           */
+          setPrefsSaveFailed(e instanceof Error ? e.message : String(e));
+          console.warn('[IEML] 偏好写入失败：', e);
+        },
+      );
+    }, 400);
+    return () => clearTimeout(t);
+  }, [state.prefs, state.theme, state.ready, backend]);
+
+  /* ====================== 主题 ====================== */
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', state.theme);
+  }, [state.theme]);
+
+  /* ====================== 窗口标题 ====================== */
+  const open = useMemo(() => selectOpenInstance(state), [state]);
+  const target = useMemo(() => selectLaunchTarget(state), [state]);
+  useEffect(() => {
+    // 二级页面时标题显示正在编辑的版本（和 PCL 的"版本设置"标题一致）
+    syncWindowTitle(open ? `版本设置 — ${open.config.name}` : null);
+  }, [open?.config.name, open]);
+
+  /* ====================== 实例变更时落盘 ====================== */
+  const instancesRef = useRef(state.instances);
+  instancesRef.current = state.instances;
+  useEffect(() => {
+    if (!state.ready) return;
+    /*
+     * ★★ **没成功读到过，就绝不允许写。**（这条是实测丢数据之后补的）
+     *
+     *   老代码只看 `state.ready` —— 而 `boot/fail` 也把 ready 置真，
+     *   于是"读实例列表失败"这条路上，250ms 后会把 `[]` 写回
+     *   `instances.json`，用户的版本记录当场消失（游戏文件还在，
+     *   但启动器里再也看不到它们）。
+     *
+     *   现场证据：`instances.json` 的修改时间 = 启动后 1 秒，
+     *   内容 `{"instances":[],"active_id":null}`。
+     *
+     *   这个"读→写"链条上必须有一个前置条件：**先读到，才有资格写**。
+     *   这与偏好那边 `prefsLoadedRef` 是同一个道理（那边早就有了，
+     *   实例这边一直漏着 —— 而实例里装的是用户的游戏，更贵）。
+     */
+    if (!instancesLoadedRef.current) return;
+    const t = setTimeout(() => {
+      void backend.saveInstances(instancesRef.current, state.lastInstanceId);
+    }, 250);
+    return () => clearTimeout(t);
+  }, [state.instances, state.lastInstanceId, state.ready, backend]);
+
+  /* ====================== 跨组件事件桥 ====================== */
+
+  /** 给一条提示装自动消失的定时器（sticky 的不装）。dispatch 是稳定的，所以空依赖安全。 */
+  const armToastDismiss = useCallback(
+    (id: string, kind: ToastItem['kind'], sticky: boolean) => {
+      if (sticky) return;
+      window.setTimeout(() => dispatch({ type: 'toast/remove', id }), toastLifetime(kind));
+    },
+    [],
+  );
+
+  useEffect(() => {    const onStarted = (e: Event) => {
+      const d = (e as CustomEvent<{ id: string; pid: number | null }>).detail;
+      dispatch({ type: 'game/start', instanceId: d.id, pid: d.pid });
+    };
+    const onStopRequest = () => {
+      if (state.running) dispatch({ type: 'game/stop' });
+    };
+
+    /*
+     * ★ 后端推来的「游戏退出了」事件（游戏自己关闭、崩溃、或被 taskkill）。
+     *
+     *   实测（用户报"游戏关闭后启动器依然显示游戏在运行"）：
+     *   在这之前**只有点「停止游戏」那条路径**会清 running ——
+     *   用户自己关掉游戏窗口后，界面永远停在"运行中"，
+     *   再点启动还会被"已经有一个游戏在运行了"挡住。
+     *   现在后端退出监测线程会推 `game-exit`，这里收到就清状态。
+     */
+    const onGameExit = (e: Event) => {
+      const d = (
+        e as CustomEvent<{
+          instanceId: string;
+          exitCode: number | null;
+          playedSeconds: number;
+          crashed: boolean;
+          crashReason?: string | null;
+        }>
+      ).detail;
+      dispatch({ type: 'game/stop' });
+      if (!d) return;
+      const mins = Math.max(0, Math.round(d.playedSeconds / 60));
+      if (d.crashed) {
+        /*
+         * ★★ **原因由后端给**（P0-6）：判据只有一份
+         *   （`domain::crash::judge_crash` —— 退出码 + 游戏自己的崩溃声明 +
+         *    离线身份下必然出现的 401 是否该排除）。
+         *   前端**不许**在这里自己拼一句原因：那会变成第二套判据，
+         *   而两套判据迟早会打架（这正是本轮修掉的东西）。
+         */
+        window.dispatchEvent(
+          new CustomEvent('ieml:toast', {
+            detail: {
+              kind: 'err',
+              title: '游戏异常退出',
+              desc: d.crashReason
+                ? `${d.crashReason}（${mins} 分钟后退出${
+                    d.exitCode != null ? `，退出码 ${d.exitCode}` : ''
+                  }）`
+                : `${mins} 分钟后退出（退出码 ${d.exitCode ?? '未知'}）。看「日志」页有崩溃分析。`,
+            },
+          }),
+        );
+      } else {
+        window.dispatchEvent(
+          new CustomEvent('ieml:toast', {
+            detail: {
+              kind: 'info',
+              title: '游戏已关闭',
+              desc: d.playedSeconds > 0 ? `本次运行 ${mins} 分钟` : '',
+            },
+          }),
+        );
+      }
+    };
+
+    // Tauri 的事件监听（只有桌面端有；浏览器演示模式直接跳过）
+    let unlisten: (() => void) | null = null;
+    void (async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        unlisten = await listen<{
+          instanceId: string;
+          exitCode: number | null;
+          playedSeconds: number;
+          crashed: boolean;
+          crashReason?: string | null;
+        }>('game-exit', (ev) => {
+          window.dispatchEvent(new CustomEvent('ieml:game-exit', { detail: ev.payload }));
+        });
+      } catch {
+        /* 浏览器里没有 Tauri —— 正常情况，不用管 */
+      }
+    })();
+
+    window.addEventListener('ieml:game-exit', onGameExit);
+    const onPrefs = (e: Event) => {
+      const patch = (e as CustomEvent<Partial<AppState['prefs']>>).detail;
+      if (patch) dispatch({ type: 'prefs/patch', patch });
+    };
+    const onModsSet = (e: Event) => {
+      const d = (
+        e as CustomEvent<{
+          entries: ModEntry[];
+          states: Map<string, ModStateResult['state']>;
+        }>
+      ).detail;
+      dispatch({ type: 'mods/set', entries: d.entries, states: d.states });
+    };
+    const onModsToggle = (e: Event) => {
+      dispatch({ type: 'mods/toggle-select', path: (e as CustomEvent<string>).detail });
+    };
+    const onModsClear = () => dispatch({ type: 'mods/clear-select' });
+    const onJavaRefresh = (e: Event) => {
+      dispatch({ type: 'java/set', runtimes: (e as CustomEvent<JavaRuntime[]>).detail });
+    };
+    /* 安装流程（flows/install.ts）通过事件建任务，避免把 store 塞进非组件代码 */
+    const onTaskAdd = (e: Event) => {
+      const task = (e as CustomEvent<TaskItem>).detail;
+      if (task) dispatch({ type: 'task/add', task });
+    };
+    const onTaskPatch = (e: Event) => {
+      const d = (e as CustomEvent<{ id: string; patch: Partial<TaskItem> }>).detail;
+      if (d) dispatch({ type: 'task/patch', id: d.id, patch: d.patch });
+    };
+    const onTaskRemove = (e: Event) => {
+      const id = (e as CustomEvent<string>).detail;
+      if (id) dispatch({ type: 'task/remove', id });
+    };
+    /* 非组件代码（flows/install.ts）弹 toast */
+    const onToast = (e: Event) => {
+      const d = (e as CustomEvent<{ kind: ToastItem['kind']; title: string; desc?: string }>).detail;
+      if (!d) return;
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      const sticky = toastSticky(d.kind);
+      dispatch({ type: 'toast/add', toast: { id, kind: d.kind, title: d.title, desc: d.desc, sticky } });
+      armToastDismiss(id, d.kind, sticky);
+    };
+    /* 非组件代码请求切页（例如从流程里跳回版本列表） */
+    const onNav = (e: Event) => {
+      const page = (e as CustomEvent<PageId>).detail;
+      if (page) dispatch({ type: 'nav', page });
+    };
+
+    window.addEventListener('ieml:game-exit', onGameExit);
+    window.addEventListener('ieml:started', onStarted);
+    window.addEventListener('ieml:stop-request', onStopRequest);
+    window.addEventListener('ieml:prefs', onPrefs);
+    window.addEventListener('ieml:mods-set', onModsSet);
+    window.addEventListener('ieml:mods-toggle-select', onModsToggle);
+    window.addEventListener('ieml:mods-clear-select', onModsClear);
+    window.addEventListener('ieml:java-refresh', onJavaRefresh);
+    window.addEventListener('ieml:task-add', onTaskAdd);
+    window.addEventListener('ieml:task-patch', onTaskPatch);
+    window.addEventListener('ieml:task-remove', onTaskRemove);
+    window.addEventListener('ieml:toast', onToast);
+    window.addEventListener('ieml:nav', onNav);
+    return () => {
+      unlisten?.();
+      window.removeEventListener('ieml:game-exit', onGameExit);
+      window.removeEventListener('ieml:started', onStarted);
+      window.removeEventListener('ieml:stop-request', onStopRequest);
+      window.removeEventListener('ieml:prefs', onPrefs);
+      window.removeEventListener('ieml:mods-set', onModsSet);
+      window.removeEventListener('ieml:mods-toggle-select', onModsToggle);
+      window.removeEventListener('ieml:mods-clear-select', onModsClear);
+      window.removeEventListener('ieml:java-refresh', onJavaRefresh);
+      window.removeEventListener('ieml:task-add', onTaskAdd);
+      window.removeEventListener('ieml:task-patch', onTaskPatch);
+      window.removeEventListener('ieml:task-remove', onTaskRemove);
+      window.removeEventListener('ieml:toast', onToast);
+      window.removeEventListener('ieml:nav', onNav);
+    };
+  }, [state.running]);
+
+  /* ====================== 动作 ====================== */
+  const go = useCallback((page: PageId) => dispatch({ type: 'nav', page }), []);
+  const openVersion = useCallback((id: string, sub?: SubPageId) => {
+    // 进入二级页 = 打开「版本列表」页 + 选中该版本
+    dispatch({ type: 'nav', page: 'versions' });
+    /*
+     * ★ 指定页签时用**一次** dispatch 把"打开哪个版本 + 落在哪个页签"定下来。
+     *   `nav/open-instance` 会把 subPage 归零成 overview，所以
+     *   "先切页签再打开"会被覆盖 —— 见 store 里 `nav/open-instance-sub` 的说明。
+     */
+    if (sub) {
+      dispatch({ type: 'nav/open-instance-sub', id, sub });
+    } else {
+      dispatch({ type: 'nav/open-instance', id });
+    }
+  }, []);
+  const closeVersion = useCallback(() => dispatch({ type: 'nav/close-instance' }), []);
+  const setSubPage = useCallback((sub: SubPageId) => dispatch({ type: 'nav/sub', sub }), []);
+  const setDownloadTab = useCallback(
+    (tab: DownloadTab) => dispatch({ type: 'nav/download-tab', tab }),
+    [],
+  );
+  /**
+   * ★ 切页 + 指定下载页签（一次派发完成）。
+   *
+   *   审计发现：调用方以前是这样写的 ——
+   *     `go('download'); window.dispatchEvent(new CustomEvent('ieml:download-tab', …))`
+   *   而 `DownloadPage` 的监听器是在它**挂载之后**的 effect 里注册的。
+   *   调用这两行时 DownloadPage 还没挂载（用户正在启动页/版本列表），
+   *   事件当场被丢掉 —— 用户点「浏览整合包」永远落在「安装游戏」页签。
+   *
+   *   现在合并成一个 action：页面和页签在同一次 dispatch 里定下来，
+   *   不依赖任何事件时序。
+   */
+  const goDownloadTab = useCallback((tab: DownloadTab) => {
+    dispatch({ type: 'nav/download-tab', tab });
+    dispatch({ type: 'nav', page: 'download' });
+  }, []);
+
+  const setTheme = useCallback((theme: 'dark' | 'light') => dispatch({ type: 'theme', theme }), []);
+
+  const setLaunchTarget = useCallback((id: string | null) => {
+    dispatch({ type: 'instances/last', id });
+  }, []);
+
+  const toast = useCallback((kind: ToastItem['kind'], title: string, desc?: string) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const sticky = toastSticky(kind);
+    dispatch({ type: 'toast/add', toast: { id, kind, title, desc, sticky } });
+    armToastDismiss(id, kind, sticky);
+  }, []);
+
+  const dismissToast = useCallback((id: string) => dispatch({ type: 'toast/remove', id }), []);
+
+  const createInstance = useCallback(
+    async (inst: Instance) => {
+      dispatch({ type: 'instances/add', instance: inst });
+      dispatch({ type: 'instances/last', id: inst.id });
+      const next = [...instancesRef.current, inst];
+      await backend.saveInstances(next, inst.id);
+    },
+    [backend],
+  );
+
+  const updateConfig = useCallback((id: string, patch: Partial<InstanceConfig>) => {
+    dispatch({ type: 'instances/config', id, patch });
+  }, []);
+
+  /**
+   * 删除一个实例。
+   *
+   * ★ 审计发现：以前只从内存列表里删掉记录，而三处确认框都写着
+   *   「存档与配置会一起删除」—— **磁盘上什么都没删**，用户以为删干净了。
+   *   现在真的去删 `instances/{slug}/`（存档 / Mod / 配置 / natives 全在里面），
+   *   并把结果如实报告给调用方。
+   *
+   * ★ 默认进**系统回收站**（`permanent = false`）：实例里有存档，
+   *   这是最不该"删错了就没了"的东西。
+   *
+   * 返回删掉的字节数（0 = 目录本来就不存在）。
+   */
+  const removeInstance = useCallback(
+    async (id: string, permanent = false): Promise<number> => {
+      const inst = instancesRef.current.find((i) => i.id === id);
+      dispatch({ type: 'instances/remove', id });
+      if (!inst) return 0;
+      try {
+        const bytes = await backend.deleteInstanceFiles(inst.config.slug, permanent);
+        return bytes ?? 0;
+      } catch (e) {
+        // 记录已经删了（内存里），但磁盘没删干净 —— 必须说出来
+        throw new Error(
+          `实例记录已从列表移除，但磁盘目录没删掉：${
+            e instanceof Error ? e.message : String(e)
+          }（目录：instances/${inst.config.slug}/）`,
+        );
+      }
+    },
+    [backend],
+  );
+
+  /**
+   * 改实例的**显示名**（只改显示名，不动目录名 —— ADR-007）。
+   *
+   * ★★ **校验收敛到这一处**（这一轮）。
+   *
+   *   原来三个页面各写一遍重命名：
+   *     `InstanceSetup` / `InstanceOverview` / `VersionsPage`
+   *   每一处都是自己 `prompt()` → `next.trim()` → `renameInstance()` →
+   *   自己弹一句 toast。三份"判据 + 文案"就是三份将来会分叉的东西
+   *   （这个仓库已经因此栽过两次：`forgespi` 的版本号、`26.2` 的 Java 要求）。
+   *
+   *   现在判据走 `domain/validate.ts::instanceNameRules()`，并且
+   *   **顺便挡住重名** —— 重名以前是允许的，于是版本列表里会出现两行
+   *   一模一样的名字，用户根本分不清哪个是哪个。
+   *
+   * 返回：`null` = 成功；否则是给用户看的原因。
+   */
+  const renameInstance = useCallback(
+    (id: string, name: string): string | null => {
+      const trimmed = name.trim();
+      const why = validate(trimmed, instanceNameRules());
+      if (why) return why;
+
+      const clash = instancesRef.current.find(
+        (i) => i.id !== id && i.config.name === trimmed,
+      );
+      if (clash) {
+        return `已经有一个版本叫「${trimmed}」了 —— 换一个名字，否则版本列表里两行长得一样`;
+      }
+
+      dispatch({ type: 'instances/config', id, patch: { name: trimmed } });
+      return null;
+    },
+    [],
+  );
+
+  /**
+   * 创建一个副本。
+   *
+   * ★ 审计发现：以前只克隆实例记录，**目录从来没建过** ——
+   *   副本指向 `instances/<slug>-copy/`，而那个目录不存在，
+   *   于是它是一个"没有存档、没有 Mod、没有配置"的空壳，
+   *   而界面写着"配置照搬一份"。
+   *   现在真的复制目录（natives 跳过：启动时按当前架构重新解压）。
+   *
+   * 返回复制的字节数；失败时抛出（调用方要如实告诉用户）。
+   */
+  const duplicateInstance = useCallback(
+    async (id: string): Promise<number> => {
+      const src = instancesRef.current.find((i) => i.id === id);
+      if (!src) throw new Error('找不到要复制的实例');
+      // slug 必须全局唯一，否则两个实例会共用同一个目录
+      const takenSlugs = new Set(instancesRef.current.map((i) => i.config.slug));
+      const baseSlug = `${src.config.slug}-copy`;
+      let slug = baseSlug;
+      for (let n = 2; takenSlugs.has(slug); n++) slug = `${baseSlug}-${n}`;
+      // 显示名也要唯一
+      const takenNames = new Set(instancesRef.current.map((i) => i.config.name));
+      let name = `${src.config.name} 副本`;
+      for (let n = 2; takenNames.has(name); n++) name = `${src.config.name} 副本 ${n}`;
+
+      const copy: Instance = {
+        ...src,
+        id: `${src.id}-copy-${Date.now().toString(36)}`,
+        config: { ...src.config, name, slug },
+        createdAt: new Date().toISOString(),
+        lastPlayedAt: null,
+        totalPlaySeconds: 0,
+      };
+
+      // 先复制目录再登记：目录建不起来就不该出现一个空壳副本
+      const bytes = await backend.copyInstanceFiles(src.config.slug, slug, true);
+      dispatch({ type: 'instances/add', instance: copy });
+      await backend.saveInstances([...instancesRef.current, copy], copy.id);
+      return bytes ?? 0;
+    },
+    [backend],
+  );
+
+  const rescanJava = useCallback(async () => {
+    dispatch({ type: 'java/scanning', scanning: true });
+    try {
+      const list = await backend.scanJava();
+      dispatch({ type: 'java/set', runtimes: list });
+    } catch (e) {
+      /*
+       * ★ 审计发现：这里没有 catch/finally —— 一旦 scanJava 抛异常，
+       *   `scanning` 会**永远是 true**，设置页那个"重新扫描"按钮
+       *   从此一直转圈、点不动，只能重启应用。
+       *   现在无论成败都收尾，并把失败说出来。
+       */
+      dispatch({ type: 'java/scanning', scanning: false });
+      window.dispatchEvent(
+        new CustomEvent('ieml:toast', {
+          detail: {
+            kind: 'err',
+            title: '扫描 Java 失败',
+            desc: e instanceof Error ? e.message : String(e),
+          },
+        }),
+      );
+    }
+  }, [backend]);
+
+  const refreshJava = useCallback((list: JavaRuntime[]) => {
+    dispatch({ type: 'java/set', runtimes: list });
+  }, []);
+
+  const upsertTask = useCallback((task: TaskItem) => {
+    dispatch({ type: 'task/add', task });
+  }, []);
+
+  const patchTask = useCallback((id: string, patch: Partial<TaskItem>) => {
+    dispatch({ type: 'task/patch', id, patch });
+  }, []);
+
+  const setMods = useCallback(
+    (entries: ModEntry[], states: Map<string, ModStateResult['state']>) => {
+      dispatch({ type: 'mods/set', entries, states });
+    },
+    [],
+  );
+  const setModFilter = useCallback(
+    (f: ModFilter) => dispatch({ type: 'mods/filter', filter: f }),
+    [],
+  );
+  const setModQuery = useCallback((q: string) => dispatch({ type: 'mods/query', query: q }), []);
+  const toggleModSelect = useCallback(
+    (path: string) => dispatch({ type: 'mods/toggle-select', path }),
+    [],
+  );
+  const clearModSelect = useCallback(() => dispatch({ type: 'mods/clear-select' }), []);
+  const toggleModEnabled = useCallback(
+    (path: string) => dispatch({ type: 'mods/toggle-enabled', path }),
+    [],
+  );
+
+  const value: AppContextValue = {
+    state,
+    backend,
+    go,
+    openVersion,
+    closeVersion,
+    setSubPage,
+    setDownloadTab,
+    goDownloadTab,
+    setTheme,
+    target,
+    open,
+    setLaunchTarget,
+    createInstance,
+    updateConfig,
+    removeInstance,
+    renameInstance,
+    duplicateInstance,
+    rescanJava,
+    refreshJava,
+    prefsSaveFailed,
+    toast,
+    dismissToast,
+    upsertTask,
+    patchTask,
+    setMods,
+    setModFilter,
+    setModQuery,
+    toggleModSelect,
+    clearModSelect,
+    toggleModEnabled,
+  };
+
+  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+}
+
+export function useApp(): AppContextValue {
+  const v = useContext(Ctx);
+  if (!v) throw new Error('useApp 必须在 AppProvider 内使用');
+  return v;
+}
+
+export function useIsForgeLike(): boolean {
+  const { target } = useApp();
+  return isForgeLike(target);
+}

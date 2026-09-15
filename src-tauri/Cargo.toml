@@ -1,0 +1,92 @@
+[package]
+name = "ieml"
+version = "0.1.0-beta.3"
+description = "IEML - 极简 Minecraft 启动器"
+authors = ["IEML"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "ieml_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["custom-protocol"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+sha1 = "0.10"
+sha2 = "0.10"
+regex = "1"
+sysinfo = "0.33"
+
+# 网络与下载
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "gzip", "http2"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "time", "process"] }
+futures-util = "0.3"
+bytes = "1"
+
+# 文件与压缩
+zip = { version = "2", default-features = false, features = ["deflate"] }
+dirs = "5"
+
+# 删除到系统回收站（PCL 的语义：默认进回收站，Shift = 永久删除）
+# 见 LAUNCHER_SOURCE_STUDY 第 14 章第 37 条。
+trash = "5"
+
+# 账号与安全
+keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native"] }
+uuid = { version = "1", features = ["v4"] }
+rand = "0.8"
+url = "2"
+
+# 本地 HTTP 回环（正版登录回调）
+tiny_http = "0.12"
+base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
+
+[profile.release]
+# 体积优化：目标 ≤8MB
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+incremental = false
+
+# ============================ 开发/测试构建：**别再吃掉 47 GB** ============================
+# ★★ 2026-09-15 实测：仓库一度占 **50.77 GB**，其中 `target/debug` 一个人就 **47.4 GB**
+#    —— 而交付物（exe）只有 12.6 MB。拆开看是两样东西：
+#      · `target/debug/incremental`  28.8 GB  ← 增量编译缓存
+#      · `target/debug/deps`         16.9 GB  ← 其中 **13.5 GB 是 .pdb 调试符号**
+#    也就是说：吃掉的每一 GB 都不是"需要的数据"，而是**调试信息与编译缓存**。
+#
+#    下面两行把这两个来源一起掐掉：
+#      · `debug = "line-tables-only"`：保留"哪一行崩的"（backtrace 仍有文件:行号），
+#        但不生成完整的类型/变量调试信息 —— PDB 从 13.5 GB 降到几百 MB；
+#      · `incremental = false`：不再写那 28.8 GB 的增量缓存（代价是二次编译稍慢，
+#        但这个项目的改动粒度是"一次改几个文件 + 跑 verify"，不值得为它花 28 GB）。
+#
+#    判据是"要能复原别人的现场"：panic 的行号还在，这是最常用的一档；
+#    真要单步调试时，本地临时把 `debug = true` 打开即可（README 里写了）。
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.test]
+debug = "line-tables-only"
+incremental = false
+
+[features]
+# ★ 重要：`custom-protocol` 必须始终启用（上面 tauri 依赖里已显式声明）。
+#   tauri 的 build.rs 用 `dev = !custom_protocol` 判断 dev 模式——
+#   没开这个 feature 会把 release 版也当成 dev，exe 去连 localhost 而不是内嵌 dist。
+default = []
