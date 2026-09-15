@@ -61,6 +61,23 @@ export function DownloadPage() {
    * 玩家随时能换 —— **不替他决定**，但也不让他每次重选。
    */
   const [targetId, setTargetId] = useState<string | null>(null);
+  /*
+   * ★★ 别的页面可以把"装到哪个版本"带过来（用户 2026-09-15：
+   *   "添加 mod 的按钮应该直接跳转下载页的 mod 页，并默认选择该跳转版本"）。
+   *
+   *   从「Mod 管理 → 添加 Mod」进来时，用户心里想的是**手上这个版本**，
+   *   而下载页默认挑的是"最近玩过的那个" —— 很可能不是它，
+   *   于是他会把 Mod 装到另一个版本上（而且一眼看不出来）。
+   *   事件里带着实例 id，这里收到就切过去。
+   */
+  useEffect(() => {
+    const onPick = (e: Event) => {
+      const id = (e as CustomEvent<{ instanceId?: string }>).detail?.instanceId;
+      if (id) setTargetId(id);
+    };
+    window.addEventListener('ieml:download-target', onPick);
+    return () => window.removeEventListener('ieml:download-target', onPick);
+  }, []);
   const target = useMemo(() => {
     if (state.instances.length === 0) return null;
     const picked = state.instances.find((i) => i.id === targetId);
