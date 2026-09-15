@@ -100,9 +100,28 @@ export function VersionsPage() {
    */
   const [diskLoaders, setDiskLoaders] = useState<Record<string, InstalledLoader[]>>({});
   const [diskError, setDiskError] = useState<string | null>(null);
+  /*
+   * ★★ **盘上到底读到了没有**（用户 2026-09-15 抓的那一帧："有模组加载器的版本会跳 1 帧"）。
+   *
+   *   现象：切到版本列表时，带加载器的行会先闪一下「缺 Fabric」「缺 Forge」，
+   *   然后才消失。
+   *
+   *   原因就在下面这个判据里：`refreshDisk` 是**异步**的，首帧 `diskLoaders` 是 `{}`，
+   *   而 `diskConflictOf` 把"**没读到**"和"**盘上没有**"当成了同一件事 ——
+   *   于是每一行都先被判成"缺加载器"，等清单回来再翻回去。
+   *
+   *   这条规矩这个仓库已经写过好几遍：**读不到 ≠ 没有**。
+   *   修法：显式记住"读到过没有"，没有之前**不下冲突结论**（不显示那个角标）。
+   *   读失败时也不下结论（`diskError` 那条提示才是该出现的东西）。
+   */
+  const [diskLoaded, setDiskLoaded] = useState(false);
 
   const refreshDisk = useCallback(async () => {
-    if (!api) return;
+    if (!api) {
+      // 浏览器演示模式没有磁盘可读：标记成"读过"，否则角标永远不出现也不会消失
+      setDiskLoaded(true);
+      return;
+    }
     try {
       const m = await api.metadata.manifest('bmclapi');
       const map: Record<string, InstalledLoader[]> = {};
@@ -111,6 +130,7 @@ export function VersionsPage() {
       }
       setDiskLoaders(map);
       setDiskError(null);
+      setDiskLoaded(true);
     } catch (e) {
       // 读盘失败必须说出来，不能显示成"什么都没装"
       setDiskError(e instanceof Error ? e.message : String(e));
@@ -162,6 +182,12 @@ export function VersionsPage() {
   ): { short: string; why: string } | null => {
     const recorded = inst.loader;
     if (!recorded) return null; // 纯原版实例：盘上有没有加载器都不算冲突
+    /*
+     * ★★ **还没读到盘上的清单时不下结论**（见 `diskLoaded` 的注释）：
+     *   否则首帧会把每一行都标成「缺 X」，等清单回来再翻回去 ——
+     *   用户看到的就是"跳 1 帧"，而且那一刻界面在**说假话**。
+     */
+    if (!diskLoaded) return null;
     const base = onDisk.find((l) => l.loader_type === recorded.kind);
     if (!base) {
       return {
