@@ -296,10 +296,23 @@ export const OPTIFINE_FORGE_REQ: Record<string, { inherit: string; req: string |
 
 /* ====================== 生成能力表 ====================== */
 
-const SNAPSHOT_RE = /^\d{2}w\d{2}[a-z]$/;
+/*
+ * ★★ "正式版"的判据（2026-09-15 修）。
+ *
+ *   原来这里只有 `SNAPSHOT_RE = /^\d{2}w\d{2}[a-z]$/` —— 它**只认周更快照**
+ *   （`24w14a`）。于是 `26.2-rc-2`、`26.2-pre-6`、`1.21.2-pre1` 这些
+ *   **预发布版全被判成"正式版"**，在"正式版"这一档里照样显示。
+ *   （用户报的"切回正式版还显示快照版"就是这个形状。）
+ *
+ *   正确的判据不是"列举哪些是快照"，而是**反过来问：这是不是一个最终版本？**
+ *   Mojang 的最终版本号只有 `x.y` / `x.y.z` 两种形状；
+ *   任何带后缀的（-pre / -rc / -beta / -alpha / w 周更 / a·b 远古版）
+ *   都不是。所以：
+ */
+const FINAL_RELEASE_RE = /^\d+\.\d+(\.\d+)?$/;
 
 function isSnapshot(id: string): boolean {
-  return SNAPSHOT_RE.test(id);
+  return !FINAL_RELEASE_RE.test(id);
 }
 
 /** 已知的全部 MC 版本 id（按发布时间倒序由 source 层提供，这里只列本地表） */
