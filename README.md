@@ -827,6 +827,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/env/cargo.ps1 `
 > （见 `docs/LAUNCHER_SOURCE_STUDY.md`、`docs/MS-LOGIN-PCL-STUDY.md`），
 > 而它们都是 GPL 系。用同一个协议，是这份"站在别人肩膀上"的关系里最省事的做法。
 
+### ★★ 仓库现在是**私有**的，而且**不能直接改成公开**（有一条硬理由）
+
+源码里内置了一把 CurseForge API Key（`src-tauri/src/net/curseforge.rs` 的
+`BUILTIN_API_KEY`），它是"装完就能搜 CurseForge"这个开箱即用体验的来源。
+**公开仓库会把这把 key 一起发出去**（额度共用、随时可能被撤销或封）。
+
+所以要把这个仓库转公开，**必须先做一件事**：
+
+1. 把 `BUILTIN_API_KEY` 置空（`const BUILTIN_API_KEY: &str = "";`），
+   改由用户自己填（界面里的「设置 → 下载」，或环境变量 `IEML_CF_API_KEY`）；
+2. 确认 `git log` 里**没有**这把 key 的历史（本仓库的第一版就有它 —— 所以
+   简单删掉还不够，要么重建历史，要么换一把 key 并撤销旧的）；
+3. 顺手检查 `.workbuddy/memory/**`：那是逐轮的工作记忆，里面有本机路径之类的
+   内部细节，公开前值得过一遍。
+
 Minecraft 是 Mojang Studios 的商标，本项目与 Mojang / Microsoft 无任何关联，
 **不含任何游戏资源文件**（界面里的版本图标是按世代配色**自绘**的方块形状，
 不是官方贴图 —— 见 `src/components/VersionIcon.tsx` 的说明）。
