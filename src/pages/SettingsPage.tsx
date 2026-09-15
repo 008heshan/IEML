@@ -33,7 +33,6 @@ import { APP_VERSION, STAGE_LABEL, versionStage } from '../domain/version-info.t
 // ★ 账号面板**只在顶栏**（用户："设置这里的账号一栏可以删除了"）。
 //   一份实现仍然只有那一处（`components/AccountPanel.tsx`），这里不再重复摆一遍。
 
-type ThemeChoice = 'system' | 'dark' | 'light';
 
 /**
  * 版本号里的阶段 → 中文名。
@@ -48,24 +47,9 @@ function stageLabelOf(version: string): string {
 }
 
 export function SettingsPage() {
-  const { state, setTheme, rescanJava, toast, backend, refreshJava, prefsSaveFailed } = useApp();
+  const { state, rescanJava, toast, backend, refreshJava, prefsSaveFailed } = useApp();
   const { api } = useRealApi();
-  const [themeChoice, setThemeChoice] = useState<ThemeChoice>(state.theme);
 
-  /*
-   * ★★ 主题选择要**跟着真实主题走**（用户报的："白色模式和深色模式在右上角切换时，
-   *   设置页不会同步"）。
-   *
-   *   原因：`useState(state.theme)` 只在**首次挂载**时取一次值。用户点顶栏那个
-   *   太阳/月亮图标切换主题时，`state.theme` 变了，而这一页的 `themeChoice`
-   *   还停在旧值 —— 于是分段控件高亮的还是上一个主题，"跟随系统"也显示不出来。
-   *
-   *   ★ 只在**真实主题变化**时同步：不监听 `themeChoice`，否则用户点"跟随系统"
-   *     又会被立刻改回去（那是个两向绑定的经典坑）。
-   */
-  useEffect(() => {
-    setThemeChoice(state.theme);
-  }, [state.theme]);
   const [downloaded, setDownloaded] = useState<Array<{ major: number; path: string; bytes: number; usable: boolean }>>([]);
   const [busy, setBusy] = useState(false);
   /** 清理缓存的两段式流程（先算再删）的忙碌态 —— 两条清理已合并，所以只有一个状态 */
@@ -75,16 +59,6 @@ export function SettingsPage() {
 
   /** 读失败时不能显示成"一个都没下过" —— 那是两句完全不同的话 */
   const [javaListError, setJavaListError] = useState<string | null>(null);
-
-  function applyTheme(choice: ThemeChoice) {
-    setThemeChoice(choice);
-    if (choice === 'system') {
-      const prefersLight = window.matchMedia('(prefers-color-scheme: light)').matches;
-      setTheme(prefersLight ? 'light' : 'dark');
-    } else {
-      setTheme(choice);
-    }
-  }
 
   async function loadDownloadedJava() {
     if (!api) return;
@@ -147,25 +121,8 @@ export function SettingsPage() {
         <Card>
           <CardTitle icon={<IconGear />}>外观</CardTitle>
 
-          <div className="field-row">
-            <span className="field-label">
-              主题
-              <span className="field-hint">默认深色</span>
-            </span>
-            <div className="field-control">
-              <Segmented
-                label="主题"
-                value={themeChoice}
-                onChange={applyTheme}
-                options={[
-                  { value: 'system', label: '跟随系统' },
-                  { value: 'dark', label: '深色' },
-                  { value: 'light', label: '浅色' },
-                ]}
-              />
-            </div>
-            <span />
-          </div>
+          {/* ★★ 2026-09-16 用户要求"删除白色模式"：主题选择整行删掉。
+              只有深色，没有可选项 —— 摆一个只有一个选项的选择器是假控件。 */}
 
           <div className="field-row">
             <span className="field-label">

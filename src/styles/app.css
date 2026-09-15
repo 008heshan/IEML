@@ -428,6 +428,19 @@
    *     · 没有色带，和底下的光晕连成一片，不割裂。
    *   分隔线也去掉：磨砂本身已经形成边界，再加一条线就是"又一道缝"。
    */
+  /*
+   * ★★ 2026-09-16 用户："页面标题区的字左边和最右边有空缺修复一下"。
+   *
+   *   磨砂是个**盒子**：`.page-head` 住在 `.content` 里，而后者左右各有
+   *   `--space-6` 的内边距 —— 于是标题区两边**各空出 24px**，
+   *   滚过去的内容在那两道缝里没被磨到，看着就是"标题条没铺满"。
+   *
+   *   修法：**满宽**（负 margin 抵消父级内边距），同时把内边距补回来
+   *   （`padding-inline` 用同一个值）—— 文字的左右位置**一点不变**，
+   *   变的只是磨砂铺满了。
+   */
+  margin-inline: calc(-1 * var(--space-6));
+  padding-inline: var(--space-6);
   background: transparent;
   backdrop-filter: blur(16px) saturate(140%);
   -webkit-backdrop-filter: blur(16px) saturate(140%);

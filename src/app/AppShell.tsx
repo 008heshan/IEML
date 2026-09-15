@@ -25,11 +25,9 @@ import {
   IconGrid,
   IconHome,
   IconLayers,
-  IconMoon,
   IconPlay,
   IconPuzzle,
   IconStop,
-  IconSun,
   IconTerminal,
 } from '../ui/Icons';
 import { VersionIcon } from '../components/VersionIcon';
@@ -76,7 +74,7 @@ function isLong(text: string): boolean {
 }
 
 export function App() {
-  const { state, go, setTheme, dismissToast, closeVersion, setSubPage, open, openVersion } = useApp();
+  const { state, go, dismissToast, closeVersion, setSubPage, open, openVersion } = useApp();
   const [stopping, setStopping] = useState(false);
   /** 顶栏的账号弹窗（正版登录入口） */
   const [accountOpen, setAccountOpen] = useState(false);
@@ -294,16 +292,9 @@ export function App() {
 
         <TaskCenter />
 
-        <Button
-          variant="ghost"
-          iconOnly
-          aria-label={state.theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'}
-          title={state.theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'}
-          onClick={() => setTheme(state.theme === 'dark' ? 'light' : 'dark')}
-        >
-          {state.theme === 'dark' ? <IconSun /> : <IconMoon />}
-        </Button>
-
+        {/* ★★ 2026-09-16 用户要求"删除白色模式"：那个太阳/月亮按钮已经删掉。
+           只保留深色 —— 一个主题就没有"两套值必须同步"的负担，
+           也不会再出现"浅色下某个 rgba 变成污渍"这类只在一半用户那里出现的问题。 */}
         {/* 窗口按钮（最小化 / 最大化-还原 / 关闭）——见上面那段说明 */}
         <WindowControls />
       </header>
