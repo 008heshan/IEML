@@ -335,7 +335,17 @@ export function App() {
               </div>
 
               <nav aria-label="版本内导航">
-                {SUB_NAV.map((item) => {
+                {/*
+                  ★★ 原版实例**不开放 Mod 列表**（用户 2026-09-15：
+                  "我觉得原版不应开放 mod 列表功能"）。
+
+                  理由：纯原版（没有加载器）根本不会加载 `mods/` 里的任何东西 ——
+                  把「Mod 管理」摆在那儿，用户放进去的 jar 会**无声无息地不生效**，
+                  而他以为装上了。与其给一个必然无效的入口，不如不给。
+                  「概览」页那句"纯原版不能加载 Mod，要装请先在设置里加加载器"
+                  仍然在 —— 那才是该看到这句话的地方。
+                */}
+                {SUB_NAV.filter((item) => item.id !== 'mods' || open?.loader != null).map((item) => {
                   const Icon = item.icon;
                   const current = state.subPage === item.id;
                   return (

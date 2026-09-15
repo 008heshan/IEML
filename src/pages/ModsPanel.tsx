@@ -20,6 +20,7 @@ import {
   Note,
   SearchBox,
   Skeleton,
+  Spinner,
 } from '../ui';
 import {
   IconAlert,
@@ -81,6 +82,7 @@ export function ModsPanel() {
     state,
     open: active,
     go,
+    goDownloadTab,
     toast,
     backend,
     setMods,
@@ -256,28 +258,51 @@ export function ModsPanel() {
    * ★ 反查不到就 `remote` 为空，界面显示文件名 —— 有信息显示信息，
    *   没信息就说没信息，绝不编造一个假的"在线库名称"。
    */
+  /** ★ 第二段（联网反查在线库）是否还在跑 —— 界面据此显示"正在核对" */
+  const [resolvingOnline, setResolvingOnline] = useState(false);
+
   const reloadMods = useCallback(async () => {
     if (!active) return;
     setLoading(true);
     try {
-      // 桌面版：真实反查；浏览器演示模式：退回演示数据
-      const scanned = api
-        ? await api.modrinth.scanMods(
-            active.config.slug,
-            active.mcVersion,
-            active.loader?.kind ?? null,
-          )
-        : (await backend.listMods(active.id)).map((f) => ({
-            file_name: f.fileName,
-            display_name: f.fileName.replace(/\.(jar|zip|litemod)(\.disabled)?$/i, ''),
-            path: f.path,
-            enabled: !f.fileName.endsWith('.disabled'),
-            bytes: f.bytes,
-            mtime_ms: f.mtimeMs,
-            sha1: null,
-            fingerprint: null,
-            remote: null,
-          }));
+      /*
+       * ★★ 两段式加载（用户 2026-09-15："版本的 mod 列表获取版本有什么 mod 的速度太慢"）。
+       *
+       *   慢在哪（实测定位）：列出 Mod 要**每个 jar 都联网反查一次**
+       *   （`modrinth.scanMods` = 读盘 + 算 SHA1/指纹 + 逐个查在线库），
+       *   而在此之前**列表是空的** —— 装了几十个 Mod 的整合包要等很久，
+       *   用户看到的是"白屏很久，然后一次性全出来"。
+       *
+       *   现在拆成两段：
+       *     ① **本地扫描**（`backend.listMods`，只读文件名/大小）→ 列表**立刻**出现，
+       *        显示文件名、大小、是否禁用 —— 这些本来就不需要联网；
+       *     ② 联网反查放到后台，回来之后把"在线库名称 / 版本 / 支持情况"补上。
+       *
+       *   ★ 没有造假：第一段显示的是**文件名**（不是编出来的名字），
+       *     补全期间界面明确写着"正在核对在线库"。
+       */
+      const local = await backend.listMods(active.id);
+      const localEntries: ModEntry[] = local.map((f) => ({
+        displayName: f.fileName.replace(/\.(jar|zip|litemod)(\.disabled)?$/i, ''),
+        fileName: f.fileName,
+        path: f.path,
+        enabled: !f.fileName.endsWith('.disabled'),
+        bytes: f.bytes,
+        mtimeMs: f.mtimeMs,
+      }));
+      setMods(localEntries, judgeAll(localEntries, active.mcVersion, active.loader?.kind ?? null));
+      setChecked(false);
+      setLoading(false);
+
+      // 浏览器演示模式没有在线库：第一段就是全部
+      if (!api) return;
+
+      setResolvingOnline(true);
+      const scanned = await api.modrinth.scanMods(
+        active.config.slug,
+        active.mcVersion,
+        active.loader?.kind ?? null,
+      );
 
       const entries: ModEntry[] = scanned.map((s) => ({
         displayName: s.display_name,
@@ -297,7 +322,10 @@ export function ModsPanel() {
           ? {
               remote: {
                 // ★ 来源如实映射：只在 CurseForge 上查到的 Mod 不该被标成 Modrinth
-                source: s.remote.source === 'curseforge' ? ('curseforge' as const) : ('modrinth' as const),
+                source:
+                  s.remote.source === 'curseforge'
+                    ? ('curseforge' as const)
+                    : ('modrinth' as const),
                 projectId: s.remote.project_id,
                 name: s.remote.title || s.remote.project_id,
                 version: s.remote.version,
@@ -316,6 +344,7 @@ export function ModsPanel() {
       toast('err', '读取 Mod 列表失败', e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
+      setResolvingOnline(false);
     }
   }, [active, api, backend, setMods, toast]);
 
@@ -653,7 +682,31 @@ export function ModsPanel() {
               那三格现在在**下载页**并排（和 Mod 同一排页签），
               这一页只留「添加 Mod」（它仍然走同一个资源中心，默认 Mod 那一格）。
           */}
-          <Button variant="primary" onClick={() => setBrowseOpen(true)}>
+          {/*
+            ★★ 改为**跳下载页的 Mod 页签，并默认选中这个版本**（用户 2026-09-15：
+            "这个添加 mod 的按钮应该直接跳转下载页的 mod 页，并默认选择该跳转版本"）。
+
+            以前它弹一个 Modal —— 于是同一个"浏览 Mod"在启动器里有**两个界面**：
+            弹窗里一个（`ResourceBrowser`），下载页里一个（`ResourceCenterBody`）。
+            两处的搜索、翻页、装到哪个版本都得各维护一遍，而用户还得记住
+            "我上次是在哪儿找的"。现在只有下载页那一个入口。
+
+            怎么实现"默认选中该版本"：下载页的 `targetId` 是它自己的局部状态，
+            所以要**告诉它选谁** —— 用事件（`ieml:download-target`），
+            下载页那边监听并 `setTargetId`。比把状态提到全局更小、更局部。
+          */}
+          <Button
+            variant="primary"
+            onClick={() => {
+              // ① 切到「下载 → Mod」；② 告诉下载页"装到哪个版本"
+              goDownloadTab('mod');
+              if (active) {
+                window.dispatchEvent(
+                  new CustomEvent('ieml:download-target', { detail: { instanceId: active.id } }),
+                );
+              }
+            }}
+          >
             <IconPlus /> 添加 Mod
           </Button>
           {/*
@@ -754,6 +807,16 @@ export function ModsPanel() {
               />
             </div>
             <div style={{ flex: 1 }} />
+            {/*
+              ★ 第二段还在跑时**明确说出来**：这时列表里显示的是**文件名**，
+                在线库名称还没到。不说的话用户会以为"这就是它的名字"，
+                而下一步（检查更新）又要求先反查完 —— 那才是"点了没反应"的观感。
+            */}
+            {resolvingOnline ? (
+              <span className="dim" title="正在用文件哈希反查 Modrinth / CurseForge">
+                <Spinner label="正在核对在线库…" />
+              </span>
+            ) : null}
             <span className="dim mono">
               {visible.length} / {entries.length} 个 · 占用{' '}
               {formatBytes(entries.reduce((s, e) => s + e.bytes, 0))}

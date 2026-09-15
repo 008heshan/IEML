@@ -401,6 +401,13 @@
   align-items: center;
   gap: var(--space-4);
   padding: var(--space-4) 0 var(--space-3);
+  /*
+   * ★★ 标题区下沿到内容要留一口气（用户 2026-09-15："里顶部分割线太近"）。
+   *   原来只有 `padding-bottom: space-3`，于是那条分隔线**紧贴**着第一行内容
+   *   （概览页上就是工具栏那一排），看起来像被压住了。
+   *   这里加的是 `margin-bottom`，不动 sticky 的定位计算。
+   */
+  margin-bottom: var(--space-4);
   margin-top: calc(-1 * var(--space-5));
   /* ★ 实底而不是渐变：渐变会让滚上来的内容"透"出标题区，看起来糊成一片 */
   background: var(--bg-base);
