@@ -1018,7 +1018,21 @@ export function InstallComposer({
             </div>
           ) : null}
 
-          <div className="cw-list" role="listbox" aria-label="选择游戏版本">
+          {/*
+            ★★ `key={channel|query}`：**换筛选时整列表重建**（2026-09-15，用户复现出来的）。
+
+            现象（真机复现，读 DOM）：点「快照」→「正式版」之后，分段控件的高亮**跟着走**，
+            但列表里**同时留着上一次的分组**（`26.2-rc-2(15 个)` 和 `26.2(1 个)` 并列），
+            再点「全部」/「正式版」/「快照」就**再也不变了**。
+
+            根因：分组用的 key 是 `g.fam.key` —— **世代键**。而 `26.2-rc-2` 与 `26.2`
+            的世代键**是同一个**（都是 `26.2`），于是两次渲染的分组 key 一一相同，
+            React 按 key 复用节点，旧分组没有被清掉 → 看起来就是"列表卡住"。
+
+            修法：key 里带上筛选条件。代价是换筛选时重建这棵子树（几十个节点，肉眼无感），
+            换来的是"看到的永远等于筛出来的"。
+          */}
+          <div className="cw-list" role="listbox" aria-label="选择游戏版本" key={`${channel}|${query}`}>
             {manifestLoading ? (
               <div style={{ padding: 'var(--space-2)' }}>
                 <Skeleton rows={8} height={40} />
@@ -1050,7 +1064,12 @@ export function InstallComposer({
                *   "切开"，不自己造一份顺序。
                */
               groupByFamily(filtered.slice(0, 200), (v) => v.id).map((g) => (
-                <div key={g.fam.key} className="wz-group">
+                /*
+                 * ★ 分组 key 也要**唯一**：`g.fam.key` 是世代键，
+                 *   而 `26.2` 与 `26.2-rc-2` 的世代键相同 —— 只用它会让
+                 *   两个不同筛选结果里的分组"撞 key"（上面那段注释记的就是这个坑）。
+                 */
+                <div key={`${channel}|${g.fam.key}|${g.rows[0]?.id ?? ''}`} className="wz-group">
                   <div className="ver-group">
                     <VersionIcon version={g.rows[0]?.id ?? ''} size={18} title={g.fam.label} />
                     <span>{g.fam.label}</span>
