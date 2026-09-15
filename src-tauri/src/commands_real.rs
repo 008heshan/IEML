@@ -2810,6 +2810,18 @@ pub struct LaunchRequest {
     pub width: u32,
     pub height: u32,
     pub instance_slug: String,
+    /*
+     * ★★ 2026-09-15（多开实例）：这里以前只有 `instance_slug`（磁盘目录名）。
+     *   "正在运行"这张表现在按 **instance_id** 索引，因为：
+     *     · 退出事件 `game-exit` 报的是 id；
+     *     · slug 是**可以被用户改名**的显示/目录名（重命名只改显示名，
+     *       但目录名变了这条记录就对不上了）；
+     *     · 前端的实例表也是按 id 找的。
+     *   一句 `#[serde(default)]` 是为了兼容老前端：缺这个字段时按空串处理，
+     *   那样多开判据会退化成"任何实例都不同名"，不会误拦。
+     */
+    #[serde(default)]
+    pub instance_id: String,
     pub extra_jvm_args: Vec<String>,
     pub extra_game_args: Vec<String>,
     /// 自定义窗口标题（`None` = 跟随全局/游戏默认）
@@ -2913,23 +2925,27 @@ pub async fn launch_minecraft(
     {
         let mut guard = state.running.lock().map_err(|_| "状态锁失败")?;
         /*
-         * ★ 先确认槽里那个进程**真的还活着**，再拒绝新的启动。
+         * ★ 先确认表里那个进程**真的还活着**，再拒绝同一个实例的重复启动。
          *
          *   实测（用户报"游戏关闭后启动器依然显示游戏在运行"）：
          *   用户自己关掉游戏窗口时，退出监测线程只写了标记文件，
          *   后端这个槽不会被清 —— 于是界面一直显示运行中，
          *   再点启动还会被"已经有一个游戏在运行了"挡住，**彻底卡死**。
          *   死掉的进程不该占着位置。
+         *
+         * ★★ 2026-09-15（多开实例）：判据从"**有没有**游戏在跑"改成
+         *   "**这一个实例**在不在跑"。别人在跑不关你的事 ——
+         *   这正是"允许多开"这件事的全部含义。
+         *   顺手把整张表里已经死掉的条目都清掉（不然界面会一直显示"运行中"）。
          */
-        if let Some(running) = guard.as_ref() {
-            if crate::launch::is_still_running(running) {
-                return Err(LaunchError::new(
-                    "already-running",
-                    "已经有一个游戏在运行了。请先停止它，再启动另一个实例。",
-                ));
-            }
-            eprintln!("[IEML/launch] 槽里的游戏进程已经结束，清掉它再启动新的");
-            *guard = None;
+        guard.retain(|_, running| crate::launch::is_still_running(running));
+        if let Some(running) = guard.get(&req.instance_id) {
+            let _ = running; // 只是为了让"取到了就说明在跑"这件事写在明面上
+            return Err(LaunchError::new(
+                "already-running",
+                "这个版本已经在运行了。同一个版本同时开两份会抢同一个存档目录，\
+                 想多开请启动**另一个**版本。",
+            ));
         }
     }
 
@@ -3010,7 +3026,15 @@ pub async fn launch_minecraft(
         offline,
         Some(app.clone()),
     );
-    *state.running.lock().map_err(|_| "状态锁失败")? = Some(running);
+    /*
+     * ★★ 登记进**表**（多开实例）：键是实例 id，所以"谁在跑"这件事
+     *   从这一刻起是**按实例**记的，而不是"整个启动器只有一个"。
+     */
+    state
+        .running
+        .lock()
+        .map_err(|_| "状态锁失败")?
+        .insert(req.instance_id.clone(), running);
 
     Ok(LaunchStarted {
         pid,
@@ -4134,13 +4158,41 @@ fn find_java_by_requirement(
 ///   —— 游戏要花几秒关闭，这几秒里 Tauri 一直占着主线程，
 ///   窗口就变成"未响应"。同步命令跑在命令线程上，但阻塞式 `Command::status()`
 ///   会把事件循环一起卡住。丢到阻塞线程池里，界面就不会僵。
+///
+/// ★★ 2026-09-15（多开实例）：加了 `instance_id` 参数。
+///   以前没有参数、只能停"那一个"；现在同时可能有好几个在跑，
+///   **"停哪个"必须由调用方说清楚** —— 让后端自己猜（比如"停最早那个"）
+///   是那种平时看不出来、一多开就停错游戏的错。
+///   传 `None` 表示"全停"（启动器退出时的收尾会用）。
 #[tauri::command]
-pub async fn stop_minecraft(state: State<'_, AppState>) -> Result<Option<StopInfo>, String> {
+pub async fn stop_minecraft(
+    instance_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Option<StopInfo>, String> {
     let running = {
         let mut guard = state.running.lock().map_err(|_| "状态锁失败")?;
-        match guard.take() {
-            Some(r) => r,
-            None => return Ok(None),
+        match instance_id {
+            Some(id) => match guard.remove(&id) {
+                Some(r) => r,
+                None => return Ok(None), // 这个实例本来就没在跑
+            },
+            /*
+             * 全停：只返回**一个** StopInfo（命令的返回类型如此），
+             * 其余几局的收尾照做、退出事件照推（前端按事件记账），
+             * 但这一条命令只把这一个的结论报回去。
+             */
+            None => match guard.keys().next().cloned() {
+                Some(first) => {
+                    let rest: Vec<String> = guard.keys().filter(|k| **k != first).cloned().collect();
+                    for id in rest {
+                        if let Some(other) = guard.remove(&id) {
+                            let _ = crate::launch::stop(&other);
+                        }
+                    }
+                    guard.remove(&first).expect("刚看过还在")
+                }
+                None => return Ok(None),
+            },
         }
     };
 
@@ -4211,6 +4263,36 @@ pub async fn stop_minecraft(state: State<'_, AppState>) -> Result<Option<StopInf
     .map_err(|e| format!("停止游戏的任务失败：{e}"))?;
 
     Ok(Some(info))
+}
+
+/// 现在有哪些实例在跑（多开实例）
+///
+/// ★ 为什么需要它：前端的状态是**自己攒**起来的（启动成功 / 收到 `game-exit` 事件）。
+///   但界面可能被重新加载（WebView 刷新、以后可能的"重开界面"），
+///   那时前端的表是空的、而后端的进程还活着 —— 界面就会说"没有游戏在运行"，
+///   用户再点启动，游戏又开一份。
+///   ★ 判据不复制：这里**顺手把已经死掉的条目清掉**，与启动那条路径同一个判据
+///   （`launch::is_still_running`），所以返回的就是"真的还在跑的那些"。
+#[tauri::command]
+pub fn running_games(state: State<'_, AppState>) -> Result<Vec<RunningGameInfo>, String> {
+    let mut guard = state.running.lock().map_err(|_| "状态锁失败")?;
+    guard.retain(|_, running| crate::launch::is_still_running(running));
+    Ok(guard
+        .iter()
+        .map(|(instance_id, running)| RunningGameInfo {
+            instance_id: instance_id.clone(),
+            pid: running.pid,
+            started_at: running.started_at,
+        })
+        .collect())
+}
+
+#[derive(serde::Serialize)]
+pub struct RunningGameInfo {
+    pub instance_id: String,
+    pub pid: u32,
+    /// 启动时刻（Unix 秒）—— 前端据此算"已经玩了多久"
+    pub started_at: u64,
 }
 
 #[derive(serde::Serialize)]

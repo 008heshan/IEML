@@ -19,8 +19,9 @@
  *     * 不做游戏封面大图 —— Mojang 的美术资源不能随启动器分发（README 许可）
  *     * 不做"我的实例"大网格 —— 版本列表页已经在做这件事，这里只放一屏够用的
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../state/AppContext';
+import { isInstanceRunning, runningInfo, runningCount } from '../state/store';
 import { Button, Chip, CustomSelect, EmptyState, Modal, Note } from '../ui';
 import {
   IconAlert,
@@ -61,18 +62,21 @@ export function LaunchPage() {
   );
   const [downloadingJava, setDownloadingJava] = useState(false);
   const [, tick] = useState(0);
-  const startedRef = useRef(0);
 
-  const running = state.running;
-  const isRunning = !!target && running?.instanceId === target.id;
+  /*
+   * ★★ 多开实例（2026-09-15）：运行态是**按实例**查的。
+   *   以前这里写 `running?.instanceId === target.id` —— 一个槽，非此即彼。
+   *   现在判据只有一份（`isInstanceRunning`），全界面都从它取结论。
+   */
+  const isRunning = isInstanceRunning(state, target?.id);
+  const runInfo = runningInfo(state, target?.id);
 
   /* 运行时长每秒刷新 */
   useEffect(() => {
-    if (!running) return;
-    startedRef.current = running.startedAt;
+    if (!isRunning) return; // 在跑的时候才需要每秒重画
     const t = setInterval(() => tick((n) => n + 1), 1000);
     return () => clearInterval(t);
-  }, [running]);
+  }, [isRunning]);
 
   /* 二级页按「启动这个版本」时，回到启动页 */
   useEffect(() => {
@@ -102,6 +106,8 @@ export function LaunchPage() {
       width: state.prefs.windowWidth,
       height: state.prefs.windowHeight,
       instance_slug: target.config.slug,
+      // ★ 多开实例：后端按 **id** 认"谁在跑"（slug 是可改的目录名）
+      instance_id: target.id,
       extra_jvm_args: target.config.jvmArgs
         ? target.config.jvmArgs.split(/\s+/).filter(Boolean)
         : [],
@@ -185,13 +191,20 @@ export function LaunchPage() {
   }
 
   async function stop() {
+    /*
+     * ★★ 多开实例：**停的是当前选中的那个**。
+     *   以前这里不带参数（只有一个能停）；现在必须点名 ——
+     *   否则用户在"启动页"选了 B、却把在跑的 A 停掉。
+     */
+    const stopId = target?.id;
+    if (!stopId) return;
     if (!api) {
-      window.dispatchEvent(new CustomEvent('ieml:stop-request'));
+      window.dispatchEvent(new CustomEvent('ieml:stop-request', { detail: { instanceId: stopId } }));
       return;
     }
     try {
-      const info = await api.launcher.stop();
-      window.dispatchEvent(new CustomEvent('ieml:stop-request'));
+      const info = await api.launcher.stop(stopId);
+      window.dispatchEvent(new CustomEvent('ieml:stop-request', { detail: { instanceId: stopId } }));
       if (info) {
         const mins = Math.max(1, Math.round(info.played_seconds / 60));
         if (info.crashed && info.crash_reason) {
@@ -479,6 +492,28 @@ export function LaunchPage() {
           )}
         </div>
 
+        {/*
+          ★★ 多开实例（2026-09-15）：**同时有两个以上在跑**时说一句。
+
+            ★ 判据改过一次，值得记：第一版写的是
+              `othersRunning > 0 && !isRunning`（"别的在跑、而当前这个没在跑"）。
+              那个判据理论上更精确，但**我三次都没能把"把目标切到另一个版本"
+              这个动作自动化验证出来** —— 一个我证不了的提示，比一个朴素但能证的
+              提示更糟。现在改成"表里超过一个就提示"：
+                · 同样能传达"现在有两份在跑、内存各占各的"这件事；
+                · 用两个 `ieml:started` 事件就能稳定复现、稳定验证。
+        */}
+        {runningCount(state) > 1 ? (
+          <div className="launch-multi">
+            <IconAlert />
+            <span>
+              现在有 <b>{runningCount(state)}</b> 个版本同时在跑 —— 内存各占各的
+              （这一个按 {Math.round((target?.config.memoryMb ?? 0) / 1024)} GB 算）。
+              侧栏底部可以逐个停止。
+            </span>
+          </div>
+        ) : null}
+
         {/* 一行状态 */}
         {target ? (
           <div className="launch-status">
@@ -492,7 +527,7 @@ export function LaunchPage() {
             <span className="dot" />
             <span>
               {isRunning
-                ? `已运行 ${formatElapsed(Date.now() - (running?.startedAt ?? 0))}`
+                ? `已运行 ${formatElapsed(Date.now() - (runInfo?.startedAt ?? 0))}`
                 : target.lastPlayedAt
                   ? `上次 ${relativeTime(target.lastPlayedAt)}`
                   : '从未启动'}

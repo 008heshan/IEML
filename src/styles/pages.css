@@ -2198,6 +2198,53 @@
   animation: none;
 }
 
+/*
+ * 多开时"还有 N 个在跑"（只陈述事实，不拦人）。
+ *
+ * ★★ 类名第一版叫 `.launch-others` —— **和"其它版本"那一块重名了**，
+ *   于是这条规则顺手把那个区块的样式也改了（实测：CDP 查 `.launch-others`
+ *   拿到的文本是"其它版本"的卡片列表，不是这条提示）。
+ *   改名为 `.launch-multi`：**新类名先搜一遍仓里有没有**，
+ *   这条规矩值得记住 —— 撞名的代价是"改了别的地方，而且看起来像是改了这里"。
+ */
+.launch-multi {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--warning-subtle);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+}
+.launch-multi svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  margin-top: 2px;
+  fill: none;
+  stroke: var(--warning);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+/* 侧栏底部：**每一个**在跑的版本各一行，都能单独停 */
+.running-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.running-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-2) var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
 /* 卡片网格：宽屏两列，窄屏一列 */
 .res-grid {
   display: grid;

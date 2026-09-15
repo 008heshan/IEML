@@ -465,6 +465,13 @@ export interface LaunchRequest {
   width: number;
   height: number;
   instance_slug: string;
+  /**
+   * 实例 id（多开实例用）。
+   *
+   * ★ 为什么必须传：后端"谁在跑"那张表按 **id** 索引 ——
+   *   slug 是磁盘目录名（可改名、可重复的显示名），只有 id 是稳定的。
+   */
+  instance_id: string;
   extra_jvm_args: string[];
   extra_game_args: string[];
   /** 自定义窗口标题（null = 游戏默认） */
@@ -500,6 +507,14 @@ export interface LaunchStarted {
    * 否则他拿着离线身份去连正版服务器只会被拒，而界面一个字都不说。
    */
   notice?: string | null;
+}
+
+/** ★ 多开实例：后端"谁在跑"那张表里的一条（界面重新加载后靠它恢复状态） */
+export interface RunningGameInfo {
+  instance_id: string;
+  pid: number;
+  /** 启动时刻（Unix 秒） */
+  started_at: number;
 }
 
 export interface StopInfo {
@@ -1126,7 +1141,19 @@ export const launcher = {
 
   launch: (req: LaunchRequest) => callLaunch<LaunchStarted>('launch_minecraft', { req }),
 
-  stop: () => call<StopInfo | null>('stop_minecraft'),
+  /**
+   * 停止游戏。
+   *
+   * ★★ 多开实例（2026-09-15）：以前没有参数 —— 因为以前**只有一个**能停。
+   *   现在同时可能有好几个在跑，"停哪个"必须说清楚，
+   *   让后端猜（"停最早那个"）是那种平时看不出来、一多开就停错游戏的错。
+   *   传 `undefined` = 全停。
+   */
+  stop: (instanceId?: string) =>
+    call<StopInfo | null>('stop_minecraft', { instanceId: instanceId ?? null }),
+
+  /** ★ 现在有哪些实例在跑（界面重新加载后靠它把状态捡回来） */
+  runningGames: () => call<RunningGameInfo[]>('running_games'),
 
   readLog: (slug: string) => call<string>('read_latest_log', { slug }),
 
@@ -1499,6 +1526,8 @@ export function createTauriBackend(): Backend {
         width: (prefs.windowWidth as number) ?? 854,
         height: (prefs.windowHeight as number) ?? 480,
         instance_slug: inst.config.slug,
+        // ★ 多开实例：后端按 id 认"谁在跑"（slug 是可改的目录名，不能当身份）
+        instance_id: inst.id,
         extra_jvm_args: inst.config.jvmArgs
           ? inst.config.jvmArgs.split(/\s+/).filter(Boolean)
           : [],
@@ -1525,8 +1554,20 @@ export function createTauriBackend(): Backend {
       return { pid: r.pid, command: r.summary };
     },
 
-    async stopGame() {
-      await launcher.stop();
+    /**
+     * 停止游戏（Backend 契约）。
+     *
+     * ★★ 多开实例（2026-09-15）：`instanceId` **必传**。
+     *   以前后端只有一个槽、这个参数写了也没处用；现在同时可能有好几个在跑，
+     *   "停哪个"必须由调用方说清楚 —— 让后端猜就是"一多开就停错游戏"。
+     */
+    async stopGame(instanceId) {
+      await launcher.stop(instanceId);
+    },
+
+    /** ★ 现在有哪些实例在跑（界面重新加载后把状态捡回来） */
+    async runningGames() {
+      return launcher.runningGames();
     },
 
     /**

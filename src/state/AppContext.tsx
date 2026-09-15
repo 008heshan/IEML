@@ -200,6 +200,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const backend = useMemo(() => getBackend(), []);
   const bootedRef = useRef(false);
+  /**
+   * 当下这一份 state 的引用。
+   *
+   * ★ 为什么需要：事件监听器是**注册一次、长期活着**的，它闭包里捕获的 state
+   *   会停在注册那一刻。监听器里要读 state 时读 `stateRef.current`，
+   *   就永远是最新的（也正因如此，那个 effect 的依赖数组可以是空的）。
+   */
+  const stateRef = useRef(state);
+  stateRef.current = state;
   /** 是否已经读过磁盘上的偏好（读过之后才允许写回，否则会用默认值覆盖用户设置） */
   const prefsLoadedRef = useRef(false);
   /**
@@ -246,7 +255,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
        *   现在：每条给一个安全的兜底值，只有"机器信息"失败才算真的启动失败
        *   （没有它就渲染不出任何东西）。
        */
-      const [machineR, instR, javaR, prefsR, infoR] = await Promise.allSettled([
+      const [machineR, instR, javaR, prefsR, infoR, runningR] = await Promise.allSettled([
         backend.machineInfo(),
         backend.loadInstances(),
         backend.scanJava(),
@@ -257,6 +266,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
          *   每条给一个安全的兜底值）。
          */
         backend.info(),
+        /*
+         * ★★ 多开实例：把"现在有哪些在跑"从**后端**捡回来。
+         *
+         *   为什么必须问后端、而不是信任本地状态：界面的状态是攒出来的，
+         *   而它可能被重新加载（WebView 刷新、以后的"重开界面"）——
+         *   那一刻本地表是空的、而后端的进程还活着。不问的话界面会说
+         *   "没有游戏在运行"，用户再点启动，游戏又开一份（同一个存档被两个进程写）。
+         *   后端那张表是**唯一**知道真相的地方（它手里有子进程句柄）。
+         */
+        backend.runningGames(),
       ]);
 
       if (machineR.status === 'rejected') {
@@ -331,6 +350,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
         prefs: restored,
         ...(savedTheme === 'light' || savedTheme === 'dark' ? { theme: savedTheme } : {}),
       });
+
+      /*
+       * ★★ 多开实例：boot 之后**用后端的事实覆盖**本地的运行表。
+       *
+       *   顺序很重要：必须在 `boot/ok` 之后（那时实例列表才在 state 里，
+       *   而 `game/sync` 只填 running，不碰 instances），
+       *   而且读失败时**什么都不做**（保持空表，下一轮收到 `game-exit` 或
+       *   用户点启动时后端会再次拒绝重复启动 —— 后端才是判据所在）。
+       */
+      if (runningR.status === 'fulfilled' && runningR.value.length > 0) {
+        dispatch({ type: 'game/sync', list: runningR.value });
+        console.info(`[IEML] 桌面版报回来 ${runningR.value.length} 个正在运行的游戏`);
+      }
     })();
   }, [backend]);
 
@@ -434,8 +466,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const d = (e as CustomEvent<{ id: string; pid: number | null }>).detail;
       dispatch({ type: 'game/start', instanceId: d.id, pid: d.pid });
     };
-    const onStopRequest = () => {
-      if (state.running) dispatch({ type: 'game/stop' });
+    /*
+     * "停止"的请求。
+     *
+     * ★★ 多开实例（2026-09-15）：这个事件现在**必须带实例 id**。
+     *   以前它不带 —— 因为当时只有一个能停。现在同时可能有好几个在跑，
+     *   不带 id 的"停一下"就等于"随机停一个"，那是会停错游戏的。
+     *   只有明确说"全停"时才允许不带（`detail.instanceId === null`）。
+     */
+    const onStopRequest = (e: Event) => {
+      const id = (e as CustomEvent<{ instanceId?: string | null }>).detail?.instanceId;
+      if (id) dispatch({ type: 'game/stop', instanceId: id });
+      else if (id === null) dispatch({ type: 'game/stop-all' });
+      // 不带 detail 的旧式事件：不动状态（后端会推 game-exit，那时再清）
     };
 
     /*
@@ -457,7 +500,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
           crashReason?: string | null;
         }>
       ).detail;
-      dispatch({ type: 'game/stop' });
+      /* ★ 多开实例：只清**这一个**（别的还在跑，不许一起清掉） */
+      if (d?.instanceId) dispatch({ type: 'game/stop', instanceId: d.instanceId });
       if (!d) return;
       /*
        * ★★ **把这一局的时长落到实例记录上**（用户报的："版本这里的从未启动是纯属骗人，
@@ -477,7 +521,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         id: d.instanceId,
         patch: {
           lastPlayedAt: new Date().toISOString(),
-          totalPlaySeconds: (state.instances.find((i) => i.id === d.instanceId)?.totalPlaySeconds ?? 0) + Math.max(0, d.playedSeconds),
+          totalPlaySeconds:
+            (stateRef.current.instances.find((i) => i.id === d.instanceId)?.totalPlaySeconds ?? 0) +
+            Math.max(0, d.playedSeconds),
         },
       });
       const mins = Math.max(0, Math.round(d.playedSeconds / 60));
@@ -612,7 +658,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       window.removeEventListener('ieml:toast', onToast);
       window.removeEventListener('ieml:nav', onNav);
     };
-  }, [state.running]);
+    /*
+     * ★★ 依赖数组从 `[state.running]` 改成 `[]`，并且事件里读的是 `stateRef.current`。
+     *
+     *   原来这里挂着 `[state.running]`：每次开关游戏都**重新注册一遍全部监听器**，
+     *   而这样做的目的只是为了"让监听器里读到的 state 别太旧" —— 治标。
+     *   多开之后 `running` 变化得更频繁（每个实例的每次开关），
+     *   而且真正的隐患是：**监听器闭包捕获的 state 可能已经过期**
+     *   （比如刚改完某个实例名，随后游戏退出要累加时长 —— 用的是旧表）。
+     *   改成 ref 之后：监听器只注册一次，读到的永远是**当下**的 state。
+     */
+  }, []);
 
   /* ====================== 动作 ====================== */
   const go = useCallback((page: PageId) => dispatch({ type: 'nav', page }), []);

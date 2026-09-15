@@ -506,4 +506,137 @@ mod tests {
             "已经有日志了就不该判成「秒退」，应交给崩溃分析：{reason:?}"
         );
     }
+
+    /* ==================== 多开实例（2026-09-15） ====================
+     *
+     * ★ 这些测试**用真进程**（`ping` 冒充两个"游戏"），不碰 Minecraft：
+     *   多开改的是"谁在跑"这张表的语义，而那张表装的全是**子进程句柄** ——
+     *   拿假对象测出来的"两个能共存"没有意义，真出问题的地方恰恰是
+     *   `try_wait` / `taskkill` 这些真调用。
+     *
+     *   一条 `ping -n 6 127.0.0.1` ≈ 5 秒，够跑完断言；测试结束时全部杀掉。
+     */
+
+    /// 造一个"正在跑的游戏"：真进程 + 最小字段。
+    #[cfg(windows)]
+    fn fake_running(instance_id: &str) -> RunningGame {
+        let mut c = Command::new("cmd");
+        c.args(["/c", "ping", "-n", "6", "127.0.0.1"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        crate::platform::hide_console(&mut c);
+        let child = c.spawn().expect("spawn ping");
+        let pid = child.id();
+        RunningGame {
+            instance_id: instance_id.to_string(),
+            pid,
+            started_at: now_secs_for_test(),
+            log_path: std::env::temp_dir().join(format!("ieml-test-multi-{instance_id}.log")),
+            offline: true,
+            child: Arc::new(Mutex::new(child)),
+        }
+    }
+
+    #[cfg(windows)]
+    fn now_secs_for_test() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+
+    /// ★★ **两个实例可以同时在跑**：这是"多开"的定义。
+    ///
+    ///   旧模型是一张 `Option<RunningGame>`（单槽），第二个 `insert` 会把第一个
+    ///   顶掉 —— 那正是"开了新的，旧的失联"这类事故的来源。
+    #[cfg(windows)]
+    #[test]
+    fn two_instances_can_run_at_the_same_time() {
+        let mut table: std::collections::HashMap<String, RunningGame> =
+            std::collections::HashMap::new();
+        let a = fake_running("inst-a");
+        let b = fake_running("inst-b");
+        let pid_a = a.pid;
+        let pid_b = b.pid;
+        assert_ne!(pid_a, pid_b, "两个进程必须真的不同");
+
+        table.insert("inst-a".into(), a);
+        table.insert("inst-b".into(), b);
+
+        assert_eq!(table.len(), 2, "两个实例都要在表里");
+        assert!(is_still_running(table.get("inst-a").unwrap()));
+        assert!(is_still_running(table.get("inst-b").unwrap()));
+
+        // 收尾
+        for (_, r) in table.drain() {
+            let _ = stop(&r);
+        }
+    }
+
+    /// ★★ **停一个不许连坐另一个**（多开之后最危险的错：停错游戏）。
+    #[cfg(windows)]
+    #[test]
+    fn stopping_one_instance_leaves_the_other_running() {
+        let mut table: std::collections::HashMap<String, RunningGame> =
+            std::collections::HashMap::new();
+        table.insert("inst-a".into(), fake_running("inst-a"));
+        table.insert("inst-b".into(), fake_running("inst-b"));
+
+        // 点名停 a（就是 `stop_minecraft(Some("inst-a"))` 干的事）
+        let a = table.remove("inst-a").expect("a 应该在表里");
+        /*
+         * ★ `stop` 的返回契约是"**警告**"而不是"失败"：
+         *   进程不肯优雅关闭（`ping` 当然不肯）时它会 taskkill，并把
+         *   "已强制结束、存档可能没保存"作为 Err 报出来 —— 调用方
+         *   （`stop_minecraft`）就是把它当 `warning` 用的（`.err()`）。
+         *   所以这里**不能** `.expect()`：要断言的是"进程真的没了"。
+         */
+        let warn = stop(&a).err();
+
+        assert!(!is_still_running(&a), "a 应该已经被停掉（强杀也算停掉）");
+        if let Some(w) = &warn {
+            assert!(w.contains("强制结束"), "非优雅关闭时应当如实说明：{w}");
+        }
+        assert_eq!(table.len(), 1, "b 必须还在表里");
+        assert!(is_still_running(table.get("inst-b").unwrap()), "b 必须还在跑");
+
+        let _ = stop(table.get("inst-b").unwrap());
+    }
+
+    /// 表里混进一个**已经死掉**的进程时：`retain` 只清它，活的照旧。
+    ///
+    ///   这条对应启动路径上那句 `guard.retain(...)`：死掉的进程不该占着位置
+    ///   （老 bug 就是"用户自己关掉游戏后，界面永远卡在运行中"）。
+    #[cfg(windows)]
+    #[test]
+    fn retain_drops_only_the_dead_entry() {
+        let mut table: std::collections::HashMap<String, RunningGame> =
+            std::collections::HashMap::new();
+
+        // 一个立刻退出的进程 = 已经死掉的游戏
+        let mut c = Command::new("cmd");
+        c.args(["/c", "exit", "0"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        crate::platform::hide_console(&mut c);
+        let dead = RunningGame {
+            instance_id: "inst-dead".into(),
+            pid: 0,
+            started_at: now_secs_for_test(),
+            log_path: std::env::temp_dir().join("ieml-test-multi-dead.log"),
+            offline: true,
+            child: Arc::new(Mutex::new(c.spawn().expect("spawn cmd"))),
+        };
+        table.insert("inst-dead".into(), dead);
+        table.insert("inst-alive".into(), fake_running("inst-alive"));
+
+        // 等那个进程真的退出（try_wait 才看得到）
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        table.retain(|_, r| is_still_running(r));
+
+        assert_eq!(table.len(), 1, "死掉的那个要被清掉，活的要留下");
+        assert!(table.contains_key("inst-alive"), "留下的必须是活着那个");
+
+        let _ = stop(table.get("inst-alive").unwrap());
+    }
 }
