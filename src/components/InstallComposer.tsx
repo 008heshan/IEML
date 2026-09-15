@@ -597,6 +597,45 @@ export function InstallComposer({
    *   安装按钮被拦住 + 顶部红条列出原因）。用户取消勾选就能继续。
    */
 
+  /*
+   * ★★ **选择变了之后，把因此变得不兼容的附加组件去掉，并**说出来**
+   *   （2026-09-15，用户报："这怎么警告不让装了之后又不让点，不应该是直接不让点吗"）。
+   *
+   *   死局是怎么形成的（截图里那一屏）：
+   *     OptiFine 是**之前**选的（那时加载器还兼容）→ 用户把基础加载器改成
+   *     Fabric 1.21.11 → 它变成"不兼容" → 按上面那条规矩，不兼容的选项**被禁用**
+   *     （不让选）—— 可是它**已经被选中了**，于是：
+   *       · 用户点不掉它（禁用）；
+   *       · 安装按钮又因为组合非法被拦住。
+   *     **卡死，而且界面上没有任何出路。**
+   *
+   *   上面那条"不自动移除"的规矩针对的是**悄悄移除**（用户原话是"应提示玩家不兼容"）。
+   *   所以这里两者都做：**移除 + 明确告知**（弹一条"已取消 高清修复 —— 原因"），
+   *   并且让"已选中但不兼容"的选项**永远可以取消勾选**（见选项按钮的 `disabled` 条件）。
+   *
+   *   ★ 只在**选择本身变了**（基础加载器 / 版本 / MC 版本）时做这件事：
+   *     不跟着 `verdict` 跑 —— 否则用户刚勾上、后台清单才回来把组合判成不兼容，
+   *     那一下也会被"自动取消"，又回到"勾了却没了"的老毛病。
+   */
+  const lastComboRef = useRef('');
+  useEffect(() => {
+    const key = `${base}|${baseVersion}|${mcVersion}`;
+    if (lastComboRef.current === key) return;
+    lastComboRef.current = key;
+
+    const killed = verdict.removed.filter((r) => addons.includes(r.kind));
+    if (killed.length === 0) return;
+    setAddons((prev) => prev.filter((k) => !killed.some((r) => r.kind === k)));
+    for (const r of killed) {
+      const name = caps.addons.find((a) => a.kind === r.kind)?.name ?? r.kind;
+      toast(
+        'warning',
+        `已取消「${name}」`,
+        `${r.reason}\n（换加载器/版本后它不再兼容 —— 想用它请换回兼容的组合）`,
+      );
+    }
+  }, [base, baseVersion, mcVersion, verdict, addons, caps.addons, setAddons, toast]);
+
   const baseOpts = caps.baseLoaders.find((b) => b.kind === base);
   const availableBaseVersions = baseOpts?.versions ?? [];
 
@@ -1426,7 +1465,12 @@ export function InstallComposer({
                       type="button"
                       className={`addon-opt${selected ? ' on' : ''}${disabled || removed ? ' dis' : ''}`}
                       aria-pressed={selected}
-                      disabled={disabled}
+                      /*
+                       * ★★ **已选中的永远可以取消勾选**，即使它现在被判成不兼容。
+                       *   否则就会出现"点不掉它 + 安装按钮被拦"的死局
+                       *   （用户报的那一屏）。不让**选**是对的；让人**取消不掉**是错的。
+                       */
+                      disabled={disabled && !selected}
                       title={disabled ? reason : undefined}
                       onClick={() =>
                         setAddons((prev) =>
