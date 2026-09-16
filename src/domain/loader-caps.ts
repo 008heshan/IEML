@@ -205,12 +205,6 @@ export const BASE_LOADER_NAME: Record<BaseLoaderKind, string> = {
   quilt: 'Quilt',
 };
 
-export const BASE_LOADER_DESC: Record<BaseLoaderKind, string> = {
-  forge: '老牌加载器，Mod 数量最多，大型整合包首选',
-  neoforge: 'Forge 分支，1.20.2 起的新选择，更新更活跃',
-  fabric: '轻量、启动快，性能优化类 Mod 多基于此',
-  quilt: 'Fabric 衍生分支，兼容大部分 Fabric Mod',
-};
 
 export const ADDON_NAME: Record<'optifine' | 'liteloader', string> = {
   optifine: 'OptiFine',
