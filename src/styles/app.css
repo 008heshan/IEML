@@ -442,9 +442,38 @@
   margin-inline: calc(-1 * var(--space-6));
   padding-inline: var(--space-6);
   background: transparent;
+  /*
+   * ★★ **磨砂要羽化**（2026-09-16 用户："这文字左侧的地方和左侧栏有割裂感，
+   *   我建议做个羽化"）。
+   *
+   *   磨砂（`backdrop-filter`）是个**矩形**：它从侧栏边界一刀切到右边缘，
+   *   于是标题区左边（和右边的滚动条那侧）各有一条硬邦邦的竖线 ——
+   *   那就是用户说的"割裂感"。
+   *
+   *   ★ 不能直接给 `.page-head` 加 mask —— 标题、按钮都在里面，
+   *     mask 会把它们**一起**羽化掉（字会变淡）。
+   *   所以把磨砂**单独做成一层伪元素**：它管羽化，文字在上面不受影响。
+   *   三层一起羽化：左、右、下（下边缘那道横线同样硬）。
+   */
+  isolation: isolate;
+}
+.page-head::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
   backdrop-filter: blur(16px) saturate(140%);
   -webkit-backdrop-filter: blur(16px) saturate(140%);
-  border-bottom: none;
+  -webkit-mask-image:
+    linear-gradient(to right, transparent 0, #000 28px, #000 calc(100% - 28px), transparent 100%),
+    linear-gradient(to bottom, #000 0, #000 78%, transparent 100%);
+  mask-image:
+    linear-gradient(to right, transparent 0, #000 28px, #000 calc(100% - 28px), transparent 100%),
+    linear-gradient(to bottom, #000 0, #000 78%, transparent 100%);
+  /* 两张 mask 相乘：只有同时在"左右内侧"和"上部"的区域才磨砂 */
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
 }
 .page-head > div:first-child {
   flex: 1;
