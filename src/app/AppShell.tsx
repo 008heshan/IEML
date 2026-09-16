@@ -13,6 +13,7 @@
  *   并排会变成"左侧两栏导航"，220px 的侧边栏塞不下，而且用户分不清哪一栏
  *   是全局、哪一栏属于当前版本。替换后"我现在在哪一层"一目了然。
  */
+import brandIcon from '../assets/brand-icon.png'
 import { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../state/AppContext';
 import type { PageId, SubPageId } from '../state/store';
@@ -245,10 +246,7 @@ export function App() {
       <header className="titlebar" data-tauri-drag-region>
         <div className="brand" data-tauri-drag-region>
           <span className="brand-mark">
-            <svg viewBox="0 0 24 24" aria-hidden="true" fill="none">
-              <path d="M12 2 21 7v10l-9 5-9-5V7l9-5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
-              <path d="M12 12 21 7M12 12v10M12 12 3 7" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
-            </svg>
+            <img src={brandIcon} alt="" style={{ width: 22, height: 22 }} />
           </span>
           <span data-tauri-drag-region>IEML</span>
         </div>

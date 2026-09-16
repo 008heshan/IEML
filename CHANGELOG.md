@@ -6,6 +6,43 @@
 
 ---
 
+## 0.1.0-beta.28 — 2026-09-16（第四十轮：**品牌标换成新图标**）
+
+用户给了新的品牌标（蓝底圆角方块 + 白色 `IEML` 字标），并说"这个正式成为我们的品牌标，
+包括左上角也要换"。
+
+### 做了什么
+
+* 用它重跑了 `pnpm exec tauri icon`：`.ico`（95 KB，多尺寸）/ `.icns` / 32·64·128·256
+  PNG / Windows Store 与 iOS·Android 全套**都是新标**；
+* 前端那份缩到 **128px**（源图 991 KB，界面里只显示 22px —— 直接把 991 KB 打进
+  前端产物是浪费）；
+* **左上角是你自己改的**（`AppShell.tsx` 里 `import brandIcon from '../assets/brand-icon.png'`
+  + `<img>`）；`VersionIcon.tsx` 里也加了 `version-icon.png`。
+
+### ★★ 我补的那一处：**图片导入编译不过**
+
+你的两处 `import ... from '../assets/*.png'` 都报：
+
+```text
+error TS2307: Cannot find module '../assets/brand-icon.png' or its corresponding type declarations
+```
+
+代码本身没问题 —— **TypeScript 默认不认识 `.png` 这种导入**，需要一份模块声明告诉它
+"`import` 进来的是个字符串 URL"。以前没报，是因为**之前没有任何地方 import 过图片**。
+
+→ 新建 `src/vite-env.d.ts`（`/// <reference types="vite/client" />`），
+Vite 那份类型里 png / jpg / svg / webp 全都有声明。加完 `tsc` 立刻转绿。
+
+★ 这类错值得记一笔：**它只在"第一次引入某类资源"时出现**，
+而且 `vite build` 不做类型检查 —— 所以只跑打包是发现不了的（打包能过、类型是红的）。
+
+### 还差一条
+
+**资源中心的同款翻页**（mod / 资源包 / 光影 / 数据包）仍然没做 ——
+这一轮的时间全花在品牌标与编译错误上。它还是下一轮的第一件事。
+
+---
 ## 0.1.0-beta.27 — 2026-09-16（第三十九轮：加载器的 title 提示也删掉）
 
 用户："鼠标停在选项上时同一句仍在 title 里，这个也不要，大伙都知道是什么"。

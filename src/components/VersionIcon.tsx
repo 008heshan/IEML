@@ -27,6 +27,8 @@
  * 界面别处（版本列表、下载页、概览）都调它 —— 否则同一条规则会出现第二份。
  */
 
+import versionIcon from '../assets/version-icon.png';
+
 /** 一个版本世代：谁属于它、叫什么、用什么色 */
 export interface VersionFamily {
   key: string;
@@ -103,14 +105,7 @@ export function VersionIcon({
       title={title ?? version}
       aria-hidden="true"
     >
-      <svg viewBox="0 0 32 32" width={size} height={size}>
-        {/* 顶面 */}
-        <path className="vi-top" d="M16 4 28 10.5 16 17 4 10.5z" />
-        {/* 左面 */}
-        <path className="vi-left" d="M4 10.5 16 17v11L4 21.5z" />
-        {/* 右面 */}
-        <path className="vi-right" d="M28 10.5 16 17v11l12-6.5z" />
-      </svg>
+      <img src={versionIcon} width={size} height={size} alt="" style={{ borderRadius: 4 }} />
     </span>
   );
 }
