@@ -120,6 +120,22 @@ export interface AppState {
   subPage: SubPageId;
   /** 下载页当前页签 */
   downloadTab: DownloadTab;
+  /**
+   * 下载页要**装进哪个实例**（由别的页面带过来）。
+   *
+   * ★ 2026-09-17 新增。在此之前这件事靠 `ieml:download-target` **事件**传递，
+   *   而 `DownloadPage` 的监听器是在它**挂载之后**的 effect 里注册的 ——
+   *   从"版本列表 / 概览页"点「安装 Mod」时下载页还没挂载，事件当场丢掉，
+   *   于是玩家以为自己选的版本生效了，其实装到了"最近玩过的那个"上，
+   *   **而且界面上看不出来**。
+   *
+   *   这与 `goDownloadTab` 当初解决的问题是**同一个**（见 AppContext 里那段注释：
+   *   "事件在目标页挂载前被丢掉"）。所以修法也一样：放进 state，一次派发定下来，
+   *   不依赖任何事件时序。
+   *
+   * null = 没指定 → 下载页沿用原来的"最近玩过的那个"。
+   */
+  downloadTargetId: string | null;
 
   /* --- 全局 --- */
   theme: 'dark' | 'light';
@@ -206,6 +222,7 @@ export const initialState: AppState = {
   openInstanceId: null,
   subPage: 'overview',
   downloadTab: 'game',
+  downloadTargetId: null,
 
   theme: 'dark',
   ready: false,
@@ -276,6 +293,8 @@ export type Action =
   | { type: 'nav/close-instance' }
   | { type: 'nav/sub'; sub: SubPageId }
   | { type: 'nav/download-tab'; tab: DownloadTab }
+  /** 指定下载页要装进哪个实例；`id: null` = 交回给"最近玩过的那个" */
+  | { type: 'nav/download-target'; id: string | null }
   | { type: 'theme'; theme: 'dark' | 'light' }
   /* 实例 */
   | { type: 'instances/set'; instances: Instance[] }
@@ -389,6 +408,9 @@ export function reducer(state: AppState, action: Action): AppState {
 
     case 'nav/download-tab':
       return { ...state, downloadTab: action.tab };
+
+    case 'nav/download-target':
+      return { ...state, downloadTargetId: action.id };
 
     case 'theme':
       return { ...state, theme: action.theme };

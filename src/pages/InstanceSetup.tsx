@@ -33,7 +33,9 @@ import {
   Card,
   CardTitle,
   Chip,
+  CustomSelect,
   EmptyState,
+  Field,
   Note,
   Segmented,
   Select,
@@ -60,6 +62,8 @@ import {
   resolveJavaRequirement,
   validateJavaRangeText,
   formatJavaRange,
+  wholeGb,
+  wholeGbFromMb,
 } from '../domain';
 
 export function InstanceSetup() {
@@ -108,7 +112,22 @@ export function InstanceSetup() {
   const machine = state.machine;
   const totalGb = machine?.totalMemoryGb ?? 16;
   const availableGb = machine?.availableMemoryGb ?? 8;
-  const memoryGb = active.config.memoryMb / 1024;
+  /*
+   * ★★ 内存显示一律取整数（下面摘要行与 `ram-value` 用的是同一个变量）★★
+   *
+   * 用户原话（截图：摘要行写着 `内存 3.599609375 GB`，带「自动」角标）：
+   *   「内存取整数即可，给也是直接给整数内存」。
+   *
+   * 那个长小数的来源就是这里原来的 `active.config.memoryMb / 1024`：
+   * 自动算法给出 3.6 GB → 存成 `Math.round(3.6 * 1024)` = 3686 MB →
+   * 3686 / 1024 = 3.599609375。1024 不是 10 的幂，只要 MB 值不是整 GB，
+   * 除回来必然是一长串小数，**显示层不取整就一定会再犯**。
+   *
+   * ★ 内部单位仍是 MB，`memoryMb` 的语义一个字节都没改：引擎按 MB 算内存，
+   *   `memoryBar` 也照旧吃 MB 换算来的值，取整只发生在"给人看的那一眼"。
+   * ★ 这里不用再自己写 `Math.round(x / 1024)`：转换只有一份，见 `wholeGbFromMb`。
+   */
+  const memoryGb = wholeGbFromMb(active.config.memoryMb);
   const bar = memoryBar(memoryGb, totalGb, availableGb);
 
   // ★ 同样要带上"Mojang 在版本 JSON 里声明的那个数"（26.2 写的是 25）
@@ -178,6 +197,14 @@ export function InstanceSetup() {
   const [rangeError, setRangeError] = useState<string | null>(null);
   const [rangeHint, setRangeHint] = useState<string | null>(null);
 
+  /*
+   * 滑块手柄位置也由**取整后的 GB** 反推（而不是 `gbToGear(原始小数 GB)`）。
+   *
+   * ★ 用户："给也是直接给整数内存" —— 手柄停在哪一档，数字就报哪一档的值：
+   *   `gearToGb(19)` 是 5.0、`gearToGb(16)` 是 3.5，若手柄按 3.6 定位、
+   *   数字却显示 4 GB，就又回到 ADR-001 记过的"手柄 1.7 / 数字 2.5 对不上"。
+   *   现在两边同源于 `memoryGb`，永远一致。
+   */
   const gear = gbToGear(memoryGb, totalGb);
   const gearMax = maxGear(totalGb);
 
@@ -303,14 +330,12 @@ export function InstanceSetup() {
 
       {/* ★ `stack-roomy`：这一页几乎全是设置行，行距要给够（用户："都快贴一块儿了"） */}
       <div className="stack stack-roomy">
-        {/* ==================== 作用域提示条 ====================
-            ★ 一行说完（0.1.0-beta.1）：这句话的作用是让用户知道"改这里不会
-              动到别的版本"，三个标签的含义本来就写在各自那一行的右端。
-            ==================================================== */}
-        <p className="scope-line">
-          只作用于「{active.config.name}」，不影响其他实例 ——
-          「跟随全局」的项会随全局变动，「已覆盖」的项已单独设定。
-        </p>
+        {/*
+          ★ 2026-09-16 用户（截图："图片里的这些启动器文本，删除"）：
+            这里原来有一行 `scope-line`："只作用于「X」，不影响其他实例 ——
+            '跟随全局'的项会随全局变动，'已覆盖'的项已单独设定。"
+            三个标签的含义本来就写在各自那一行的右端，这行是重复解释，删掉。
+        */}
 
         {/*
           ==================== 一眼摘要（0.1.0-beta.2 补）====================
@@ -449,23 +474,29 @@ export function InstanceSetup() {
               disabled={active.config.memorySource !== 'custom'}
               onChange={(e) => {
                 const gb = gearToGb(Number(e.target.value));
-                updateConfig(active.id, { memoryMb: Math.round(gb * 1024), memorySource: 'custom' });
+                /*
+                 * ★ 用户："给也是直接给整数内存" —— 用户能设的值也只有整数 GB。
+                 *   档位曲线本身没动（2~8 GB 区间仍是 0.5 一档），
+                 *   但落库前取整，`memoryMb` 从此是整 GB 的 MB 值，
+                 *   界面也就不会再反推出 `3.599609375` 这种数。
+                 */
+                updateConfig(active.id, {
+                  memoryMb: Math.round(wholeGb(gb) * 1024),
+                  memorySource: 'custom',
+                });
               }}
             />
             <span className="ram-value mono">{memoryGb} GB</span>
           </div>
 
-          {/* ★ 依据行用真实算出来的数值，不写死（原稿写死"向 2.7 GB 递进"是错的） */}
-          <div className="ram-basis">
-            <IconInfo />
-            <span>
-              {active.config.memorySource === 'auto'
-                ? memoryReasoning(state.mods.entries.length, autoSuggestion)
-                : active.config.memorySource === 'global'
-                  ? `当前跟随全局设置（${Math.round(state.prefs.globalMemoryMb / 1024)} GB），改动全局会同步影响本实例。`
-                  : `自定义值。本实例的自动配置建议为 ${autoSuggestion.gb} GB（共 ${state.mods.entries.length} 个 Mod）。`}
-            </span>
-          </div>
+          {/*
+            ★ 2026-09-16 用户（截图）：把内存那一行"依据"整块删掉 ——
+              "检测到 N 个 Mod，按「1.5 + N/90 ≈ x GB」起步，可用内存充裕时向 y GB 递进；
+               本次分配 z GB（可用 w GB）"。
+              ★ 数值本身（滑块 + `ram-value` 里那个 GB）都在，删掉的是解释它的那段话。
+              ★ `memoryReasoning()` 留在 `domain/memory.ts` 里没删：它是算内存的域逻辑，
+                有自己的测试（删了就成了"界面改了、规则没了"）。
+          */}
         </Card>
 
         {/* ==================== Java ==================== */}
@@ -477,13 +508,13 @@ export function InstanceSetup() {
             Java 运行时
           </CardTitle>
 
-          <Note tone={matchedRuntime ? 'success' : 'warning'} icon={<IconInfo />} title={javaReq.reason}>
-            {matchedRuntime ? (
-              <>
-                已匹配到 <span className="mono">{matchedRuntime.vendor} {matchedRuntime.version}</span>
-                （{matchedRuntime.path}）
-              </>
-            ) : (
+          {/*
+            ★ 2026-09-16 用户（截图）：这条 Note 里"已匹配到 Temurin 25.0.3（路径）"那两行删掉。
+              现在**匹配成功时什么都不显示**；只有"本机没有需要的 Java"时才出现 ——
+              那时候它是**可操作的**（自动下载按钮 + `javaReq.reason` 这条版本依据）。
+          */}
+          {!matchedRuntime ? (
+            <Note tone="warning" icon={<IconInfo />} title={javaReq.reason}>
               <>
                 本机没有 Java {javaReq.major}。可以
                 <Button
@@ -523,23 +554,35 @@ export function InstanceSetup() {
                 </Button>
                 或手动指定。
               </>
-            )}
-          </Note>
+            </Note>
+          ) : null}
 
-          <Select
-            label="选择方式"
-            value={active.config.javaMode}
-            onChange={(e) =>
-              updateConfig(active.id, {
-                javaMode: e.target.value as 'auto' | 'range' | 'instance-folder' | 'path',
-              })
-            }
-          >
-            <option value="auto">自动选择</option>
-            <option value="range">按版本区间选择</option>
-            <option value="instance-folder">使用实例文件夹中的 Java</option>
-            <option value="path">使用指定的 Java</option>
-          </Select>
+          {/*
+            ★ 2026-09-17 用户（发来展开状态的截图）："图四图五，这个下拉栏也得改"。
+              原来这里是 `Select`（原生 <select>）—— 展开的菜单是**浏览器画的**，
+              灰底、选项挤在一起，在深色玻璃界面里非常突兀。
+              换成设置页「下载源」同款的 `CustomSelect`（`.cs-*`）。
+              ★ 行为不变：值仍然走同一条 `updateConfig(active.id, { javaMode })`，
+                只是换了控件 —— 注意 `CustomSelect` 的 `onChange` 直接给**值**，
+                不再有原生那个 `e.target.value`。
+          */}
+          <Field label="选择方式">
+            <CustomSelect
+              value={active.config.javaMode}
+              onChange={(v) =>
+                updateConfig(active.id, {
+                  javaMode: v as 'auto' | 'range' | 'instance-folder' | 'path',
+                })
+              }
+              ariaLabel="选择方式"
+              options={[
+                { value: 'auto', label: '自动选择' },
+                { value: 'range', label: '按版本区间选择' },
+                { value: 'instance-folder', label: '使用实例文件夹中的 Java' },
+                { value: 'path', label: '使用指定的 Java' },
+              ]}
+            />
+          </Field>
 
           {active.config.javaMode === 'range' ? (
             <div className="field-row">
@@ -600,26 +643,49 @@ export function InstanceSetup() {
         <Card>
           <CardTitle icon={<IconGear />}>启动选项</CardTitle>
 
+          {/*
+            ★★ 2026-09-17 用户（截图）："版本隔离的下拉栏直接爆了"。
+
+            根因是**这个 `Field` 外面又套了一层 `.field-row`**：
+            `Field` 组件自己就渲染 `<div className="field-row">`（label / control / source 三列），
+            再套一层就变成 **grid 套 grid** —— 外层把内层当成"一个格子"，
+            内层那三列被压进 1fr 里，触发器直接扁成一个小方块。
+
+            原来能work是因为这行用的是**原生 `<select>` 直接当 grid 子元素**；
+            换成 `Field` 之后多了一层容器，布局就塌了。
+
+            修法：**去掉外层那层 wrapper**，把 `id="row-isolation"` 交给 `Field` 自己的
+            `rowId`（这个 prop 就是为"从摘要跳过来"准备的），
+            label / hint / 控件 / Chip 全部由 `Field` 的三列承担 —— 与原来一模一样。
+          */}
           <div className="field-row" id="row-isolation">
-            <label className="field-label" htmlFor="iso">
+            <label className="field-label">
               版本隔离
               <span className="field-hint">存档 / Mod / 配置是否与其他实例共用</span>
             </label>
             <div className="field-control">
-              <select
-                id="iso"
-                className="input"
+              {/*
+                ★ 2026-09-17 用户（发来展开状态的截图）："图四图五，这个下拉栏也得改"。
+                  原来这里是原生 `<select id="iso">` —— 展开的菜单由浏览器绘制，
+                  CSS 改不了。换成 `CustomSelect`（`.cs-*`）。
+                  ★ 行为不变：`onChange` 直接给值，不再有 `e.target.value`。
+                  ★ 原来那个 `htmlFor="iso"` 一并去掉：自绘下拉是一个 `<button>`，
+                    它的无障碍名称由 `ariaLabel` 提供（`CustomSelect` 的注释里写了原因）。
+              */}
+              <CustomSelect
                 value={active.config.isolation}
-                onChange={(e) =>
+                onChange={(v) =>
                   updateConfig(active.id, {
-                    isolation: e.target.value as 'auto' | 'on' | 'off',
+                    isolation: v as 'auto' | 'on' | 'off',
                   })
                 }
-              >
-                <option value="auto">自动判定（推荐）</option>
-                <option value="on">强制隔离</option>
-                <option value="off">不隔离（共享）</option>
-              </select>
+                ariaLabel="版本隔离"
+                options={[
+                  { value: 'auto', label: '自动判定（推荐）' },
+                  { value: 'on', label: '强制隔离' },
+                  { value: 'off', label: '不隔离（共享）' },
+                ]}
+              />
             </div>
             <Chip tone={active.config.isolation === 'auto' ? 'neutral' : 'accent'}>
               {active.config.isolation === 'auto' ? '自动' : '已覆盖'}

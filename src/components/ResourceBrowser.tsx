@@ -182,10 +182,13 @@ function VersionPicker({
   return (
     <div className="res-versions">
       <div className="res-versions-head">
+        {/*
+          ★ 2026-09-16 用户（截图）：删掉"—— 自己挑一个装"和右边那句
+            "第一个是上游最新发布的，不代表'最适合你'"。
+        */}
         <span>
-          <b>{hit.title}</b> 的全部版本（{versions.length} 个）—— 自己挑一个装
+          <b>{hit.title}</b> 的全部版本（{versions.length} 个）
         </span>
-        <span className="dim">第一个是上游最新发布的，不代表"最适合你"</span>
       </div>
       <div className="res-version-list">
         {versions.map((v) => {
@@ -533,7 +536,8 @@ export function ResourceCenterBody({
             className="input"
             type="search"
             aria-label={`搜索${current?.display ?? '资源'}`}
-            placeholder={`搜索${current?.display ?? '资源'}（留空 = 看热门）`}
+            /* ★ 2026-09-16 用户（截图）：占位符里"（留空 = 看热门）"删掉，只留"搜索XX" */
+            placeholder={`搜索${current?.display ?? '资源'}`}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
@@ -544,13 +548,12 @@ export function ResourceCenterBody({
         <Button variant="primary" size="sm" onClick={() => void runSearch()}>
           搜索
         </Button>
-        {current && instance ? (
-          <span className="dim res-where">
-            装到「{instance.config.name}」· {instance.mcVersion}
-            {current.needs_loader_filter ? ` + ${loaderLabel}` : ''} 的{' '}
-            <span className="mono">{current.install_dir}/</span>
-          </span>
-        ) : null}
+        {/*
+          ★ 2026-09-16 用户（截图）：这里原来有一行"装到「版本名」· 26.2 + fabric 的 mods/"
+            （资源包页签是"的 resourcepacks 目录"）—— 用户要求删掉。
+          ★ 来历要说清：这一行是 **beta.26 用户自己要求加的**（"装到哪写清"），
+            这次是用户看过之后决定不要了。别再当成"以前的需求"加回来。
+        */}
       </div>
 
       {error ? (

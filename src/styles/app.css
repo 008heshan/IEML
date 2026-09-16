@@ -951,6 +951,76 @@
   background: var(--success-subtle);
   color: var(--success);
 }
+/*
+ * ★ 正版账号头像（2026-09-17 用户："对勾位置换成正版账号头像，
+ *   **头像不要做圆角**（不会就看 PCL）"）。
+ *
+ *   **按 PCL 的做法**：拿 Mojang 官方的 64×64 皮肤原图，在前端裁出头部 ——
+ *   不请求任何第三方头像站（实测 `mc-heads.net` 回 403，而 `<img>` 是静默失败的）。
+ *   裁剪用 `background-position` 在行内样式里算（见 `AccountPanel`），
+ *   这里只负责尺寸、圆角与像素化。
+ *
+ *   `border-radius: 0` 是**用户明确要求**的 —— PCL 的账号头像也是方的。
+ *   父级 `.acct-avatar` 有 `--radius-md` 圆角，这里必须显式覆盖掉。
+ *
+ *   `image-rendering: pixelated`：皮肤的头是 8×8 像素图，
+ *   放大到 40px 用默认的双线性插值会糊；像素化才是它的正确观感。
+ */
+.acct-head {
+  width: 40px;
+  height: 40px;
+  border-radius: 0;
+  display: block;
+  /* 两层（头 / 帽子）用绝对定位叠放 —— 见下面 .acct-head-layer */
+  position: relative;
+}
+/*
+ * ★ 头部与帽子层（2026-09-17 用户："帽子没渲染"）。
+ *
+ *   原来是**一个元素叠两层背景**，坐标算对了但实际只画出一层。
+ *   改成两个元素显式叠放：谁盖在谁上面由 DOM 顺序决定，
+ *   不再依赖 `background` 的多层语义（图层序 / 逗号解析 / React 序列化）。
+ *
+ *   `background-size: 320px`：显示 40px 是从源图 8px 放大 **5 倍**来的，
+ *   所以整张 64×64 皮肤要放到 64×5 = 320px；具体取哪一块由行内的
+ *   `background-position` 决定（头部 -40,-40；帽子 -200,-40）。
+ */
+.acct-head-layer {
+  position: absolute;
+  inset: 0;
+  background-repeat: no-repeat;
+  background-size: 320px 320px;
+  image-rendering: pixelated;
+}
+/* 帽子层：只做标记用，位置由行内 background-position 给（DOM 在后 ⇒ 盖在头上） */
+/*
+ * ★★ 帽子层要**比头大一圈**（2026-09-17 用户发来 PCL 的对照图："这是PCL的"）。
+ *
+ *   Minecraft 里帽子层是头模型**外扩 0.5 像素**的同一形状：
+ *   头是 8×8×8，帽子层是 **9×9×9** —— 所以头发会**包住**头、左右和顶部凸出来。
+ *
+ *   原来我按"和头同样大小、同样位置"画，头发就全被框在头的方形轮廓里，
+ *   看起来像"没渲染"。实测 PCL 的图：头发外框 / 脸 = **1.09**，
+ *   与理论值 9/8 = **1.125** 吻合（差值来自抗锯齿）。
+ *
+ *   算法（头显示 40px）：
+ *     帽子显示尺寸 = 40 × 9/8 = **45px**
+ *     居中偏移     = -(45-40)/2 = **-2.5px**
+ *     背景缩放     = 64 × (45/8) = **360px**（源图 8px 的这块要铺满 45px）
+ *     坐标         = 源(40,8) × 360/64 = **(225, 45)** → position `-225px -45px`
+ *   ——这三处数字是**一套**，改一个另外两个都要跟着改。
+ */
+.acct-head-hat {
+  /* ★ 顺序要紧：`inset: auto` 必须写在 left/top **之前**，
+     否则它会把前面设的 left/top 一起重置成 auto（CSS 后者覆盖前者） */
+  inset: auto;
+  width: 45px;
+  height: 45px;
+  left: -2.5px;
+  top: -2.5px;
+  background-size: 360px 360px;
+  pointer-events: none;
+}
 .acct-avatar svg {
   width: 18px;
   height: 18px;
@@ -1984,21 +2054,27 @@ tbody tr.clickable:focus-visible {
   color: var(--text-secondary);
   font-size: var(--text-base);
 }
+/*
+ * 启动页的图标。
+ *
+ * ★ 2026-09-17 用户（截图：启动页中间一个粉紫色方块 + "正在准备…"）：
+ *   「加载页的图标没改，用现在的 icon」。
+ *   组件那边已从内联方块 SVG 换成 `brand-icon.png`（见 `AppShell.tsx`），
+ *   所以这里不再需要那层 `background: var(--accent)` 色板 ——
+ *   **品牌图标自带蓝色底与圆角**，再叠一层会在图标边缘露出一圈色块。
+ */
 .boot-mark {
   width: 48px;
   height: 48px;
-  border-radius: var(--radius-lg);
-  background: var(--accent);
-  color: #fff;
   display: grid;
   place-items: center;
 }
-.boot-mark svg {
-  width: 26px;
-  height: 26px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2.2;
+.boot-mark img {
+  width: 48px;
+  height: 48px;
+  display: block;
+  /* 图标本身已是圆角方块，这里只保证与容器对齐时不被拉伸 */
+  object-fit: contain;
 }
 
 /* ============================ 栅格 ============================ */
@@ -2181,6 +2257,20 @@ tbody tr.clickable:focus-visible {
   border-radius: var(--radius-md);
   background: var(--bg-overlay);
   box-shadow: var(--shadow-lg);
+}
+/*
+ * ★★ 朝上开（2026-09-17 用户："java选择方式的下拉栏被遮挡了"）。
+ *
+ *   `.content`（二级页面的滚动容器）带 `overflow-y: auto`，而本面板是
+ *   `position: absolute` —— 超出容器底部的部分会被**裁掉**，越靠页面底部越明显。
+ *
+ *   翻转的**判断**在组件里做（`CustomSelect` 的 `measureDrop`：量视口剩余空间，
+ *   下面不够且上面更宽裕才翻），这里只负责"翻上去之后长什么样"。
+ *   为什么不在这里用纯 CSS 解决：CSS 没有"容器还剩多少空间"这个概念。
+ */
+.cs[data-drop='up'] .cs-menu {
+  top: auto;
+  bottom: calc(100% + 4px);
 }
 .cs-option {
   padding: 8px 10px;

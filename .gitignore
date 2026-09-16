@@ -31,3 +31,10 @@ instances.json
 
 # --- 打包出来的安装程序不进仓库（体积大、且随时能重建）---
 /src-tauri/target/release/bundle/
+
+# --- ★ 更新签名私钥：绝不能进仓库（丢了就再也发不了更新）---
+*.key
+*.key.pub
+
+# --- 图标瘦身前的原图备份（2.2 MB，只在本地留底，不入库）---
+/src/assets/_original/

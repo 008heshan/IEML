@@ -142,6 +142,21 @@ interface AppContextValue {  state: AppState;
   setDownloadTab: (tab: DownloadTab) => void;
   /** ★ 切到下载页并指定页签（一次派发，不依赖事件时序） */
   goDownloadTab: (tab: DownloadTab) => void;
+  /**
+   * 切到下载页的某个页签，并**指定装到哪个实例**。
+   *
+   * 存在的理由与 `goDownloadTab` 相同（事件在目标页挂载前会被丢掉），
+   * 只是多带一个"装给谁"。详见实现处的注释。
+   */
+  goDownloadFor: (tab: DownloadTab, instanceId: string | null) => void;
+  /**
+   * 单独设置"下载页装到哪个实例"（下载页里那个「装到」选择器用它）。
+   *
+   * 与 `goDownloadFor` 写的是**同一个字段** —— 这是刻意的：
+   * 跳转过来的目标和玩家自己选的目标只留**一处真相**，
+   * 否则"跳过来之后又手动改选"会出现两个值互相打架。
+   */
+  setDownloadTarget: (instanceId: string | null) => void;
   setTheme: (t: 'dark' | 'light') => void;
 
   /* --- 实例 --- */
@@ -733,6 +748,38 @@ export function AppProvider({ children }: { children: ReactNode }) {
     dispatch({ type: 'nav', page: 'download' });
   }, []);
 
+  /**
+   * ★★ 切到下载页 + 指定页签 + **指定装到哪个实例**，一次派发全部定下来。
+   *
+   *   为什么不能写成"先 `go('download')`、再发一个 `ieml:download-target` 事件"：
+   *   `DownloadPage` 的监听器是在它**挂载之后**的 effect 里注册的。
+   *   从「版本列表」或「概览页」点「安装 Mod」时下载页还没挂载，
+   *   事件当场被丢掉 —— 玩家指定的那个版本白选了，Mod 会被装到
+   *   "最近玩过的那个"上，**而且界面上看不出来**（下载页会安静地显示另一个版本）。
+   *
+   *   这和上面 `goDownloadTab` 当初解决的问题是**同一个**
+   *   （见它上面那段注释："事件在目标页挂载前被丢掉"），所以修法也一样：
+   *   放进 state，一次派发定下来，不依赖任何事件时序。
+   *
+   *   触发场景（用户 2026-09-16）：
+   *   「原版不给装mod的选项，**能装mod的版本，跳转mod下载页**」。
+   */
+  const goDownloadFor = useCallback((tab: DownloadTab, instanceId: string | null) => {
+    dispatch({ type: 'nav/download-tab', tab });
+    dispatch({ type: 'nav/download-target', id: instanceId });
+    dispatch({ type: 'nav', page: 'download' });
+  }, []);
+
+  /**
+   * 单独设置下载页的目标实例（下载页那个「装到」选择器用）。
+   *
+   * 与 `goDownloadFor` 写同一个字段 —— **一处真相**。这样
+   * "跳过来 → 又手动改选"不会出现两个值打架，也不需要同步 effect。
+   */
+  const setDownloadTarget = useCallback((instanceId: string | null) => {
+    dispatch({ type: 'nav/download-target', id: instanceId });
+  }, []);
+
   const setTheme = useCallback((theme: 'dark' | 'light') => dispatch({ type: 'theme', theme }), []);
 
   const setLaunchTarget = useCallback((id: string | null) => {
@@ -941,6 +988,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setSubPage,
     setDownloadTab,
     goDownloadTab,
+    goDownloadFor,
+    setDownloadTarget,
     setTheme,
     target,
     open,

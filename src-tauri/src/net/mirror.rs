@@ -156,6 +156,33 @@ pub fn mirror_url(url: &str, source: Source) -> String {
         return format!("https://bmclapi2.bangbang93.com/maven/{rest}");
     }
 
+    /*
+     * ★★ Fabric 的 meta **改写了**（2026-09-16 复测，推翻 2026-09-13 的旧结论）
+     *
+     * 旧结论「Fabric 官方 meta 直连 2.75 秒，比镜像快，有更快的路就别绕」，
+     * 复测后**不成立**。逐端点实测（每项间隔 400ms，避免触发限流）：
+     *
+     *   | 端点 | 官方 | BMCLAPI 镜像 |
+     *   |---|---|---|
+     *   | `/v2/versions/loader` | 1.36s（4 次里 3 次超时） | **0.30s** |
+     *   | `/v2/versions/loader/1.20.1` | 1.01s | 超时 |
+     *   | `/v2/versions/loader/{mc}/{v}/profile/json` | **超时 12s** | **0.38s** |
+     *   | `/v2/versions/game` | **超时 12s** | **0.48s** |
+     *   | `/v2/versions/installer` | **超时 12s** | **0.34s** |
+     *
+     * 关键点：**两侧互补**，官方挂 3/5、镜像挂 1/5。所以改写不是"用镜像换掉官方"，
+     * 而是让 `candidate_urls` 能同时拿到两条路 —— 这正是多候选兜底存在的意义。
+     * 不改写的话，官方一超时就直接失败，没有任何退路。
+     *
+     * ★ 改写前必须确认镜像**不是过期副本**（否则会"查不到最新版本"）：
+     *   实测两侧 `loader` 列表都是 **253 条**，版本集合**完全相同**
+     *   （仅官方有 0 个、仅镜像有 0 个）。字节数 40674 vs 29793 的差异
+     *   只是 JSON 空白格式，不是数据缺失。
+     */
+    if let Some(rest) = url.strip_prefix("https://meta.fabricmc.net/") {
+        return format!("https://bmclapi2.bangbang93.com/fabric-meta/{rest}");
+    }
+
     // Modrinth / CurseForge 的镜像是**兜底候选**，由 `candidate_urls` 追加，
     // 不在这里改写首选地址（见 `mcimirror_url` 的说明）。
     // 其它域名（Adoptium / OptiFine / Fabric meta 等）本来就没有镜像。
@@ -249,7 +276,7 @@ pub fn candidate_urls(original: &str, preferred: Source) -> Vec<(Source, String)
     let mirrored = mirror_url(original, Source::Bmclapi);
     let official = original.to_string();
 
-    // ★ Modrinth / CurseForge：**官方 CDN 首选，mcimirror 兜底**。
+    // ★ Modrinth / CurseForge：**国内 mcimirror 首选，官方兜底**。
     //
     //   为什么必须有这一条（用户报的"下载慢得要死 / 有些版本甚至报错"）：
     //   这两个域的地址在镜像表里改写不出东西，于是候选列表**只有一个**
@@ -257,11 +284,25 @@ pub fn candidate_urls(original: &str, preferred: Source) -> Vec<(Source, String)
     //   没有任何"换一条路"的余地。实测就是这样把 2 MB 的 Fabric API
     //   判成"装不上"的（见 net/download.rs 里 `switchable` 的说明）。
     //
-    //   顺序刻意是"官方在前"：本机实测官方 230 KB/s、mcimirror 146 KB/s，
-    //   把镜像放首位会拖慢所有人；它只在前面失败时才被用到。
+    //   ★★ 顺序在 2026-09-16 反转为「国内优先」（原来是官方在前）：
+    //
+    //   | 端点 | 官方 | 国内 mcimirror |
+    //   |---|---|---|
+    //   | CurseForge `/v1/games` | 1/3 成功, 2432ms | **3/3 成功, 430ms** |
+    //   | forgecdn 文件 | 769ms | **432ms** |
+    //   | Modrinth `/v2/project/sodium` | 227ms | 266ms（相当） |
+    //   | Modrinth CDN jar | 1/3 | 0/3（**两条路都不通**，见下） |
+    //
+    //   旧注释记录的「官方 230 KB/s、mcimirror 146 KB/s」已不再成立。
+    //   策略上按「国内有的就用国内」定默认序，实际次序由
+    //   `source.rs` 的健康分 + 启动期延迟探测动态调整 —— 所以这里翻转
+    //   **不会**把本来更快的官方路堵死：它仍然是第二个候选。
+    //
+    //   ★ Modrinth CDN 那一行说明一个更重要的事实：**两条路可能同时不通**，
+    //     这时候选列表再长也没用，只能靠引擎重试。别把候选数当成可用性保证。
     if let Some(m) = mcimirror_url(original) {
         if m != official {
-            return vec![(preferred, official), (Source::Bmclapi, m)];
+            return vec![(Source::Bmclapi, m), (preferred, official)];
         }
     }
 
@@ -519,17 +560,22 @@ mod tests {
     ///   或 CDN 边缘挂住，就没有任何"换一条路"的余地。
     ///   实测后果：2 MB 的 Fabric API 被判成"装不上"，用户看到的是
     ///   「所有下载源都失败了（试过 1 个）」。
+    ///
+    ///   ★ 2026-09-16 顺序反转为「国内优先」：CurseForge 实测国内
+    ///     3/3 成功 430ms、官方 1/3 成功 2432ms。官方仍是第二候选。
     #[test]
     fn modrinth_downloads_have_a_second_candidate() {
         let jar = "https://cdn.modrinth.com/data/P7dR8mSH/versions/rvI2dfzR/fabric-api.jar";
         let c = candidate_urls(jar, Source::Bmclapi);
         assert_eq!(c.len(), 2, "Modrinth 的 CDN 地址必须有两个候选，实际 {c:?}");
-        // 首选必须是官方（实测官方 230 KB/s 比镜像 146 KB/s 快，不能反着来）
-        assert_eq!(c[0].1, jar);
+        // 国内镜像在首位（策略：国内有的就用国内）
         assert_eq!(
-            c[1].1,
+            c[0].1,
             "https://mod.mcimirror.top/data/P7dR8mSH/versions/rvI2dfzR/fabric-api.jar"
         );
+        // 官方兜底，不能被丢掉
+        assert_eq!(c[1].1, jar);
+        assert_ne!(c[0].1, c[1].1, "两个候选不能是同一个 URL");
     }
 
     #[test]
@@ -537,12 +583,13 @@ mod tests {
         let u = "https://edge.forgecdn.net/files/1234/567/sodium.jar";
         let c = candidate_urls(u, Source::Bmclapi);
         assert_eq!(c.len(), 2);
-        assert_eq!(c[0].1, u);
-        assert_eq!(c[1].1, "https://mod.mcimirror.top/files/1234/567/sodium.jar");
+        assert_eq!(c[0].1, "https://mod.mcimirror.top/files/1234/567/sodium.jar");
+        assert_eq!(c[1].1, u);
 
         let api = "https://api.curseforge.com/v1/mods/search?gameId=432";
         let c2 = candidate_urls(api, Source::Bmclapi);
-        assert_eq!(c2[1].1, "https://mod.mcimirror.top/curseforge/v1/mods/search?gameId=432");
+        assert_eq!(c2[0].1, "https://mod.mcimirror.top/curseforge/v1/mods/search?gameId=432");
+        assert_eq!(c2[1].1, api);
     }
 
     /// 实测过的四条改写规则（URL 形状照抄 2026-09-13 的手工验证结果）
@@ -620,15 +667,59 @@ mod tests {
         );
     }
 
-    /// ★ Fabric 的 meta **故意不改写**：实测官方 2.75 秒比绕镜像更快。
-    ///   这条测试是为了防止有人"顺手把 Fabric 也加进镜像表"。
+    /// ★★ Fabric 的 meta **必须改写**（2026-09-16 复测，推翻旧结论）。
+    ///
+    ///   旧测试 `fabric_meta_is_left_alone_because_official_is_faster` 断言官方更快，
+    ///   依据是 2026-09-13 单次测得的「官方 2.75s / 38KB」。复测后不成立：
+    ///
+    ///   | 端点 | 官方 | 镜像 |
+    ///   |---|---|---|
+    ///   | `/v2/versions/loader` | 1.36s（4 次 3 超时） | 0.30s |
+    ///   | `…/profile/json` | 超时 12s | 0.38s |
+    ///   | `/v2/versions/game` | 超时 12s | 0.48s |
+    ///   | `/v2/versions/installer` | 超时 12s | 0.34s |
+    ///
+    ///   而且两侧**互补**（官方挂 3/5、镜像挂 1/5），改写后才有多候选兜底。
+    ///   镜像非过期副本：两侧 loader 列表都是 253 条，版本集合完全相同。
     #[test]
-    fn fabric_meta_is_left_alone_because_official_is_faster() {
+    fn fabric_meta_is_rewritten_to_bmclapi() {
         assert_eq!(
             mirror_url("https://meta.fabricmc.net/v2/versions/loader", Source::Bmclapi),
-            "https://meta.fabricmc.net/v2/versions/loader",
-            "Fabric meta 直连实测 2.75s / 38KB，镜像更慢，别绕"
+            "https://bmclapi2.bangbang93.com/fabric-meta/v2/versions/loader"
         );
+        // 带路径参数的三个端点（都是代码里真实用到的）
+        assert_eq!(
+            mirror_url(
+                "https://meta.fabricmc.net/v2/versions/loader/1.20.1/0.16.9/profile/json",
+                Source::Bmclapi
+            ),
+            "https://bmclapi2.bangbang93.com/fabric-meta/v2/versions/loader/1.20.1/0.16.9/profile/json"
+        );
+        assert_eq!(
+            mirror_url("https://meta.fabricmc.net/v2/versions/game", Source::Bmclapi),
+            "https://bmclapi2.bangbang93.com/fabric-meta/v2/versions/game"
+        );
+        assert_eq!(
+            mirror_url("https://meta.fabricmc.net/v2/versions/installer", Source::Bmclapi),
+            "https://bmclapi2.bangbang93.com/fabric-meta/v2/versions/installer"
+        );
+        // Mojang 源不改写（那是"要官方数据"的选项）
+        assert_eq!(
+            mirror_url("https://meta.fabricmc.net/v2/versions/loader", Source::Mojang),
+            "https://meta.fabricmc.net/v2/versions/loader"
+        );
+    }
+
+    /// ★ 改写后必须**真的产生两个候选**，否则等于没兜底。
+    ///   这是这次改写的全部意义：官方一超时要有第二条路。
+    #[test]
+    fn fabric_meta_has_both_candidates() {
+        let c = candidate_urls("https://meta.fabricmc.net/v2/versions/loader", Source::Bmclapi);
+        assert_eq!(c.len(), 2, "Fabric meta 必须有官方+镜像两个候选：{c:?}");
+        let urls: Vec<&str> = c.iter().map(|(_, u)| u.as_str()).collect();
+        assert!(urls.iter().any(|u| u.contains("fabric-meta")), "{c:?}");
+        assert!(urls.iter().any(|u| u.contains("meta.fabricmc.net")), "{c:?}");
+        assert_ne!(c[0].1, c[1].1, "两个候选不能是同一个 URL");
     }
 
     #[test]
@@ -689,7 +780,8 @@ mod tests {
         //    实测把 2 MB 的 Fabric API 判成了装不上。见 mcimirror_url 的说明。）
         let m = candidate_urls("https://api.modrinth.com/v2/x", Source::Bmclapi);
         assert_eq!(m.len(), 2, "Modrinth 现在有 mcimirror 兜底：{m:?}");
-        assert_eq!(m[0].1, "https://api.modrinth.com/v2/x");
+        assert_eq!(m[0].1, "https://mod.mcimirror.top/modrinth/v2/x", "国内镜像在首位");
+        assert_eq!(m[1].1, "https://api.modrinth.com/v2/x", "官方兜底不能丢");
         assert_ne!(m[0].1, m[1].1, "两个候选不能是同一个 URL（那是假回退）");
     }
 

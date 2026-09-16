@@ -92,7 +92,7 @@ export function SettingsPage() {
       <div className="page-head">
         <div>
           <h1 className="page-title">设置</h1>
-          <p className="page-desc">全局设置 · 单个版本的内存 / Java / 隔离在版本列表里双击它改</p>
+          {/* ★ 2026-09-16 用户（截图）：删掉副标题"全局设置 · 单个版本的内存 / Java / 隔离在版本列表里双击它改" */}
         </div>
       </div>
 
@@ -135,7 +135,7 @@ export function SettingsPage() {
           <div className="field-row">
             <span className="field-label">
               低性能损耗模式
-              <span className="field-hint">关掉磨砂与氛围光晕，弱机更流畅</span>
+              {/* ★ 2026-09-16 用户（截图）：删掉"关掉磨砂与氛围光晕，弱机更流畅" */}
             </span>
             <div className="field-control">
               <Switch
@@ -459,21 +459,17 @@ export function SettingsPage() {
             >
               {javaListError}。这不代表你没下过 Java —— 只是这次没读到。
             </Note>
-          ) : (
-            /*
-             * ★ 措辞不能下"一个都没下过"这种结论：`downloaded` 只反映这一次的
-             *   磁盘读取，而下面那张表可能正列着一个「IEML 下载」的 Java ——
-             *   两句话打架比少一句话糟得多。
-             */
-            <span className="field-hint">IEML 自己下载的 Java 会列在这里，可随时删除</span>
-          )}
+          ) : null}
+          {/* ★ 2026-09-16 用户（截图）：这里原来还有一句（没出错时显示的）
+              "IEML 自己下载的 Java 会列在这里，可随时删除" —— 删掉：
+              下面那张表自己就标着来源（「IEML 下载」的 Chip）。 */}
 
-          {/* 系统扫描到的 Java */}
+          {/* 系统扫描到的 Java（★ 2026-09-16 用户要求删掉这里那行版本对照：
+              "1.20.5+ → 21 · 1.18~1.20.4 → 17 · 1.16.5 及更早 → 8"） */}
           <div className="section-head">
             <h3 className="section-title" style={{ fontSize: 'var(--text-base)' }}>
               系统里探测到的 Java
             </h3>
-            <span className="field-hint">1.20.5+ → 21 · 1.18~1.20.4 → 17 · 1.16.5 及更早 → 8</span>
           </div>
 
           {state.java.runtimes.length === 0 ? (
@@ -510,7 +506,8 @@ export function SettingsPage() {
 
         {/* ==================== 新版本默认值 ==================== */}
         <Card>
-          <CardTitle icon={<IconShield />} hint="只影响之后新建的版本">
+          {/* ★ 2026-09-16 用户（截图）：删掉这块的 hint"只影响之后新建的版本" */}
+          <CardTitle icon={<IconShield />}>
             新版本的默认值
           </CardTitle>
 
@@ -779,9 +776,10 @@ export function SettingsPage() {
             </span>
             <div className="field-control">
               <span className="field-hint">
-                Tauri 2 · React 18 · Vite 5 · 字体由系统提供 ——
-                启动器本体不含任何 Minecraft 游戏资源文件
+                Tauri 2 · React 18 · Vite 5
               </span>
+              {/* ★ 2026-09-16 用户（截图）：后面那半句
+                  "· 字体由系统提供 —— 启动器本体不含任何 Minecraft 游戏资源文件" 删掉 */}
             </div>
             <span />
           </div>

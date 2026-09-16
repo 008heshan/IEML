@@ -4640,6 +4640,18 @@ pub fn account_remove(uuid: String) -> Result<(), String> {
     auth::remove_account(&uuid).map_err(err_auth)
 }
 
+/// 正版账号的皮肤（照 PCL 的做法走 Mojang 官方，不经过第三方头像站）。
+///
+/// ★ 为什么必须走**后端**而不是前端直接 `<img src="mc-heads...">`：
+///   ① `sessionserver.mojang.com` 不保证跨域，前端 fetch 拿不到；
+///   ② 第三方头像站实测会回 403（`<img>` 静默失败，界面上什么都不显示）；
+///   ③ 顺带能拿到**权威玩家名**与披风。
+///   详见 `auth::fetch_skin` 的注释。
+#[tauri::command]
+pub async fn account_skin(uuid: String) -> Result<auth::SkinInfo, String> {
+    auth::fetch_skin(&uuid).await.map_err(err_auth)
+}
+
 #[tauri::command]
 pub async fn account_refresh(refresh_token: String) -> Result<McAccount, String> {
     auth::refresh_msa(&refresh_token).await.map_err(err_auth)
@@ -5311,6 +5323,12 @@ pub fn download_sources_payload() -> serde_json::Value {
                 "bytesPerSecond": r.bytes_per_second,
                 "coolingSeconds": r.cooling_seconds,
                 "score": r.score,
+                // ★ ADR-057：把**实测值**也给前端。用户该看到的不只是
+                //   "算出来的分"，还有"实测多少毫秒、几个端点通、多久前测的" ——
+                //   两者对不上时（比如分高但实测不可达）才有得判断。
+                "probeTtfbMs": r.probe_ttfb_ms,
+                "probeOk": r.probe_ok,
+                "probedSecondsAgo": r.probed_seconds_ago,
             })
         })
         .collect();
@@ -5390,7 +5408,7 @@ mod wire_tests {
         assert!(!found.contains(&LoaderFlavor::Forge));
     }
 
-    /// 前端 `DownloadSourceReport` 读的是 camelCase 的这三个字段
+    /// 前端 `DownloadSourceReport` 读的是 camelCase 的这几个字段
     #[test]
     fn download_sources_payload_is_camel_case() {
         let v = download_sources_payload();
@@ -5400,11 +5418,26 @@ mod wire_tests {
             for k in ["source", "attempts", "successes", "failures", "score"] {
                 assert!(s.get(k).is_some(), "缺少字段 {k}：{s}");
             }
-            for k in ["rateLimited", "bytesPerSecond", "coolingSeconds"] {
+            for k in [
+                "rateLimited",
+                "bytesPerSecond",
+                "coolingSeconds",
+                // ★ ADR-057 新增的三个实测字段（同样只能手工映射）
+                "probeTtfbMs",
+                "probeOk",
+                "probedSecondsAgo",
+            ] {
                 assert!(s.get(k).is_some(), "★ 前端读的是 {k}，缺了会显示 undefined：{s}");
             }
             // 顺手确认没有混进 snake_case（混进来就说明有人改回了直接透传）
-            for bad in ["rate_limited", "bytes_per_second", "cooling_seconds"] {
+            for bad in [
+                "rate_limited",
+                "bytes_per_second",
+                "cooling_seconds",
+                "probe_ttfb_ms",
+                "probe_ok",
+                "probed_seconds_ago",
+            ] {
                 assert!(s.get(bad).is_none(), "不该出现 snake_case 字段 {bad}：{s}");
             }
         }

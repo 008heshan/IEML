@@ -171,6 +171,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .manage(AppState {
@@ -277,6 +278,8 @@ pub fn run() {
             commands_real::account_poll_login,
             commands_real::account_load,
             commands_real::account_current,
+            /* ★ 正版皮肤：照 PCL 走 Mojang 官方（不经过第三方头像站） */
+            commands_real::account_skin,
             commands_real::account_remove,
             commands_real::account_refresh,
             /* -------- 整合包 -------- */
@@ -286,6 +289,24 @@ pub fn run() {
             /* -------- 杂项 -------- */
             commands_real::backend_capabilities,
         ])
+        /*
+         * ★★ 启动期源延迟探测（ADR-057「国内优先 + 实测延迟决定次序」）。
+         *
+         *   为什么必须**后台 spawn、绝不 await**：
+         *   探测最坏要 4 秒（三个端点并发 + 4 秒超时）。如果在这里等它，
+         *   用户就会看到"启动器卡了 4 秒"。而探测的价值只是**调整候选顺序** ——
+         *   拿不到结果时 `SourceManager` 会沿用默认序（国内优先），
+         *   所以"这次没探到"是完全可接受的退化，不值得拿启动时间来换。
+         *
+         *   探测结论 10 分钟后过期（`probe::PROBE_TTL`），届时自动退回
+         *   纯健康分排序 —— 不会拿一次旧结论一直压着。
+         */
+        .setup(|_app| {
+            tauri::async_runtime::spawn(async {
+                net::probe::refresh_global().await;
+            });
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("IEML 启动失败");
 }

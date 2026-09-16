@@ -527,8 +527,59 @@ export function CustomSelect({
     }
   }
 
+  /**
+   * ★★ 面板朝上还是朝下开（2026-09-17 用户："java选择方式的下拉栏被遮挡了"）。
+   *
+   *   根因：`.content`（二级页面的滚动容器）带 `overflow-y: auto`，
+   *   而 `.cs-menu` 是 `position: absolute` —— 面板一旦超出**容器**底部就被裁掉。
+   *
+   *   ★ 第一版修错了：量的是 `window.innerHeight`（视口）。
+   *     但**视口比滚动容器大**（容器上面还有标题栏、下面还有别的东西），
+   *     所以"视口底部还有空间"跟"容器底部还有空间"是两回事 ——
+   *     量出来说下面够，实际早被容器裁没了，用户看到的还是被挡。
+   *     **量哪个容器裁它，就得量哪个容器。**
+   *
+   *   所以这里先往上找**最近的可滚动祖先**，以它的边界为准。
+   */
+  const [dropUp, setDropUp] = useState(false);
+
+  /** 往上找最近的可滚动祖先（没有就返回 null，退回视口） */
+  function scrollParent(el: HTMLElement): HTMLElement | null {
+    let p = el.parentElement;
+    while (p) {
+      const oy = getComputedStyle(p).overflowY;
+      if (oy === 'auto' || oy === 'scroll' || oy === 'hidden') return p;
+      p = p.parentElement;
+    }
+    return null;
+  }
+
+  function measureDrop() {
+    const el = ref.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    // 面板最大 280px（.cs-menu 的 max-height），再按项数估实际高度、留 20px 余量
+    const need = Math.min(options.length * 36 + 8, 280) + 20;
+
+    const sp = scrollParent(el);
+    const box = sp ? sp.getBoundingClientRect() : null;
+    const bottomLimit = box ? box.bottom : window.innerHeight;
+    const topLimit = box ? box.top : 0;
+
+    const below = bottomLimit - r.bottom;
+    const above = r.top - topLimit;
+    // 只有"下面确实不够、上面更宽裕"时才翻 —— 免得在页面中部莫名其妙朝上开
+    setDropUp(below < need && above > below);
+  }
+
   return (
-    <div className={`cs ${className}`} ref={ref} data-open={open} onKeyDown={onKeyDown}>
+    <div
+      className={`cs ${className}`}
+      ref={ref}
+      data-open={open}
+      data-drop={dropUp ? 'up' : 'down'}
+      onKeyDown={onKeyDown}
+    >
       <button
         type="button"
         className="cs-trigger input"
@@ -536,7 +587,10 @@ export function CustomSelect({
         aria-label={ariaLabel}
         aria-haspopup="listbox"
         aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => {
+          if (!open) measureDrop();
+          setOpen((o) => !o);
+        }}
       >
         <span className="cs-label">{current?.label ?? placeholder}</span>
         <svg className="cs-arrow" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">

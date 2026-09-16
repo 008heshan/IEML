@@ -803,46 +803,166 @@ pub async fn refresh_msa(refresh_token: &str) -> Result<McAccount> {
 
 /* ====================== 密钥环存储 ====================== */
 
+/// 凭据管理器对**单条**凭据的硬上限（UTF-16 码元数）。
+///
+/// ★★ 这个数字必须记清楚 —— **报错信息会骗人**：
+///   Windows 的 `CRED_MAX_CREDENTIAL_BLOB_SIZE` 是 **2560 字节**，
+///   而 `keyring` 把密码按 UTF-16 存（`windows.rs`：
+///   `password.encode_utf16().count() * 2 > 2560` 就报错）。
+///   所以**真正的上限是 1280 个 UTF-16 码元**。
+///
+///   它抛出的错误信息写的是
+///   「longer than platform limit of **2560 chars**」—— 2560 是**字节**，
+///   不是字符。照着这句话把分片定成 2560 会继续失败。
+///
+/// 触发场景（用户报的「正版登录报错 / 密码环操作失败」）：
+///   整个 `McAccount` 序列化成 JSON 后，光 `access_token`（JWT）就有 ~1600 字符，
+///   再加微软的 refresh token，稳稳超过 1280 —— 一存就炸。
+const KEYRING_MAX_CHARS: usize = 1280;
+
+/// 单个分片的大小。留 80 字符余量，吸收任何计数口径差异。
+const CHUNK_CHARS: usize = 1200;
+
+/// 分片数上限。1200 × 64 = 76800 字符 —— 远超任何真实令牌，
+/// 纯粹是防止读到脏数据时无限循环。
+const MAX_CHUNKS: usize = 64;
+
+/// 凭据的"用户名"：第 0 片用**裸 uuid**，第 i 片用 `uuid#i`。
+///
+/// 第 0 片刻意不加后缀：这样**旧格式（单条存整串）天然还能读**，
+/// 不需要任何迁移步骤。
+fn chunk_user(uuid: &str, i: usize) -> String {
+    if i == 0 {
+        uuid.to_string()
+    } else {
+        format!("{uuid}#{i}")
+    }
+}
+
+fn entry_for(user: &str) -> Result<keyring::Entry> {
+    keyring::Entry::new(KEYRING_SERVICE, user).map_err(|e| AuthError::Keyring(e.to_string()))
+}
+
+/// 按 **UTF-16 码元**切分。空串返回一个空分片（不是 0 个 —— 那样会存出"没有凭据"）。
+///
+/// 为什么不能按字节或 `chars()` 切：
+///   * 按字节切会把 UTF-8 多字节字符劈成两半，拼回来是乱码；
+///   * 按 `chars()` 切会让 BMP 之外的字符（emoji）少算一半 ——
+///     它们在 UTF-16 里占 **2** 个码元，而限制正是按 UTF-16 算的。
+fn split_chunks(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut cur_len = 0usize;
+    for ch in s.chars() {
+        let w = ch.len_utf16();
+        if cur_len + w > CHUNK_CHARS && !cur.is_empty() {
+            out.push(std::mem::take(&mut cur));
+            cur_len = 0;
+        }
+        cur.push(ch);
+        cur_len += w;
+    }
+    // 空串也要留一个分片：否则"存了空账号"会变成"什么都没存"
+    if !cur.is_empty() || out.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// 读出并拼回某个账号的全部内容。
+///
+/// `Ok(None)` = 这个账号根本没存过。
+/// 从第 0 片一直读到"取不到"为止 —— 旧格式（单条整串）天然兼容。
+fn read_chunks(uuid: &str) -> Result<Option<String>> {
+    let mut out = String::new();
+    for i in 0..MAX_CHUNKS {
+        match entry_for(&chunk_user(uuid, i))?.get_password() {
+            Ok(part) => out.push_str(&part),
+            Err(keyring::Error::NoEntry) => {
+                if i == 0 {
+                    return Ok(None); // 从来没存过
+                }
+                break; // 分片到此为止
+            }
+            Err(e) => return Err(AuthError::Keyring(e.to_string())),
+        }
+    }
+    Ok(Some(out))
+}
+
+/// 删掉某个账号的全部分片（删到一个不存在为止）。
+fn clear_chunks(uuid: &str) {
+    for i in 0..MAX_CHUNKS {
+        let Ok(e) = entry_for(&chunk_user(uuid, i)) else {
+            break;
+        };
+        // 删不到就是"没有下一片了"，正常结束
+        if e.delete_credential().is_err() {
+            break;
+        }
+    }
+}
+
 /// 把账号存进系统密钥环。**绝不写明文配置文件。**
+///
+/// ★ 大令牌要**分片**（见 `KEYRING_MAX_CHARS`）：单条凭据最多 1280 字符，
+///   而正版账号的 JSON 通常 2000~3000 字符，一条根本存不下。
 pub fn store_account(account: &McAccount) -> Result<()> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &account.uuid)
-        .map_err(|e| AuthError::Keyring(e.to_string()))?;
     let json = serde_json::to_string(account)
         .map_err(|e| AuthError::Other(format!("序列化账号失败：{e}")))?;
-    entry
-        .set_password(&json)
-        .map_err(|e| AuthError::Keyring(e.to_string()))?;
+    let chunks = split_chunks(&json);
+
+    // ★★ 必须先清掉**旧分片**再写新的，顺序不能反。
+    //
+    //   不清的后果（这是分片方案最容易踩的坑）：上次存了 4 片、这次只要 3 片，
+    //   残留的第 4 片会在读的时候被拼到末尾 —— JSON 尾部多一段旧令牌，
+    //   反序列化直接报「账号数据损坏」。而**令牌长度本来就是会变的**
+    //   （刷新之后微软给的新 refresh token 长短不一定），所以这不是理论风险。
+    //
+    //   代价：万一写到一半失败，这个账号就没了（需要重新登录）。
+    //   两害相权取轻 —— 留一段会**稳定损坏**的旧尾巴比要求重新登录更糟。
+    clear_chunks(&account.uuid);
+
+    for (i, part) in chunks.iter().enumerate() {
+        // ★ 防御性检查：分片逻辑万一被改坏（比如有人把 CHUNK_CHARS 调大），
+        //   这里要立刻给出**看得懂**的错误，而不是把 keyring 那句
+        //   「longer than platform limit of 2560 chars」（还把字节写成了字符）
+        //   原样丢给用户 —— 用户报的就是那句话，没人能从中知道该做什么。
+        let units = part.encode_utf16().count();
+        if units > KEYRING_MAX_CHARS {
+            return Err(AuthError::Other(format!(
+                "内部错误：账号数据分片 {i} 有 {units} 个 UTF-16 码元，超过密钥环上限 \
+                 {KEYRING_MAX_CHARS}。这是分片逻辑的缺陷，请反馈这个问题。"
+            )));
+        }
+        entry_for(&chunk_user(&account.uuid, i))?
+            .set_password(part)
+            .map_err(|e| AuthError::Keyring(e.to_string()))?;
+    }
 
     // 记一个"当前账号"指针（只存 uuid，不敏感）
-    let idx = keyring::Entry::new(KEYRING_SERVICE, "__current__")
-        .map_err(|e| AuthError::Keyring(e.to_string()))?;
-    idx.set_password(&account.uuid)
+    entry_for("__current__")?
+        .set_password(&account.uuid)
         .map_err(|e| AuthError::Keyring(e.to_string()))?;
     Ok(())
 }
 
 pub fn load_account(uuid: &str) -> Result<McAccount> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, uuid)
-        .map_err(|e| AuthError::Keyring(e.to_string()))?;
-    let json = entry
-        .get_password()
-        .map_err(|e| AuthError::Keyring(e.to_string()))?;
+    let json = read_chunks(uuid)?
+        .ok_or_else(|| AuthError::Keyring(format!("找不到账号 {uuid} 的凭据（可能已被移除）")))?;
     serde_json::from_str(&json).map_err(|e| AuthError::Other(format!("账号数据损坏：{e}")))
 }
 
 pub fn current_account_uuid() -> Option<String> {
-    keyring::Entry::new(KEYRING_SERVICE, "__current__")
-        .ok()?
-        .get_password()
-        .ok()
+    entry_for("__current__").ok()?.get_password().ok()
 }
 
 pub fn remove_account(uuid: &str) -> Result<()> {
-    let entry = keyring::Entry::new(KEYRING_SERVICE, uuid)
-        .map_err(|e| AuthError::Keyring(e.to_string()))?;
-    let _ = entry.delete_credential();
+    // ★ 必须删**全部分片**，不能只删第 0 片 —— 否则 `uuid#1` 会永远留在
+    //   用户的凭据管理器里，既清不掉也看不见。
+    clear_chunks(uuid);
     if current_account_uuid().as_deref() == Some(uuid) {
-        if let Ok(idx) = keyring::Entry::new(KEYRING_SERVICE, "__current__") {
+        if let Ok(idx) = entry_for("__current__") {
             let _ = idx.delete_credential();
         }
     }
@@ -860,6 +980,115 @@ pub fn offline_account(username: &str) -> McAccount {
         kind: "legacy".into(),
         expires_at: None,
     }
+}
+
+/* ====================== 皮肤（照 PCL 的做法：走 Mojang 官方） ====================== */
+
+/// 正版账号的皮肤信息，**全部来自 Mojang 官方**，不经过任何第三方头像站。
+///
+/// ★ `rename_all = "camelCase"`：这个结构是**直接透传给前端**的，
+///   按 ADR-036「透传的必须 camelCase」—— 前端 `AccountSkin` 读的是
+///   `skinUrl` / `capeUrl`，写成 snake_case 会让那两个值静默变成 `undefined`
+///   （这类跨 IPC 字段名不一致的 bug 编译器抓不到）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkinInfo {
+    /// Mojang 侧的玩家名（比本地记的 `offlineUsername` 权威）
+    pub name: String,
+    /// 皮肤原图 URL（64×64 PNG）。没设皮肤时为 `None`
+    pub skin_url: Option<String>,
+    /// 披风图 URL。没有披风时为 `None`
+    pub cape_url: Option<String>,
+}
+
+/// 查一个正版账号的皮肤。
+///
+/// ## 为什么不用第三方头像站（用户问「PCL 的头像服务也是境外的？」）
+///
+/// **PCL 根本不用第三方头像站** —— 它走 Mojang 官方：拿到 64×64 的皮肤原图，
+/// **在本地裁头部**画出来。所以它不依赖任何第三方服务。
+///
+/// 2026-09-17 在本机把两条路都实测了：
+///
+/// | 端点 | 结果 |
+/// |---|---|
+/// | `mc-heads.net/avatar/<uuid>/64` | **403 + 1084 B HTML**（`<img>` 只会静默失败） |
+/// | `minotar.net/avatar/<uuid>/64` | 200 + 458 B（能用，但仍是第三方） |
+/// | **`sessionserver.mojang.com/.../profile/<uuid>`** | **200 / 727 B / 0.9 s** |
+/// | **`textures.minecraft.net/texture/<hash>`** | **200 / 3054 B / 真 PNG 64×64** |
+///
+/// → **官方那条链在用户的网络环境里反而是通的**，而且顺带带回玩家名与披风。
+///
+/// ## 皮肤图的坐标（前端裁头用）
+///
+/// 64×64 皮肤里：**头部在 (8,8) 的 8×8**，**帽子层（第二层）在 (40,8) 的 8×8**。
+/// 裁剪在前端用 CSS `background-position` 做 —— 后端只负责把 URL 拿到，
+/// 不引入任何图像处理依赖。
+///
+/// ★ **接口有速率限制**（Mojang 建议同一 profile 每分钟不超过一次），
+///   所以调用方要缓存；改完皮肤不会立刻生效，这是 Mojang 的行为不是我们的 bug。
+pub async fn fetch_skin(uuid: &str) -> Result<SkinInfo> {
+    #[derive(Deserialize)]
+    struct Profile {
+        name: String,
+        #[serde(default)]
+        properties: Vec<Property>,
+    }
+    #[derive(Deserialize)]
+    struct Property {
+        name: String,
+        value: String,
+    }
+
+    let url = format!("https://sessionserver.mojang.com/session/minecraft/profile/{uuid}");
+    let resp = crate::net::client().get(&url).send().await?;
+
+    // ★ sessionserver 对**不存在的 profile** 回的是 **204 No Content**，不是 404 ——
+    //   直接 `.json()` 会得到一个"EOF while parsing a value"那种看不懂的错，
+    //   用户完全不知道自己做错了什么。这里翻译成一句能行动的说明。
+    if resp.status() == reqwest::StatusCode::NO_CONTENT {
+        return Err(AuthError::Other(format!(
+            "Mojang 查不到这个账号（{uuid}）—— 可能它不是正版账号，或 UUID 不对"
+        )));
+    }
+    if !resp.status().is_success() {
+        let code = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let brief: String = body.chars().take(200).collect();
+        return Err(AuthError::Other(format!("查皮肤失败（HTTP {code}）：{brief}")));
+    }
+    let profile: Profile = resp.json().await?;
+
+    // textures 属性是一段 base64 包着的 JSON —— 这是 Mojang 的格式，不是我们选的
+    let mut skin_url = None;
+    let mut cape_url = None;
+    if let Some(prop) = profile.properties.iter().find(|p| p.name == "textures") {
+        use base64::Engine as _;
+        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&prop.value) {
+            if let Ok(text) = String::from_utf8(bytes) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                    skin_url = v["textures"]["SKIN"]["url"].as_str().map(force_https);
+                    cape_url = v["textures"]["CAPE"]["url"].as_str().map(force_https);
+                }
+            }
+        }
+    }
+
+    Ok(SkinInfo {
+        name: profile.name,
+        skin_url,
+        cape_url,
+    })
+}
+
+/// Mojang 给的皮肤/披风地址是 **`http://`**，而界面的 CSP 里
+/// `img-src` **只允许 `https:`** —— 原样塞进去会被 CSP 拦掉，
+/// 表现是"图片地址对了但什么都不显示"（又是静默失败）。
+///
+/// 实测 `https://textures.minecraft.net/...` 与 http 返回**同一张图、同样 3054 字节**，
+/// 所以直接改写协议，比放宽 CSP 更对（没有理由为了迁就对方的 http 而降低自己的策略）。
+fn force_https(url: &str) -> String {
+    url.replacen("http://", "https://", 1)
 }
 
 #[cfg(test)]
@@ -927,5 +1156,137 @@ mod tests {
     fn empty_is_not_a_placeholder() {
         assert!(!looks_like_placeholder(""));
         assert!(!looks_like_placeholder("   "));
+    }
+
+    /* ====================== 密钥环分片（用户报的登录失败） ====================== */
+
+    /// ★★ 核心不变量：**任何分片都不能超过凭据管理器的上限**。
+    ///
+    ///   用户报的「密钥环操作失败：Attribute 'password encoded as UTF-16'
+    ///   is longer than platform limit of 2560 chars」就是这条被违反。
+    ///   注意断言用的是**UTF-16 码元 × 2 ≤ 2560**（keyring 的真实判据），
+    ///   而不是报错信息里那句"2560 chars"。
+    fn assert_chunks_fit(parts: &[String]) {
+        for (i, p) in parts.iter().enumerate() {
+            let units = p.encode_utf16().count();
+            assert!(
+                units * 2 <= 2560,
+                "第 {i} 片有 {units} 个 UTF-16 码元（{} 字节），超过 2560 字节上限",
+                units * 2
+            );
+        }
+    }
+
+    /// 真实尺寸的账号 JSON 必须能存下 —— 这就是用户遇到的那个场景。
+    ///
+    /// 尺寸取自实测：Minecraft 的 access_token 是 ~1600 字符的 JWT，
+    /// 微软 refresh token 另有 ~1000 字符。单条存必然超过 1280。
+    #[test]
+    fn real_sized_account_is_chunked_within_limit() {
+        let account = McAccount {
+            username: "Player".into(),
+            uuid: "0123456789abcdef0123456789abcdef".into(),
+            // 1600 字符的假 JWT
+            access_token: "a".repeat(1600),
+            refresh_token: Some("r".repeat(1000)),
+            kind: "msa".into(),
+            expires_at: Some(1758000000000),
+        };
+        let json = serde_json::to_string(&account).unwrap();
+        assert!(
+            json.encode_utf16().count() * 2 > 2560,
+            "这个账号本来就该超过单条上限，否则测不到分片（实际 {} 字符）",
+            json.encode_utf16().count()
+        );
+
+        let parts = split_chunks(&json);
+        assert!(parts.len() >= 2, "应当被切成多片，实际 {} 片", parts.len());
+        assert_chunks_fit(&parts);
+        assert_eq!(parts.concat(), json, "拼回来必须逐字符一致");
+    }
+
+    /// 拼回来必须与原文**逐字符一致**（分片方案的正确性底线）。
+    #[test]
+    fn chunks_round_trip() {
+        for len in [0usize, 1, 10, 1199, 1200, 1201, 2400, 2401, 5000, 30000] {
+            let s = "x".repeat(len);
+            let parts = split_chunks(&s);
+            assert_chunks_fit(&parts);
+            assert_eq!(parts.concat(), s, "长度 {len} 的串拼回来不一致");
+        }
+    }
+
+    /// ★ 必须按 **UTF-16 码元**切，不能按 `chars()` ——
+    ///   emoji 在 UTF-16 里占 2 个码元，按 `chars()` 计会少算一半，
+    ///   于是一个"1200 字符"的分片实际是 2400 字节，照样超限。
+    #[test]
+    fn chunks_count_utf16_units_not_chars() {
+        // 每个 emoji 占 2 个 UTF-16 码元
+        let s = "😀".repeat(2000); // 2000 个 char，4000 个 UTF-16 码元
+        assert_eq!(s.chars().count(), 2000);
+        assert_eq!(s.encode_utf16().count(), 4000);
+
+        let parts = split_chunks(&s);
+        assert_chunks_fit(&parts);
+        assert_eq!(parts.concat(), s);
+        // 每片最多 1200 码元 → 至少 4 片（按 chars() 切只会给 2 片，那是错的）
+        assert!(
+            parts.len() >= 4,
+            "按 UTF-16 码元应有 ≥4 片，实际 {} 片 —— 说明切分没按码元算",
+            parts.len()
+        );
+    }
+
+    /// 空串要产出**一个**分片，不能是 0 个。
+    /// 0 个分片意味着什么都没写进密钥环，读的时候会变成"账号不存在"。
+    #[test]
+    fn empty_string_still_produces_one_chunk() {
+        let parts = split_chunks("");
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0], "");
+        assert_eq!(parts.concat(), "");
+    }
+
+    /// 小账号（离线账号没有 refresh_token）应当只有一片 ——
+    /// 这保证了**大多数情况行为与分片之前完全一样**。
+    #[test]
+    fn small_account_is_a_single_chunk() {
+        let account = McAccount {
+            username: "Steve".into(),
+            uuid: "0123456789abcdef0123456789abcdef".into(),
+            access_token: "0".into(),
+            refresh_token: None,
+            kind: "legacy".into(),
+            expires_at: None,
+        };
+        let json = serde_json::to_string(&account).unwrap();
+        assert!(json.encode_utf16().count() <= CHUNK_CHARS);
+        assert_eq!(split_chunks(&json).len(), 1, "小账号不该被分片");
+    }
+
+    /// 分片命名：第 0 片必须是**裸 uuid**，否则旧格式（单条存整串）读不出来。
+    #[test]
+    fn first_chunk_keeps_the_bare_uuid_for_backward_compat() {
+        assert_eq!(chunk_user("abc123", 0), "abc123");
+        assert_eq!(chunk_user("abc123", 1), "abc123#1");
+        assert_eq!(chunk_user("abc123", 7), "abc123#7");
+        // 不能和 uuid 本身撞（uuid 是 32 位 hex，不含 #）
+        assert_ne!(chunk_user("abc123", 0), chunk_user("abc123", 1));
+    }
+
+    /// 上限常量本身要对得上 keyring 的真实判据。
+    /// 这条是防止有人照着报错信息里的 "2560 chars" 把 `CHUNK_CHARS` 改成 2560。
+    #[test]
+    fn chunk_size_stays_under_the_real_platform_limit() {
+        assert_eq!(KEYRING_MAX_CHARS, 1280, "keyring 的真实上限是 1280 个 UTF-16 码元");
+        assert!(
+            CHUNK_CHARS < KEYRING_MAX_CHARS,
+            "分片必须严格小于上限，否则最后一片会踩线"
+        );
+        // 留的余量要够，不能贴着 1280 写
+        assert!(
+            KEYRING_MAX_CHARS - CHUNK_CHARS >= 16,
+            "余量太小，计数口径稍有出入就会失败"
+        );
     }
 }
