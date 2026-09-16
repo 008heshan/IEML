@@ -52,3 +52,7 @@ createRoot(root).render(
     </AppProvider>
   </StrictMode>,
 );
+
+// 移除启动画面
+const splash = document.getElementById('splash');
+splash?.remove();
