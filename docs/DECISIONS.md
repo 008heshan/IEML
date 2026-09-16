@@ -3940,3 +3940,173 @@ ADR-055（资源中心）、`src-tauri/src/platform.rs`、`src-tauri/Cargo.toml`
 第三十三轮补充 ADR-056，50 GB 构建缓存的清理与 dev profile、去掉附带字体改系统字体栈、
 游戏数据搬进 .minecraft（含"顺序也是判据"那次真机 bug）、清理按判据分两条命令、
 账号提到顶栏 + 占位符 client_id 的拦截）*
+
+---
+
+## ADR-057　下载源策略：**国内优先 + 启动实测延迟决定次序**（★ 第四十六轮新增）
+
+**日期**：2026-09-16
+**状态**：已实施
+**修正**：[ADR-026](#adr-026多源竞速与镜像表第六轮新增) 的镜像表顺序、
+`mirror.rs` 中「Fabric meta 故意不改写」的旧结论。
+
+### 背景
+
+用户提出：「**国内有的就用国内，没有国内就用国内最近的、延迟低、能连的节点**」。
+
+这句话看着像"把所有源换成国内镜像"就够了，但逐项实测表明**不能一刀切** ——
+同一时刻，不同项目的快慢是**相反**的：
+
+| 探测项 | 官方 | 国内镜像 | 谁快 |
+|---|---|---|---|
+| 原版版本清单 | **346 ms / 3-3** | 639 ms / 2-3 | **官方** |
+| 原版库文件 asm-9.5 | 1136 ms | **157 ms** | **国内 7×** |
+| Fabric loader jar | 1363 ms | **187 ms** | **国内 7×** |
+| Forge installer jar | 1004 ms / **1-3** | **196 ms / 3-3** | **国内** |
+| OptiFine 版本列表 | **0-3 全失败** | **51 ms / 3-3** | **国内** |
+| CurseForge `/v1/games` | 2432 ms / 1-3 | **430 ms / 3-3** | **国内** |
+| Modrinth `/v2/project/sodium` | **227 ms** | 266 ms | 相当 |
+| Modrinth CDN jar | 1-3 | 0-3 | **两条路都不通** |
+
+所以「无条件国内优先」会在原版版本清单上真的变慢，而「一律官方优先」
+会在库文件上慢 7 倍。**顺序不能写死。**
+
+### 决定
+
+**三层叠加**，优先级从高到低：
+
+1. **限流冷却** —— 429 / 限流页之后该源直接 −5000 分。
+   这是"现在别用它"，比任何长期倾向都紧急。
+2. **国内优先（策略，+25 分）** —— 落实用户要的"国内有的就用国内"。
+   取值经过校准：大到能压过"官方仅快 300 ms"，小到能被"国内慢 13 倍"翻盘。
+3. **实测延迟（TTFB）** —— 启动后台探测，越快加分越多（0~60），
+   三端点全失败 −120（这次它真的不可达，此时不该再讲策略）。
+   结论 **10 分钟过期** —— 源的好坏是时段性的，一次探测不能当永久结论。
+
+顺序落在 `SourceManager::score()` 里（`source.rs`），
+候选列表由 `candidates_with` → `sort_by_health` 按分数重排。
+
+### 为什么是"探测三个端点取中位数"
+
+只探一个端点会**系统性偏向一边**：只探"原版版本清单"偏向官方
+（那是唯一官方更快的项），只探"库文件"偏向国内。
+三个端点里刻意保留了一快一慢两类，取中位数才是对整体倾向的估计。
+
+量的是 **TTFB（首字节时间）而不是总耗时**：总耗时受文件大小影响，
+270 KB 的 JSON 和 3 KB 的 JSON 比"谁快"是错的。
+（`reqwest` 的 `send()` 在收到响应头时返回，那一刻就是 TTFB。）
+
+### 探测端点的额外价值
+
+`PROBE_URLS` 里**只写官方地址**，镜像侧由 `mirror::mirror_url` 推导。
+这样探测用的正是镜像表自己声称支持的路径 —— **镜像表写错了，探测会立刻暴露**
+（表现为该源中位延迟变差或全失败），而不是等用户装游戏时才 404。
+
+### 同时修正的两处旧结论
+
+| 旧结论 | 复测结果 |
+|---|---|
+| `mirror.rs`：「Fabric meta 故意不改写，官方 2.75s 比镜像快」 | **反了**。官方 4 次里 3 次超时；镜像 `/profile/json`、`/game`、`/installer` 全部 200 / 0.3~0.5s。两侧**互补**（官方挂 3/5、镜像挂 1/5），改写后才有多候选兜底 |
+| `mirror.rs`：「Modrinth/CF 官方在前，官方 230 KB/s vs 镜像 146 KB/s」 | **已不成立**。CF 实测国内 3-3/430ms、官方 1-3/2432ms。顺序反转为国内优先，官方仍是第二候选 |
+
+**镜像非过期副本**（改写的前置条件，已验）：两侧 Fabric loader 列表都是
+**253 条**，版本集合完全相同（仅官方有 0 个、仅镜像有 0 个）。
+字节 40674 vs 29793 的差异只是 JSON 空白格式。
+
+### 结果
+
+- 新增 `src-tauri/src/net/probe.rs`（启动探测）
+- `source.rs`：`SourceStats` 加探测字段、`score()` 加策略与实测两项、
+  `snapshot()` 把实测值一并给前端（用户该看到"实测多少毫秒"，不只看到"猜"出来的分）
+- `mirror.rs`：Fabric meta 改写、Modrinth/CF 顺序反转
+- `lib.rs`：`.setup()` 里 `spawn` 探测，**绝不 await** ——
+  拿不到结果就沿用默认序，界面不该为探测多等哪怕 4 秒
+- 9 条新测试锁住：默认国内优先 / 国内全挂时让位 / 国内慢 13 倍时让位 /
+  国内仅慢 300ms 时保持 / 探测过期失效 / 探测不污染传输统计 /
+  加成单调有封顶 / 冷却压过策略 / Fabric 改写后确有两个候选
+
+### 没做到的那一半（诚实记录）
+
+「没有国内的就用最近的节点」这条**没有落地**，因为实测发现
+**Adoptium（Java 运行时）根本没有可用的国内镜像**：
+TUNA 整站 403、NJU/BFSU/SJTU/ZJU/PKU/阿里云 404、
+USTC 有目录但文件被 JS 反爬拦死、CERNET 302 跳回 TUNA、
+BMCLAPI 的 `java-runtime` 302 跳到 Cloudflare 后端（不是国内源）。
+
+所以 Java 自动下载**只能走官方**，而官方 API 时段性不可达
+（有时 223 ms / 3-3，有时整段超时）—— 属于国际出口问题，本机修不了。
+`ARCHITECTURE.md` 里「有国内镜像可换」那句是错的，已删除并附实测表。
+
+**相关**：ADR-026、ADR-034、ADR-045、ADR-049、
+`src-tauri/src/net/probe.rs`、`src-tauri/src/net/source.rs`、`src-tauri/src/net/mirror.rs`、
+`tools/probe/probe-source-policy.mjs`、`tools/probe/probe-ratelimit-artifact.mjs`、
+`tools/probe/probe-adoptium-mirror.mjs`、`tools/probe/probe-ustc-adoptium.mjs`、
+`tools/probe/probe-java-runtime-mirror.mjs`。
+---
+
+## ADR-058　启动器自身的更新：机制已落地，**端点待定**（★ 第五十六轮新增）
+
+**背景**
+
+用户问「有没有给客户端推送更新的功能」→ 核对结果：**一行都没有**。
+
+| 检查项 | 结果 |
+|---|---|
+| `Cargo.toml` | 只有 `dialog` / `fs` / `opener`，**没有 `tauri-plugin-updater`** |
+| `tauri.conf.json` | 没有 `plugins.updater`（无 endpoints、无 pubkey） |
+| `createUpdaterArtifacts` | **没开** —— 不开这个，打包器根本不产出更新包 |
+
+用户随即决定：「**做，如果不做，玩家怎么收到我们做的更新**」。
+
+★ 注意与 **ADR-018（Mod 绝不自动更新）** 的关系：那条针对的是 **Mod**，
+理由是"自动更新只能判断'有更新'，无法判断回到用户这个具体实例里还成不成立"。
+**启动器自身是另一回事** —— 它没有"回装到某个实例里还成不成立"这个问题，
+不更新的代价是玩家永远停在旧版本。
+
+**已做（第五十六轮）**
+
+1. `Cargo.toml` 加 `tauri-plugin-updater = "2"`（实测拉下 2.11.0 并编译通过）
+2. `capabilities/default.json` 加 `"updater:default"`
+3. `lib.rs` 注册 `tauri_plugin_updater::Builder::new().build()`
+4. `tauri.conf.json`：
+   - `bundle.createUpdaterArtifacts: true`（不开就产不出 `.tar.gz` + `.sig`）
+   - `plugins.updater.pubkey` ← 真实公钥已写入
+   - `plugins.updater.endpoints` ← **占位符 `https://REPLACE-ME/...`，待填**
+5. 生成签名密钥对（**仓库外**：`~/.ieml-release/ieml.key` ＋ `.key.pub`），
+   `.gitignore` 补了 `*.key` 兜底
+
+**状态：机制通了，但没有端点也没有界面 —— 现在不会有任何更新行为**（插件注册了但无人调用）。
+
+**⚠ 待决策：更新包放哪**
+
+这是唯一的真阻碍，而且**这个项目自己已经踩过**：
+`README.md:131` 记着「Tauri 的打包器需要从 GitHub Releases 下载 NSIS，**国内直连会超时**」。
+
+仓库**是有的**（`https://github.com/008heshan/IEML.git`，配在 `.git/config` 的
+`remote.origin`；`package.json` 里没有 `repository` 字段，我第一次只查了那里，说错了）。
+所以 GitHub Releases 这条路技术上可用 —— 但受下面那条网络约束。
+
+候选（按可靠性排序）：
+
+| 方案 | 优点 | 代价 |
+|---|---|---|
+| **国内对象存储 / 自建 CDN** | 国内稳定，这是**玩家实际能不能收到更新**的关键 | 要花钱、要维护 |
+| GitHub Releases + 国内可达的加速 | 免费、生态标准 | 加速层自己也不稳定 |
+| 两者都挂（endpoint 可配多个） | 一条挂了走另一条 | 要多一套发布流程 |
+
+★ Tauri 的 `endpoints` 是**数组**，天然支持多端点回退 —— 建议至少配两个。
+
+**签名的两条硬约束（丢了就再也发不了更新）**
+
+- **私钥**：`~/.ieml-release/ieml.key`。丢了 → **所有已发布的客户端再也收不到更新**
+  （因为新包签不出来，而旧客户端只认这把公钥）。必须离线备份。
+- 当前密钥**无密码**（`--ci` 生成的）。CI 上要用 `TAURI_SIGNING_PRIVATE_KEY` /
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 两个环境变量传，别把私钥写进任何脚本。
+
+**还没做**
+
+- 界面入口：设置页「关于」那一带加「检查更新」。
+  ★ **必须与 `ModsPanel` 那个「检查更新」区分开** —— 后者是查 **Mod** 的更新
+  （`ModsPanel.tsx:674`，全仓库唯一叫这四个字的地方），两者混在一起会误导用户。
+- `@tauri-apps/plugin-updater` 前端包 + 检查/下载/安装的进度 UI。
+- 发布流程：`tauri build` 之后把 `latest.json` ＋ `.tar.gz` ＋ `.sig` 传到端点。
