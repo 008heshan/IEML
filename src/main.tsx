@@ -6,6 +6,15 @@ import './styles/tokens.css';
 import './styles/app.css';
 import './styles/pages.css';
 
+/*
+ * ★★ 低性能损耗模式：**在首屏渲染之前**就把类挂上（用户 2026-09-16）。
+ *   放到 React 里再挂会有"先磨砂闪一下再变平"的一帧 —— 这个开关就是给弱机用的，
+ *   多闪一帧反而更糟。存 localStorage（不是 prefs.json）是有意的：
+ *   它是**本机性能偏好**，换机器本来就该重新选（和"主题/语言"那种跟着人走的不同）。
+ */
+if (localStorage.getItem('ieml.lowPerf') === '1') {
+  document.documentElement.classList.add('low-perf');
+}
 const root = document.getElementById('root');
 if (!root) throw new Error('找不到 #root 挂载点');
 

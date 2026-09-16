@@ -1336,17 +1336,12 @@ export function InstallComposer({
                         <span className="b-info">
                           <span className="b-name">{o.label}</span>
                           {/*
-                            ★ 说明只在**选中或不可用**时出现。
-                              四个加载器各带一两行说明同时铺开，右栏就只剩字了 ——
-                              而"选哪个"本来靠名字就能决定，说明是补充信息。
+                            ★★ 2026-09-16 用户："图三这个副标题提示，可以去掉"。
+                              原来选中/不可用时会在这里多铺一行说明
+                              （"老牌加载器，Mod 数量最多…"）—— 删掉。
+                              **没有丢信息**：鼠标停在这个选项上时，
+                              同一句说明仍然在 `title` 里（上面那个 title 属性）。
                           */}
-                          {selected || disabled ? (
-                            <span className="b-desc">
-                              {o.value === ''
-                                ? '不安装任何加载器，玩原版或仅加光影'
-                                : BASE_LOADER_DESC[o.value]}
-                            </span>
-                          ) : null}
                           {disabled && reason ? (
                             <span className="b-reason" title={reason}>
                               {shortReason === null ? (
