@@ -405,11 +405,9 @@ export function VersionsPage() {
                   ) : null}                </div>
               </div>
 
-              {/* 右侧：最近游玩 + 操作 */}
+              {/* 右侧：操作（★ 2026-09-16：原来这里还有一列"从未启动 / 3 天前"，
+                  用户要求删掉时间记录 —— 见 CHANGELOG） */}
               <div className="ver-side">
-                <span className="ver-time">
-                  {inst.lastPlayedAt ? relativeTime(inst.lastPlayedAt) : '从未启动'}
-                </span>
                 <div className="ver-actions" onClick={(e) => e.stopPropagation()}>
                   <Button
                     size="sm"
@@ -689,13 +687,4 @@ function loaderName(kind: string): string {
     quilt: 'Quilt',
   };
   return map[kind] ?? kind;
-}
-
-function relativeTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const d = Math.floor(diff / 86400000);
-  if (d === 0) return '今天';
-  if (d === 1) return '昨天';
-  if (d < 30) return `${d} 天前`;
-  return `${Math.floor(d / 30)} 个月前`;
 }

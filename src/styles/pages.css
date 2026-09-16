@@ -236,10 +236,6 @@
   font-size: var(--text-xs);
   color: var(--text-secondary);
 }
-.lo-time {
-  font-size: var(--text-xs);
-  color: var(--text-tertiary);
-}
 
 /* ---------- 本机状态一行 ---------- */
 .launch-facts {
@@ -459,13 +455,6 @@
   align-items: center;
   gap: var(--space-3);
   flex: 0 0 auto;
-}
-.ver-time {
-  font-size: var(--text-sm);
-  color: var(--text-tertiary);
-  white-space: nowrap;
-  min-width: 3.5em;
-  text-align: right;
 }
 .ver-actions {
   position: relative;

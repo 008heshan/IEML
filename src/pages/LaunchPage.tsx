@@ -26,7 +26,6 @@ import { Button, Chip, CustomSelect, EmptyState, Modal, Note } from '../ui';
 import {
   IconAlert,
   IconBox,
-  IconClock,
   IconCpu,
   IconDownload,
   IconDrive,
@@ -415,12 +414,8 @@ export function LaunchPage() {
                 <span>
                   <IconJava /> {javaLabel(target.config.javaMode)}
                 </span>
-                <span>
-                  <IconClock />{' '}
-                  {target.totalPlaySeconds > 0
-                    ? `累计 ${formatElapsed(target.totalPlaySeconds * 1000)}`
-                    : '还没玩过'}
-                </span>
+                {/* ★ 2026-09-16 用户："记录时间的功能删掉，这没有用" ——
+                    「累计 xx / 还没玩过」这一格已删（那是"从未启动"的另一个说法）。 */}
               </div>
             </div>
             <div className="lh-actions">
@@ -525,14 +520,16 @@ export function LaunchPage() {
               <IconJava /> {javaLabel(target.config.javaMode)}
             </span>
             <span className="dot" />
-            <span>
-              {isRunning
-                ? `已运行 ${formatElapsed(Date.now() - (runInfo?.startedAt ?? 0))}`
-                : target.lastPlayedAt
-                  ? `上次 ${relativeTime(target.lastPlayedAt)}`
-                  : '从未启动'}
-            </span>
-            <span className="dot" />
+            {/*
+              ★ 2026-09-16 用户："记录时间的功能删掉，这没有用"。
+                原来这里在没跑的时候显示「上次 3 天前 / 从未启动」——
+                现在只在**真的在跑**时显示已运行时长（那是当下的状态，不是历史记录），
+                其余情况什么都不显示。
+            */}
+            {isRunning ? (
+              <span>已运行 {formatElapsed(Date.now() - (runInfo?.startedAt ?? 0))}</span>
+            ) : null}
+            {isRunning ? <span className="dot" /> : null}
             <button type="button" className="link-btn" onClick={() => go('versions')}>
               管理这个版本
             </button>
@@ -581,9 +578,7 @@ export function LaunchPage() {
                     {i.mcVersion}
                     {i.loader ? ` · ${loaderName(i.loader.kind)}` : ' · 原版'}
                   </span>
-                  <span className="lo-time">
-                    {i.lastPlayedAt ? relativeTime(i.lastPlayedAt) : '从未启动'}
-                  </span>
+                  {/* ★ 2026-09-16：卡片右下角那行"从未启动 / 3 天前"已删（用户要求） */}
                 </span>
               </button>
             ))}
@@ -707,16 +702,6 @@ function javaLabel(mode: string): string {
     default:
       return 'Java 自动';
   }
-}
-
-function relativeTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const d = Math.floor(diff / 86400000);
-  if (d === 0) return '今天';
-  if (d === 1) return '昨天';
-  if (d < 30) return `${d} 天前`;
-  if (d < 365) return `${Math.floor(d / 30)} 个月前`;
-  return `${Math.floor(d / 365)} 年前`;
 }
 
 function formatElapsed(ms: number): string {

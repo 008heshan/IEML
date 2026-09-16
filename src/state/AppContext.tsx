@@ -539,28 +539,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (d?.instanceId) dispatch({ type: 'game/stop', instanceId: d.instanceId });
       if (!d) return;
       /*
-       * ★★ **把这一局的时长落到实例记录上**（用户报的："版本这里的从未启动是纯属骗人，
-       *   这个记录的功能根本没做或者没生效"）。
+       * ★★ 2026-09-16 用户："'从未启动'相关的记录时间的功能，删掉，这没有用"。
        *
-       *   实测确认用户说得对：`lastPlayedAt` / `totalPlaySeconds` 这两个字段
-       *   在 Rust 侧**只有类型定义**、在浏览器演示数据里有假值，**真机上从来没被写过**
-       *   —— 于是每个版本永远显示「从未启动 / 累计时长 –」。
+       *   这里原来会把这一局的时长写回实例（`lastPlayedAt` + `totalPlaySeconds`）——
+       *   那是上一轮为了治"从未启动是骗人"补上的。用户现在明确不要这个功能了
+       *   （理由也说得通：启动器的本职是"把游戏跑起来"，玩多久是游戏自己的事）。
        *
-       *   落账点选在这里，而不是"点停止游戏"那条路径上，因为：
-       *     · 后端退出监测线程**两条路都会推** `game-exit`（自己关掉 / 崩溃 / 被停止），
-       *       所以这里是**唯一**的收口；写在别处就会漏掉"用户自己关游戏"这一半。
-       *     · 时长由后端算（`played_seconds`），前端只负责记下来，不自己算。
+       *   所以**不再写**。字段本身留在类型与 `instances.json` 里不动 ——
+       *   删字段会让老文件解析报错，而"留着不写也不显示"没有任何副作用。
+       *   界面上那几处显示（概览的"最近游玩/累计时长"、启动页的"上次/从未启动"、
+       *   版本列表行的相对时间）也一并删掉了。
        */
-      dispatch({
-        type: 'instances/update',
-        id: d.instanceId,
-        patch: {
-          lastPlayedAt: new Date().toISOString(),
-          totalPlaySeconds:
-            (stateRef.current.instances.find((i) => i.id === d.instanceId)?.totalPlaySeconds ?? 0) +
-            Math.max(0, d.playedSeconds),
-        },
-      });
       const mins = Math.max(0, Math.round(d.playedSeconds / 60));
       if (d.crashed) {
         /*

@@ -368,20 +368,9 @@ export function InstanceOverview() {
             管理
           </button>
         </div>
-        <div className="fact">
-          <span className="fact-k">最近游玩</span>
-          <span className="fact-v">
-            {inst.lastPlayedAt ? relativeTime(inst.lastPlayedAt) : '从未启动'}
-          </span>
-          <span />
-        </div>
-        <div className="fact">
-          <span className="fact-k">累计时长</span>
-          <span className="fact-v mono">
-            {inst.totalPlaySeconds > 0 ? formatDuration(inst.totalPlaySeconds) : '—'}
-          </span>
-          <span />
-        </div>
+        {/* ★★ 2026-09-16 用户："'从未启动'相关的记录时间的功能，删掉，这没有用" ——
+            「最近游玩 / 累计时长」两格已删。启动器的本职是把游戏跑起来，
+            玩多久是游戏自己的事；而且这个数字以前还长期是假的（从没被写过）。 */}
       </div>
 
       {/* ==================== 危险区（折叠） ==================== */}
@@ -480,20 +469,4 @@ function formatSize(bytes: number): string {
   if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
   if (bytes >= 1024 * 1024) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
   return `${Math.round(bytes / 1024)} KB`;
-}
-
-function relativeTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const d = Math.floor(diff / 86400000);
-  if (d === 0) return '今天';
-  if (d === 1) return '昨天';
-  if (d < 30) return `${d} 天前`;
-  return `${Math.floor(d / 30)} 个月前`;
-}
-
-function formatDuration(seconds: number): string {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  if (h > 0) return `${h} 小时 ${m} 分`;
-  return `${m} 分钟`;
 }
