@@ -6,6 +6,43 @@
 
 ---
 
+## 0.1.0-beta.32 — 2026-09-16（第四十四轮：设置页的「下载源」也换成自绘下拉）
+
+用户（两张图对照）："忘了，这里的下拉栏也要像图二这样" —— 图一是**原生 `<select>`**
+展开的样子（灰底、菜单由浏览器画），图二是启动页「要启动的版本」那个自绘下拉。
+
+* `SettingsPage` 的「下载源」：`Select`（原生 `<select>`）→ **`CustomSelect`**（`.cs-*`，
+  与启动页 / 下载页同款）。标签与提示仍走 `Field`，**值与行为一点没变**
+  —— 还是同一条 `ieml:prefs` 事件，只换了控件。
+* 顺手把 `Select` 从 SettingsPage 的 import 去掉（那里没有第二处用它）。
+
+### 为什么这一处会漏掉
+
+`CustomSelect` 是 2026-09-15 加的（`ui/index.tsx` 里写明了原因："原生 `<select>` 的下拉菜单
+是浏览器画的，CSS 改不了"），当时只替换了**启动页与下载页**两处 —— 设置页这处留在原生，
+于是同一个界面里两种下拉长得不一样。这一轮补上。
+
+### 还有 4 处原生下拉（本轮**没动**，等用户发话）
+
+| 在哪 | 是什么 |
+|---|---|
+| 版本设置页 `InstanceSetup.tsx` | 2 处 `Select` |
+| 安装页 `InstallComposer.tsx` | 「加载器版本」「OptiFine 版本」两处原生 `<select>`（各带 `<label>` + 一个 Chip） |
+
+### 验证
+
+* `pnpm exec tsc --noEmit` 通过；
+* 浏览器演示模式（CDP 截图 + DOM）：`.cs-trigger` 从 0 变 1（文字 `BMCLAPI 镜像（推荐）`），
+  点开后 `.cs-menu` 里两项 `BMCLAPI 镜像（推荐）[selected] | Mojang 官方源`；
+* 真机（桌面版 `IEML.exe` + WebView2 CDP，一次性脚本没入库）：设置页里
+  「下载源」那一行的控件是 `cs-trigger input`（文字 `BMCLAPI 镜像（推荐）`）、
+  行内 `nativeSelectInRow: false`、**整页 `select` 数量 0**；
+  点开后 `role=listbox`，两项 `BMCLAPI 镜像（推荐）[selected] | Mojang 官方源`；截图两张。
+* 重建 + 部署：exe `10,434,048 B`、sha256 `EE241EAE…1F1717`，桌面 `IEML.exe` 逐字节一致；
+  安装包 `IEML_0.1.0-beta.32_x64-setup.exe`。
+* `node tools/verify.mjs`：**全部 15 项通过**（含 exe 内嵌前端一致性）。
+
+---
 ## 0.1.0-beta.31 — 2026-09-16（第四十三轮：收起的分组标题**不再列出版本号**）
 
 用户（发来版本列表的截图）："后面的这个详细版本就不用了，去掉即可"。

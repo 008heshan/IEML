@@ -11,7 +11,7 @@
  */
 import { useEffect, useState } from 'react';
 import { useApp } from '../state/AppContext';
-import { Button, Card, CardTitle, Chip, Note, Segmented, Select, Switch } from '../ui';
+import { Button, Card, CardTitle, Chip, CustomSelect, Field, Note, Segmented, Switch } from '../ui';
 import {
   IconAlert,
   IconGear,
@@ -597,19 +597,28 @@ export function SettingsPage() {
         <Card>
           <CardTitle icon={<IconRefresh />}>下载</CardTitle>
 
-          <Select
-            label="下载源"
-            hint="国内建议用 BMCLAPI"
-            value={state.prefs.downloadSource}
-            onChange={(e) =>
-              window.dispatchEvent(
-                new CustomEvent('ieml:prefs', { detail: { downloadSource: e.target.value } }),
-              )
-            }
-          >
-            <option value="bmclapi">BMCLAPI 镜像（推荐）</option>
-            <option value="mojang">Mojang 官方源</option>
-          </Select>
+          {/*
+            ★ 2026-09-16 用户（发来展开状态的两张图）："这里的下拉栏也要像图二这样"。
+              原来这里是 `Select`（原生 <select>）—— 展开的菜单是**浏览器画的**，
+              灰底、选项挤在一起，在深色玻璃界面里非常突兀。
+              换成启动页「要启动的版本」同款的 `CustomSelect`（`.cs-*`）。
+              ★ 行为不变：值仍然走同一条 `ieml:prefs` 事件，只是换了控件。
+          */}
+          <Field label="下载源" hint="国内建议用 BMCLAPI">
+            <CustomSelect
+              value={state.prefs.downloadSource}
+              onChange={(v) =>
+                window.dispatchEvent(
+                  new CustomEvent('ieml:prefs', { detail: { downloadSource: v } }),
+                )
+              }
+              ariaLabel="下载源"
+              options={[
+                { value: 'bmclapi', label: 'BMCLAPI 镜像（推荐）' },
+                { value: 'mojang', label: 'Mojang 官方源' },
+              ]}
+            />
+          </Field>
 
           <div className="field-row">
             <span className="field-label">
