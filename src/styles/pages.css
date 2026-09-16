@@ -2409,10 +2409,6 @@
   gap: var(--space-2);
   margin-top: auto;
 }
-.res-page {
-  font-size: var(--text-xs);
-  margin-left: auto;
-}
 
 /* 展开的版本列表 */
 .res-versions {
