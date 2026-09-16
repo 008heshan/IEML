@@ -35,7 +35,7 @@ $src = Join-Path $repoRoot 'src-tauri\target\release\ieml.exe'
 $src = [System.IO.Path]::GetFullPath($src)
 
 # 'IEML ' + U+542F U+52A8 U+5668  ("IEML <launcher>" in Chinese)
-$launcherName = 'IEML ' + [char]0x542F + [char]0x52A8 + [char]0x5668
+$launcherName = 'IEML'
 $dst = Join-Path (Join-Path $env:USERPROFILE 'Desktop') ($launcherName + '.exe')
 
 if (-not (Test-Path -LiteralPath $src)) {
