@@ -416,6 +416,41 @@ export function AppProvider({ children }: { children: ReactNode }) {
     document.documentElement.setAttribute('data-theme', state.theme);
   }, [state.theme]);
 
+  /*
+   * ★★ **"游戏关了，界面还说在运行"的兜底**（2026-09-16，用户报了两次）。
+   *
+   *   正常路径是后端推 `game-exit` 事件 → 前端清掉那一个实例。但用户实测
+   *   出现过"游戏已经关了、启动器仍显示在运行"，而我把三处都查过：
+   *   退出标记写了、事件带了 `instanceId`、前端桥接原样传了 payload ——
+   *   每一段单独看都对，所以**没有复现**，也就没法证明是哪一段丢的。
+   *
+   *   与其继续猜，这里加一条**不依赖事件**的兜底：
+   *   只要界面认为"有实例在跑"，就每 4 秒问一次后端的 `running_games`
+   *   （它手里有子进程句柄，是**唯一**知道真相的地方），拿结果覆盖本地表。
+   *
+   *   为什么是 4 秒：真关了窗口的用户，4 秒内界面就会自己修正；
+   *   而这条轮询只在"有实例在跑"时开，空转成本可以忽略。
+   *   ★ 判据没有第二份：`running_games` 内部用的就是 `is_still_running`。
+   */
+  useEffect(() => {
+    if (!state.ready) return;
+    if (Object.keys(state.running).length === 0) return; // 没有在跑的就不轮询
+    let alive = true;
+    const tick = async () => {
+      try {
+        const list = await backend.runningGames();
+        if (alive) dispatch({ type: 'game/sync', list });
+      } catch {
+        /* 读不到就等下一轮（不影响任何状态） */
+      }
+    };
+    const t = window.setInterval(() => void tick(), 4000);
+    return () => {
+      alive = false;
+      window.clearInterval(t);
+    };
+  }, [state.ready, state.running, backend]);
+
   /* ====================== 窗口标题 ====================== */
   const open = useMemo(() => selectOpenInstance(state), [state]);
   const target = useMemo(() => selectLaunchTarget(state), [state]);

@@ -172,18 +172,26 @@ export function DownloadPage() {
                   onChange={setTargetId}
                   ariaLabel="装到哪个版本"
                   /*
-                   * ★★ **原版实例不出现在这里**（用户 2026-09-15：
-                   *   "下载页的 MOD 分区，选择版本里，不应出现原版"）。
-                   *   纯原版不加载 mods/ —— 把 Mod 装进去等于**装了个必然不生效的东西**，
-                   *   而它在列表里和别的版本长得一模一样。想装 Mod 就先加加载器。
-                   *   ★ 顺带：这里以前给原版实例写的后缀是「 · 原版」，现在过滤掉了，
-                   *     每个选项都是「名字（版本 + 加载器）」，不会有歧义。
+                   * ★★ **原版能不能装，要看资源种类**（用户 2026-09-16：
+                   *   "资源包和数据包原版可以安装，所以得让这俩能选择原版"）。
+                   *
+                   *   上一轮我一刀切把原版全过滤掉了 —— 那是**过度的**：
+                   *     · **Mod**：纯原版不加载 `mods/` → 装进去必然不生效 → 不给选；
+                   *     · **光影**：要有 Iris / OptiFine 这类前置（都靠加载器）→ 不给选；
+                   *     · **资源包 / 数据包**：原版**本来就能用** → **必须给选**，
+                   *       否则玩家想给原版换个材质包都做不到。
+                   *   （这条与 Rust 侧 `ResourceKind::install_dir` 是同一张表的两个侧面：
+                   *     那边决定"装到哪个目录"，这边决定"哪个目录对原版有意义"。）
                    */
                   options={state.instances
-                    .filter((i) => i.loader !== null)
+                    .filter(
+                      (i) =>
+                        !(resourceTab.kind === 'mod' || resourceTab.kind === 'shader') ||
+                        i.loader !== null,
+                    )
                     .map((i) => ({
                       value: i.id,
-                      label: `${i.config.name}（${i.mcVersion} + ${i.loader?.kind}）`,
+                      label: `${i.config.name}（${i.mcVersion}${i.loader ? ` + ${i.loader.kind}` : ' · 原版'}）`,
                     }))}
                 />
               </div>
