@@ -2294,17 +2294,6 @@
   color: var(--text-tertiary);
   transition: transform var(--dur-fast) var(--ease);
 }
-/* 收起时列出的版本号（最多 4 个）—— 比世代号有用得多，见 InstallComposer 里的说明 */
-.ver-group-ids {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--text-xs);
-  font-weight: 500;
-  color: var(--text-secondary);
-}
 .fold-caret.folded {
   transform: rotate(-90deg);
 }

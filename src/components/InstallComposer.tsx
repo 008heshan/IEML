@@ -1138,22 +1138,11 @@ export function InstallComposer({
                     <VersionIcon version={g.rows[0]?.id ?? ''} size={18} title={g.fam.label} />
                     <span>{g.fam.label}</span>
                     {/*
-                      ★★ 收起时**直接把组里的版本号写出来**（用户 2026-09-16：
-                        "版本折叠的地方的效果不如直接到那里就显示哪个的版本号"）。
-                        收起的目的是"别铺满一屏"，但只留一个世代号（`26.1`）时
-                        用户还得点开才知道里面有什么 —— 等于用一次点击换一次点击。
-                        现在收起状态顺手把版本号列出来（最多 4 个，多了给省略号），
-                        展开后反而不用再显示（下面就是列表本身）。
+                      ★ 2026-09-16 用户（看图）："后面的这个详细版本就不用了，去掉即可"。
+                        这里曾经在收起时列出组内的版本号（beta.21 加的 `.ver-group-ids`，
+                        最多 4 个 + "…等 N 个"）—— 用户看过后不要了：
+                        收起状态只留**世代号 + 个数**，别再往回加。
                     */}
-                    {folded ? (
-                      <span className="ver-group-ids mono">
-                        {g.rows
-                          .slice(0, 4)
-                          .map((r) => r.id)
-                          .join(' · ')}
-                        {g.rows.length > 4 ? ` …等 ${g.rows.length} 个` : ''}
-                      </span>
-                    ) : null}
                     <span className="ver-group-line" />
                     <span className="dim">{g.rows.length} 个</span>
                   </button>
