@@ -24,7 +24,6 @@ import { useApp } from '../state/AppContext';
 import { Button, Chip, Note, SearchBox, Segmented, Skeleton, Spinner } from '../ui';
 import { IconAlert, IconCheck, IconChevronDown, IconInfo, IconPlus, IconRefresh } from '../ui/Icons';
 import {
-  BASE_LOADER_DESC,
   BASE_LOADER_NAME,
   ADDON_DESC,
   autoMemory,
@@ -1320,13 +1319,15 @@ export function InstallComposer({
                         className={`base-opt${selected ? ' on' : ''}${disabled ? ' dis' : ''}`}
                         aria-pressed={selected}
                         disabled={disabled}
-                        title={
-                          disabled
-                            ? reason
-                            : o.value === ''
-                              ? '不安装任何加载器，玩原版或仅加光影'
-                              : BASE_LOADER_DESC[o.value]
-                        }
+                        /*
+                         * ★★ 2026-09-16 用户："鼠标停在选项上时同一句仍在 title 里，
+                         *   这个也不要，大伙都知道是什么"。
+                         *
+                         *   所以 title **只在不可用时给理由**（那是"为什么点不了"，
+                         *   必须留着），可点时一律不给 —— 加载器的名字本身就说清了，
+                         *   再挂一句"老牌加载器，Mod 数量最多"是在教用户常识。
+                         */
+                        title={disabled ? reason : undefined}
                         onClick={() => {
                           setBase(o.value === '' ? null : o.value);
                           setAddons([]);
