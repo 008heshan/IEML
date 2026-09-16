@@ -2640,3 +2640,55 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* ============================================================================
+   ★★ 2026-09-16 用户："启动游戏这个 UI 美化一下，纯色不好看"。
+   主按钮原来是**平涂**一个色 —— 在玻璃界面里显得很平。
+   改成：竖向渐变（上浅下深，模拟受光）+ 1px 内高光 + 一圈同色系外发光。
+   全部用现有色值推导，不引入新变量；hover / disabled 各自有明确表现。
+   ============================================================================ */
+.launch-btn {
+  background: linear-gradient(180deg, #6f9df5 0%, #4a7be0 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.24),
+    0 6px 18px rgba(74, 123, 224, 0.32);
+  transition: background var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+.launch-btn:hover:not(:disabled) {
+  background: linear-gradient(180deg, #82adf8 0%, #5588e8 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    0 8px 22px rgba(74, 123, 224, 0.42);
+  transform: translateY(-1px);
+}
+.launch-btn:active:not(:disabled) {
+  background: linear-gradient(180deg, #4a7be0 0%, #3f6dd0 100%);
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.22);
+  transform: translateY(0);
+}
+
+/* ============================================================================
+   ★★ 低性能损耗模式（用户 2026-09-16："在外观选项里加一个低性能损耗模式"）。
+   玻璃很吃 GPU：整屏卡片各一层 backdrop-filter，弱机/核显上滚动会掉帧。
+   这个开关**只关装饰**（磨砂与氛围光晕），不动任何功能与布局。
+   ============================================================================ */
+:root.low-perf .card,
+:root.low-perf .page-head::before,
+:root.low-perf .chip-btn,
+:root.low-perf .titlebar {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+:root.low-perf body::before {
+  display: none !important;
+}
+
+/* "装到哪个目录"那一行（用户："不知道下到哪里去了"）—— 小字、紧跟在选择器后面 */
+.res-target-where {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+.res-target-where.warn {
+  color: var(--warning);
+}

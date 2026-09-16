@@ -39,6 +39,17 @@ const RESOURCE_TABS: Array<{ tab: DownloadTab; kind: ResourceKindName; label: st
 /** 整合包每页几个（写死的 20 个 = "没有翻页"，见 `load`） */
 const PAGE_SIZE = 20;
 
+/**
+ * 每种资源装进哪个目录 —— 与 Rust 侧 `ResourceKind::install_dir` **逐条对齐**。
+ * 这里只用于界面**显示**（"装到哪个目录"），安装本身仍然由后端决定路径。
+ */
+const RESOURCE_DIR: Record<ResourceKindName, string> = {
+  mod: 'mods',
+  resourcepack: 'resourcepacks',
+  shader: 'shaderpacks',
+  datapack: 'datapacks',
+};
+
 export function DownloadPage() {
   const { state, go, toast, setDownloadTab } = useApp();
   const { isDesktop } = useRealApi();
@@ -60,7 +71,16 @@ export function DownloadPage() {
    * 显式选择器：默认挑最近玩过的那个（最可能就是玩家现在要装的），
    * 玩家随时能换 —— **不替他决定**，但也不让他每次重选。
    */
-  const [targetId, setTargetId] = useState<string | null>(null);
+  /*
+   * ★★ **记住玩家上次选的版本**（用户 2026-09-16："要记得玩家最后一次选的是哪个版本，
+   *   而不是每次都得重新选"）。
+   *   初值从 localStorage 读，变化时写回 —— 重启启动器不用再选一次。
+   *   ★ 选中的那个实例可能已经被删了：下面 `target` 的 useMemo 里会用
+   *     `state.instances.find(...)` 找不到就回退到"最近玩过的"，所以不会指向空气。
+   */
+  const [targetId, setTargetId] = useState<string | null>(() =>
+    localStorage.getItem('ieml.downloadTarget'),
+  );
   /*
    * ★★ 别的页面可以把"装到哪个版本"带过来（用户 2026-09-15：
    *   "添加 mod 的按钮应该直接跳转下载页的 mod 页，并默认选择该跳转版本"）。
@@ -78,6 +98,7 @@ export function DownloadPage() {
     window.addEventListener('ieml:download-target', onPick);
     return () => window.removeEventListener('ieml:download-target', onPick);
   }, []);
+
   const target = useMemo(() => {
     if (state.instances.length === 0) return null;
     const picked = state.instances.find((i) => i.id === targetId);
@@ -87,6 +108,16 @@ export function DownloadPage() {
     );
     return byTime[0] ?? null;
   }, [state.instances, targetId]);
+
+  /*
+   * ★ 记住玩家选的版本（下次打开还是它，不用再选一次）—— 见上面 targetId 的说明。
+   *   ★ 存的是**实际生效的那个**（`target`），不是"手动选过的那个"（`targetId`）：
+   *     从 Mod 管理页跳过来时目标是被事件设的，那种也要记住。
+   *   ★ 位置必须在 `target` 之后声明 —— 否则 `target` 还没初始化就被读了（TDZ）。
+   */
+  useEffect(() => {
+    if (target) localStorage.setItem('ieml.downloadTarget', target.id);
+  }, [target]);
 
   const tabs: Array<{ key: DownloadTab; label: string; icon: React.ReactNode }> = [
     { key: 'game', label: '安装游戏', icon: <IconDownload /> },
@@ -194,6 +225,23 @@ export function DownloadPage() {
                       label: `${i.config.name}（${i.mcVersion}${i.loader ? ` + ${i.loader.kind}` : ' · 原版'}）`,
                     }))}
                 />
+                {/*
+                  ★★ **说清"装到哪去"**（用户 2026-09-16：
+                    "下载页下载资源，没选版本也能下载，但不知道下到哪里去了"）。
+                  下拉里只有实例名，玩家仍然不知道文件落在哪个目录 ——
+                  这一行把**实例 + 目录**都写出来；没有可用实例时直接说清"装不了"，
+                  而不是让他点完才发现不知道去哪了。
+                */}
+                {target ? (
+                  <span className="res-target-where">
+                    装到「{target.config.name}」的{' '}
+                    <b className="mono">{RESOURCE_DIR[resourceTab.kind]}</b> 目录
+                  </span>
+                ) : (
+                  <span className="res-target-where warn">
+                    还没有可以装入的版本 —— 先去「版本列表」新建一个
+                  </span>
+                )}
               </div>
               <ResourceCenterBody
                 kind={resourceTab.kind}

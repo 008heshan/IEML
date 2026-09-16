@@ -59,6 +59,8 @@ export function SettingsPage() {
 
   /** 读失败时不能显示成"一个都没下过" —— 那是两句完全不同的话 */
   const [javaListError, setJavaListError] = useState<string | null>(null);
+  /** 低性能损耗模式（本机偏好，存 localStorage；见 main.tsx 的说明） */
+  const [lowPerf, setLowPerf] = useState(() => localStorage.getItem('ieml.lowPerf') === '1');
 
   async function loadDownloadedJava() {
     if (!api) return;
@@ -123,6 +125,32 @@ export function SettingsPage() {
 
           {/* ★★ 2026-09-16 用户要求"删除白色模式"：主题选择整行删掉。
               只有深色，没有可选项 —— 摆一个只有一个选项的选择器是假控件。 */}
+
+          {/*
+            ★★ 低性能损耗模式（用户 2026-09-16："在外观选项里加一个低性能损耗模式"）。
+            关掉的是**装饰**：卡片的磨砂（整屏几十层 backdrop-filter 是实打实的 GPU 开销）、
+            页面标题区的磨砂、以及背景那三团氛围光晕。功能与布局一点不动。
+            存 localStorage（本机偏好），见 main.tsx 里的说明。
+          */}
+          <div className="field-row">
+            <span className="field-label">
+              低性能损耗模式
+              <span className="field-hint">关掉磨砂与氛围光晕，弱机更流畅</span>
+            </span>
+            <div className="field-control">
+              <Switch
+                label="低性能损耗模式"
+                checked={lowPerf}
+                onChange={(v) => {
+                  setLowPerf(v);
+                  localStorage.setItem('ieml.lowPerf', v ? '1' : '0');
+                  document.documentElement.classList.toggle('low-perf', v);
+                  toast('ok', v ? '已开启低性能损耗模式' : '已关闭低性能损耗模式');
+                }}
+              />
+            </div>
+            <span />
+          </div>
 
           <div className="field-row">
             <span className="field-label">
