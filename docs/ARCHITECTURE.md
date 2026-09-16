@@ -843,7 +843,25 @@ API 前置包（Fabric API / QFAPI）
 解压到 <数据目录>/java/<major>/ , 校验通过则复用不重复下载
 ```
 
-**重点**：Java 下载走 Adoptium 官方 API（`api.adoptium.net/v3/binary/latest/...`），无需登录、支持断点续传、有国内镜像可换。选择 Adoptium 而非 Oracle JDK 的原因是**许可问题**——Oracle JDK 不允许自由分发，启动器不能内置。详见 ADR-013。
+**重点**：Java 下载走 Adoptium 官方 API（`api.adoptium.net/v3/assets/latest/...`），无需登录、支持断点续传。选择 Adoptium 而非 Oracle JDK 的原因是**许可问题**——Oracle JDK 不允许自由分发，启动器不能内置。详见 ADR-013。
+
+> ★★ **更正（2026-09-16 逐项实测）**：本节原先写「**有国内镜像可换**」，**这句是错的**，
+> 已删除。Adoptium 在实测中**没有可用作程序化下载的国内镜像**：
+>
+> | 镜像站 | 结果 |
+> |---|---|
+> | 清华 TUNA | **整站 403**（连 `/ubuntu/` 都是 403，不是 Adoptium 路径问题） |
+> | 南大 NJU / 北外 BFSU / 上交 SJTU / 浙大 ZJU / 北大 PKU / 阿里云 | **404，没有 Adoptium 镜像** |
+> | 中科大 USTC | 有目录（`adoptium/releases/temurin21-binaries/`），但**文件下载被 JS 反爬验证拦死** —— 返回 859 字节的 "Verifying" 页面而非文件 |
+> | CERNET 联合镜像 | `/Adoptium/` **302 跳回 TUNA**（同样 403） |
+> | BMCLAPI | 有 `/v1/products/java-runtime/` 路径，但 **302 跳到 Cloudflare 后端**（`*.749333.xyz` → `162.159.x`），**并非国内源** |
+>
+> 所以 Java 自动下载目前**只能走 Adoptium 官方**（`adoptium.rs` 的代码注释一直是对的，
+> 是本节文档写错了）。官方 API 实测**时段性可用**：有时 223 ms / 3-3 成功，
+> 有时整段超时 —— 与 GitHub / Modrinth 的抖动同源，属于国际出口问题，不是本机能修的。
+>
+> 复核脚本：`tools/probe/probe-adoptium-mirror.mjs`、`probe-adoptium-layout.mjs`、
+> `probe-ustc-adoptium.mjs`、`probe-java-runtime-mirror.mjs`。
 
 **必须做到的几点**：
 
