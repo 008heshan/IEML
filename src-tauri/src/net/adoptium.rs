@@ -130,7 +130,20 @@ pub async fn install_java(
         info.size,
         format!("Java {} 运行时", info.version),
     );
-    // Adoptium 没有镜像，只能用官方源（候选列表就是它自己，重试由引擎负责）
+    // ★★ Adoptium **没有可用的国内镜像** —— 2026-09-16 逐站实测确认，
+    //    不是"懒得找"，是真的没有（详见 tools/probe/probe-adoptium-mirror.mjs
+    //    与 probe-ustc-adoptium.mjs）：
+    //
+    //    | 镜像站 | 结果 |
+    //    |---|---|
+    //    | 清华 TUNA | 整站 403（`/ubuntu/` 也是 403，与 Adoptium 无关） |
+    //    | NJU / BFSU / SJTU / ZJU / PKU / 阿里云 | 404，无此镜像 |
+    //    | 中科大 USTC | 有目录，但文件下载被 JS 反爬拦死（返回 859B 验证页） |
+    //    | CERNET 联合镜像 | 302 跳回 TUNA（同样 403） |
+    //    | BMCLAPI `/v1/products/java-runtime/` | 302 跳到 Cloudflare 后端，**不是国内源** |
+    //
+    //    所以这里只能用官方源（候选列表就是它自己，重试由引擎负责）。
+    //    `ARCHITECTURE.md` 曾写「有国内镜像可换」，那句是错的，已更正。
     download_one(&task, Source::Mojang, &Default::default()).await?;
 
     // ---------- 校验 SHA256 ----------

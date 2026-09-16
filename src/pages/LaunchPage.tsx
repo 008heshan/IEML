@@ -436,9 +436,24 @@ export function LaunchPage() {
               <Button variant="ghost" size="sm" onClick={() => openVersion(target.id, 'logs')}>
                 <IconTerminal /> 日志
               </Button>
-              <Button variant="ghost" size="sm" onClick={() => openVersion(target.id, 'mods')}>
-                <IconPuzzle /> Mod 管理
-              </Button>
+              {/*
+                ★ 2026-09-17 用户（截图 图六）：「主页这里，也不给原版 mod 管理的键」。
+
+                  判据用 `target.loader`（真值判断）—— 与同文件 402 行的
+                  `target.loader ? loaderName(...) : '原版'` 一致，
+                  也与 `ModsPanel.tsx:720/886/891` 那三处「纯原版不能加载 Mod」
+                  用的是同一个概念。**不另写一套判据**（ADR-020 的教训：
+                  同一件事两处判定，早晚会不一致）。
+
+                  为什么该藏而不是置灰：原版实例**根本没有 mods 能加载**
+                  （`ModsPanel` 里那句"纯原版实例不能加载 Mod"就是这个意思）。
+                  置灰会让人以为"差一点就能用"，藏起来才是实话。
+                */}
+              {target.loader ? (
+                <Button variant="ghost" size="sm" onClick={() => openVersion(target.id, 'mods')}>
+                  <IconPuzzle /> Mod 管理
+                </Button>
+              ) : null}
               <Button variant="ghost" size="sm" onClick={() => openVersion(target.id, 'setup')}>
                 <IconGear /> 版本设置
               </Button>
@@ -530,8 +545,27 @@ export function LaunchPage() {
               <span>已运行 {formatElapsed(Date.now() - (runInfo?.startedAt ?? 0))}</span>
             ) : null}
             {isRunning ? <span className="dot" /> : null}
-            <button type="button" className="link-btn" onClick={() => go('versions')}>
-              管理这个版本
+            {/*
+              ★ 2026-09-17 用户（截图）："主页的管理这个版本改成『**管理此版本**』，
+                然后**直接转到这个版本的设置页**，而不是版本列表"。
+
+              原来它 `go('versions')` —— 把人送去**版本列表**，然后还得再找到
+              这一行、再点进设置。而用户此刻看的就是这个版本的卡片，
+              点"管理"当然是"管理**这一个**"，不该让他去列表里再找一遍
+              （卡片上已经有版本名和图标，再让他去列表里对号入座是多余的一步）。
+
+              现在直接 `openVersion(target.id, 'setup')` —— 与右边那颗
+              「版本设置」按钮**同一个落点**，两条路通向同一个地方。
+              ★ 文案也从「管理这个版本」改成「管理此版本」：
+                "这个/那个"在中文里带指代距离，而卡片上就有版本名，
+                "此"才是"我正看着的这一个"。
+            */}
+            <button
+              type="button"
+              className="link-btn"
+              onClick={() => openVersion(target.id, 'setup')}
+            >
+              管理此版本
             </button>
           </div>
         ) : null}
@@ -558,9 +592,19 @@ export function LaunchPage() {
         <>
           <div className="section-head">
             <h2 className="section-title">其它版本</h2>
-            <button type="button" className="link-btn" onClick={() => go('versions')}>
-              全部版本
-            </button>
+            {/*
+              ★ 2026-09-17 用户（截图 图七）：这里的「全部版本」按钮删掉 ——
+                「这个全部版本的按钮是没必要的」。
+
+              为什么它是多余的：下面那排卡片已经能点一下切启动目标、
+              点右边箭头直接进它的设置，"其它版本"这块本身就是**快捷入口**；
+              再去跳一个"版本列表"页，是把用户从主页推走，与这块的意图相反。
+              （`go` 这个函数本身不会变成未使用变量 —— 本页还有
+                `go('launch')` / `go('download')` / `go('settings')` 三处。
+                ★ 注：`go('versions')` 到第五十轮已经**一处都不剩**了，
+                  最后两处分别是这里和下面那颗「管理这个版本」，
+                  两处都改成直达目标而不是绕去列表。）
+            */}
           </div>
           <div className="launch-others">
             {others.map((i) => (
@@ -622,12 +666,14 @@ export function LaunchPage() {
         </div>
       ) : null}
 
-      {/* ==================== 启动命令预览 ==================== */}
+      {/* ==================== 启动命令预览 ====================
+          ★ 2026-09-16 用户（截图）：删掉了副标题
+            "这是真正会执行的命令行（令牌已隐藏，可以放心贴出来求助）"
+          ==================================================== */}
       <Modal
         open={previewOpen}
         onClose={() => setPreviewOpen(false)}
         title="启动命令预览"
-        subtitle="这是真正会执行的命令行（令牌已隐藏，可以放心贴出来求助）"
         size="lg"
         footer={
           <>

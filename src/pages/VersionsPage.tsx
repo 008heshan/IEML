@@ -31,7 +31,13 @@ import {
 } from '../ui/Icons';
 import { useRealApi } from '../hooks/useRealApi';
 import { formatBytes } from '../domain';
-import { EVT_OPEN_MOD_BROWSE } from '../state/events';
+/*
+ * ★ 2026-09-17：「安装 Mod」改成走 `goDownloadFor('mod', inst.id)` 跳下载页之后，
+ *   本文件不再需要 `EVT_OPEN_MOD_BROWSE`（那个事件是给"实例内的 Mod 管理页
+ *   弹搜索框"用的，见 ModsPanel）。原来的 `import { EVT_OPEN_MOD_BROWSE }
+ *   from '../state/events'` 已随之删除 —— 留着就是一个新的 TS6133，
+ *   而本仓库已有 3 个同类既有错误，不该再加。
+ */
 import {
   deleteIntent,
   describeDelete,
@@ -42,7 +48,7 @@ import type { InstalledLoader } from '../bridge/tauri';
 type Filter = 'all' | 'modded' | 'vanilla';
 
 export function VersionsPage() {
-  const { state, go, goDownloadTab, openVersion, toast, removeInstance, duplicateInstance, renameInstance } =
+  const { state, go, goDownloadTab, goDownloadFor, openVersion, toast, removeInstance, duplicateInstance, renameInstance } =
     useApp();
   const { api } = useRealApi();
   const [filter, setFilter] = useState<Filter>('all');
@@ -249,11 +255,8 @@ export function VersionsPage() {
       <div className="page-head">
         <div>
           <h1 className="page-title">版本列表</h1>
-          <p className="page-desc">
-            {state.instances.length} 个版本
-            {installedCount > 0 ? ` · 盘上已装 ${installedCount} 份游戏文件` : ''}
-            <span className="dim"> · 点一行进它的设置</span>
-          </p>
+          {/* ★ 2026-09-16 用户（截图）：删掉"· 盘上已装 N 份游戏文件"与"· 点一行进它的设置" */}
+          <p className="page-desc">{state.instances.length} 个版本</p>
         </div>
         <div className="page-actions">
           {api ? (
@@ -472,33 +475,41 @@ export function VersionsPage() {
                           安装 Mod 的功能一直都在，但它藏在
                           「双击版本 → Mod 管理 → 右上角添加 Mod」三层里面。
                           版本列表这一行是用户最常操作的地方，菜单里直接给一条。
-                      */}
-                      <button
-                        type="button"
-                        role="menuitem"
-                        title={
-                          inst.loader === null
-                            ? '纯原版装不了 Mod —— 先在「设置」里加一个加载器'
-                            : '搜索并安装 Mod 到这个版本'
-                        }
-                        onClick={() => {
-                          setMenuFor(null);
-                          /*
-                           * ★ 一次调用就把"打开这个版本 + 落在 Mod 页签"定下来。
-                           *   以前要写 `setSubPage` + `openVersion` 两次 dispatch，
-                           *   而 `nav/open-instance` 会把 subPage 归零 ——
-                           *   顺序写反就会静默落回「概览」页（见 store 的说明）。
-                           */
-                          openVersion(inst.id, 'mods');
-                          // ModsPanel 挂载后才订阅得到这个事件，所以推到下一个宏任务
-                          window.setTimeout(
-                            () => window.dispatchEvent(new CustomEvent(EVT_OPEN_MOD_BROWSE)),
-                            0,
-                          );
-                        }}
-                      >
-                        <IconPuzzle /> 安装 Mod
-                      </button>
+
+                        ★ 2026-09-17 用户（截图 图二）：
+                          「原版不给装mod的选项，**能装mod的版本，跳转mod下载页**」。
+                          两条都要改：
+
+                          ① **原版不再显示这一项**。以前是显示 + tooltip 说
+                             "纯原版装不了 Mod" —— 那等于给了一个点不动的入口，
+                             点下去只会落到一个写着"不能加载 Mod"的页面。
+                             判据 `inst.loader === null` 与 `ModsPanel.tsx:720/886/891`
+                             那三处一致，**不另写一套**（ADR-020 的教训）。
+
+                          ② **能装 Mod 的改成跳「下载页的 Mod 页签」**，并把
+                             当前这个版本一起带过去（下载页有「装到」选择器 + 资源搜索，
+                             那才是"下载页"；以前的 `openVersion(id,'mods')` 是进
+                             **实例的 Mod 管理**，是"已装了什么"，不是"能装什么"）。
+
+                          ★ 用的是 `goDownloadFor` 而不是"先切页再发事件"：
+                            `DownloadPage` 的监听器在它挂载后才注册，
+                            从这里发 `ieml:download-target` 会被当场丢掉 ——
+                            那正是下面那段 `setTimeout(0)` 注释当年想绕过的坑，
+                            而 `setTimeout(0)` 只是把窗口改小、并没有消除它。
+                        */}
+                      {inst.loader !== null ? (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          title="到下载页搜索并安装 Mod 到这个版本"
+                          onClick={() => {
+                            setMenuFor(null);
+                            goDownloadFor('mod', inst.id);
+                          }}
+                        >
+                          <IconPuzzle /> 安装 Mod
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         role="menuitem"

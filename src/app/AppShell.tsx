@@ -197,11 +197,20 @@ export function App() {
     return (
       <div className="boot">
         <div className="boot-inner">
+          {/*
+            ★ 2026-09-17 用户（截图：启动页中间一个粉紫色方块 + "正在准备…"）：
+              「**加载页的图标没改，用现在的 icon**」。
+
+            这里原来画的是一个**内联的通用方块 SVG**（lucide 的 box 图标）——
+            那是设计初期的占位符，后来换了正式品牌图标却漏了这一处。
+            现在改成与 `index.html` 的 splash、以及下面标题栏（22×22）**同一个**
+            `brandIcon`，三处视觉统一。
+
+            ★ 用 `<img>` 而不是把 PNG 转成 SVG：图标本身是位图资产，
+              这里只需要"显示它"，不需要矢量能力。
+          */}
           <div className="boot-mark">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
-              <path d="m3.3 7 8.7 5 8.7-5M12 22V12" />
-            </svg>
+            <img src={brandIcon} alt="" />
           </div>
           <div>正在准备…</div>
         </div>

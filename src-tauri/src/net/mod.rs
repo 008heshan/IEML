@@ -19,6 +19,8 @@ pub mod liteloader;
 pub mod metadata;
 pub mod mirror;
 pub mod optifine;
+/// ★★ 启动期源延迟探测：给「国内优先」的静态序补上**实测**依据
+pub mod probe;
 pub mod source;
 
 use std::sync::OnceLock;

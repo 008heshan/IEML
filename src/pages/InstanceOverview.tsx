@@ -35,7 +35,11 @@ import { formatBytes } from '../domain';
 // ★ Java 要求只有一份实现（`domain/java-requirement.ts`）—— 界面不许自己再算一遍
 import { forgeLikeOf, javaRequirementFor } from '../domain/java-requirement.ts';
 import { useDeclaredJava } from '../hooks/useJavaRequirement.ts';
-import { EVT_OPEN_MOD_BROWSE } from '../state/events';
+/*
+ * ★ 2026-09-17：顶栏「安装 Mod」改成 `goDownloadFor('mod', inst.id)` 跳下载页之后，
+ *   本文件不再需要 `EVT_OPEN_MOD_BROWSE`（那个事件是给"实例内的 Mod 管理页
+ *   弹搜索框"用的，见 ModsPanel）。原 import 已随之删除 —— 留着就是新的 TS6133。
+ */
 import {
   deleteIntent,
   describeDelete,
@@ -47,6 +51,7 @@ export function InstanceOverview() {
     open: inst,
     state,
     go,
+    goDownloadFor,
     setSubPage,
     toast,
     renameInstance,
@@ -250,23 +255,27 @@ export function InstanceOverview() {
             第一屏能看到的、最像"我要装东西"的地方就是这里 ——
             以前这里一个 Mod 相关的按钮都没有。
 
-            所以补的不是功能，是**入口**：概览页顶栏直接给一个
-            「安装 Mod」，点了就切到 Mod 管理并弹出搜索框。
+            所以补的不是功能，是**入口**：概览页顶栏直接给一个「安装 Mod」。
+
+            ★ 2026-09-17 用户（截图 图二）：「原版不给装mod的选项，
+              **能装mod的版本，跳转mod下载页**」。按这个把入口对齐到与
+              版本列表 ⋯ 菜单**完全一致**的行为：
+                · 原版不显示（`inst.loader === null`，与 ModsPanel 同一判据）；
+                · 能装的走 `goDownloadFor('mod', inst.id)` 跳**下载页的 Mod 页签**
+                  并带上当前版本 —— 而不是"切到 Mod 管理再补一个事件"。
+              以前那两行（`setSubPage('mods')` + 派发 `EVT_OPEN_MOD_BROWSE`）
+              有两个问题：落在的是"已装了什么"而不是"能装什么"；
+              而且事件在 ModsPanel 挂载前发出会被丢掉，搜索框根本不弹。
           */}
-          <Button
-            variant="secondary"
-            title={
-              inst.loader === null
-                ? '这是纯原版版本 —— 装 Mod 前需要先给它加一个加载器（Forge / Fabric 等）'
-                : '搜索并安装 Mod 到 mods 目录'
-            }
-            onClick={() => {
-              setSubPage('mods');
-              window.dispatchEvent(new CustomEvent(EVT_OPEN_MOD_BROWSE));
-            }}
-          >
-            <IconPuzzle /> 安装 Mod
-          </Button>
+          {inst.loader !== null ? (
+            <Button
+              variant="secondary"
+              title="到下载页搜索并安装 Mod 到这个版本"
+              onClick={() => goDownloadFor('mod', inst.id)}
+            >
+              <IconPuzzle /> 安装 Mod
+            </Button>
+          ) : null}
         </div>
       </div>
 

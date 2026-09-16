@@ -1381,10 +1381,10 @@ export function InstallComposer({
             <section className="wz-block">
               <div className="wz-block-title">
                 附加组件
-                <span className="wz-block-hint">
-                  可叠加 · 受加载器兼容性约束
-                  {optifineReal && optifineReal.length > 0 ? ' · OptiFine 清单来自在线' : ''}
-                </span>
+                {/* ★ 2026-09-16 用户（截图）：删掉"可叠加 · 受加载器兼容性约束" */}
+                {optifineReal && optifineReal.length > 0 ? (
+                  <span className="wz-block-hint">OptiFine 清单来自在线</span>
+                ) : null}
               </div>
               <div className="addon-grid">
                 {caps.addons.map((a) => {

@@ -604,6 +604,16 @@ export interface DownloadSourceReport {
   /** 429 冷却剩余秒数（0 = 不在冷却） */
   coolingSeconds: number;
   score: number;
+  /**
+   * 启动探测的中位 TTFB（毫秒）。
+   * `null` = 没探过，**或**那次探测该源三个端点全失败（不可达）。
+   * 与 `probedSecondsAgo` 一起看才能区分这两种情况。
+   */
+  probeTtfbMs: number | null;
+  /** 那次探测成功的端点数（0..=3） */
+  probeOk: number;
+  /** 距上次探测过了多少秒；`null` = 从未探测 */
+  probedSecondsAgo: number | null;
 }
 
 export interface DownloadSourcesPayload {
@@ -1199,7 +1209,25 @@ export const account = {
   remove: (uuid: string) => call<void>('account_remove', { uuid }),
 
   refresh: (refreshToken: string) => call<McAccount>('account_refresh', { refreshToken }),
+
+  /**
+   * 正版账号的皮肤（走 Mojang 官方，照 PCL 的做法）。
+   *
+   * 返回 64×64 皮肤原图的 URL —— 头部在 (8,8)、帽子层在 (40,8)，
+   * **裁剪在界面里用 CSS 做**（见 `AccountPanel` 的 `.acct-head`）。
+   */
+  skin: (uuid: string) => call<AccountSkin>('account_skin', { uuid }),
 };
+
+/** 见后端 `auth::SkinInfo` */
+export interface AccountSkin {
+  /** Mojang 侧的玩家名（比本地记的那个权威） */
+  name: string;
+  /** 皮肤原图 URL（64×64 PNG）；没设皮肤时为 null */
+  skinUrl: string | null;
+  /** 披风图 URL；没有披风时为 null */
+  capeUrl: string | null;
+}
 
 /* ====================== 整合包 ====================== */
 

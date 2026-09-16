@@ -139,13 +139,105 @@ export function AccountPanel({ compact = false, toast, onLoggedIn }: AccountPane
   }, [api, device]);
 
   const loggedIn = !!state.prefs.accountUuid;
+  /**
+   * 正版皮肤（照 PCL 的做法走 Mojang 官方，不经过第三方头像站）。
+   *
+   * ★ 在**后端**查（`account_skin`），不是前端直接 `<img src="第三方">`：
+   *   `sessionserver.mojang.com` 不保证跨域，而且第三方头像站实测会回 403
+   *   —— `<img>` 遇到 403 是**静默失败**的，界面上什么都不显示。
+   *   详见 `auth::fetch_skin` 的注释与里面的实测表。
+   *
+   * ★ 只查一次：Mojang 对同一 profile 有速率限制（约每分钟一次），
+   *   而且换皮肤本来就要重启才看得到，没必要轮询。
+   */
+  const [skin, setSkin] = useState<{ skinUrl: string | null } | null>(null);
+  const [headFailed, setHeadFailed] = useState(false);
+  const accountUuid = state.prefs.accountUuid;
+
+  useEffect(() => {
+    if (!loggedIn || !accountUuid || !api) return;
+    let alive = true;
+    api.account
+      .skin(accountUuid)
+      .then((s) => {
+        if (alive) setSkin(s);
+      })
+      .catch(() => {
+        /* 查不到就退回对勾 —— 没网/被限流都不该让这块变空 */
+        if (alive) setHeadFailed(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [loggedIn, accountUuid, api]);
 
   return (
     <div className={compact ? 'acct acct-compact' : 'acct'}>
       {/* ---------- 当前身份 ---------- */}
       <div className="acct-now">
         <span className={`acct-avatar${loggedIn ? ' on' : ''}`} aria-hidden="true">
-          {loggedIn ? <IconCheck /> : <IconShield />}
+          {/*
+            ★★ 2026-09-17 用户（截图）："这个正版登录的这个对勾位置，换成正版账号头像，
+              **头像不要做圆角**（不会就看 PCL）"。
+
+            以前这里是一个**绿色对勾** —— 它只说明"登录成功了"，
+            对"是**哪个**账号"一个字都没说。而现在这一行右边就写着玩家名，
+            左边却是个跟身份无关的符号，两者对不上。
+            PCL 的做法就是"账号行最左边放这个号的头像"，照做。
+
+            ★ 用 `state.prefs.accountUuid` 拼头像地址：它本来就是正版账号的
+              Minecraft UUID，不需要额外请求。
+            ★ 拉不到就退回原来的对勾 —— 头像服务在**境外**（见
+              `2026-09-16-network-diag.md`：这台机器访问境外站是时段性不通的），
+              不能让它挂了之后留一个空方块。
+          */}
+          {loggedIn ? (
+            headFailed || !skin?.skinUrl ? (
+              <IconCheck />
+            ) : (
+              /*
+               * ★★ 在**本地裁头部**（PCL 的做法），不请求任何头像站。
+               *
+               *   64×64 皮肤里：**头部在 (8,8) 的 8×8**，**帽子层在 (40,8) 的 8×8**。
+               *   显示 40px = 8px × 5，所以整图放大到 64×5 = **320px**，
+               *   再按坐标平移到负方向即可：头部 (-40,-40)、帽子 (-200,-40)。
+               *
+               * ★ 2026-09-17 用户："帽子没渲染"。原来这里是**一个元素叠两层背景**
+               *   （`background-image: url(s), url(s)` + 两组 position/size）。
+               *   坐标算下来是对的，但多背景的图层序、逗号解析、以及 React 把
+               *   数组形式的 background 序列化成字符串这几处**任何一处出错都会
+               *   静默地只画出一层**，而且从代码上看不出来。
+               *
+               *   改成**两个元素显式叠放**：底下一层画头、上面一层画帽子。
+               *   谁在谁上面是 DOM 顺序说了算，不依赖 background 的多层语义 ——
+               *   出问题也一眼能看出是哪一层。
+               */
+              <span className="acct-head">
+                <span
+                  className="acct-head-layer"
+                  style={{
+                    backgroundImage: `url(${skin.skinUrl})`,
+                    backgroundPosition: '-40px -40px',
+                  }}
+                />
+                {/*
+                  ★ 帽子层比头大一圈（9/8）—— 三个数字是一套，别单独改：
+                    尺寸 45px、居中偏移 -2.5px、背景缩放 360px、
+                    坐标 = 源(40,8) × 360/64 = (225,45)。
+                    详见 `app.css` 的 `.acct-head-hat`。
+                */}
+                <span
+                  className="acct-head-layer acct-head-hat"
+                  style={{
+                    backgroundImage: `url(${skin.skinUrl})`,
+                    backgroundPosition: '-225px -45px',
+                  }}
+                />
+              </span>
+            )
+          ) : (
+            <IconShield />
+          )}
         </span>
         <div className="acct-who">
           <div className="acct-name">

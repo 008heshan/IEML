@@ -82,7 +82,7 @@ export function ModsPanel() {
     state,
     open: active,
     go,
-    goDownloadTab,
+    goDownloadFor,
     toast,
     backend,
     setMods,
@@ -691,21 +691,23 @@ export function ModsPanel() {
             两处的搜索、翻页、装到哪个版本都得各维护一遍，而用户还得记住
             "我上次是在哪儿找的"。现在只有下载页那一个入口。
 
-            怎么实现"默认选中该版本"：下载页的 `targetId` 是它自己的局部状态，
-            所以要**告诉它选谁** —— 用事件（`ieml:download-target`），
-            下载页那边监听并 `setTargetId`。比把状态提到全局更小、更局部。
+            ★★ 2026-09-17 修正："默认选中该版本"**以前是坏的**。
+            原实现是 `goDownloadTab('mod')` 之后立刻派发 `ieml:download-target` 事件，
+            当时的注释还写着"比把状态提到全局更小、更局部"—— **那个判断是错的**：
+            `DownloadPage` 的监听器在它**挂载之后**的 effect 里才注册，
+            而这里发事件时它还没挂载，事件当场被丢掉。
+            后果是：从这里点「添加 Mod」，下载页会用"最近玩过的那个"版本，
+            **不是你现在这个**，而且界面上看不出来 —— 用户会把 Mod 装错版本。
+
+            （`goDownloadTab` 本身就是为了同类时序问题才被造出来的，
+              见它上面那段注释；但"带哪个版本"这件事当时漏掉了，没一起放进去。）
+
+            现在统一走 `goDownloadFor('mod', active.id)`：
+            页签、目标版本、页面切换在**同一次派发**里定下来，不依赖任何事件时序。
           */}
           <Button
             variant="primary"
-            onClick={() => {
-              // ① 切到「下载 → Mod」；② 告诉下载页"装到哪个版本"
-              goDownloadTab('mod');
-              if (active) {
-                window.dispatchEvent(
-                  new CustomEvent('ieml:download-target', { detail: { instanceId: active.id } }),
-                );
-              }
-            }}
+            onClick={() => goDownloadFor('mod', active?.id ?? null)}
           >
             <IconPlus /> 添加 Mod
           </Button>

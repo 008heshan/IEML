@@ -15,7 +15,7 @@
  *   mod 列表应该是显示 mod，不要显示版本"—— 旧的第三格列的是每个版本
  *   各装了什么，那是"已有"，而这一页要回答的是"能装什么"。
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../state/AppContext';
 import { Button, Chip, CustomSelect, EmptyState, Note, SearchBox, Segmented } from '../ui';
 import { IconAlert, IconBox, IconDownload, IconLayers, IconPuzzle, IconRefresh, IconImage, IconGrid, IconPackage } from '../ui/Icons';
@@ -51,7 +51,7 @@ const RESOURCE_DIR: Record<ResourceKindName, string> = {
 };
 
 export function DownloadPage() {
-  const { state, go, toast, setDownloadTab } = useApp();
+  const { state, go, toast, setDownloadTab, setDownloadTarget } = useApp();
   const { isDesktop } = useRealApi();
   const tab = state.downloadTab;
 
@@ -74,13 +74,20 @@ export function DownloadPage() {
   /*
    * ★★ **记住玩家上次选的版本**（用户 2026-09-16："要记得玩家最后一次选的是哪个版本，
    *   而不是每次都得重新选"）。
-   *   初值从 localStorage 读，变化时写回 —— 重启启动器不用再选一次。
+   *   初值从 localStorage 读 —— 重启启动器不用再选一次。
    *   ★ 选中的那个实例可能已经被删了：下面 `target` 的 useMemo 里会用
    *     `state.instances.find(...)` 找不到就回退到"最近玩过的"，所以不会指向空气。
+   *
+   * ★ 2026-09-17：**不再是 state**（原来是 `useState` + `setTargetId`）。
+   *   唯一会改它的两处都已经搬走：
+   *     · 上面那个「装到」选择器 → 改写全局的 `downloadTargetId`；
+   *     · `ieml:download-target` 事件监听器 → 已删除（全仓库无派发方）。
+   *   所以它现在只是"上次留下的值"，读一次就够，不需要 setter。
+   *   （这正是原来那个 setter 会变成 TS6133 的原因。）
    */
-  const [targetId, setTargetId] = useState<string | null>(() =>
+  const rememberedTargetId = useRef<string | null>(
     localStorage.getItem('ieml.downloadTarget'),
-  );
+  ).current;
   /*
    * ★★ 别的页面可以把"装到哪个版本"带过来（用户 2026-09-15：
    *   "添加 mod 的按钮应该直接跳转下载页的 mod 页，并默认选择该跳转版本"）。
@@ -88,26 +95,43 @@ export function DownloadPage() {
    *   从「Mod 管理 → 添加 Mod」进来时，用户心里想的是**手上这个版本**，
    *   而下载页默认挑的是"最近玩过的那个" —— 很可能不是它，
    *   于是他会把 Mod 装到另一个版本上（而且一眼看不出来）。
-   *   事件里带着实例 id，这里收到就切过去。
+   *
+   * ★ 2026-09-17：这件事**不再走 `ieml:download-target` 事件**。
+   *   原来的实现是一个挂在挂载后 effect 里的监听器 —— 而调用方
+   *   （版本列表 / 概览页 / Mod 管理）跳过来时**本页还没挂载**，
+   *   事件当场被丢掉，于是"默认选中该版本"一直是坏的，装错版本且看不出来。
+   *   现在改为读 `state.downloadTargetId`（见下面 `target` 的说明与 `store.ts`），
+   *   三个调用方也一并换成了 `goDownloadFor`。那个监听器因此已删除 ——
+   *   全仓库已无任何地方派发该事件。
    */
-  useEffect(() => {
-    const onPick = (e: Event) => {
-      const id = (e as CustomEvent<{ instanceId?: string }>).detail?.instanceId;
-      if (id) setTargetId(id);
-    };
-    window.addEventListener('ieml:download-target', onPick);
-    return () => window.removeEventListener('ieml:download-target', onPick);
-  }, []);
 
   const target = useMemo(() => {
     if (state.instances.length === 0) return null;
-    const picked = state.instances.find((i) => i.id === targetId);
+    /*
+     * ★★ 优先级：**别的页面明确指定的** > 玩家在下载页选过的 > 最近玩过的。
+     *
+     *   第一项刻意走 `state.downloadTargetId` 而**不是** `ieml:download-target` 事件：
+     *   事件在本页挂载前就发了会被丢掉（从版本列表点「安装 Mod」时正是这种情形），
+     *   于是玩家选的版本白选、Mod 装到别的版本上，且界面看不出来。
+     *   详见 `store.ts` 里 `downloadTargetId` 的说明。
+     *
+     *   ★ 跳转与手动改选写的是**同一个字段**，所以这里不需要额外的同步 effect，
+     *     也不会出现两个值打架。
+     */
+    const forced = state.downloadTargetId
+      ? state.instances.find((i) => i.id === state.downloadTargetId)
+      : null;
+    if (forced) return forced;
+
+    const picked = rememberedTargetId
+      ? state.instances.find((i) => i.id === rememberedTargetId)
+      : null;
     if (picked) return picked;
     const byTime = [...state.instances].sort((a, b) =>
       (b.lastPlayedAt ?? '').localeCompare(a.lastPlayedAt ?? ''),
     );
     return byTime[0] ?? null;
-  }, [state.instances, targetId]);
+  }, [state.instances, state.downloadTargetId, rememberedTargetId]);
 
   /*
    * ★ 记住玩家选的版本（下次打开还是它，不用再选一次）—— 见上面 targetId 的说明。
@@ -200,7 +224,11 @@ export function DownloadPage() {
                 <span className="res-target-k">装到</span>
                 <CustomSelect
                   value={target?.id ?? ''}
-                  onChange={setTargetId}
+                  /*
+                   * ★ 手动改选也写**同一个字段**（不是只写本地 state）——
+                   *   否则"跳过来 → 又改选"会有两个值打架。见 target 的 useMemo。
+                   */
+                  onChange={setDownloadTarget}
                   ariaLabel="装到哪个版本"
                   /*
                    * ★★ **原版能不能装，要看资源种类**（用户 2026-09-16：

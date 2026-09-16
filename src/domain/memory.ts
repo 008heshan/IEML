@@ -39,7 +39,7 @@ export function memoryTargets(modCount: number, type: InstanceMemoryType): Memor
 }
 
 export interface AutoMemoryResult {
-  /** 建议分配的 GB */
+  /** 建议分配的 GB —— **整数**（用户："给也是直接给整数内存"） */
   gb: number;
   /** 依据说明里要用的中间值 */
   detail: {
@@ -54,6 +54,36 @@ export interface AutoMemoryResult {
 }
 
 const round1 = (n: number) => Math.round(n * 10) / 10;
+
+/**
+ * MB → **整数** GB（只用于显示）。
+ *
+ * ★ 用户原话（截图里那一行显示 `内存 3.599609375 GB`）：
+ *   「内存取整数即可，给也是直接给整数内存」。
+ *
+ * 为什么必须有个专门的函数，而不是随手写 `Math.round(mb / 1024)`：
+ *   ① 存储单位是 MB（`Instance.config.memoryMb`），引擎也算 MB —— 这里**不改语义**，
+ *      只把"给人看的那一眼"收敛成整数；
+ *   ② `3.599609375` 的直接来源就是 `3686 / 1024`：自动算法给出 3.6 GB 后按
+ *      `Math.round(3.6 * 1024)` 存成 3686 MB，再除回来就不再是 3.6 了。
+ *      1024 不是 10 的幂，**任何"非整 GB 的 MB 值"除回来都会带一长串小数**，
+ *      所以显示层必须取整，否则换个数字还会再犯。
+ */
+export function wholeGbFromMb(memoryMb: number): number {
+  return Math.round(memoryMb / 1024);
+}
+
+/**
+ * GB → **整数** GB：用户可设置的值（滑块 / 档位）也一律是整数。
+ * 同样是用户那句「给也是直接给整数内存」的落点。
+ *
+ * ★ 这里用 `Math.floor` 而不是 `Math.round`：`autoMemory` 的结果带有
+ *   "**绝不超发**"这条硬约束（见下方四阶段说明与它的回归测试），
+ *   四舍五入会把 3.6 变成 4，凭空多要 0.4 GB —— 向下取整才守得住这条约束。
+ */
+export function wholeGb(gb: number): number {
+  return Math.floor(gb);
+}
 
 /**
  * 四阶段递减比例分配。
@@ -100,7 +130,22 @@ export function autoMemory(
     avail -= s4;
   }
 
-  const gb = round1(Math.min(Math.max(give, T.min), Math.max(totalGb, 0.5)));
+  /*
+   * ★ 2026-09-16 用户（截图 `内存 3.599609375 GB`）：
+   *   「内存取整数即可，给也是直接给整数内存」。
+   *
+   *   这里在**算法出口**就取整，而不是只让界面显示整数 —— 两处都要，缺一不可：
+   *     · 只改显示：`3.6` 存成 3686 MB、界面写 4 GB，说的和存的不是一回事，
+   *       下次再有人从 MB 反推显示，长小数又回来了；
+   *     · 只改这里：老实例库里已经有 3686 MB 这类值，界面照样漏出长小数。
+   *   所以出口取整（保证新值）＋显示取整（兜住老值，见 `wholeGbFromMb`）。
+   *
+   *   用 `wholeGb`（向下取整）不是 `Math.round`：上面的四阶段分配有一条
+   *   "任何阶段都不得超发"的硬约束（`autoMemory(24,'modded',8,1.5)` 不许超过 1.5），
+   *   而 `Math.round(1.5) = 2` 正好会把它破掉。
+   *   算法本身一个数都没动，取整只作用在它已经算完的输出上。
+   */
+  const gb = wholeGb(Math.min(Math.max(give, T.min), Math.max(totalGb, 0.5)));
 
   return {
     gb,
