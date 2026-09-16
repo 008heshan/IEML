@@ -370,10 +370,26 @@ export function ResourceCenterBody({
 
   const hasMore = hits.length < total;
 
-  async function more() {
-    const next = page + 1;
-    setPage(next);
-    await load({ k: kind, q: query, src: source, offset: (next - 1) * PAGE, append: true });
+
+  /**
+   * 跳到第 n 页（分页条的"上一页/下一页"都走这里）。
+   *
+   * ★ 两个方向**语义不同**，所以这里必须分开写（见下面分页条的注释）：
+   *   · 往后（n > page）→ `append: true`，接着堆；
+   *   · 往回（n < page）→ `append: false`，清空重取第一屏。
+   * 用同一个 append 值会让"上一页"变成"把第 1 页接到最后面"。
+   */
+  async function gotTo(n: number) {
+    if (n < 1 || loadingMore) return;
+    const forward = n > page;
+    setPage(n);
+    await load({
+      k: kind,
+      q: query,
+      src: source,
+      offset: (n - 1) * PAGE,
+      append: forward,
+    });
   }
 
   async function runSearch() {
@@ -646,18 +662,44 @@ export function ResourceCenterBody({
       </div>
 
       {hits.length > 0 ? (
-        <div className="res-foot">
-          <span className="dim">
-            已显示 <b className="mono">{hits.length}</b> / {total > 0 ? total : hits.length} 个
-            {resultSource ? ` · 来源 ${resultSource === 'curseforge' ? 'CurseForge' : 'Modrinth'}` : ''}
+        /*
+         * ★★ 换成**整合包同款的分页条**（用户 2026-09-16："整合包的翻页不错，
+         *   给 mod / 资源包 / 光影 / 数据包 做同款"）。
+         *
+         *   原来是「加载更多（第 N 页）」一个按钮：只能往后走、**回不去**，
+         *   而且"已显示 40 / 18337"要玩家自己做除法。
+         *
+         *   ★ 接口语义没变（offset + append），但**两个方向必须分开**：
+         *     往后跳用 `append: true`（接着堆），
+         *     往回跳用 `append: false`（清空重取）——
+         *     否则"上一页"会把第 1 页接在最后面。
+         */
+        <div className="pager">
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={page <= 1 || loadingMore}
+            onClick={() => void gotTo(page - 1)}
+          >
+            上一页
+          </Button>
+          <span className="pager-info">
+            第 {page} / {Math.max(1, Math.ceil((total > 0 ? total : hits.length) / PAGE))} 页 · 共{' '}
+            {total > 0 ? total : hits.length} 个
+            {resultSource ? ` · ${resultSource === 'curseforge' ? 'CurseForge' : 'Modrinth'}` : ''}
           </span>
-          <div className="spacer" />
-          {loadingMore ? <Spinner label="正在加载…" /> : null}
-          {hasMore && !loadingMore ? (
-            <Button size="sm" variant="secondary" onClick={() => void more()}>
-              加载更多（第 {page + 1} 页）
+          {loadingMore ? (
+            <Spinner label="正在加载…" />
+          ) : (
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={!hasMore}
+              onClick={() => void gotTo(page + 1)}
+            >
+              下一页
             </Button>
-          ) : null}
+          )}
         </div>
       ) : null}
 
