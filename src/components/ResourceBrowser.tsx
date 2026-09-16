@@ -642,9 +642,13 @@ export function ResourceCenterBody({
               >
                 {openProject === hit.project_id ? '收起版本' : '选择版本并安装'}
               </Button>
-              {hit.page_url ? (
-                <span className="dim mono res-page">{hit.project_id}</span>
-              ) : null}
+              {/*
+                ★ 2026-09-16 用户："资源卡片右下角是啥，大多都是乱码似的，那端小字不要"。
+                  那行字是 `hit.project_id` —— Modrinth 给的是 base62 id（`AANobbMI` 这种）、
+                  CurseForge 给的是数字 id，对玩家一点用都没有，看着就像乱码。
+                  删掉。`page_url`（项目页地址）没有丢，它只在
+                  "作者不允许第三方下载"的提示里出现 —— 那种时候它才真的有用。
+              */}
             </div>
             {openProject === hit.project_id ? (
               <VersionPicker
