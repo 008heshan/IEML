@@ -6,6 +6,90 @@
 
 ---
 
+## 0.1.0-beta.44 — 2026-09-17（第五十六轮：客户端更新通道打通，玩家终于能收到更新）
+
+这一轮的主题是**把"更新"这条路走完**。前几轮把发布端搭起来了（CNB 上的 `latest.json`、
+签名、`tauri.conf.json` 里的端点和公钥），但**前端从来没有调用过 updater 插件** ——
+东西全在，玩家永远收不到更新。这轮补上那条缺失的链路，并且**端到端验证**了它真的通。
+
+### 加了什么
+
+| 位置 | 内容 |
+|---|---|
+| `src/hooks/useLauncherUpdate.ts`（新） | 检查 / 下载 / 安装的全过程状态机 |
+| `src/pages/SettingsPage.tsx` | 「关于」卡里新增一行「启动器更新」 |
+| `package.json` | 依赖 `@tauri-apps/plugin-updater`；新增 `release:manifest` / `release:publish` / `release:verify` 脚本 |
+| `tools/release/verify-manifest.mjs`（新） | 上传**前**自检：清单/签名/公钥三者自洽 |
+| `tools/release/verify-endpoint.mjs`（新） | 上传**后**自检：匿名拉清单 → 下包 → 真验签 |
+| `tools/release/set-pubkey.mjs`（新） | 换公钥（原文替换，不重排 conf） |
+| `tools/env/build-signed.ps1`（新） | 带签名的构建；**构建前**就校验公钥与私钥同源 |
+| `tools/env/msvc-env.ps1`（新） | MSVC 环境抽成可 dot-source 的共享文件（原来只有一份、且无法复用） |
+| `tools/gates/check-ps1-encoding.mjs`（新） | 验门禁第 16 项：含中文的 `.ps1` 必须有 UTF-8 BOM |
+
+### 按钮为什么叫「检查启动器更新」
+
+这个程序里有**两种**更新：启动器自己、以及游戏 Mod（`ModsPanel` 里那个）。
+两者都叫"检查更新"会让人点错，所以文案上必须能分清。
+
+### 修掉的三个真问题
+
+1. **发布脚本会发错包。** 原来 `.sig` 和安装包都是"取 bundle 目录里第一个匹配"，
+   而 `bundle/` 里攒着历次构建的产物 —— 干跑时它就挑中了 `beta.28`。
+   改成**按当前版本号精确匹配**，一个都对不上才退回最新的并大声警告。
+
+2. **确认上传时 URL 拼错了。** `fetch(`${API}${verify_url...}`)` 里那个三元表达式
+   两个分支都是空字符串（半途改坏的），于是 CNB 返回绝对地址时拼成
+   `api.cnb.coolhttps://…` → `ENOTFOUND api.cnb.coolhttps`。
+   加了 `abs()` 统一补全，并给确认请求补上 JSON content-type（否则 406）。
+
+3. **签名器挂死**（承接上一轮）根因确认：`--ci` 生成的无密码密钥会让
+   `tauri signer sign` 在解码成功后挂住，还打印误导性的 `Signing without password.`。
+   **带密码的密钥 + `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 正常。**
+
+### 换了一次发布密钥（不可逆，所以趁现在）
+
+`beta.43` 用的是 `ieml2` 密钥对，密码是随手设的测试密码且已泄露。
+**公钥是编进 exe 里的** —— 换密钥对之后，装了旧版本的机器会认为新版本的签名是伪造的，
+永久失去自动更新能力。所以这件事只有"还没人安装"时能免费做。
+
+`beta.43` 发布后约 20 分钟内没有任何分发，因此这轮：
+- 生成 `ieml3` 密钥对，密码为 32 位随机串（存 `~/.ieml-release/PASSWORD.txt`，见该目录的备份说明）
+- `tauri.conf.json` 的 pubkey 换成 `ieml3`
+- **版本号升到 `beta.44`** —— 绝不能用同一个 `beta.43` 重发，
+  否则世上会存在两个公钥不同的 `beta.43`，而装过第一版的人永远更新不了
+
+### 顺带清掉的死代码
+
+`pnpm typecheck` 长期有 3 条 `TS6133`（未使用变量），让验证门禁一直是红的：
+- `ResourceBrowser.tsx` 的 `loaderLabel`
+- `InstanceSetup.tsx` 的 `memoryReasoning` 导入、`autoSuggestion` 计算
+
+后两个是当初删掉内存"依据"那一行时忘了跟着删的导入和 `useMemo`
+（`InstanceSetup.tsx` 里那段注释正好记着这件事）。现在 `tsc --noEmit` 零错误。
+
+### 新增一道门禁：PowerShell 脚本的编码
+
+含中文的 `.ps1` 没有 UTF-8 BOM 时，PowerShell 5.1 按 GBK 解码、**直接解析失败**，
+而报错指向一个无辜的 `}`（真凶是第一行的中文注释）。**这个坑本轮又踩了一次** ——
+用工具重写 `cargo-manual-msvc.ps1` 时 BOM 被悄悄抹掉，文件看起来完全正常。
+
+它极易复发，因为任何"以 UTF-8 无 BOM 重新落盘"的工具都会抹掉 BOM，diff 里也看不出来。
+所以做成了会红的检查（`tools/gates/check-ps1-encoding.mjs`），而不是一句"记得加 BOM"。
+纯 ASCII 的 `.ps1` 不报（没有可被误解码的字节）。
+
+### 验证
+
+```
+node tools/verify.mjs                     → 全部 15 项通过（含 420 个 Rust 测试）
+node tools/release/verify-manifest.mjs    → 16 项全绿
+node tools/release/verify-endpoint.mjs    → 匿名取清单 ✓ 下包 ✓ Ed25519 验签 ✓
+```
+
+★ 门禁项数这一轮从 15 变 16（新增 PowerShell 编码检查），
+所以上面 `verify.mjs` 的输出是加那一条之前跑的。
+
+---
+
 ## 0.1.0-beta.43 — 2026-09-17（第五十五轮：帽子层要按 9/8 放大，这才叫"画了帽子"）
 
 用户发来 **PCL 的对照图**："这是PCL的"。

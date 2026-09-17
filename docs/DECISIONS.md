@@ -4044,7 +4044,7 @@ BMCLAPI 的 `java-runtime` 302 跳到 Cloudflare 后端（不是国内源）。
 `tools/probe/probe-java-runtime-mirror.mjs`。
 ---
 
-## ADR-058　启动器自身的更新：机制已落地，**端点待定**（★ 第五十六轮新增）
+## ADR-058　启动器自身的更新：**CNB 公开发布仓 + 端到端验签**（★ 第五十六轮新增）
 
 **背景**
 
@@ -4075,38 +4075,62 @@ BMCLAPI 的 `java-runtime` 302 跳到 Cloudflare 后端（不是国内源）。
 5. 生成签名密钥对（**仓库外**：`~/.ieml-release/ieml.key` ＋ `.key.pub`），
    `.gitignore` 补了 `*.key` 兜底
 
-**状态：机制通了，但没有端点也没有界面 —— 现在不会有任何更新行为**（插件注册了但无人调用）。
+**★ 第五十六轮更新：端点已定、界面已做、通道已端到端验证通过**
 
-**⚠ 待决策：更新包放哪**
+上面那份"待决策"已经落地。最终选型：**CNB 的公开发布仓**。
 
-这是唯一的真阻碍，而且**这个项目自己已经踩过**：
-`README.md:131` 记着「Tauri 的打包器需要从 GitHub Releases 下载 NSIS，**国内直连会超时**」。
+| 项 | 结果 |
+|---|---|
+| 端点 | `https://cnb.cool/IEML_Official/IEML-releases/-/releases/download/latest/latest.json` |
+| 发布仓 | `IEML_Official/IEML-releases`（**公开**，与私密的代码仓 `IEML_Official/IEML` 分开） |
+| 发布脚本 | `tools/release/publish-cnb.mjs`（`pnpm release:publish`） |
 
-仓库**是有的**（`https://github.com/008heshan/IEML.git`，配在 `.git/config` 的
-`remote.origin`；`package.json` 里没有 `repository` 字段，我第一次只查了那里，说错了）。
-所以 GitHub Releases 这条路技术上可用 —— 但受下面那条网络约束。
+**为什么必须是公开仓**：Tauri 要求端点是**静态 URL**，且玩家要**匿名**下载。
+实测 CNB 私密仓匿名访问是 401（API）/ 404（网页），网页的 `share` 参数只在
+12 小时、最多 10 次下载内有效 —— 那条路走不通。（用户曾问「我这是私密库」，
+这是当时的核对结论，也是把发布拆成独立公开仓的原因。）
 
-候选（按可靠性排序）：
+**为什么用一个滚动的 `latest` tag**：端点写死在 exe 里、不能每次发版都改。
+所以维护两个 release：`v<版本>` 存带版本的产物（只增不改），`latest` 只存一个
+每次覆盖的 `latest.json`；端点固定指向 `latest`，由清单里的 `url` 指出该下哪个版本。
 
-| 方案 | 优点 | 代价 |
-|---|---|---|
-| **国内对象存储 / 自建 CDN** | 国内稳定，这是**玩家实际能不能收到更新**的关键 | 要花钱、要维护 |
-| GitHub Releases + 国内可达的加速 | 免费、生态标准 | 加速层自己也不稳定 |
-| 两者都挂（endpoint 可配多个） | 一条挂了走另一条 | 要多一套发布流程 |
+**签名密钥：已换成 `ieml3`，这次有真密码**
 
-★ Tauri 的 `endpoints` 是**数组**，天然支持多端点回退 —— 建议至少配两个。
+- `~/.ieml-release/ieml3.key` ＋ `ieml3.key.pub` ＋ `PASSWORD.txt`（32 位随机串）
+- 同目录 `README-备份说明.txt` 写明**必须三个一起备份**、以及"为什么换密钥不可逆"
 
-**签名的两条硬约束（丢了就再也发不了更新）**
+★ 换密钥**不可逆**：公钥编进 exe，装了旧版本的机器会认为新版本的签名是伪造的。
+`beta.43`（`ieml2`，测试密码且已泄露在对话记录里）发布后 20 分钟内没有分发，
+所以趁那个窗口换掉，并把版本号升到 `beta.44` —— **绝不能用同一个 `beta.43` 重发**，
+否则世上会存在两个公钥不同的 `beta.43`，而装过第一版的人永远更新不了。
 
-- **私钥**：`~/.ieml-release/ieml.key`。丢了 → **所有已发布的客户端再也收不到更新**
-  （因为新包签不出来，而旧客户端只认这把公钥）。必须离线备份。
-- 当前密钥**无密码**（`--ci` 生成的）。CI 上要用 `TAURI_SIGNING_PRIVATE_KEY` /
-  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 两个环境变量传，别把私钥写进任何脚本。
+★ `--ci` 生成的无密码密钥**签不动**：`tauri signer sign` 会在解码成功后挂住，
+还打印误导性的 `Signing without password.`。必须用带密码的密钥 +
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。
 
-**还没做**
+**界面（本节要求"必须与 Mod 更新区分开"，已照办）**
 
-- 界面入口：设置页「关于」那一带加「检查更新」。
-  ★ **必须与 `ModsPanel` 那个「检查更新」区分开** —— 后者是查 **Mod** 的更新
-  （`ModsPanel.tsx:674`，全仓库唯一叫这四个字的地方），两者混在一起会误导用户。
-- `@tauri-apps/plugin-updater` 前端包 + 检查/下载/安装的进度 UI。
-- 发布流程：`tauri build` 之后把 `latest.json` ＋ `.tar.gz` ＋ `.sig` 传到端点。
+- `src/hooks/useLauncherUpdate.ts`：检查 / 下载 / 安装的状态机
+- 设置页「关于」卡新增一行，按钮文案是「**检查启动器更新**」而不是"检查更新"
+
+★ Windows 上 `downloadAndInstall` 会**自己退出 app** 把控制权交给安装程序，
+不需要（也不该）再加 `plugin-process` 去 relaunch —— 那是 macOS/Linux 的要求。
+
+**两道自检（本轮最有价值的部分）**
+
+上传**前** —— `tools/release/verify-manifest.mjs`：清单版本号、notes 编码、
+url 与版本号一致、**签名 key id 与内置 pubkey 同源**、本地产物存在，共 16 项。
+
+上传**后** —— `tools/release/verify-endpoint.mjs`：完全照客户端的做法走一遍，
+匿名拉清单 → 匿名下包 → 用内置 pubkey 真验 Ed25519 签名。
+
+★ 为什么值得专门写：这类失败**在服务端完全看不出来**（CNB 只会说上传成功），
+只有玩家那边报"更新失败"。而且签名格式有真实的解析陷阱 —— `.sig` 是
+**一层 base64 包着 minisign 文本**，文本里才是 base64 载荷；漏掉外层解码就会把
+`untrusted` 的第 3 个字节当成 key id，从而误报"不同源"（我第一版就这么错过一次）。
+
+**仍然没做**
+
+- GitHub ↔ CNB 两个代码仓的自动同步（目前靠手动推两个 remote）
+- 更新通道的**定期巡检**：万一 CNB 改了下载行为，只有玩家会发现
+

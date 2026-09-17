@@ -4,7 +4,7 @@
 
 一个从零构建的 Minecraft 启动器。不做"功能最多"，做"最快、最小、最好用"。
 
-**当前版本：`0.1.0-beta.43`（公开测试版）** —— 版本号规则见
+**当前版本：`0.1.0-beta.44`（公开测试版）** —— 版本号规则见
 [`docs/VERSIONING.md`](docs/VERSIONING.md)，改动见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 > ★ **进阶到 beta 是用户的决定，不是"三条判据全满足"的自然结果**：
@@ -62,7 +62,7 @@ pnpm desktop:dev
 # 打包成 exe 与 NSIS 安装程序
 pnpm desktop:build
 #   → src-tauri/target/release/ieml.exe                                 （绿色版）
-#   → src-tauri/target/release/bundle/nsis/IEML_0.1.0-beta.43_x64-setup.exe（安装程序）
+#   → src-tauri/target/release/bundle/nsis/IEML_0.1.0-beta.44_x64-setup.exe（安装程序）
 #   并把绿色版**逐字节复制**到桌面「IEML 启动器.exe」（见 tools/env/deploy-desktop.ps1）
 #
 # ★ 为什么打包脚本必须顺手更新桌面那份：真实事故 —— 用户双击桌面图标测修复，
