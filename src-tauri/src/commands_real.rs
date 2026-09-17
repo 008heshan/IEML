@@ -4472,6 +4472,62 @@ pub fn open_data_dir(
     Ok(dir.to_string_lossy().to_string())
 }
 
+/* ====================== 新建游戏根目录 ====================== */
+
+/// 换数据根目录的结果。
+///
+/// 之所以要把 `previous` 也返回去：界面必须能明确说出
+/// **旧目录在哪、它没被动过** —— 否则用户会以为东西被搬走了/删了。
+#[derive(serde::Serialize)]
+pub struct DataRootChange {
+    /// 新的根目录（已建好、已记录）
+    pub path: String,
+    /// 换之前用的那个（**原样保留，未搬未删**）
+    pub previous: String,
+    /// 目标在系统盘上 —— 提示，不是错误（默认选址刻意躲开系统盘）
+    pub on_system_drive: bool,
+    /// 需要重启启动器才生效（`AppPaths` 是启动时解析一次并放进 AppState 的）
+    pub restart_required: bool,
+    /// 新目录里有没有已经存在的游戏数据（有 = 用户可能选到了老目录）
+    pub has_existing_data: bool,
+}
+
+/// 新建/切换游戏根目录（2026-09-17 用户：「单独建一个根目录，源目录不删」）。
+///
+/// ★ **不迁移**：新目录是空的，旧的**一个字节都不动**。语义与理由见
+///   `platform::set_data_root` 的文档注释。
+///
+/// ★ **需要重启**：`AppPaths` 在启动时解析一次、放进 `AppState`，
+///   而实例列表、缓存路径、日志路径全都从它派生。运行中换掉它意味着
+///   要把这些全部重建 —— 那是另一件事（而且要处理"旧句柄还开着"）。
+///   所以这里只**记录**选择，并如实告诉界面"要重启才生效"，
+///   而不是假装切成功了。
+#[tauri::command]
+pub async fn set_data_root(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<DataRootChange, String> {
+    let previous = state.paths.root.clone();
+    let target = std::path::PathBuf::from(path.trim());
+
+    // 它的错误本来就是给用户看的中文 String，直接透传（不再过 `err` 那层转换）
+    crate::platform::set_data_root(&target, &previous)?;
+
+    // 目标里是不是已经有游戏数据 —— 有的话用户可能选到了某个老目录，
+    // 值得在界面上说一句（不是错误：他可能就是要用那份）
+    let has_existing_data = target.join("instances.json").is_file()
+        || target.join(".minecraft").is_dir()
+        || target.join("versions").is_dir();
+
+    Ok(DataRootChange {
+        path: target.to_string_lossy().to_string(),
+        previous: previous.to_string_lossy().to_string(),
+        on_system_drive: crate::platform::is_on_system_drive(&target),
+        restart_required: true,
+        has_existing_data,
+    })
+}
+
 /* ====================== 校验文件完整性 ====================== */
 
 #[derive(serde::Serialize)]

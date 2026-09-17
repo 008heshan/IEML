@@ -263,9 +263,102 @@ fn ensure_writable(dir: &Path) -> bool {
     }
 }
 
+/// 玩家指定一个新的数据根目录（2026-09-17 用户要求）。
+///
+/// ## 语义：**新建一个，旧的原样不动**
+///
+/// 用户的原话是「单独建一个根目录，源目录不删」。所以这里**不做迁移** ——
+/// 一个字节都不搬、也不删。切换之后：
+///   * 新根目录是**空的**，游戏要重新装（该盘上的空间自己算）
+///   * 旧根目录里的版本、存档、Mod **原封不动地留在那**，随时可以切回去
+///
+/// ★ 为什么不做"顺手搬过去"：那是一个会失败一半的操作（几十 GB、
+///   跨盘、中途断电），而失败之后的界面没法诚实描述"搬了多少"。
+///   要做也得单独一轮，配断点续搬与校验。**这一版只做切换，并把话说清楚。**
+///
+/// ## 拒绝的几种情况（每一条都给出具体原因，不返回一句"路径非法"）
+///
+/// * 空路径、相对路径 —— 相对谁？没有意义
+/// * 和当前根目录同一个 —— 无操作，不该写记录文件
+/// * 在**当前根目录里面** —— 数据目录套数据目录，扫描与清理都会失控
+/// * 当前根目录在**目标里面** —— 同上，方向相反
+/// * 建不出来 / 写不进去（只读盘、权限不够）—— 现在就说，别等下载到一半
+///
+/// ## 不拒绝但会**告诉调用方**的
+///
+/// 目标在系统盘上。默认选址是刻意躲开系统盘的（数据能到 20 GB+），
+/// 但玩家可能有自己的理由（只有一块盘）。所以这是**提示**不是错误 ——
+/// 判断权在他，我们只负责别让他不知情。
+pub fn set_data_root(target: &Path, current: &Path) -> Result<(), String> {
+    validate_data_root(target, current)?;    write_location(&AppPaths::location_file(), target);
+    eprintln!(
+        "[IEML/paths] 数据目录已改为 {}（旧目录 {} 保持原样，未搬未删）",
+        target.display(),
+        current.display()
+    );
+    Ok(())
+}
+
+/// 上面那件事的**纯校验部分**（不碰磁盘、不写记录文件）。
+///
+/// ★ 为什么拆出来：`set_data_root` 成功时会写 `datadir.txt` ——
+///   如果测试直接调它，跑一次单测就会把**开发机真实的**数据目录记录改掉。
+///   拆开之后测试只验判据，不产生副作用。
+///
+/// 注意 `is_usable_data_root` 那一步**会建目录**（要试写）——
+/// 所以测试传的一定是临时目录。
+pub fn validate_data_root(target: &Path, current: &Path) -> Result<(), String> {
+    if target.as_os_str().is_empty() {
+        return Err("路径是空的。".into());
+    }
+    if !target.is_absolute() {
+        return Err(format!(
+            "要一个完整路径（形如 D:\\IEML），现在是相对路径：{}",
+            target.display()
+        ));
+    }
+
+    // 用规范化后的形式比较，避免 `D:\IEML` 与 `D:\IEML\` 被当成两个地方
+    let norm = |p: &Path| -> PathBuf {
+        let s = p.to_string_lossy().replace('/', "\\");
+        let s = s.trim_end_matches('\\').to_string();
+        #[cfg(windows)]
+        let s = s.to_lowercase();
+        PathBuf::from(s)
+    };
+    let t = norm(target);
+    let c = norm(current);
+
+    if t == c {
+        return Err("这就是当前的数据目录，没有变化。".into());
+    }
+    if t.starts_with(&c) {
+        return Err(format!(
+            "这个目录在当前数据目录**里面**（{}）。\
+             数据目录不能嵌套 —— 否则版本扫描和清理会把彼此当内容。",
+            current.display()
+        ));
+    }
+    if c.starts_with(&t) {
+        return Err(format!(
+            "当前数据目录（{}）在你选的位置**里面**。\
+             选一个与它无关的目录。",
+            current.display()
+        ));
+    }
+
+    if !is_usable_data_root(target) {
+        return Err(format!(
+            "这个位置建不出来或写不进去：{}。\
+             换个目录，或者先确认盘符存在、不是只读的。",
+            target.display()
+        ));
+    }
+    Ok(())
+}
+
 /// 系统盘（Windows 上是 `%SystemRoot%` 所在的盘符）—— 默认不该往上写游戏数据。
-pub fn is_on_system_drive(p: &Path) -> bool {
-    #[cfg(windows)]
+pub fn is_on_system_drive(p: &Path) -> bool {    #[cfg(windows)]
     {
         let Some(sys) = std::env::var_os("SystemRoot") else {
             return false;
@@ -1239,6 +1332,60 @@ fn dir_size(dir: &Path) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /*
+     * ★★ 换数据根目录的判据（2026-09-17 用户要求"单独建一个根目录，源目录不删"）。
+     *
+     *   测的是 `validate_data_root`（纯校验）而**不是** `set_data_root` ——
+     *   后者成功时会写真实的 `datadir.txt`，跑一次单测就会把开发机的
+     *   数据目录记录改掉。所以副作用那一步不在这里测。
+     */
+    #[test]
+    fn data_root_rejects_empty_and_relative() {
+        let cur = PathBuf::from(r"D:\IEML");
+        assert!(validate_data_root(Path::new(""), &cur).is_err(), "空路径该拒");
+        assert!(
+            validate_data_root(Path::new(r"newdata"), &cur).is_err(),
+            "相对路径该拒（相对谁？没有意义）"
+        );
+    }
+
+    #[test]
+    fn data_root_rejects_same_path_even_with_trailing_slash() {
+        let cur = PathBuf::from(r"D:\IEML");
+        assert!(validate_data_root(Path::new(r"D:\IEML"), &cur).is_err(), "同一个该拒");
+        assert!(
+            validate_data_root(Path::new(r"D:\IEML\"), &cur).is_err(),
+            "只差一个反斜杠也是同一个地方，不该当成「变了」"
+        );
+    }
+
+    #[test]
+    fn data_root_rejects_nesting_in_both_directions() {
+        let cur = PathBuf::from(r"D:\IEML");
+        let inside = PathBuf::from(r"D:\IEML\sub");
+        assert!(
+            validate_data_root(&inside, &cur).is_err(),
+            "数据目录套数据目录：扫描与清理会把彼此当内容"
+        );
+        let outside = PathBuf::from(r"D:\");
+        assert!(
+            validate_data_root(&outside, &cur).is_err(),
+            "反过来也不行：当前目录在目标里面"
+        );
+    }
+
+    #[test]
+    fn data_root_accepts_a_writable_temp_dir() {
+        let cur = PathBuf::from(r"D:\IEML");
+        // 必须是个真的能建的临时目录 —— 校验里那一步会试写
+        let tmp = std::env::temp_dir().join(format!("ieml-dataroot-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let r = validate_data_root(&tmp, &cur);
+        assert!(r.is_ok(), "能建能写的目录该通过，实际：{r:?}");
+        // 校验会顺便把目录建出来（试写探针需要），这里收干净
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 
     #[test]
     fn parse_modern_version() {

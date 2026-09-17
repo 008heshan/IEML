@@ -234,6 +234,66 @@ export function SettingsPage() {
               >
                 复制路径
               </Button>
+              {/*
+                ★★ 2026-09-17 用户：「应该可以让玩家新建游戏根目录路径」，
+                  并明确语义是「单独建一个根目录，源目录不删」。
+
+                ★ 为什么这里**不叫「迁移」也不叫「移动」**：这个动作不搬任何文件。
+                  新目录是空的，游戏要重新装；旧的版本 / 存档 / Mod
+                  原封不动留在原处，随时能把记录改回去。
+                  文案必须让用户看完就知道"我的东西还在"，否则他不会敢点。
+              */}
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={!api}
+                onClick={async () => {
+                  if (!api) {
+                    toast('info', '演示模式', '浏览器里不能改数据目录');
+                    return;
+                  }
+                  let picked: string | null = null;
+                  try {
+                    /*
+                     * 动态 import：`@tauri-apps/plugin-dialog` 只在桌面版有意义，
+                     * 静态引入会把它拖进浏览器演示模式的包里。
+                     */
+                    const { open } = await import('@tauri-apps/plugin-dialog');
+                    picked = await open({
+                      directory: true,
+                      multiple: false,
+                      title: '选一个新的游戏根目录（旧的不会被动）',
+                    });
+                  } catch (e) {
+                    toast('err', '打不开文件夹选择框', e instanceof Error ? e.message : String(e));
+                    return;
+                  }
+                  if (!picked) return; // 用户取消 —— 不是错误，什么都不说
+
+                  try {
+                    const r = await api.launcher.setDataRoot(picked);
+                    // ★ 后端已经把该拒的都拒了（嵌套、只读、和当前相同），
+                    //   走到这里就是真的记下了。下面把三件事一次说清：
+                    //   装在哪、旧的怎么样、什么时候生效。
+                    const extra = [
+                      r.hasExistingData ? '这个目录里已经有游戏数据，会直接用那一份' : null,
+                      r.onSystemDrive ? '★ 它在系统盘上，游戏多了会把系统盘写满' : null,
+                    ]
+                      .filter(Boolean)
+                      .join('；');
+                    toast(
+                      r.onSystemDrive ? 'warning' : 'ok',
+                      '已记录新的游戏根目录（重启后生效）',
+                      `新的：${r.path}　旧的：${r.previous} —— 旧目录里的东西一个都没动，` +
+                        `想换回来重新选它就行。${extra}${extra ? '。' : ''}`,
+                    );
+                  } catch (e) {
+                    toast('err', '换不了这个目录', e instanceof Error ? e.message : String(e));
+                  }
+                }}
+              >
+                新建/切换…
+              </Button>
             </div>
             <span />
           </div>

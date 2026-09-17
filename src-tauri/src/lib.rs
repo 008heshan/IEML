@@ -269,6 +269,8 @@ pub fn run() {
             /* ★ 设置页的「打开数据目录」走这条 —— 前端的 opener 插件
                因为 scope 白名单为空，调 openPath 必然被拒（见命令注释）。 */
             commands_real::open_data_dir,
+            /* ★ 新建 / 切换游戏根目录（只记录选择，重启后生效；旧的目录不动） */
+            commands_real::set_data_root,
             /* -------- 账号 -------- */
             /* ★★ 正版登录的可用性（client_id 配没配）+ 配置入口 */
             commands_real::ms_login_status,

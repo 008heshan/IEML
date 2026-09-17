@@ -1180,6 +1180,24 @@ export const launcher = {
    */
   openDir: (which: string, slug?: string) =>
     call<string>('open_data_dir', { which, slug: slug ?? null }),
+
+  /**
+   * 新建 / 切换游戏根目录（2026-09-17 用户要求）。
+   *
+   * ★ 语义是**只切换、不迁移**：新目录是空的，旧的**一个字节都不动**。
+   *   界面必须把这件事说清楚，否则用户会以为东西被搬走了。
+   *
+   * ★ 返回里带 `restartRequired` —— `AppPaths` 是启动时解析一次的，
+   *   所以这个函数只**记录**选择，界面要如实告诉用户"重启后生效"。
+   */
+  setDataRoot: (path: string) =>
+    call<{
+      path: string;
+      previous: string;
+      onSystemDrive: boolean;
+      restartRequired: boolean;
+      hasExistingData: boolean;
+    }>('set_data_root', { path }),
 };
 
 /* ====================== 账号 ====================== */
