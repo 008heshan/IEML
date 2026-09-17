@@ -52,12 +52,10 @@ import {
   IconTerminal,
 } from '../ui/Icons';
 import {
-  autoMemory,
   gbToGear,
   gearToGb,
   maxGear,
   memoryBar,
-  memoryReasoning,
   resolveIsolation,
   resolveJavaRequirement,
   validateJavaRangeText,
@@ -174,18 +172,6 @@ export function InstanceSetup() {
         globalDefault: state.prefs.globalIsolation,
       }),
     [active, state.prefs.globalIsolation, state.mods.entries.length],
-  );
-
-  /* 内存自动值：显示真实算出来的值，并解释依据 */
-  const autoSuggestion = useMemo(
-    () =>
-      autoMemory(
-        state.mods.entries.length,
-        active.addons.some((a) => a.kind === 'optifine') ? 'optifine' : 'vanilla',
-        totalGb,
-        availableGb,
-      ),
-    [state.mods.entries.length, active.addons, totalGb, availableGb],
   );
 
   const [javaRangeText, setJavaRangeText] = useState(
