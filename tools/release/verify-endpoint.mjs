@@ -42,7 +42,27 @@ function ed25519Key(raw32) {
 
 // ---------- 1. 拉清单 ----------
 console.log('1) 匿名拉取更新端点…');
-const mres = await fetch(ENDPOINT, { redirect: 'follow' });
+/*
+ * ★ 网络错误要给人话，不要抛 Node 堆栈（2026-09-17 踩到）。
+ *
+ *   这台机器的 DNS 会间歇性解析不了 `asset.cnb.cool`（清单是 302 跳到那儿的），
+ *   于是 `fetch` 抛 `EAI_AGAIN` + 一屏 undici 堆栈。
+ *   看的人只会以为"发布炸了"，其实只是这次没解析出来 —— 重跑一次就好。
+ *   ★ 但**不能因此把它当成通过**：所以这里退出码仍然是 1，
+ *     只是把话说清楚，并给出"重跑"这个可行动作。
+ */
+let mres;
+try {
+  mres = await fetch(ENDPOINT, { redirect: 'follow' });
+} catch (e) {
+  const raw = e?.cause?.code ?? e?.message ?? String(e);
+  console.error(`✗ 拉取端点失败：${raw}`);
+  if (/EAI_AGAIN|ENOTFOUND|ECONN|ETIMEDOUT|fetch failed/i.test(String(raw))) {
+    console.error('  这是**网络/DNS 问题**，不代表发布有问题 —— 重跑一次再判断。');
+    console.error(`  （清单地址是 302 跳到 asset.cnb.cool，本机 DNS 偶尔解析不了它）`);
+  }
+  process.exit(1);
+}
 if (!mres.ok) {
   console.error(`✗ 端点返回 HTTP ${mres.status}`);
   process.exit(1);
