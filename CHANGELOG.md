@@ -21,6 +21,7 @@
 | `package.json` | 依赖 `@tauri-apps/plugin-updater`；新增 `release:manifest` / `release:publish` / `release:verify` 脚本 |
 | `tools/release/verify-manifest.mjs`（新） | 上传**前**自检：清单/签名/公钥三者自洽 |
 | `tools/release/verify-endpoint.mjs`（新） | 上传**后**自检：匿名拉清单 → 下包 → 真验签 |
+| `tools/release/check-exe-wiring.mjs`（新） | 确认更新能力**真的编进了 exe**（端点、公钥、插件、ACL 权限） |
 | `tools/release/set-pubkey.mjs`（新） | 换公钥（原文替换，不重排 conf） |
 | `tools/env/build-signed.ps1`（新） | 带签名的构建；**构建前**就校验公钥与私钥同源 |
 | `tools/env/msvc-env.ps1`（新） | MSVC 环境抽成可 dot-source 的共享文件（原来只有一份、且无法复用） |
@@ -83,7 +84,17 @@
 node tools/verify.mjs                     → 全部 15 项通过（含 420 个 Rust 测试）
 node tools/release/verify-manifest.mjs    → 16 项全绿
 node tools/release/verify-endpoint.mjs    → 匿名取清单 ✓ 下包 ✓ Ed25519 验签 ✓
+node tools/release/check-exe-wiring.mjs   → 端点/公钥/插件/ACL 权限都编进了 exe ✓
 ```
+
+★ 最后那条查的是"配置写对了但没进二进制"这个经典失败形态 ——
+构建、类型检查、打包**全都不会报**，只有玩家点按钮时才暴露。
+
+★ 顺带纠正一个我自己写错的判据：`capabilities/default.json` 里写的是
+`updater:default`，但 Tauri 会把它**展开成具体命令**再编进二进制，
+形态是 `plugin:updater|check` / `plugin:updater|download_and_install`。
+第一版查的是字面量 `updater:default`，找不到就误报"权限没编进去"。
+（`createUpdaterArtifacts` 同理不该查 —— 它是纯构建期选项，运行时 conf 里会被剥掉。）
 
 ★ 门禁项数这一轮从 15 变 16（新增 PowerShell 编码检查），
 所以上面 `verify.mjs` 的输出是加那一条之前跑的。
