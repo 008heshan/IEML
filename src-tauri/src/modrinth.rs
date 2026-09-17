@@ -400,12 +400,39 @@ pub async fn versions_from_hashes(hashes: &[String]) -> Result<HashMap<String, P
 
 /* ====================== 整合包（.mrpack） ====================== */
 
+/*
+ * ★★ 整合包清单是 **camelCase**，和 Modrinth 的 API 不一样 ★★
+ *
+ *   这是「整合包无法安装」的根因（2026-09-17 用户报，live_modpack 实测抓到）：
+ *
+ *       #[serde(rename = "version_id")]     // ← 字段本来就叫 version_id
+ *       pub version_id: String,             //    这行 rename 是**空操作**
+ *
+ *   作者显然想写 `versionId`（规范里就是这个名字），但写成了下划线版本 ——
+ *   等于什么都没改。于是 serde 去找 `version_id`、真实清单里只有 `versionId`、
+ *   直接报 `missing field version_id`，整合包**一个都装不上**。
+ *
+ *   同一个错误还有两处**不报错但读到错数据**的：
+ *     * `format_version` 拿不到 `formatVersion` → `default` 成 0
+ *     * `MrpackFile::file_size` 拿不到 `fileSize` → `default` 成 0
+ *       （后者会让"要下多少字节"永远是 0，进度条与调度都失去依据）
+ *
+ *   修法是给整个结构体加 `rename_all = "camelCase"` —— 一次盖住所有字段，
+ *   而不是再逐个写 `rename`（逐个写正是当初漏掉的那个形态）。
+ *
+ *   ★ 为什么单测没抓到：下面那些测试是**直接用 Rust 结构体字面量**构造
+ *     `MrpackIndex` 的，从来没走过反序列化 —— serde 的字段名一条都没被验证过。
+ *     所以这次同时补了一条**按真实 JSON 形状**解析的测试（见 `mrpack_json_*`）。
+ */
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MrpackIndex {
     #[serde(default)]
     pub format_version: u32,
     pub game: String,
-    #[serde(rename = "version_id")]
+    /// 规范里 `formatVersion: 2` 起这个字段是**可选**的，所以给 default；
+    /// 它只用于界面显示，缺失不该让整个安装失败。
+    #[serde(default)]
     pub version_id: String,
     pub name: String,
     #[serde(default)]
@@ -417,6 +444,7 @@ pub struct MrpackIndex {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MrpackFile {
     pub path: String,
     pub hashes: HashMap<String, String>,
@@ -874,6 +902,90 @@ mod tests {
             dependencies: deps,
         };
         assert_eq!(idx.loader(), Some(("fabric-loader", "0.15.7")));
+    }
+
+    /*
+     * ★★ 这两条是 2026-09-17「整合包无法安装」的防复发断言 ★★
+     *
+     *   上面那些测试全都是**直接构造 Rust 结构体**的 —— 它们能验证业务逻辑，
+     *   却**完全绕过了 serde**：字段名叫什么、JSON 里是 camelCase 还是
+     *   snake_case，一条都没被检查过。
+     *
+     *   于是 `#[serde(rename = "version_id")]`（字段本来就叫这个名，等于没写）
+     *   一路活到了线上：真实清单里是 `versionId`，serde 找不到 `version_id`，
+     *   直接 `missing field version_id` —— **所有整合包都装不上**。
+     *
+     *   下面的 JSON **逐字取自真实 .mrpack**（Fabulously Optimized，
+     *   实测用 Expand-Archive 解出来的 modrinth.index.json），
+     *   只把 files 截短。这样 serde 的字段名就被真正钉住了。
+     */
+    const REAL_INDEX_JSON: &str = r#"{
+      "formatVersion": 1,
+      "game": "minecraft",
+      "versionId": "15.0.0-alpha.2",
+      "name": "Fabulously Optimized",
+      "files": [
+        {
+          "path": "mods/sodium.jar",
+          "hashes": { "sha1": "abc123", "sha512": "def456" },
+          "env": { "client": "required", "server": "unsupported" },
+          "downloads": ["https://cdn.modrinth.com/data/AANobbMI/versions/abc/sodium.jar"],
+          "fileSize": 123456
+        },
+        {
+          "path": "mods/server-only.jar",
+          "hashes": { "sha1": "999999" },
+          "env": { "client": "unsupported", "server": "required" },
+          "downloads": ["https://cdn.modrinth.com/data/XXXX/versions/def/server-only.jar"],
+          "fileSize": 500
+        }
+      ],
+      "dependencies": { "fabric-loader": "0.19.5", "minecraft": "26.3" }
+    }"#;
+
+    #[test]
+    fn mrpack_json_uses_camel_case_and_parses() {
+        let idx: MrpackIndex =
+            serde_json::from_str(REAL_INDEX_JSON).expect("真实形状的清单必须能解析");
+
+        // 曾经致命的那一个字段
+        assert_eq!(idx.version_id, "15.0.0-alpha.2", "versionId 没读进来");
+        // 曾经静默变成 0 的那两个
+        assert_eq!(idx.format_version, 1, "formatVersion 没读进来（会静默变成 0）");
+        assert_eq!(idx.files.len(), 2);
+        assert_eq!(
+            idx.files[0].file_size, 123456,
+            "fileSize 没读进来（会静默变成 0，进度与调度都失去依据）"
+        );
+        // 业务字段
+        assert_eq!(idx.mc_version(), Some("26.3"));
+        assert_eq!(idx.loader(), Some(("fabric-loader", "0.19.5")));
+        assert_eq!(idx.files[0].hashes.get("sha1").map(|s| s.as_str()), Some("abc123"));
+        // 客户端筛选的两个方向都要对（`env.client` 才是判据，不是 server）
+        assert!(
+            MrpackIndex::is_client_relevant(&idx.files[0]),
+            "client=required 的文件必须下给客户端"
+        );
+        assert!(
+            !MrpackIndex::is_client_relevant(&idx.files[1]),
+            "client=unsupported 的文件不该下给客户端"
+        );
+    }
+
+    /// 规范里 `formatVersion: 2` 起 `versionId` 是**可选**的 —— 缺了不该让安装失败。
+    #[test]
+    fn mrpack_json_without_version_id_still_parses() {
+        let json = r#"{
+          "formatVersion": 2,
+          "game": "minecraft",
+          "name": "No VersionId Pack",
+          "files": [],
+          "dependencies": { "minecraft": "1.20.1" }
+        }"#;
+        let idx: MrpackIndex =
+            serde_json::from_str(json).expect("formatVersion 2 没有 versionId 也要能解析");
+        assert_eq!(idx.format_version, 2);
+        assert_eq!(idx.version_id, "");
     }
 
     #[test]
