@@ -51,13 +51,27 @@ export function isFabricApiVersion(mcVersion: string): boolean {
  * ★ 必须包含"那该怎么办"，而不只是"不行"：这个版本的 Mod 生态在哪，
  *   用户看完这句话就能自己决定下一步。
  *
- * ★ **不要在里面写 markdown**（2026-09-17 用户截图：`**1.14**` 的星号
- *   原样显示出来了）。这段文字会进 `title` 提示与告警面板，两处都按纯文本渲染。
- *   要强调就用「」，或者像这样靠断句。
+ * ★ **不要在里面写 markdown**（2026-09-17 用户截图：星号原样显示出来了）。
+ *   这段文字会进 `title` 提示与告警面板，两处都按纯文本渲染。
+ *
+ * ★ 2026-09-17 补：**Quilt 走同一张表**。用户指出「Quilt 和 Fabric 支持的版本
+ *   是重合的」—— 实测确认：Quilt 的加载器从 **1.14.4** 起有构建，
+ *   而 Fabric API 从 1.14 起，两者基本重合。Quilt 上装 Mod 要靠
+ *   **QFAPI（Quilted Fabric API）**，它的支持范围跟着 Fabric API 走，
+ *   所以"Fabric API 不支持这个版本"对 Quilt 同样成立。
+ *   我上一轮把 Quilt 排除在外，理由是"它有自己的范围"—— 那是错的。
  */
-export function fabricApiUnsupportedReason(mcVersion: string): string {
+export function fabricApiUnsupportedReason(
+  mcVersion: string,
+  loader: 'fabric' | 'quilt' = 'fabric',
+): string {
+  const isQuilt = loader === 'quilt';
+  const api = isQuilt ? 'QFAPI（Quilted Fabric API）' : 'Fabric API';
+  const lead = isQuilt
+    ? `Quilt 上的前置 API 是 ${api}，它的支持范围跟着 Fabric API 走 —— 而 Fabric API 没有发布 ${mcVersion} 版本，它从 1.14 起才支持正式版。`
+    : `Fabric API 没有发布 ${mcVersion} 版本 —— 它从 1.14 起才支持正式版。`;
   return (
-    `Fabric API 没有发布 ${mcVersion} 版本 —— 它从 1.14 起才支持正式版。\n` +
+    `${lead}\n` +
     `更低的版本要靠移植项目（1.13.2~1.3.2 用 Legacy Fabric API、b1.7.3 用 ` +
     `Cursed Legacy API），那是另一套东西，IEML 没有做。\n` +
     `这个版本想装 Mod 请改用 Forge —— 1.12.2 / 1.7.10 那一档的 Forge 生态是完整的。`

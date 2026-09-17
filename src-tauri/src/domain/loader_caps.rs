@@ -676,29 +676,32 @@ mod tests {
         assert!(r.contains("Forge"), "★ 理由必须给出替代方案，不能只说不行");
     }
 
-    /// ★★ 防漂：**静态能力表里凡是给了 Fabric 的正式版，都必须在 API 支持表里**。
+    /// ★★ 防漂：**静态能力表里凡是给了 Fabric 或 Quilt 的正式版，
+    /// 都必须在 API 支持表里**。
     ///
     /// 以后有人往 `profile()` 里加一个 1.12.2 + Fabric，这条会立刻变红 ——
-    /// 而不是等玩家勾上 Fabric、装完发现一个 Mod 都装不了才暴露。
+    /// 而不是等玩家勾上、装完发现一个 Mod 都装不了才暴露。
+    ///
+    /// ★ **Quilt 一起管**（2026-09-17 用户指出「Quilt 和 Fabric 支持的版本是
+    ///   重合的」）：实测 Quilt 加载器从 **1.14.4** 起有构建，Fabric API 从 1.14 起，
+    ///   两者基本重合。Quilt 装 Mod 靠 QFAPI，支持范围跟着 Fabric API 走 ——
+    ///   所以它**不是**"有自己的范围"，而是**跟着 Fabric API 的范围**。
     ///
     /// ★ **快照跳过这条**：表里只有正式版，而 MC百科页面写明 Fabric API
     ///   「也跟进最新快照版本开发」。一律拒掉会误伤 ——
-    ///   "用户明明能装、我们不让"比"漏放一个"更糟。运行时的规则也是这样：
-    ///   快照不过那道闸，交给在线清单。这条断言必须与它一致，否则就是
-    ///   "测试说的"和"程序做的"两回事。
+    ///   "用户明明能装、我们不让"比"漏放一个"更糟。
     #[test]
-    fn builtin_table_never_offers_fabric_outside_the_api_list() {
+    fn builtin_table_never_offers_fabric_family_outside_the_api_list() {
         for v in known_versions() {
             let p = profile(v).expect("known_versions 里的每个都该有 profile");
-            if !p.bases.contains(&BaseLoaderKind::Fabric) {
-                continue;
-            }
-            if is_snapshot(v) {
+            let has_family = p.bases.contains(&BaseLoaderKind::Fabric)
+                || p.bases.contains(&BaseLoaderKind::Quilt);
+            if !has_family || is_snapshot(v) {
                 continue; // 快照不归这张表管（见上）
             }
             assert!(
                 is_fabric_api_version(v),
-                "静态表给 {v} 提供了 Fabric，但 Fabric API 不支持它（表里没有）—— \
+                "静态表给 {v} 提供了 Fabric/Quilt，但 Fabric API 不支持它（表里没有）—— \
                  玩家勾上只会得到一个装不了 Mod 的空壳"
             );
         }
