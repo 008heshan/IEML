@@ -1277,9 +1277,27 @@ export function InstallComposer({
                    *   查询失败 → 置灰 + 说明"没查到，可重试"，
                    *   **绝不**显示成"这个版本没有它"。
                    */
-                  const confirmed = q?.status === 'ok' && q.versions.length > 0;
+                  const liveOk = q?.status === 'ok' && (q?.versions.length ?? 0) > 0;
                   const loading = q?.status === 'loading';
-                  const disabled = o.value === '' ? false : !confirmed;
+                  /*
+                   * ★★ 2026-09-17（用户："与其这样，直接不让选不就好了"）。
+                   *
+                   *   用户看到的：1.7.10 上 Fabric **点得动、能选中**，选完下面
+                   *   才弹一句「当前组合不可用」。既然我们的结论就是"不能用"，
+                   *   就不该让它选得上 —— 让用户先选、再被拒绝，等于把我们自己的
+                   *   判断变成他的一次操作失误。
+                   *
+                   *   **为什么上一轮那道闸没生效**：`disabled` 原来只看
+                   *   `liveOk`（在线清单非空），**完全没读 `opt.available`**。
+                   *   Fabric 加载器在 1.7.10 上确实有 253 个构建 ——
+                   *   于是"在线清单非空 → 点得动"，而能力表早就判它不可用了。
+                   *
+                   *   ★ 两者必须分开看：`liveOk` 说的是"清单到没到"，
+                   *     `available` 说的是"我们判它能不能用"。只有后者为假时，
+                   *     才该说"这个版本没有它"。
+                   */
+                  const blockedByCapability = liveOk && opt != null && !opt.available;
+                  const disabled = o.value === '' ? false : blockedByCapability || !liveOk;
                   const selected = (o.value === '' && base === null) || o.value === base;
                   const reason =
                     o.value === ''
@@ -1288,7 +1306,9 @@ export function InstallComposer({
                         ? '正在查询在线清单…'
                         : q?.status === 'error'
                           ? `没查到 ${o.label} 的版本清单（${q.message}）—— 这不等于是没有，可以点上面「重新查询」`
-                          : (opt?.unavailableReason ?? `${o.label} 没有 ${mcVersion} 的版本`);
+                          : blockedByCapability
+                            ? (opt?.unavailableReason ?? `${o.label} 不支持 ${mcVersion}`)
+                            : (opt?.unavailableReason ?? `${o.label} 没有 ${mcVersion} 的版本`);
                   /*
                    * ★★ 一行短状态（0.1.0-beta.1，用户要求）。
                    *
