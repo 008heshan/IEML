@@ -629,14 +629,28 @@ function ModpackTab({
             }}
           >
             {/* ★ 有封面就用真封面；没有才退回按"分量"变色的方块（不再假装有图） */}
-            <div className="pack-cover" data-weight={p.weight}>
+            <div
+              className="pack-cover"
+              data-weight={p.weight}
+              /* ★ 高度判据给在 DOM 属性上，而不是让 CSS 用 `:has(img)` 去猜
+                 （理由见 pages.css 里 `.pack-cover[data-has-img]` 的注释） */
+              data-has-img={p.icon ? '1' : '0'}
+            >
               {p.icon ? (
                 <img
                   src={p.icon}
                   alt=""
                   loading="lazy"
+                  /* ★ 关掉原生拖拽：否则按住封面一拖就能把图拖到桌面去 */
+                  draggable={false}
                   onError={(e) => {
-                    (e.currentTarget as HTMLImageElement).style.display = 'none';
+                    const img = e.currentTarget as HTMLImageElement;
+                    img.style.display = 'none';
+                    /*
+                     * ★ 图挂了就**退回"分量色条"**，别留一个 96px 的空灰块 ——
+                     *   高度是由 `data-has-img` 决定的，所以这里必须一起撤掉。
+                     */
+                    img.parentElement?.setAttribute('data-has-img', '0');
                   }}
                 />
               ) : null}

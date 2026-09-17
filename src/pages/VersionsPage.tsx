@@ -412,17 +412,13 @@ export function VersionsPage() {
                   用户要求删掉时间记录 —— 见 CHANGELOG） */}
               <div className="ver-side">
                 <div className="ver-actions" onClick={(e) => e.stopPropagation()}>
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    onClick={() => {
-                      window.dispatchEvent(
-                        new CustomEvent('ieml:launch-request', { detail: inst.id }),
-                      );
-                    }}
-                  >
-                    <IconPlay /> 启动
-                  </Button>
+                  {/*
+                    ★ 2026-09-17 用户：「版本列表的启动游戏按钮删除」。
+                      原来这里每行都有一个显眼的「启动」主按钮。去掉的理由是它和
+                      "这一行是干什么的"不一致 —— 列表是**管理版本**的地方
+                      （设置 / Mod / 日志都在二级页），启动入口也在二级页里。
+                      就地启动的路没堵死：「更多操作」菜单里仍然有「启动」。
+                  */}
                   <Button
                     size="sm"
                     variant="ghost"

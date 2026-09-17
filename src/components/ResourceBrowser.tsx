@@ -125,6 +125,8 @@ function Cover({ hit, size = 44 }: { hit: ModrinthHit; size?: number }) {
       src={hit.icon_url}
       alt=""
       loading="lazy"
+      /* ★ 与整合包封面同一条规矩：关掉原生拖拽，别让图能被拖出窗口 */
+      draggable={false}
       onError={() => setBroken(true)}
     />
   );
