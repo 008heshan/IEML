@@ -15,7 +15,6 @@ import { readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
 
 const ENDPOINT =
   'https://cnb.cool/IEML_Official/IEML-releases/-/releases/download/latest/latest.json';
-const CACHE = 'tmp/_verify-artifact.exe';
 const problems = [];
 const ok = [];
 
@@ -64,6 +63,21 @@ else problems.push(`线上版本 ${manifest.version} ≠ 本地 ${pkgVersion}`);
 
 // ---------- 2. 下载产物 ----------
 console.log('2) 匿名下载更新包…');
+/*
+ * ★★ 缓存名必须**带版本号**（2026-09-17 踩到）。
+ *
+ *   原来固定叫 `tmp/_verify-artifact.exe`。发完 beta.45 之后再跑，
+ *   它复用了上一次下载的 **beta.44** 包，却拿 beta.45 的签名去验 ——
+ *   于是报「Ed25519 签名验证失败，客户端会拒绝这个更新」，
+ *   看起来像发布炸了，其实验的是上一版的文件。
+ *
+ *   ★ 这个 bug 的方向是**双向**的：错配会误报失败，但只要版本刚好对上，
+ *     也可能拿旧包"验通过"——**一个会验错对象的检查工具比没有更危险**，
+ *     因为它给出的是绿色。
+ *
+ *   所以：缓存按版本号分文件。换版本 = 自动换文件，不存在复用错的可能。
+ */
+const CACHE = `tmp/_verify-artifact-${manifest.version}.exe`;
 if (!existsSync(CACHE) || statSync(CACHE).size === 0) {
   const ares = await fetch(plat.url, { redirect: 'follow' });
   if (!ares.ok) {
@@ -71,9 +85,9 @@ if (!existsSync(CACHE) || statSync(CACHE).size === 0) {
     process.exit(1);
   }
   writeFileSync(CACHE, Buffer.from(await ares.arrayBuffer()));
-  console.log(`   ✓ 已下载`);
+  console.log('   ✓ 已下载');
 } else {
-  console.log('   （使用 tmp/_verify-artifact.exe 缓存；删掉可强制重下）');
+  console.log(`   （复用缓存 ${CACHE}；删掉可强制重下）`);
 }
 const artifact = readFileSync(CACHE);
 console.log(`   大小 ${(artifact.length / 1048576).toFixed(2)} MB`);

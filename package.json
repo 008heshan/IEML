@@ -1,7 +1,7 @@
 {
   "name": "ieml",
   "private": true,
-  "version": "0.1.0-beta.44",
+  "version": "0.1.0-beta.45",
   "description": "IEML - 极简跨平台 Minecraft 启动器（Rust + Tauri 2 · React 18 + TS）",
   "type": "module",
   "scripts": {
@@ -29,7 +29,7 @@
     "verify": "node tools/verify.mjs",
     "release:manifest": "node tools/release/publish-cnb.mjs",
     "release:publish": "node tools/release/publish-cnb.mjs --upload",
-    "release:verify": "node tools/release/verify-manifest.mjs && node tools/release/verify-endpoint.mjs",
+    "release:verify": "node tools/release/publish-cnb.mjs && node tools/release/verify-manifest.mjs && node tools/release/verify-endpoint.mjs && node tools/release/check-exe-wiring.mjs",
     "icons": "node tools/make-icons.mjs",
     "tauri": "tauri",
     "desktop:dev": "tauri dev",
