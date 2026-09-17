@@ -103,12 +103,27 @@ test('★ 快照不走这道闸（否则就是误伤）', () => {
   assert.equal(fabric.available, true, '快照上 Fabric 可用性交给在线清单');
 });
 
-test('这道闸只针对 Fabric，不牵连 Quilt / Forge', () => {
-  const caps = getLoaderCapabilities('1.12.2', {
-    bases: { fabric: ['0.16.9'], quilt: ['0.9.2'], forge: ['47.2.0'] },
+test('★ Quilt 走同一张表（用户：Quilt 和 Fabric 支持的版本是重合的）', () => {
+  /*
+   * 实测：Quilt 加载器从 **1.14.4** 起有构建，Fabric API 从 1.14 起 ——
+   * 两者基本重合。Quilt 装 Mod 靠 QFAPI，支持范围跟着 Fabric API 走，
+   * 所以"Fabric API 不支持这个版本"对 Quilt 同样成立。
+   *
+   * ★ 这条测试是**翻过来的**：上一轮我写的是「这道闸不牵连 Quilt」，
+   *   理由是"它有自己的支持范围"—— 那个理由是错的，范围不是它自己的。
+   */
+  const caps = getLoaderCapabilities('1.7.10', { bases: { quilt: ['0.9.2'] } });
+  const quilt = caps.baseLoaders.find((b) => b.kind === 'quilt');
+  assert.equal(quilt.available, false, 'Quilt 不能单独放行');
+  assert.match(quilt.unavailableReason ?? '', /QFAPI/, 'Quilt 的理由要说清前置是 QFAPI');
+  assert.ok(!(quilt.unavailableReason ?? '').includes('**'), '理由里不许有 markdown');
+});
+
+test('Forge / NeoForge 仍然不受这道闸影响', () => {
+  // 它们各有自己的支持范围，拿 Fabric API 的表去卡是另一类错
+  const caps = getLoaderCapabilities('1.1_02', {
+    bases: { forge: ['1.1-1.3.2.0'], neoforge: [], fabric: [], quilt: [] },
   });
-  const q = caps.baseLoaders.find((b) => b.kind === 'quilt');
-  const f = caps.baseLoaders.find((b) => b.kind === 'forge');
-  assert.equal(q.available, true, 'Quilt 有它自己的支持范围，不能拿 Fabric API 的表去卡');
-  assert.equal(f.available, true, 'Forge 更不该被牵连');
+  const forge = caps.baseLoaders.find((b) => b.kind === 'forge');
+  assert.equal(forge.available, true, 'Forge 有构建就该可用，与 Fabric API 无关');
 });

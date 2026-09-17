@@ -382,22 +382,27 @@ export function getLoaderCapabilities(
 
         /*
          * ★★ 2026-09-17（用户：「根据 Fabric API 支持版本来精确限制哪些版本有
-         *    Fabric 哪些没有」）。
+         *    Fabric 哪些没有」，随后补一句「Quilt 和 Fabric 支持的版本是重合的」）。
          *
          *   **Fabric 加载器存在 ≠ Fabric API 存在。**
-         *   以前这里只看在线清单有没有构建 —— 只要有，就说"Fabric 可用"。
+         *   以前这里只看在线清单有没有构建 —— 只要有，就说"可用"。
          *   可是玩家装 Fabric 基本都是为了装依赖 Fabric API 的 Mod：加载器有、
-         *   API 没有时，勾上 Fabric 只会得到一个**装不了任何 Mod 的空壳**。
+         *   API 没有时，勾上只会得到一个**装不了任何 Mod 的空壳**。
          *
-         *   所以正式版要**再过一道闸**：必须在 Fabric API 的支持表里
-         *   （`domain/fabric-api-versions.json`，来源 MC百科）。
+         *   ★ **Quilt 走同一张表**（2026-09-17 补）：
+         *     实测 Quilt 加载器从 **1.14.4** 起有构建，而 Fabric API 从 1.14 起 ——
+         *     两者基本重合。Quilt 装 Mod 靠的是 **QFAPI**，它的支持范围跟着
+         *     Fabric API 走，所以"Fabric API 不支持这个版本"对 Quilt 同样成立。
+         *     我一开始把 Quilt 排除在外（理由是"它有自己的支持范围"），那是错的：
+         *     它的范围**不是自己的**，是跟着 Fabric API 的。
          *
          *   ★ 快照**不**过这道闸：MC百科页面明确写着 Fabric API
-         *     「也跟进最新快照版本开发」，一律拒掉会误伤 ——
-         *     而"用户明明能装、我们不让"比"漏放一个"更糟。
+         *     「也跟进最新快照版本开发」，一律拒掉是**误伤** ——
+         *     "用户明明能装、我们不让"比"漏放一个"更糟。
          */
+        const fabricFamily = kind === 'fabric' || kind === 'quilt';
         const blockedByApi =
-          kind === 'fabric' && !isSnapshotVersion(mcVersion) && !isFabricApiVersion(mcVersion);
+          fabricFamily && !isSnapshotVersion(mcVersion) && !isFabricApiVersion(mcVersion);
         const available = hasBuilds && !blockedByApi;
 
         return {
@@ -410,7 +415,7 @@ export function getLoaderCapabilities(
           // 在线清单是**权威**的：有就是有，空就是"确认没有"
           confirmed: true,
           unavailableReason: blockedByApi
-            ? fabricApiUnsupportedReason(mcVersion)
+            ? fabricApiUnsupportedReason(mcVersion, kind === 'quilt' ? 'quilt' : 'fabric')
             : available
               ? undefined
               : `${BASE_LOADER_NAME[kind]} 未发布 ${mcVersion} 版本`,

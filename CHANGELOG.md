@@ -6,6 +6,57 @@
 
 ---
 
+## 0.1.0-beta.49 — 2026-09-17（第六十一轮：Quilt 走同一张表 —— 我上一轮的理由是错的）
+
+用户一句：「**Quilt 和 Fabric 支持的版本是重合的，所以你懂的**」。
+
+上一轮我把 Quilt 排除在闸门之外，理由是「Quilt 有自己的支持范围，
+拿 Fabric API 的表去卡它是另一类错」。**那个理由是错的** —— 实测：
+
+| | 支持的 MC 版本 |
+|---|---|
+| Fabric 加载器 | 1.14 起 |
+| **Quilt 加载器** | **1.14.4 起**（1.14 整版返回 404） |
+| Fabric API | 1.14 起 |
+
+**Quilt 的范围不是它自己的，是跟着 Fabric API 的** —— Quilt 上装 Mod 靠的是
+**QFAPI（Quilted Fabric API）**，它的支持范围跟着 Fabric API 走。
+所以「Fabric API 不支持这个版本」对 Quilt 同样成立。
+
+### 改了什么
+
+`getLoaderCapabilities` 里那道闸从「只针对 fabric」扩到「fabric 或 quilt」，
+并且理由按加载器措辞 —— Quilt 的说法要讲清前置是 QFAPI：
+
+```
+Quilt 上的前置 API 是 QFAPI（Quilted Fabric API），它的支持范围跟着
+Fabric API 走 —— 而 Fabric API 没有发布 1.7.10 版本，它从 1.14 起才支持正式版。
+```
+
+Rust 侧那条防漂断言也一起扩到 Quilt（`builtin_table_never_offers_fabric_family_
+outside_the_api_list`）。
+
+★ **上一轮那条测试被翻了过来**：它原来叫「这道闸只针对 Fabric，不牵连 Quilt」，
+现在叫「Quilt 走同一张表」。**测试写成什么样，取决于我当时信的是什么** ——
+这次是用户的领域知识纠正了我的臆断。Forge / NeoForge 仍然不受影响，
+另有一条测试单独守它们。
+
+### 顺带
+
+`meta.quiltmc.org` 的 API 是 **`/v3`** 不是 `/v2`（我探针写错了一次，
+返回 404 还以为是"Quilt 不支持"）。这一类"探针 URL 写错 → 得出错误结论"
+本轮是第二次（上次是 mcimirror 漏了 `/v2`）—— **探针报"没有"时先怀疑探针**。
+
+### 验证
+
+```
+node --test tests/fabric-api.test.mjs   → 10 项
+cargo test --lib domain::loader_caps    → 17 项
+pnpm exec tsc --noEmit                  → 零错误
+```
+
+---
+
 ## 0.1.0-beta.48 — 2026-09-17（第六十轮：不让选，而不是选完再拒绝）
 
 用户截图 + 一句反问：「**与其这样，直接不让选不就好了**」。
