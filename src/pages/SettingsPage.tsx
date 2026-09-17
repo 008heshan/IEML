@@ -23,6 +23,7 @@ import {
 } from '../ui/Icons';
 import { useRealApi } from '../hooks/useRealApi';
 import { humanBytes } from '../hooks/useRealApi';
+import { useLauncherUpdate } from '../hooks/useLauncherUpdate';
 import {
   deleteIntent,
   describeDelete,
@@ -49,6 +50,8 @@ function stageLabelOf(version: string): string {
 export function SettingsPage() {
   const { state, rescanJava, toast, backend, refreshJava, prefsSaveFailed } = useApp();
   const { api } = useRealApi();
+  /** 启动器自身的更新（不是 Mod 更新，见 useLauncherUpdate 顶部说明） */
+  const upd = useLauncherUpdate();
 
   const [downloaded, setDownloaded] = useState<Array<{ major: number; path: string; bytes: number; usable: boolean }>>([]);
   const [busy, setBusy] = useState(false);
@@ -766,6 +769,61 @@ export function SettingsPage() {
                   ⚠ 与后端不一致
                 </span>
               ) : null}
+            </div>
+            <span />
+          </div>
+          {/*
+            ★ 2026-09-17：更新检查放在"关于"卡里、紧挨版本号。
+              用户看到版本号，下一个问题必然是"那有没有新的" —— 两者分开就是让人找。
+              按钮文案特意写成「检查启动器更新」（而不是 ModsPanel 那种「检查更新」），
+              因为这个程序里同时存在两种更新，同名会点错。
+          */}
+          <div className="field-row">
+            <span className="field-label">
+              启动器更新
+              <span className="field-hint">
+                {upd.state.phase === 'unsupported'
+                  ? '浏览器演示模式下没有更新能力'
+                  : '更新的是启动器自己，装完需要重启'}
+              </span>
+            </span>
+            <div className="field-control">
+              {upd.state.phase === 'available' ? (
+                <span
+                  className="field-hint"
+                  style={{ color: 'var(--ok, #6cc06c)' }}
+                  title={upd.state.notes || undefined}
+                >
+                  发现新版本 {upd.state.version}
+                </span>
+              ) : upd.state.phase === 'downloading' ? (
+                <span className="field-hint">
+                  正在下载 {humanBytes(upd.state.downloaded ?? 0)}
+                  {upd.state.total ? ` / ${humanBytes(upd.state.total)}` : ''}
+                </span>
+              ) : upd.state.phase === 'installing' ? (
+                <span className="field-hint" style={{ color: 'var(--ok, #6cc06c)' }}>
+                  已开始安装，启动器马上退出；装完会自动打开（没打开就手动开一次）
+                </span>
+              ) : upd.state.phase === 'uptodate' ? (
+                <span className="field-hint">已是最新版本</span>
+              ) : upd.state.phase === 'checking' ? (
+                <span className="field-hint">正在检查…</span>
+              ) : upd.state.phase === 'error' ? (
+                <span className="field-hint" style={{ color: 'var(--warn, #d9a441)' }}>
+                  {upd.state.error}
+                </span>
+              ) : null}
+              <Button
+                size="sm"
+                variant={upd.state.phase === 'available' ? 'primary' : 'ghost'}
+                loading={upd.state.phase === 'checking' || upd.state.phase === 'downloading'}
+                disabled={upd.state.phase === 'unsupported' || upd.state.phase === 'installing'}
+                onClick={() => void (upd.state.phase === 'available' ? upd.install() : upd.checkNow())}
+              >
+                {upd.state.phase !== 'checking' && upd.state.phase !== 'downloading' ? <IconRefresh /> : null}
+                {upd.state.phase === 'available' ? '下载并安装' : '检查启动器更新'}
+              </Button>
             </div>
             <span />
           </div>
