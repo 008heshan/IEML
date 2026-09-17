@@ -22,6 +22,11 @@ import type {
   LoaderCapabilities,
   LoaderOption,
 } from './types.ts';
+/*
+ * ★ Fabric API 的支持表（判"这个正式版能不能用 Fabric"）。
+ *   表和理由都在那边，这里只用结论 —— 判据只有一处。
+ */
+import { isFabricApiVersion, fabricApiUnsupportedReason } from './fabric-api.ts';
 // ★ 版本比较只有一份实现（`version.ts`）—— 判"1.20.5 及以上"必须用它，
 //   不要再用 `parseInt(mcVersion.split('.')[1])`：那对 `26.2` 这种
 //   两位数主版本号是错的（这个坑在 Java 要求那边已经踩过一次，
@@ -373,17 +378,42 @@ export function getLoaderCapabilities(
       /* --- ① 有在线数据：以在线为准（这是真实版本唯一可靠的判据） --- */
       const live = online?.bases?.[kind];
       if (live) {
-        const available = live.length > 0;
+        const hasBuilds = live.length > 0;
+
+        /*
+         * ★★ 2026-09-17（用户：「根据 Fabric API 支持版本来精确限制哪些版本有
+         *    Fabric 哪些没有」）。
+         *
+         *   **Fabric 加载器存在 ≠ Fabric API 存在。**
+         *   以前这里只看在线清单有没有构建 —— 只要有，就说"Fabric 可用"。
+         *   可是玩家装 Fabric 基本都是为了装依赖 Fabric API 的 Mod：加载器有、
+         *   API 没有时，勾上 Fabric 只会得到一个**装不了任何 Mod 的空壳**。
+         *
+         *   所以正式版要**再过一道闸**：必须在 Fabric API 的支持表里
+         *   （`domain/fabric-api-versions.json`，来源 MC百科）。
+         *
+         *   ★ 快照**不**过这道闸：MC百科页面明确写着 Fabric API
+         *     「也跟进最新快照版本开发」，一律拒掉会误伤 ——
+         *     而"用户明明能装、我们不让"比"漏放一个"更糟。
+         */
+        const blockedByApi =
+          kind === 'fabric' && !isSnapshotVersion(mcVersion) && !isFabricApiVersion(mcVersion);
+        const available = hasBuilds && !blockedByApi;
+
         return {
           kind,
           name: BASE_LOADER_NAME[kind],
+          // ★ 保留在线拿到的版本号：用户看得见"加载器确实有构建"，
+          //   再配上理由就能明白"是 API 不支持，不是没下载到"。
           versions: live,
           available,
           // 在线清单是**权威**的：有就是有，空就是"确认没有"
           confirmed: true,
-          unavailableReason: available
-            ? undefined
-            : `${BASE_LOADER_NAME[kind]} 未发布 ${mcVersion} 版本`,
+          unavailableReason: blockedByApi
+            ? fabricApiUnsupportedReason(mcVersion)
+            : available
+              ? undefined
+              : `${BASE_LOADER_NAME[kind]} 未发布 ${mcVersion} 版本`,
         };
       }
 

@@ -138,6 +138,60 @@ pub fn is_snapshot(mc_version: &str) -> bool {
     b.len() >= 6 && b[0].is_ascii_digit() && b[1].is_ascii_digit() && b[2] == b'w'
 }
 
+/* ====================== Fabric API 支持范围 ====================== */
+
+/// Fabric API 支持哪些 MC 版本（**正式版**）。
+///
+/// ## 为什么"有没有 Fabric"不能只看 Fabric 加载器
+///
+/// 以前只看 `meta.fabricmc.net/v2/versions/loader/{mc}` 有没有构建 ——
+/// 但**加载器存在 ≠ Fabric API 存在**。加载器在很多版本上都有构建（含快照），
+/// 而玩家装 Fabric 基本都是为了装依赖 Fabric API 的 Mod：加载器有、API 没有时，
+/// 勾上 Fabric 只会得到一个**装不了任何 Mod 的空壳**。
+///
+/// ## 一条表两边读
+///
+/// 真正的那份数据在 `src/domain/fabric-api-versions.json`，
+/// **前端与这里读的是同一个文件**（这里是 `include_str!`）。别在这儿再抄一份
+/// 数组：抄一份就会漂，而"支持范围"漂了之后的表现是"某个版本莫名其妙不能装"。
+///
+/// 来源：MC百科 Fabric API 词条（见 JSON 的 `_source`）。页面正文原话：
+/// 「除支持 1.14+ 的正式版本外，Fabric API 也跟进最新快照版本开发」。
+pub fn fabric_api_versions() -> &'static std::collections::HashSet<String> {
+    use std::sync::OnceLock;
+    static SET: OnceLock<std::collections::HashSet<String>> = OnceLock::new();
+    SET.get_or_init(|| {
+        #[derive(serde::Deserialize)]
+        struct Table {
+            versions: Vec<String>,
+        }
+        let raw = include_str!("../../../src/domain/fabric-api-versions.json");
+        serde_json::from_str::<Table>(raw)
+            .expect("fabric-api-versions.json 格式不对")
+            .versions
+            .into_iter()
+            .collect()
+    })
+}
+
+/// 这个**正式版**在不在 Fabric API 的支持表里。
+///
+/// ★ 快照**不**归这张表管：页面写明 Fabric API 会跟进快照，
+///   一律拒掉会误伤。调用方（`capabilities`）自己判 `is_snapshot`。
+pub fn is_fabric_api_version(mc_version: &str) -> bool {
+    fabric_api_versions().contains(mc_version)
+}
+
+/// 不在表里时，能直接展示给用户的理由（必须包含"那该怎么办"）。
+pub fn fabric_api_unsupported_reason(mc_version: &str) -> String {
+    format!(
+        "Fabric API 没有发布 {mc_version} 版本 —— 它从 **1.14** 起支持正式版。\n\
+         更低的版本要靠移植项目（1.13.2~1.3.2 用 Legacy Fabric API、\
+         b1.7.3 用 Cursed Legacy API），那是另一套东西，IEML 没有做。\n\
+         这个版本想装 Mod 请改用 Forge —— 1.12.2 / 1.7.10 那一档的 Forge 生态是完整的。"
+    )
+}
+
 /// ★★ **IEML 真的实现了这个附加组件的安装吗？**（ADR-041：界面上的承诺必须是真的）
 ///
 /// 这是"能装就是能装"的**唯一判据** —— 静态表回答的是"上游有没有"，
@@ -576,6 +630,109 @@ pub fn optifine_forge_req(mc_version: &str) -> Option<(&'static str, Option<&'st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /*
+     * ★★ Fabric API 支持表（2026-09-17 用户要求）。
+     *
+     *   用户：「根据 Fabric API 支持版本来精确限制哪些版本有 Fabric 哪些没有」，
+     *   并给了 MC百科的词条。表在 `src/domain/fabric-api-versions.json`，
+     *   前端读同一份。
+     *
+     *   这几条测试守两件事：
+     *     ① 表本身没被改坏（条数、边界）
+     *     ② **静态表不许和它对不上** —— 这是防漂的关键一条
+     */
+    #[test]
+    fn fabric_api_table_has_the_expected_shape() {
+        let t = fabric_api_versions();
+        assert_eq!(t.len(), 48, "1.14 起的正式版共 48 个（1.14段5 + 1.15段3 + 1.16段6 + 1.17段2 + 1.18段3 + 1.19段5 + 1.20段7 + 1.21段12 + 26.x段5）");
+    }
+
+    #[test]
+    fn fabric_api_boundaries_are_exactly_right() {
+        // 下界：1.14 是第一个支持的正式版
+        assert!(is_fabric_api_version("1.14"), "1.14 必须支持");
+        assert!(!is_fabric_api_version("1.13.2"), "1.13.2 要走 Legacy Fabric，不在表里");
+        assert!(!is_fabric_api_version("1.12.2"), "1.12.2 不在表里");
+        assert!(!is_fabric_api_version("1.7.10"), "1.7.10 不在表里");
+        // 上界：表里最新的几个
+        assert!(is_fabric_api_version("26.3"), "26.3 在表里");
+        assert!(is_fabric_api_version("26.1"), "26.1 在表里");
+        // 中间不能有洞（抽几个容易被漏的）
+        for v in ["1.17.1", "1.19.1", "1.20.6", "1.21.11"] {
+            assert!(is_fabric_api_version(v), "{v} 在 MC百科的清单里，不能漏");
+        }
+    }
+
+    #[test]
+    fn fabric_api_reason_tells_the_user_what_to_do_instead() {
+        let r = fabric_api_unsupported_reason("1.12.2");
+        assert!(r.contains("1.14"), "理由要说清是从哪个版本起支持");
+        assert!(r.contains("Legacy Fabric"), "理由要说清低版本是另一套移植");
+        assert!(r.contains("Forge"), "★ 理由必须给出替代方案，不能只说不行");
+    }
+
+    /// ★★ 防漂：**静态能力表里凡是给了 Fabric 的正式版，都必须在 API 支持表里**。
+    ///
+    /// 以后有人往 `profile()` 里加一个 1.12.2 + Fabric，这条会立刻变红 ——
+    /// 而不是等玩家勾上 Fabric、装完发现一个 Mod 都装不了才暴露。
+    ///
+    /// ★ **快照跳过这条**：表里只有正式版，而 MC百科页面写明 Fabric API
+    ///   「也跟进最新快照版本开发」。一律拒掉会误伤 ——
+    ///   "用户明明能装、我们不让"比"漏放一个"更糟。运行时的规则也是这样：
+    ///   快照不过那道闸，交给在线清单。这条断言必须与它一致，否则就是
+    ///   "测试说的"和"程序做的"两回事。
+    #[test]
+    fn builtin_table_never_offers_fabric_outside_the_api_list() {
+        for v in known_versions() {
+            let p = profile(v).expect("known_versions 里的每个都该有 profile");
+            if !p.bases.contains(&BaseLoaderKind::Fabric) {
+                continue;
+            }
+            if is_snapshot(v) {
+                continue; // 快照不归这张表管（见上）
+            }
+            assert!(
+                is_fabric_api_version(v),
+                "静态表给 {v} 提供了 Fabric，但 Fabric API 不支持它（表里没有）—— \
+                 玩家勾上只会得到一个装不了 Mod 的空壳"
+            );
+        }
+    }
+
+    /// 表说支持的正式版，静态表里若给了 Fabric 就是一致的。
+    /// （表比静态表大得多是正常的 —— 静态表只有 10 个版本，在线清单才是权威。）
+    #[test]
+    fn fabric_api_table_is_a_superset_of_the_builtin_fabric_versions() {
+        for v in known_versions() {
+            if is_snapshot(v) {
+                continue;
+            }
+            if let Some(p) = profile(v) {
+                if p.bases.contains(&BaseLoaderKind::Fabric) {
+                    assert!(is_fabric_api_version(v), "{v} 不在 API 表里却提供了 Fabric");
+                }
+            }
+        }
+    }
+
+    /// ★ 快照例外本身也要被钉住 —— 否则上面两条 `continue` 可能悄悄变成
+    ///   "把快照全跳过"，而没人发现那条规则已经不在生效。
+    #[test]
+    fn snapshot_is_recognized_and_exempted_by_design() {
+        assert!(is_snapshot("24w45a"), "24w45a 是快照");
+        assert!(!is_snapshot("1.20.1"), "1.20.1 不是快照");
+        // 静态表给快照配了 Fabric —— 这是**故意的**（Fabric API 跟进快照）
+        let p = profile("24w45a").expect("静态表里有这个快照");
+        assert!(
+            p.bases.contains(&BaseLoaderKind::Fabric),
+            "24w45a 的 Fabric 是刻意留的；删掉它这条测试就没意义了"
+        );
+        assert!(
+            !is_fabric_api_version("24w45a"),
+            "快照不该出现在只有正式版的表里 —— 它走的是「不归表管」那条路"
+        );
+    }
 
     #[test]
     fn neoforge_unavailable_on_1_20_1_with_reason() {
