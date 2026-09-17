@@ -78,6 +78,40 @@
 所以做成了会红的检查（`tools/gates/check-ps1-encoding.mjs`），而不是一句"记得加 BOM"。
 纯 ASCII 的 `.ps1` 不报（没有可被误解码的字节）。
 
+### ★ 一次真实的疏漏：构建成功了，但你双击到的还是旧版
+
+首发 beta.44 之后用户反馈「开发端没更新，客户端也没有」—— 核对结果：
+
+| 位置 | 版本 | 说明 |
+|---|---|---|
+| `src-tauri/target/release/ieml.exe` | **beta.44** | 构建成功 |
+| 桌面 `IEML.exe` | beta.43 | **没跟着更新** |
+| `%LOCALAPPDATA%\IEML\ieml.exe` | beta.43 | 从没在本机装过 |
+
+**根因**：`pnpm desktop:build` 原本是 `tauri build && deploy-desktop.ps1`，
+而我新写的 `build-signed.ps1` **只做了前半截**。
+于是"构建成功"和"用户双击到的是新版"分了家 ——
+**这正是 `deploy-desktop.ps1` 头部记着的那起事故（2026-09-13），
+我以新脚本的形式让它复发了一次。**
+
+已修：`build-signed.ps1` 末尾调用 `deploy-desktop.ps1`（失败就抛错），
+并加 `-Install` 开关可顺带静默安装客户端。
+**默认不装** —— 替换用户机器上正在用的客户端是有副作用的动作，
+不该在"构建"里偷偷发生。
+
+顺带把"release exe 与已安装 exe 差 3 字节"这件事**逐字节验证了**（以前只是记着）：
+
+```
+差异字节数: 3
+  偏移 8220674  release="U"(55)  已安装="N"(4e)
+  偏移 8220675  release="N"(4e)  已安装="S"(53)
+  偏移 8220676  release="K"(4b)  已安装="S"(53)
+上下文：BUNDLE_TYPE_VAR_UNK  →  BUNDLE_TYPE_VAR_NSS
+```
+
+就是 Tauri 的打包标记。（★ 偏移量已从记忆里的 7783306 变成 8220674 ——
+二进制变了，**凭记忆写数字就会错**，所以这次真的跑了一遍比对。）
+
 ### 验证
 
 ```
