@@ -145,6 +145,36 @@ export function LaunchPage() {
     setLaunching(true);
     setJavaMissing(null);
     try {
+      /*
+       * ★★ 2026-09-17 用户：「在启动游戏时提前自检Java」。
+       *
+       *   以前是**先启动、失败了再解释** —— 用户看到的是"点了启动、转一会儿、
+       *   报一句缺 Java"。而 `preview_launch` 早就能在**不启动游戏**的前提下
+       *   把同一条准备路径（解析 Java、拼 classpath、查文件）跑一遍，
+       *   失败时给出同样的结构化错误（`code` / `required_major`）。
+       *   这个命令本来就是为"点之前就知道会发生什么"写的，只是从没被接上。
+       *
+       *   所以现在**先自检、再启动**：Java 不对就原地告诉他该装哪个版本，
+       *   连那次必然失败的启动都不发生。
+       *
+       * ★ 为什么自检失败就**不继续启动**（而不是"失败了也照样试一次"）：
+       *   `preview_launch` 与 `launch_minecraft` 调的是**同一个** `prepare_spec`
+       *   （见 Rust 侧那两个命令）。自检过不去的，启动一定也过不去 ——
+       *   再试一次只会把同一句话晚几秒再说一遍。
+       */
+      try {
+        await api.launcher.preview(req);
+      } catch (e) {
+        const pre = launchFailureOf(e);
+        if (pre?.code === 'java-missing' && pre.requiredMajor !== null) {
+          setJavaMissing({ major: pre.requiredMajor, range: pre.requiredRange });
+          toast('warning', `这个版本要求 Java ${pre.requiredMajor}`, pre.message);
+        } else {
+          toast('err', '启动前自检没通过', pre?.message ?? (e instanceof Error ? e.message : String(e)));
+        }
+        return;
+      }
+
       const r = await api.launcher.launch(req);
       window.dispatchEvent(
         new CustomEvent('ieml:started', { detail: { id: target.id, pid: r.pid } }),

@@ -882,9 +882,30 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
+  /*
+   * ★★ 2026-09-17（用户："整合包的封面图片可以脱出启动器"）。
+   *
+   *   WebView 里 `<img>` **默认可拖拽** —— 按住封面往外拖会起一次原生拖放，
+   *   图片能落到桌面 / 资源管理器里。对启动器来说这是纯粹的意外行为：
+   *   玩家只是想滚列表，指针一歪就把封面拖出去了。
+   *
+   *   `-webkit-user-drag: none` 关掉拖拽；`user-select: none` 顺带避免拖拽
+   *   过程中把图片选成"待复制"的蓝框（那个更常见）。
+   *   JSX 那边同时加了 `draggable={false}` —— **两个都要**，别只靠 CSS：
+   *   `draggable` 是硬开关，某些路径下 `-webkit-user-drag` 不生效。
+   */
+  -webkit-user-drag: none;
+  user-select: none;
 }
-/* 有真封面时不再用"分量色条"那套（两者同时出现只会互相打架） */
-.pack-cover:has(img) {
+/*
+ * 有真封面时不再用"分量色条"那套（两者同时出现只会互相打架）。
+ *
+ * ★ 2026-09-17：这里原来写的是 `.pack-cover:has(img)`。`:has()` 需要
+ *   Chromium 105+（本机 WebView2 是 153，跑得动），但那是**没必要的版本依赖** ——
+ *   一个属性选择器就能表达同一件事，而且在任何内核上都成立。
+ *   判据由 JSX 给（`data-has-img`），别让样式去猜 DOM 里有没有子元素。
+ */
+.pack-cover[data-has-img='1'] {
   height: 96px;
   background: var(--bg-surface);
 }
@@ -2360,6 +2381,9 @@
   object-fit: cover;
   background: var(--bg-active);
   border: 1px solid var(--border-subtle);
+  /* ★ 与整合包封面同一条规矩：WebView 里 <img> 默认可拖拽，这里也要关 */
+  -webkit-user-drag: none;
+  user-select: none;
 }
 .res-cover-letter {
   display: grid;

@@ -34,6 +34,31 @@ export function TaskCenter() {
     return () => document.removeEventListener('mousedown', onDown);
   }, [open]);
 
+  /*
+   * ★★ 2026-09-17 用户：「下载完后下载展开栏自动收起」。
+   *
+   *   展开栏挡住了主界面，而"下完了"之后它还杵在那儿，得手动再点一下 ——
+   *   那一下点的是纯粹的收尾动作，不该让用户来做。
+   *
+   * ## 只在"看着它下完"时才收
+   *
+   *   判据是**从有活跃任务变成没有**（`was > 0 && now === 0`），
+   *   而不是"当前没有活跃任务" —— 后者会在用户主动打开面板查看
+   *   历史任务时把它一把收掉（他正要读，你却关了）。
+   *
+   * ## 失败时坚决不收
+   *
+   *   有失败任务就保持展开：收起来等于把错误信息藏了，用户只会觉得
+   *   "又没反应"。要收也得是**成功**之后收。
+   */
+  const prevActive = useRef(0);
+  useEffect(() => {
+    const was = prevActive.current;
+    prevActive.current = active.length;
+    if (!open) return;
+    if (was > 0 && active.length === 0 && failed.length === 0) setOpen(false);
+  }, [active.length, failed.length, open]);
+
   if (state.tasks.length === 0) return null;
 
   const count = active.length + failed.length;
