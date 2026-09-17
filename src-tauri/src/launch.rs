@@ -246,15 +246,40 @@ pub fn watch_game_exit(
 ) {
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_millis(800));
-        let mut guard = match child.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        let status = match guard.try_wait() {
-            Ok(Some(s)) => s,
-            Ok(None) => continue,
-            Err(_) => return,
-        };
+
+        /*
+         * ★★ 锁**只围住 `try_wait()`**（2026-09-17 用户：
+         *   "游戏关闭后，启动器的 UI 还是不正常，还会一直认为游戏在运行"）。
+         *
+         *   以前这里从 `child.lock()` 一路持锁到线程 `return` ——
+         *   中间夹着：读 256 KB 日志 → `judge_crash` → 写标记文件 → 发 Tauri 事件。
+         *   而 `running_games`（前端每 4 秒的兜底轮询）是**持注册表锁来抢这把锁**的，
+         *   于是它得排队等整套收尾做完。
+         *
+         *   更要命的是**注册表没有别的清理点**：这条线程从不删自己
+         *   （见 `is_still_running` 上面那段注释——"只有点停止游戏才会被清"），
+         *   清理全靠 `running_games` 里那句 `retain(is_still_running)`。
+         *   所以只要收尾那几步里**任何一步卡住**（`emit` 阻塞、日志读取慢、
+         *   主线程忙），这把锁就放不掉 →
+         *     `running_games` 永不返回 → 前端 `await` **挂住**（不抛错，`catch` 捕不到）
+         *     → 本地表永远不会被后端的事实覆盖
+         *     → **UI 永久显示"游戏在运行"**，再点启动还会被"已经有一个在跑"挡住。
+         *
+         *   根因是**锁的范围**：收尾那几步（读日志、判崩溃、写文件、发事件）
+         *   一个都不需要子进程句柄，让锁一直握着纯属顺手。
+         *   把锁缩到只包住 `try_wait()`，这条链就断了。
+         */
+        let status = {
+            let mut guard = match child.lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            match guard.try_wait() {
+                Ok(Some(s)) => s,
+                Ok(None) => continue,
+                Err(_) => return,
+            }
+        }; // ← 锁在这一行就放掉了；下面全是**无锁**的收尾
 
         let code = status.code();
         let played = SystemTime::now()
@@ -338,7 +363,16 @@ pub fn watch_game_exit(
 ///   所以每次要用这个槽之前，都先问一句"它还活着吗"，
 ///   死了就当成没有（顺手把槽清掉）。
 pub fn is_still_running(running: &RunningGame) -> bool {
-    let Ok(mut guard) = running.child.lock() else {
+    is_child_alive(&running.child)
+}
+
+/// 只判"这个子进程句柄还活着吗" —— 不需要整个 `RunningGame`。
+///
+/// ★ 存在的理由（2026-09-17）：`running_games` 需要**在放掉注册表锁之后**
+///   逐个判活（它以前是持着注册表锁去抢子进程锁，见那里的注释）。
+///   把判据抽出来，两处共用同一份实现 —— 判据仍然只有一处。
+pub fn is_child_alive(child: &Arc<Mutex<Child>>) -> bool {
+    let Ok(mut guard) = child.lock() else {
         return false; // 拿不到句柄 → 当作已结束，别把用户卡死
     };
     matches!(guard.try_wait(), Ok(None))

@@ -2923,22 +2923,32 @@ pub async fn launch_minecraft(
     state: State<'_, AppState>,
 ) -> Result<LaunchStarted, LaunchError> {
     {
-        let mut guard = state.running.lock().map_err(|_| "状态锁失败")?;
         /*
-         * ★ 先确认表里那个进程**真的还活着**，再拒绝同一个实例的重复启动。
+         * ★★ 与 `running_games` 同样的修法（2026-09-17）：**不要持注册表锁去抢子进程锁**。
          *
-         *   实测（用户报"游戏关闭后启动器依然显示游戏在运行"）：
-         *   用户自己关掉游戏窗口时，退出监测线程只写了标记文件，
-         *   后端这个槽不会被清 —— 于是界面一直显示运行中，
-         *   再点启动还会被"已经有一个游戏在运行了"挡住，**彻底卡死**。
-         *   死掉的进程不该占着位置。
-         *
-         * ★★ 2026-09-15（多开实例）：判据从"**有没有**游戏在跑"改成
-         *   "**这一个实例**在不在跑"。别人在跑不关你的事 ——
-         *   这正是"允许多开"这件事的全部含义。
-         *   顺手把整张表里已经死掉的条目都清掉（不然界面会一直显示"运行中"）。
+         *   这里是**启动路径** —— 一旦这句被堵住，用户就**彻底开不了游戏**
+         *   （启动命令自己挂在锁上），比"UI 显示错"更严重。
+         *   完整的因果见 `running_games` 上方那段注释。
          */
-        guard.retain(|_, running| crate::launch::is_still_running(running));
+        // ① 持锁只取快照
+        let snapshot: Vec<(String, std::sync::Arc<std::sync::Mutex<std::process::Child>>)> = {
+            let guard = state.running.lock().map_err(|_| "状态锁失败")?;
+            guard
+                .iter()
+                .map(|(id, r)| (id.clone(), std::sync::Arc::clone(&r.child)))
+                .collect()
+        }; // ← 放锁
+        // ② 无锁判活（慢也只慢自己）
+        let dead: Vec<String> = snapshot
+            .into_iter()
+            .filter(|(_, child)| !crate::launch::is_child_alive(child))
+            .map(|(id, _)| id)
+            .collect();
+        // ③ 再拿锁：清死条目 + 判"这一个实例"在不在跑
+        let mut guard = state.running.lock().map_err(|_| "状态锁失败")?;
+        for id in &dead {
+            guard.remove(id);
+        }
         if let Some(running) = guard.get(&req.instance_id) {
             let _ = running; // 只是为了让"取到了就说明在跑"这件事写在明面上
             return Err(LaunchError::new(
@@ -4302,16 +4312,54 @@ pub async fn stop_minecraft(
 ///   （`launch::is_still_running`），所以返回的就是"真的还在跑的那些"。
 #[tauri::command]
 pub fn running_games(state: State<'_, AppState>) -> Result<Vec<RunningGameInfo>, String> {
-    let mut guard = state.running.lock().map_err(|_| "状态锁失败")?;
-    guard.retain(|_, running| crate::launch::is_still_running(running));
-    Ok(guard
-        .iter()
-        .map(|(instance_id, running)| RunningGameInfo {
-            instance_id: instance_id.clone(),
-            pid: running.pid,
-            started_at: running.started_at,
-        })
-        .collect())
+    /*
+     * ★★ 分三步：**取快照 → 放锁判活 → 再拿锁删**（2026-09-17 用户：
+     *   "游戏关闭后，启动器的 UI 还是不正常，还会一直认为游戏在运行"）。
+     *
+     *   以前是一句话：持着**注册表锁**，在 `retain` 里对每一项调
+     *   `is_still_running` —— 那要抢**子进程锁**。而退出监测线程当时
+     *   正持着子进程锁做全套收尾（读 256 KB 日志 / 判崩溃 / 写文件 / 发事件）。
+     *
+     *   后果是**没有备用出口的死等**：这条轮询是前端唯一的兜底自愈路径
+     *   （注册表别处不会自己清，见 `is_still_running` 的注释），它一挂，
+     *   前端 `await` 就永远不返回 —— 注意是**挂住不是抛错**，
+     *   所以前端那个 `catch` 捕不到，本地表永远不会被后端的事实覆盖，
+     *   UI 就永久停在"游戏在运行"。
+     *
+     *   两处都改了：监测线程把锁缩到只包 `try_wait()`（见 `launch.rs`），
+     *   这里则**不再持着注册表锁去抢子进程锁** —— 两步之间一把锁都不持，
+     *   慢也只慢自己，不会把别人堵死。
+     */
+    // ① 持注册表锁**只取快照**，越短越好
+    let snapshot: Vec<(String, u32, u64, std::sync::Arc<std::sync::Mutex<std::process::Child>>)> = {
+        let guard = state.running.lock().map_err(|_| "状态锁失败")?;
+        guard
+            .iter()
+            .map(|(id, r)| (id.clone(), r.pid, r.started_at, std::sync::Arc::clone(&r.child)))
+            .collect()
+    }; // ← 注册表锁在这里就放掉了
+
+    // ② **无锁**逐个判活（这一步可能慢，但不再挡着任何人）
+    let mut alive: Vec<RunningGameInfo> = Vec::new();
+    let mut dead: Vec<String> = Vec::new();
+    for (instance_id, pid, started_at, child) in snapshot {
+        if crate::launch::is_child_alive(&child) {
+            alive.push(RunningGameInfo { instance_id, pid, started_at });
+        } else {
+            dead.push(instance_id);
+        }
+    }
+
+    // ③ 只为"删"再拿一次锁
+    if !dead.is_empty() {
+        if let Ok(mut guard) = state.running.lock() {
+            for id in &dead {
+                guard.remove(id);
+            }
+        }
+    }
+
+    Ok(alive)
 }
 
 #[derive(serde::Serialize)]
