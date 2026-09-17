@@ -135,6 +135,20 @@ results.push([
   run('文档版本口径一致', 'node', ['tools/set-version.mjs', '--docs']),
 ]);
 
+/*
+ * ★ **PowerShell 脚本的编码**（第五十六轮新增）。
+ *
+ *   含中文的 `.ps1` 必须有 UTF-8 BOM，否则 PowerShell 5.1 按 GBK 解码、
+ *   直接解析失败，而报错指向一个无辜的 `}`。这个坑踩过三次，且**极易复发**：
+ *   任何以"UTF-8 无 BOM"重新落盘的工具（AI 的 write/edit、node writeFileSync）
+ *   都会把 BOM 悄悄抹掉，文件看起来完全正常、diff 也看不出来。
+ *   所以它必须是一条会红的检查，而不是一句"记得加 BOM"。
+ */
+results.push([
+  'PowerShell 脚本编码',
+  run('PowerShell 脚本编码', 'node', ['tools/gates/check-ps1-encoding.mjs']),
+]);
+
 if (existsSync(join(root, 'src-tauri', 'Cargo.toml'))) {
   results.push([
     'Rust 领域测试（含 Java 判据表）',

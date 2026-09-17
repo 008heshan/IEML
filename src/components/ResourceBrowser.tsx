@@ -487,8 +487,6 @@ export function ResourceCenterBody({
     }
   }
 
-  const loaderLabel = instance?.loader ? instance.loader.kind : '原版';
-
   return (
     <div className="res-center">
       {kindsError ? (
