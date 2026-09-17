@@ -22,7 +22,9 @@ param(
     # 用哪一对密钥（`~/.ieml-release/<名字>.key` 及同名 `.key.pub`）
     [string]$KeyName = 'ieml3',
     # 密钥目录；默认在用户目录下，**不在仓库里**（见 .gitignore 的 *.key）
-    [string]$KeyDir = "$env:USERPROFILE\.ieml-release"
+    [string]$KeyDir = "$env:USERPROFILE\.ieml-release",
+    # 构建完是否顺带把本机装的客户端也换成这一版（默认不装，见文末说明）
+    [switch]$Install
 )
 
 $ErrorActionPreference = 'Stop'
@@ -113,11 +115,42 @@ if (-not $sig) {
 Write-Output ""
 Write-Output "[build-signed] ✓ 安装包 $($exe.Name)  $([math]::Round($exe.Length/1MB,2)) MB"
 Write-Output "[build-signed] ✓ 签名   $($sig.Name)  $($sig.Length) 字节"
+
+# ---------- 6. 部署到桌面 ----------
+# ★ 这一步是第五十六轮补上的，因为**漏掉它出过一次真事故**：
+#   `pnpm desktop:build` 原本是 `tauri build && deploy-desktop.ps1`，
+#   而这个脚本只做了前半截 —— 于是"构建成功"和"用户双击到的是新版"分家了：
+#   release 目录里是 beta.44，桌面上还是 beta.43，用户看到的功能当然没变。
+#   这正是 `deploy-desktop.ps1` 头部记着的那类事故，不能让它以新形式复发。
+Write-Output ""
+Write-Output "[build-signed] 部署到桌面…"
+& powershell -NoProfile -ExecutionPolicy Bypass -File "$PSScriptRoot\deploy-desktop.ps1"
+if ($LASTEXITCODE -ne 0) { throw "部署到桌面失败（退出码 $LASTEXITCODE）" }
+
+# ---------- 7. 可选：顺带把本机装的客户端也换成这一版 ----------
+# 默认**不装**：装机会替换用户机器上正在用的客户端，这是有副作用的动作，
+# 不该在"构建"里偷偷发生。要装就显式 -Install。
+if ($Install) {
+    Write-Output ""
+    Write-Output "[build-signed] 静默安装到 `$env:LOCALAPPDATA\IEML …"
+    $p = Start-Process -FilePath $exe.FullName -ArgumentList '/S' -PassThru -Wait
+    if ($p.ExitCode -ne 0) { throw "安装失败（退出码 $($p.ExitCode)）" }
+    $installed = "$env:LOCALAPPDATA\IEML\ieml.exe"
+    if (Test-Path -LiteralPath $installed) {
+        $v = (Get-Item -LiteralPath $installed).VersionInfo.FileVersion
+        Write-Output "[build-signed] ✓ 已安装客户端版本：$v"
+        if ($v -ne $version) { throw "装完的版本是 $v，但期望 $version" }
+    } else {
+        throw "安装程序退出码 0，但 $installed 不存在"
+    }
+}
+
 Write-Output ""
 Write-Output "下一步："
 Write-Output "  node tools/release/verify-manifest.mjs     # 上传前自检"
 Write-Output "  node tools/release/publish-cnb.mjs --upload"
 Write-Output "  node tools/release/verify-endpoint.mjs     # 上传后按客户端的方式真验一遍"
+Write-Output "  node tools/release/check-exe-wiring.mjs    # 确认更新能力真的进了 exe"
 
 # ★ 必须显式 exit 0：编译过程会往 stderr 写 warning（linker messages 之类），
 #   而 PowerShell 把原生命令的 stderr 记成 ErrorRecord —— 于是脚本**明明成功
