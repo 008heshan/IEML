@@ -183,9 +183,13 @@ pub fn is_fabric_api_version(mc_version: &str) -> bool {
 }
 
 /// 不在表里时，能直接展示给用户的理由（必须包含"那该怎么办"）。
+///
+/// ★ **不要在里面写 markdown**（2026-09-17 用户截图：`**1.14**` 的星号原样
+///   显示出来了）。这段文字会进 `title` 提示与告警面板，两处都按纯文本渲染。
+///   要强调就用「」。
 pub fn fabric_api_unsupported_reason(mc_version: &str) -> String {
     format!(
-        "Fabric API 没有发布 {mc_version} 版本 —— 它从 **1.14** 起支持正式版。\n\
+        "Fabric API 没有发布 {mc_version} 版本 —— 它从 1.14 起才支持正式版。\n\
          更低的版本要靠移植项目（1.13.2~1.3.2 用 Legacy Fabric API、\
          b1.7.3 用 Cursed Legacy API），那是另一套东西，IEML 没有做。\n\
          这个版本想装 Mod 请改用 Forge —— 1.12.2 / 1.7.10 那一档的 Forge 生态是完整的。"

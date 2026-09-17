@@ -6,6 +6,56 @@
 
 ---
 
+## 0.1.0-beta.48 — 2026-09-17（第六十轮：不让选，而不是选完再拒绝）
+
+用户截图 + 一句反问：「**与其这样，直接不让选不就好了**」。
+
+截图里 1.7.10 的 Fabric **点得动、能选中**（蓝点选上了），选完下面才弹
+「当前组合不可用」。上一轮那道闸**根本没生效在这一项上**。
+
+### 为什么没生效
+
+`InstallComposer` 里基础加载器的禁用条件是：
+
+```ts
+const confirmed = q?.status === 'ok' && q.versions.length > 0;
+const disabled = o.value === '' ? false : !confirmed;
+```
+
+**它只看"在线清单有没有版本"，完全没读 `opt.available`。**
+Fabric 加载器在 1.7.10 上确实有 253 个构建 → "清单非空 → 点得动"，
+而能力表早就判它不可用了。
+
+现在两者分开看：
+
+```ts
+const liveOk = q?.status === 'ok' && (q?.versions.length ?? 0) > 0;
+const blockedByCapability = liveOk && opt != null && !opt.available;
+const disabled = o.value === '' ? false : blockedByCapability || !liveOk;
+```
+
+★ 这条区分是有意义的，不能合并：
+`liveOk` 说的是「**清单到没到**」（没到 → "查不到，可以重试"），
+`available` 说的是「**我们判它能不能用**」（判不能用 → "这个版本没有它"）。
+两者为假时给用户的话完全不同 —— 合成一个条件就会把"没查到"说成"没有"，
+那正是 ADR-050 记着的那类假话。
+
+### 顺带修掉截图里的第二个问题
+
+理由文案里的 `**1.14**` **把星号原样显示出来了** —— 「当前组合不可用」面板与
+`title` 提示都按**纯文本**渲染，不认 markdown。去掉星号，并加一条断言：
+**理由里不许出现任何 markdown 记号**（`* _ \` #`），免得以后再犯。
+
+### 测试
+
+```
+node --test tests/fabric-api.test.mjs   → 9 项（+1 条：理由里不许有 markdown）
+cargo test --lib domain::loader_caps    → 17 项
+pnpm exec tsc --noEmit                  → 零错误
+```
+
+---
+
 ## 0.1.0-beta.47 — 2026-09-17（第五十九轮：用 Fabric API 的支持范围精确限制 Fabric）
 
 用户要求：「根据 Fabric API 支持版本来精确限制哪些版本有 Fabric 哪些没有」，
