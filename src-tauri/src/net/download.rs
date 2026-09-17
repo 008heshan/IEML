@@ -1744,6 +1744,27 @@ pub async fn download_batch(tasks: Vec<DownloadTask>, opts: BatchOptions) -> Res
     let mut pending: Vec<DownloadTask> = network_tasks;
     let mut failed: Vec<(String, String)> = Vec::new();
     let mut round = 0u32;
+    /*
+     * ★★ 收尾诊断（2026-09-17）。
+     *
+     *   用户报：「下载引擎下载……最后一个文件，需要等待很长时间」，
+     *   并强调这是**所有版本下载的共性**。
+     *
+     *   本文件 `sort_large_first` 那段注释说明：长尾本来已经被"大文件优先"
+     *   消掉了（收尾该只剩几个一眨眼就完的小文件）。既然仍然卡，
+     *   剩下的可能只有三种，而它们**都会在日志里留下痕迹**：
+     *     · 重试轮（退避 0.8→15s + 降并发到 1）
+     *     · 换源重下（`换 mcimirror 重试`）
+     *     · 单文件超时窗口（等满静默窗口才判死）
+     *
+     *   这里只补一样**原本没被记下来**的东西：**每一轮各花了多久**。
+     *   有了它，"最后那段时间被谁吃掉"一眼可见：
+     *     · 只有第 0 轮却很长 → 某个文件本身慢（超时窗口 / 源慢）
+     *     · 出现第 1..N 轮    → 是重试退避
+     *
+     *   ★ 刻意**不动**任何下载逻辑：没有证据就改调度，很容易把对的地方改坏。
+     */
+    let mut round_ms: Vec<u64> = Vec::new();
 
     while !pending.is_empty() && round <= MAX_BATCH_ROUNDS {
         if opts.cancel.is_cancelled() {
@@ -1782,6 +1803,7 @@ pub async fn download_batch(tasks: Vec<DownloadTask>, opts: BatchOptions) -> Res
             }
         }
 
+        let round_t0 = std::time::Instant::now();
         let (still_failed, failures, was_paused, unstarted) = run_round(
             pending,
             concurrency,
@@ -1795,6 +1817,9 @@ pub async fn download_batch(tasks: Vec<DownloadTask>, opts: BatchOptions) -> Res
             round,
         )
         .await;
+        // ★ 记在 await 之后、任何 return 之前 —— 暂停那条分支也会 return，
+        //   而"暂停前这一轮花了多久"同样是有用的信息。
+        round_ms.push(round_t0.elapsed().as_millis() as u64);
 
         /*
          * ★★ **被暂停** → 把"还没开始的"和"这一轮失败的"合成续下清单，
@@ -1951,6 +1976,32 @@ pub async fn download_batch(tasks: Vec<DownloadTask>, opts: BatchOptions) -> Res
             copy.task.label.clone(),
             opts.source,
         );
+    }
+
+    /*
+     * ★★ 收尾诊断（2026-09-17）：每一轮各花了多久。
+     *
+     *   用户报「最后一个文件要等很久」，且是**所有版本下载的共性**。
+     *   这段日志让"最后那段时间被谁吃掉了"一眼可见：
+     *     · 只有第 0 轮、但它很长 → 是单个文件本身慢（超时窗口 / 源慢）
+     *     · 有第 1..N 轮          → 是重试退避（0.8→15s + 降并发）
+     *   配合已有的 `换 mcimirror 重试` 日志就能分清是哪一种。
+     */
+    if !round_ms.is_empty() {
+        let total: u64 = round_ms.iter().sum();
+        if total > 30_000 {
+            let detail: Vec<String> = round_ms
+                .iter()
+                .enumerate()
+                .map(|(i, ms)| format!("第{i}轮 {:.1}s", *ms as f64 / 1000.0))
+                .collect();
+            eprintln!(
+                "[IEML/download] 各轮耗时：{}（合计 {:.1}s，{} 个文件）",
+                detail.join(" · "),
+                total as f64 / 1000.0,
+                total_files
+            );
+        }
     }
 
     Ok(DownloadOutcome {
