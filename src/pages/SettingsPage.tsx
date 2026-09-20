@@ -24,6 +24,7 @@ import {
 import { useRealApi } from '../hooks/useRealApi';
 import { humanBytes } from '../hooks/useRealApi';
 import { useLauncherUpdate } from '../hooks/useLauncherUpdate';
+import { DataRootPicker } from '../components/DataRootPicker';
 import {
   deleteIntent,
   describeDelete,
@@ -64,6 +65,16 @@ export function SettingsPage() {
   const [javaListError, setJavaListError] = useState<string | null>(null);
   /** 低性能损耗模式（本机偏好，存 localStorage；见 main.tsx 的说明） */
   const [lowPerf, setLowPerf] = useState(() => localStorage.getItem('ieml.lowPerf') === '1');
+  /** 「换一个游戏根目录」弹窗开没开 */
+  const [rootPicker, setRootPicker] = useState(false);
+  /**
+   * 已经记下、但**还没重启**的新数据目录（null = 没换过）。
+   *
+   * ★ 为什么要有这个：换目录是"记录 + 重启后生效"，重启前 `machine.dataDir`
+   *   仍是旧的。不给个提示的话，用户换完回来一看还是老路径，
+   *   只会以为"没换成"（这正是本仓库最忌讳的那类"看起来什么都没有发生"）。
+   */
+  const [pendingRoot, setPendingRoot] = useState<string | null>(null);
 
   async function loadDownloadedJava() {
     if (!api) return;
@@ -190,6 +201,17 @@ export function SettingsPage() {
               >
                 {shortPath(state.machine?.dataDir ?? '未知')}
               </span>
+              {/* ★ 换过、但还没重启时**必须留个痕**：否则用户回到这一页
+                  看到的还是旧路径，只会以为"没换成"（见 pendingRoot 的说明）。 */}
+              {pendingRoot ? (
+                <span
+                  className="droot-pending"
+                  title={`现在用的还是 ${state.machine?.dataDir ?? '旧目录'}，重启后改成 ${pendingRoot}`}
+                >
+                  <Chip tone="warning">重启后生效</Chip>
+                  <span className="mono truncate">{pendingRoot}</span>
+                </span>
+              ) : null}
             </span>
             <div className="field-control">
               <Button
@@ -242,55 +264,21 @@ export function SettingsPage() {
                   新目录是空的，游戏要重新装；旧的版本 / 存档 / Mod
                   原封不动留在原处，随时能把记录改回去。
                   文案必须让用户看完就知道"我的东西还在"，否则他不会敢点。
+
+                ★★ 2026-09-20 用户：「**我希望数据目录是在启动器里选，不需要到
+                  资源管理器里找**」。原来这个按钮**直接弹系统文件夹对话框**，
+                  想换个盘要自己在那个像资源管理器的框里翻。
+                  现在改成打开 `DataRootPicker`：候选盘由启动器列出来
+                  （盘符 / 剩余空间 / 是不是系统盘 / 会建到哪），点一下就行；
+                  系统对话框退成弹窗里的「浏览其他文件夹…」。
               */}
               <Button
                 size="sm"
                 variant="ghost"
                 disabled={!api}
-                onClick={async () => {
-                  if (!api) {
-                    toast('info', '演示模式', '浏览器里不能改数据目录');
-                    return;
-                  }
-                  let picked: string | null = null;
-                  try {
-                    /*
-                     * 动态 import：`@tauri-apps/plugin-dialog` 只在桌面版有意义，
-                     * 静态引入会把它拖进浏览器演示模式的包里。
-                     */
-                    const { open } = await import('@tauri-apps/plugin-dialog');
-                    picked = await open({
-                      directory: true,
-                      multiple: false,
-                      title: '选一个新的游戏根目录（旧的不会被动）',
-                    });
-                  } catch (e) {
-                    toast('err', '打不开文件夹选择框', e instanceof Error ? e.message : String(e));
-                    return;
-                  }
-                  if (!picked) return; // 用户取消 —— 不是错误，什么都不说
-
-                  try {
-                    const r = await api.launcher.setDataRoot(picked);
-                    // ★ 后端已经把该拒的都拒了（嵌套、只读、和当前相同），
-                    //   走到这里就是真的记下了。下面把三件事一次说清：
-                    //   装在哪、旧的怎么样、什么时候生效。
-                    const extra = [
-                      r.hasExistingData ? '这个目录里已经有游戏数据，会直接用那一份' : null,
-                      r.onSystemDrive ? '★ 它在系统盘上，游戏多了会把系统盘写满' : null,
-                    ]
-                      .filter(Boolean)
-                      .join('；');
-                    toast(
-                      r.onSystemDrive ? 'warning' : 'ok',
-                      '已记录新的游戏根目录（重启后生效）',
-                      `新的：${r.path}　旧的：${r.previous} —— 旧目录里的东西一个都没动，` +
-                        `想换回来重新选它就行。${extra}${extra ? '。' : ''}`,
-                    );
-                  } catch (e) {
-                    toast('err', '换不了这个目录', e instanceof Error ? e.message : String(e));
-                  }
-                }}
+                /* ★ 禁用必须给具体理由（"禁用必须给具体理由"是这一页的老规矩） */
+                title={api ? '换一个游戏根目录（候选盘会列出来）' : '浏览器演示模式看不到磁盘 —— 桌面版才能换目录'}
+                onClick={() => setRootPicker(true)}
               >
                 新建/切换…
               </Button>
@@ -903,6 +891,15 @@ export function SettingsPage() {
           </div>
         </Card>
       </div>
+
+      {/* 换游戏根目录的弹窗（候选盘由后端列，见组件头部的说明） */}
+      <DataRootPicker
+        open={rootPicker}
+        onClose={() => setRootPicker(false)}
+        current={state.machine?.dataDir ?? ''}
+        toast={toast}
+        onChanged={setPendingRoot}
+      />
     </>
   );
 }

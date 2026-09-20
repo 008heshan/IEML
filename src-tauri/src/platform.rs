@@ -426,6 +426,80 @@ fn pick_best_volume() -> Option<Volume> {
     }
 }
 
+/* ====================== 可以放游戏数据的盘（设置页"在启动器里选"） ====================== */
+
+/// 一块能放游戏数据的盘 —— **给设置页的选择列表用**。
+///
+/// ★★ 用户 2026-09-20：「我希望数据目录是在启动器里选，不需要到资源管理器里找」。
+///
+///   所以这里给的**不只是盘符**：`free_gb`（够不够装游戏）与 `is_system`
+///   （默认选址刻意躲开它）是玩家真正要据此决定的两件事；`suggested` 直接给
+///   "我们打算建的目录"，目录名取自本文件的 [`DATA_DIR_NAME`] ——
+///   **前端不许自己拼路径**：拼错就是"界面说的位置"和"文件实际落下的位置"
+///   不是同一个地方，而那种错**一点报错都没有**。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VolumeInfo {
+    /// 挂载点（Windows 上是 `D:\`）
+    pub path: String,
+    /// 剩余空间（GB，一位小数）
+    pub free_gb: f64,
+    /// 总容量（GB，一位小数）
+    pub total_gb: f64,
+    /// 在系统盘上 —— 提示，不是错误（只有一块盘的机器上它就是唯一选择）
+    pub is_system: bool,
+    /// 建议的根目录：`<挂载点>\IEML`
+    pub suggested: String,
+    /// 现在正在用的根目录就在这块盘上
+    pub current: bool,
+}
+
+/// 列出所有卷（**含系统盘**，一块都不藏 —— 藏了单盘机器就没得选）。
+///
+/// ★ 顺序：非系统盘在前，同组按剩余空间从大到小，最后按盘符定序（结果稳定）。
+///   这与自动选址 [`pick_best_volume`] 是**同一套判据**，不另立一份。
+pub fn list_volumes(current: &Path) -> Vec<VolumeInfo> {
+    #[cfg(windows)]
+    {
+        use sysinfo::Disks;
+        const GB: f64 = 1024.0 * 1024.0 * 1024.0;
+        let round1 = |v: f64| (v * 10.0).round() / 10.0;
+
+        let disks = Disks::new_with_refreshed_list();
+        let mut out: Vec<VolumeInfo> = disks
+            .list()
+            .iter()
+            .map(|d| {
+                let mount = d.mount_point().to_path_buf();
+                VolumeInfo {
+                    path: mount.to_string_lossy().to_string(),
+                    free_gb: round1(d.available_space() as f64 / GB),
+                    total_gb: round1(d.total_space() as f64 / GB),
+                    is_system: is_on_system_drive(&mount),
+                    suggested: mount.join(DATA_DIR_NAME).to_string_lossy().to_string(),
+                    current: current.starts_with(&mount),
+                }
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            a.is_system
+                .cmp(&b.is_system)
+                .then(
+                    b.free_gb
+                        .partial_cmp(&a.free_gb)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
+                .then_with(|| a.path.cmp(&b.path))
+        });
+        out
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = current;
+        Vec::new()
+    }
+}
+
 /// ★★ 把老布局的 `shared/` 挪成 `.minecraft/`（**同盘改名，秒完成**）。
 ///
 /// ## 为什么用 `rename` 而不是像 `migrate_data_root` 那样逐个复制
@@ -1385,6 +1459,49 @@ mod tests {
         assert!(r.is_ok(), "能建能写的目录该通过，实际：{r:?}");
         // 校验会顺便把目录建出来（试写探针需要），这里收干净
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn volume_list_is_self_consistent() {
+        let vols = list_volumes(Path::new(r"D:\IEML"));
+        if vols.is_empty() {
+            return; // 非 Windows：这个列表本来就是空的
+        }
+        for v in &vols {
+            assert!(
+                v.suggested.starts_with(&v.path),
+                "建议目录必须在这块盘里：{} vs {}",
+                v.suggested,
+                v.path
+            );
+            assert!(
+                v.suggested.ends_with(DATA_DIR_NAME),
+                "目录名必须来自 DATA_DIR_NAME（前端不许自己拼）：{}",
+                v.suggested
+            );
+            assert!(v.free_gb <= v.total_gb + 0.1, "剩余不可能大于总量：{v:?}");
+        }
+        // 非系统盘要排在系统盘前面 —— 除非机器上只有系统盘
+        assert!(
+            !vols[0].is_system || vols.iter().all(|v| v.is_system),
+            "系统盘不该排在最前（默认选址刻意躲开它）：{vols:?}"
+        );
+    }
+
+    /// ★ "现在用的目录在哪块盘上"必须**恰好命中一块** ——
+    ///   命中 0 块（界面上一片"正在用"都没有）或命中 2 块（两块都说正在用）
+    ///   都是那种"看起来只是显示问题"、实际会让用户选错盘的错。
+    #[test]
+    fn exactly_one_volume_holds_the_current_root() {
+        let vols = list_volumes(Path::new(r"D:\IEML"));
+        if vols.is_empty() {
+            return;
+        }
+        let probe = PathBuf::from(&vols[0].suggested);
+        let marked = list_volumes(&probe);
+        let cur: Vec<&VolumeInfo> = marked.iter().filter(|v| v.current).collect();
+        assert_eq!(cur.len(), 1, "当前盘必须恰好标出一块：{marked:?}");
+        assert_eq!(cur[0].path, vols[0].path);
     }
 
     #[test]

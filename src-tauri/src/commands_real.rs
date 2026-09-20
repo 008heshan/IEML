@@ -4472,6 +4472,19 @@ pub fn open_data_dir(
     Ok(dir.to_string_lossy().to_string())
 }
 
+/// 可以放游戏数据的盘（设置页「新建/切换…」列表）。
+///
+/// ★ 用户 2026-09-20：「我希望数据目录是在启动器里选，不需要到资源管理器里找」。
+///   所以候选**由启动器自己列出来**（盘符 + 剩余空间 + 建议目录），
+///   系统文件夹对话框退成"还有其他地方"的备选，而不是唯一入口。
+///
+/// ★ 这条命令**只读**：它只把候选摆出来。真正落盘的是 `set_data_root`
+///   （校验、建目录、写记录文件都在那儿，且只有那一处）。
+#[tauri::command]
+pub fn list_data_volumes(state: State<'_, AppState>) -> Vec<crate::platform::VolumeInfo> {
+    crate::platform::list_volumes(&state.paths.root)
+}
+
 /* ====================== 新建游戏根目录 ====================== */
 
 /// 换数据根目录的结果。

@@ -1198,7 +1198,40 @@ export const launcher = {
       restartRequired: boolean;
       hasExistingData: boolean;
     }>('set_data_root', { path }),
+
+  /**
+   * ★★ 可以放游戏数据的盘（设置页「新建/切换…」列表）。
+   *
+   * ★ 用户 2026-09-20：「我希望数据目录是在启动器里选，不需要到资源管理器里找」。
+   *   所以候选由**后端**列（它才知道盘符、剩余空间、哪块是系统盘），
+   *   界面只负责画出来。
+   *
+   * ★ `suggested` 里那个目录名（`…\IEML`）来自 Rust 的 `DATA_DIR_NAME` ——
+   *   **前端不要自己拼 `path + '\\IEML'`**：拼错的话界面说的位置和文件真正
+   *   落下的位置就不是同一个地方，而且一点报错都没有。
+   */
+  dataVolumes: () => call<DataVolume[]>('list_data_volumes'),
 };
+
+/**
+ * 一块能放游戏数据的盘（与 Rust 侧 `platform::VolumeInfo` 一一对应）。
+ *
+ * ★ 字段名是后端 `rename_all = "camelCase"` 透传过来的（ADR 的跨 IPC 契约）。
+ */
+export interface DataVolume {
+  /** 挂载点（Windows 上是 `D:\`） */
+  path: string;
+  /** 剩余空间（GB） */
+  freeGb: number;
+  /** 总容量（GB） */
+  totalGb: number;
+  /** 系统盘 —— 提示，不是错误（只有一块盘的机器上它就是唯一选择） */
+  isSystem: boolean;
+  /** 建议的根目录：`<挂载点>\IEML` */
+  suggested: string;
+  /** 现在正在用的根目录就在这块盘上 */
+  current: boolean;
+}
 
 /* ====================== 账号 ====================== */
 
