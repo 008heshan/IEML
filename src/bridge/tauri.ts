@@ -1229,8 +1229,16 @@ export interface DataVolume {
   isSystem: boolean;
   /** 建议的根目录：`<挂载点>\IEML` */
   suggested: string;
-  /** 现在正在用的根目录就在这块盘上 */
-  current: boolean;
+  /** ★ 建议的那个目录**就是**现在正在用的那个（精确到路径，不是"同一块盘"） */
+  isCurrent: boolean;
+  /**
+   * ★★ 现在用的根目录**在这块盘上**（但可能不是 `suggested` 那个目录）。
+   *
+   *   与 `isCurrent` 的区别是这一轮（beta.52）修的 bug：只按"哪块盘"判断，
+   *   玩家把根目录设成 `D:\测试目录` 之后，**D: 整行**会被标成「正在用」、
+   *   按钮禁用 —— 他就再也换不回 `D:\IEML` 了。
+   */
+  onCurrentDrive: boolean;
 }
 
 /* ====================== 账号 ====================== */
