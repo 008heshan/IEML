@@ -219,6 +219,11 @@ export function DownloadPage() {
                     已经能做同一件事**（选版本就在这一行），是个绕路按钮；
                   · 内层的 Mod / 资源包 / 光影 / 数据包 四个页签 —— 与最外层那排**完全重复**。
                     所以给 ResourceCenterBody 传 `hideKindTabs`，只留来源切换（Modrinth/CurseForge）。
+
+                ★★ 2026-09-17 起这一行的职责**只剩"装到哪去"**：搜什么由下面那排的
+                  「版本 / 加载器」两个筛选器回答（玩家的选择，默认「不限」）。
+                  以前这两件事是同一件事 —— 于是"我想看看 1.20.1 的 Forge 有什么 Mod"
+                  这个再正常不过的念头，在这一页根本表达不出来。
               */}
               <div className="res-target">
                 <span className="res-target-k">装到</span>
@@ -281,6 +286,17 @@ export function DownloadPage() {
                 toast={toast}
                 compactHead
                 hideKindTabs
+                /*
+                 * ★★ 给「游戏版本 + 模组加载器」两个筛选器（用户 2026-09-17：
+                 *   "下载页下载资源我想要可以选择版本（不给推荐版本）同时能选择
+                 *    模组加载器，这俩可以叠加，做到『选择资源来源』的左边吧"）。
+                 *
+                 *   给了之后，"搜什么"由玩家自己那两个下拉决定，**不再**由
+                 *   上面「装到」的那个实例决定 —— 上面那行只回答"装到哪去"。
+                 *   两边对不上时，筛选器旁边会出现一枚警告（见 ResourceCenterBody
+                 *   的 `mismatch`）：装错版本的那种事故不能只靠"一眼看不出来"。
+                 */
+                gameFilters
               />
             </>
           )}

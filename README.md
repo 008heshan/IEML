@@ -2,7 +2,7 @@
 
 从零构建的 Minecraft 启动器。快、小、好用。
 
-**当前版本：`0.1.0-beta.49`** — 改动见 [`CHANGELOG.md`](CHANGELOG.md)。
+**当前版本：`0.1.0-beta.50`** — 改动见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 真实可运行的桌面应用，382 项 Rust 测试 + 前端测试，真实下载和真实启动都跑通过。
 
@@ -14,7 +14,7 @@ pnpm dev              # 浏览器开发，?demo=1 给演示实例
 pnpm desktop:dev      # 桌面版
 pnpm desktop:build    # 打包 exe + NSIS，并逐字节复制到桌面
                       #   → src-tauri/target/release/ieml.exe
-                      #   → src-tauri/target/release/bundle/nsis/IEML_0.1.0-beta.49_x64-setup.exe
+                      #   → src-tauri/target/release/bundle/nsis/IEML_0.1.0-beta.50_x64-setup.exe
 pnpm verify           # 一键验证：类型 + 测试 + 端到端 + 构建 + 静态门禁
 ```
 
@@ -50,7 +50,7 @@ UI（React）  →  桥接（一个接口两套实现）  →  领域层（TS �
 
 两级导航。一级侧栏 4 项：启动 / 版本列表 / 下载 / 设置。点进某个版本，侧栏整条换成该版本的二级页（概览 / 设置 / Mod / 日志）。
 
-下载页六个页签：安装游戏、整合包、Mod、资源包、光影、数据包。资源中心同时接 Modrinth 和 CurseForge。
+下载页六个页签：安装游戏、整合包、Mod、资源包、光影、数据包。资源中心同时接 Modrinth 和 CurseForge，可按**游戏版本**与**模组加载器**筛选（两个叠加，默认都不限 —— 界面不替你挑版本）。
 
 ## 已实现
 

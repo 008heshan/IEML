@@ -35,10 +35,12 @@
  *   是这个仓库反复栽过的坑）。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Chip, Modal, Note, Segmented, Spinner } from '../ui';
+import { Button, Chip, CustomSelect, Modal, Note, Segmented, Spinner } from '../ui';
 import { IconDownload, IconRefresh, IconSearch } from '../ui/Icons';
 import { useRealApi } from '../hooks/useRealApi';
-import type { Instance } from '../domain';
+import { useApp } from '../state/AppContext';
+import { BASE_LOADER_NAME, compareVersion, isSnapshotVersion, knownVersions } from '../domain';
+import type { BaseLoaderKind, Instance } from '../domain';
 import type {
   ModrinthHit,
   ModrinthVersion,
@@ -257,6 +259,19 @@ export interface ResourceCenterBodyProps {
    *   这里只留需要的东西：来源切换 + 搜索 + 结果。
    */
   hideKindTabs?: boolean;
+  /**
+   * 给「游戏版本 + 模组加载器」两个筛选器（**只有下载页给**）。
+   *
+   * ★★ 用户 2026-09-17：「下载页下载资源我想要可以选择版本（**不给推荐版本**）
+   *   同时能选择模组加载器，**这俩可以叠加**，做到『选择资源来源』的左边吧」。
+   *
+   *   给了之后：这一页搜什么**由这两个下拉决定**，不再由「装到」的那个实例决定
+   *   （在那之前，玩家想看点别的版本的东西都做不到 —— 界面替他选好了）。
+   *
+   *   ★ 弹窗形态（版本设置页的「社区资源」）**不给**：那个弹窗的前提就是
+   *     "装到这一个实例上"，再让玩家筛成别的版本，只会装出一个不生效的文件。
+   */
+  gameFilters?: boolean;
 }
 
 export function ResourceCenterBody({
@@ -267,8 +282,10 @@ export function ResourceCenterBody({
   toast,
   compactHead = false,
   hideKindTabs = false,
+  gameFilters = false,
 }: ResourceCenterBodyProps) {
   const { api } = useRealApi();
+  const { state } = useApp();
 
   /** 后端给的五种资源描述（**唯一一份**） */
   const [kinds, setKinds] = useState<ResourceKindInfo[]>([]);
@@ -296,7 +313,149 @@ export function ResourceCenterBody({
   /* 竞争保护：快速切种类/来源时，先发的那次请求后回来会写错列表 */
   const seq = useRef(0);
 
+  /** 当前种类的描述（后端那张表）—— 下面"这类资源筛不筛加载器"要看它 */
   const current = useMemo(() => kinds.find((k) => k.key === kind) ?? null, [kinds, kind]);
+
+  /* ==================================================================
+     「游戏版本 / 模组加载器」两个筛选器（下载页，见 `gameFilters` 的说明）
+     ------------------------------------------------------------------
+     ★ 这一段必须排在 `current` **之后**：`loaderForQuery` 要读它
+       （`current?.needs_loader_filter`）。先读后声明就是 TDZ ——
+       tsc 的 TS2448 拦得住（beta.26 在 DownloadPage 踩过一次）。
+     ================================================================== */
+
+  /**
+   * ★★ 两个都是**空串 = 不限**，而且**默认就是空**。
+   *
+   *   这正是用户说的"不给推荐版本"：我们不替他挑一个版本。
+   *   （在这之前，这里搜什么完全由「装到」的那个实例决定 ——
+   *     玩家想看一眼别的版本有什么东西，都做不到。）
+   *
+   *   ★ 空串表示"**不加这个条件**"，不要把它变成一个叫「不限」的值传下去：
+   *     后端只有收到 `null` 才真的不筛。传一个 "不限" 过去会搜出空列表，
+   *     而界面只会说"没有结果" —— 把"查不到"说成"没有"是这个仓库的老毛病。
+   */
+  const [filterVersion, setFilterVersion] = useState('');
+  const [filterLoader, setFilterLoader] = useState('');
+
+  /**
+   * 版本下拉的备选：**真实清单**（Mojang / BMCLAPI manifest），不是我们挑的几个。
+   *
+   * ★ 判"正式版"用的是与安装页**同一条**判据 —— 上游 `release_type === 'release'`
+   *   **且**版本号长得像最终版（`x.y` / `x.y.z`）。少任何一条，`26.2-rc-2`
+   *   这种预发布版就会混进来（那个坑在版本列表页栽过两次，见 `InstallComposer`
+   *   的 `FINAL_RELEASE_RE` 说明）。
+   * ★ 快照**不做成选项**：900+ 个版本的下拉没法用，而且它真正的入口是
+   *   「安装游戏」那一页（那里有正式版/快照/全部三档）。
+   */
+  const [allVersions, setAllVersions] = useState<string[]>([]);
+  const downloadSource = state.prefs.downloadSource;
+
+  useEffect(() => {
+    if (!gameFilters) return;
+    if (!api) {
+      /*
+       * 浏览器演示模式：没有清单接口，退回内置那张表里的**正式版**（新到旧）。
+       * ★ 这里也要过 `isSnapshotVersion`：内置表里有一个快照（`24w45a`），
+       *   放了它，演示模式和真机就是两张口径不同的表。
+       */
+      setAllVersions(
+        knownVersions()
+          .filter((v) => !isSnapshotVersion(v))
+          .sort((a, b) => compareVersion(b, a)),
+      );
+      return;
+    }
+    let alive = true;
+    void api.metadata
+      .manifest(downloadSource === 'mojang' ? 'mojang' : 'bmclapi')
+      .then((m) => {
+        if (!alive) return;
+        setAllVersions(
+          m.versions
+            .filter((v) => v.release_type === 'release' && !isSnapshotVersion(v.id))
+            .map((v) => v.id),
+        );
+      })
+      .catch(() => {
+        /* ★ 清单拉不到**不是**"没有版本"：清空即可 —— 下面会把玩家自己
+           装着的版本补进去，至少让他能筛。不编一份假的版本表。 */
+        if (alive) setAllVersions([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [api, gameFilters, downloadSource]);
+
+  /**
+   * 版本选项 = 清单里的正式版（新到旧）+ **玩家自己装着的版本**（快照也在内）。
+   *
+   * ★ 后一半不能省：清单里没有快照，网络不通时清单更是空的 ——
+   *   而"我手上这个版本"永远该能选。
+   */
+  const versionOptions = useMemo(() => {
+    const extra = [
+      ...new Set(
+        state.instances
+          .map((i) => i.mcVersion)
+          .filter((v) => v && !allVersions.includes(v)),
+      ),
+    ].sort((a, b) => compareVersion(b, a));
+    return [
+      { value: '', label: '不限版本' },
+      ...[...allVersions, ...extra].map((v) => ({ value: v, label: v })),
+    ];
+  }, [allVersions, state.instances]);
+
+  /** 加载器选项：名字取自 `BASE_LOADER_NAME`（**唯一一份**），不在界面上再抄一遍 */
+  const loaderOptions = useMemo(
+    () => [
+      { value: '', label: '不限加载器' },
+      ...(Object.keys(BASE_LOADER_NAME) as BaseLoaderKind[]).map((k) => ({
+        value: k,
+        label: BASE_LOADER_NAME[k],
+      })),
+    ],
+    [],
+  );
+
+  const loaderLabel =
+    loaderOptions.find((o) => o.value === filterLoader)?.label ?? filterLoader;
+
+  /**
+   * 真正交给后端的那两个条件。
+   *
+   * ★ 没开筛选器（弹窗形态）时**还是老行为**：跟着「装到」的那个实例走。
+   * ★ 加载器只有 Mod 这一类才筛（后端也会再兜一层，这里是"别白传"）。
+   */
+  const searchVersion = gameFilters ? filterVersion : (instance?.mcVersion ?? '');
+  const searchLoader = gameFilters ? filterLoader : (instance?.loader?.kind ?? '');
+  const loaderForQuery = current?.needs_loader_filter ? searchLoader : '';
+
+  /**
+   * ★★ 「筛的」和「装到」不是一回事时要说出来。
+   *
+   *   这是这一页最容易出的一种错：搜的是 1.20.1 + Forge，资源却装进
+   *   1.21.4 + Fabric 的实例目录 —— 提示说"已装好"，而游戏根本不加载它。
+   *   **只在真的不一致时才出现**（一致时一个字的噪音都不加）。
+   */
+  const mismatch = useMemo(() => {
+    if (!gameFilters || !instance) return null;
+    const versionBad = Boolean(filterVersion) && filterVersion !== instance.mcVersion;
+    const loaderBad =
+      Boolean(filterLoader) && filterLoader !== (instance.loader?.kind ?? '');
+    if (!versionBad && !loaderBad) return null;
+    const scope = `${filterVersion || '不限版本'} · ${
+      filterLoader ? loaderLabel : '不限加载器'
+    }`;
+    const target = `${instance.mcVersion}${
+      instance.loader ? ` + ${instance.loader.kind}` : ' · 原版'
+    }`;
+    return (
+      `上面筛的是 ${scope}，而资源会装到「${instance.config.name}」（${target}）——` +
+      '版本或加载器对不上的资源装进去不会生效。'
+    );
+  }, [gameFilters, instance, filterVersion, filterLoader, loaderLabel]);
 
   /* ---------- 取资源描述（挂载时一次） ---------- */
   useEffect(() => {
@@ -334,10 +493,12 @@ export function ResourceCenterBody({
         const r = await api.modrinth.resourceSearch({
           kind: opts.k,
           query: opts.q,
-          // ★ 没有实例就没有 MC 版本可筛 —— 传 undefined 让后端只按种类查
-          mcVersion: instance?.mcVersion,
-          // ★ 只有需要挑加载器的种类才传（后端也会再兜一层，这里是"别白传"）
-          loader: current?.needs_loader_filter ? (instance?.loader?.kind ?? undefined) : undefined,
+          /*
+           * ★ 版本与加载器**叠加**（用户："这俩可以叠加"）——
+           *   两个都不选时传 undefined，让后端只按种类查（那是真的"不限"）。
+           */
+          mcVersion: searchVersion || undefined,
+          loader: loaderForQuery || undefined,
           limit: PAGE,
           offset: opts.offset,
           source: opts.src,
@@ -361,17 +522,24 @@ export function ResourceCenterBody({
         }
       }
     },
-    [api, instance?.mcVersion, instance?.loader?.kind, current?.needs_loader_filter],
+    [api, searchVersion, loaderForQuery],
   );
 
-  /* 切种类 / 切来源 / 换实例 → 回到第一页并重搜（**打开就列出来**，不用先点搜索） */
+  /*
+   * 切种类 / 切来源 / 换实例 / **改版本或加载器筛选** → 回到第一页并重搜
+   * （**打开就列出来**，不用先点搜索）。
+   *
+   * ★ `instance?.id` 留着：没开筛选器时它确实是判据之一（版本/加载器都从它推），
+   *   开了之后它不影响结果，多搜一次而已 —— 但删掉它会让"换实例"这条路径
+   *   在将来某次改动里静默失效，不值当。
+   */
   useEffect(() => {
     setPage(1);
     setOpenProject(null);
     setVersions(null);
     void load({ k: kind, q: query, src: source, offset: 0, append: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kind, source, instance?.id, current?.key]);
+  }, [kind, source, instance?.id, current?.key, searchVersion, loaderForQuery]);
 
   const hasMore = hits.length < total;
 
@@ -416,8 +584,10 @@ export function ResourceCenterBody({
         const list = await api.modrinth.resourceVersions({
           kind,
           projectId: hit.project_id,
-          mcVersion: instance?.mcVersion,
-          loader: current?.needs_loader_filter ? (instance?.loader?.kind ?? undefined) : undefined,
+          /* ★ 展开某个项目时用的是**同一套**筛选（版本 × 加载器）——
+             否则会出现"列表是 1.20.1 的，点开却是别的版本"。 */
+          mcVersion: searchVersion || undefined,
+          loader: loaderForQuery || undefined,
           source,
         });
         setVersions(list);
@@ -427,7 +597,7 @@ export function ResourceCenterBody({
         setVerLoading(false);
       }
     },
-    [api, kind, instance?.mcVersion, instance?.loader?.kind, current?.needs_loader_filter, source],
+    [api, kind, searchVersion, loaderForQuery, source],
   );
 
   async function toggleVersions(hit: ModrinthHit) {
@@ -489,6 +659,21 @@ export function ResourceCenterBody({
     }
   }
 
+  /**
+   * 页面最下面那行小字的内容：**如实复述这一屏是按什么筛出来的**。
+   *
+   * ★ 两个下拉都显示「不限」时也要说清"没限定版本、没限定加载器"——
+   *   否则玩家看着一屏 1.7.10 的 Mod，会以为筛坏了。
+   */
+  const scopeNote = [
+    filterVersion ? `只列 ${filterVersion}` : '没限定版本',
+    current && !current.needs_loader_filter
+      ? '这一类资源与加载器无关，游戏不按加载器读它'
+      : filterLoader
+        ? `只列 ${loaderLabel}`
+        : '没限定加载器',
+  ].join('、');
+
   return (
     <div className="res-center">
       {kindsError ? (
@@ -519,6 +704,57 @@ export function ResourceCenterBody({
           </div>
         )}
         <div className="spacer" />
+        {/*
+          ★★ 「游戏版本 + 模组加载器」两个筛选器（下载页，2026-09-17 用户：
+            "下载页下载资源我想要可以选择版本（不给推荐版本）同时能选择模组加载器，
+             这俩可以叠加，做到『选择资源来源』的左边吧"）。
+
+            · 位置就在「内容来源」**左边**（用户指定）；
+            · 两个都能选、**叠加生效**（版本 × 加载器，AND）；
+            · 默认都是「不限」—— 这就是"不给推荐版本"：不替玩家挑，也不预选。
+            · 未选时值用次要色（`.is-unset`），一眼能看出"现在没筛"。
+        */}
+        {gameFilters ? (
+          <div className="res-filters">
+            <div className="res-filter">
+              <CustomSelect
+                className={filterVersion ? '' : 'is-unset'}
+                value={filterVersion}
+                onChange={setFilterVersion}
+                options={versionOptions}
+                ariaLabel="筛选游戏版本"
+              />
+            </div>
+            <div
+              className="res-filter"
+              /*
+               * ★ 资源包 / 光影 / 数据包这类**与加载器无关**（后端那张表里
+               *   `needs_loader_filter = false`），所以这里**不让选** ——
+               *   理由挂在能收到鼠标的**外层**上（禁用按钮自己不弹 title），
+               *   下面那行小字里也有同一句（"禁用必须给具体理由"）。
+               */
+              title={
+                current && !current.needs_loader_filter
+                  ? `${current.display}与加载器无关，游戏不按加载器读它 —— 所以不按加载器过滤。`
+                  : undefined
+              }
+            >
+              <CustomSelect
+                className={filterLoader ? '' : 'is-unset'}
+                value={filterLoader}
+                onChange={setFilterLoader}
+                disabled={current ? !current.needs_loader_filter : false}
+                options={loaderOptions}
+                ariaLabel="筛选模组加载器"
+              />
+            </div>
+            {mismatch ? (
+              <Chip tone="warning" title={mismatch}>
+                与「装到」不一致
+              </Chip>
+            ) : null}
+          </div>
+        ) : null}
         {/* ★ 来源用现成的 Segmented —— 别再造一套"看起来像分段控件"的东西 */}
         <Segmented
           label="内容来源"
@@ -710,14 +946,24 @@ export function ResourceCenterBody({
         </div>
       ) : null}
 
-      {/* 页面形态下把"不筛加载器"这类事实放在最后一行小字里，不占首屏 */}
+      {/*
+        页面形态下把"这一屏到底按什么筛出来的"放在最后一行小字里，不占首屏。
+
+        ★★ 2026-09-17 改口径：以前这里写死一句"只列适配当前加载器的版本"——
+          现在版本与加载器都是**玩家自己选的**，而且**默认不选**（= 不限），
+          那句写死的话就会在两个下拉都显示「不限」时说谎。
+          所以这里改成**如实复述当前筛选**（没选也要说"没限定"，
+          否则玩家不知道自己在看什么）。
+      */}
       {compactHead && current ? (
         <div className="dim res-fineprint">
           装到 <span className="mono">{current.install_dir}/</span>，认{' '}
           {current.extensions.join(' / ')}。
-          {current.needs_loader_filter
-            ? ' 只列适配当前加载器的版本。'
-            : ' 这一类资源与加载器无关，所以不按加载器过滤。'}
+          {gameFilters
+            ? ` ${scopeNote}。`
+            : current.needs_loader_filter
+              ? ' 只列适配当前加载器的版本。'
+              : ' 这一类资源与加载器无关，所以不按加载器过滤。'}
           {current.install_note ? ` ${current.install_note}` : ''}
         </div>
       ) : null}
