@@ -4472,17 +4472,29 @@ pub fn open_data_dir(
     Ok(dir.to_string_lossy().to_string())
 }
 
-/// 可以放游戏数据的盘（设置页「新建/切换…」列表）。
+/// 「用过的游戏文件夹」列表（设置页「新建/切换…」里那张表）。
 ///
-/// ★ 用户 2026-09-20：「我希望数据目录是在启动器里选，不需要到资源管理器里找」。
-///   所以候选**由启动器自己列出来**（盘符 + 剩余空间 + 建议目录），
-///   系统文件夹对话框退成"还有其他地方"的备选，而不是唯一入口。
+/// ★★ 用户 2026-09-20（给了 PCL 的截图）：「**这个切换列表我想要 PCL 这样的**」。
+///   所以列的是**文件夹**（名字 + 路径），而不是我上一版那种"机器上有哪些盘"。
 ///
 /// ★ 这条命令**只读**：它只把候选摆出来。真正落盘的是 `set_data_root`
 ///   （校验、建目录、写记录文件都在那儿，且只有那一处）。
 #[tauri::command]
-pub fn list_data_volumes(state: State<'_, AppState>) -> Vec<crate::platform::VolumeInfo> {
-    crate::platform::list_volumes(&state.paths.root)
+pub fn list_data_roots(state: State<'_, AppState>) -> Vec<crate::platform::KnownRoot> {
+    crate::platform::list_known_roots(&state.paths.root)
+}
+
+/// 忘记一个文件夹（目录已经没了时用户会点"移除"）。
+///
+/// ★ 只动"用过的列表"，**不碰磁盘上任何东西** —— 移除了还能再选回来。
+#[tauri::command]
+pub fn forget_data_root(path: String) -> Result<(), String> {
+    let p = std::path::PathBuf::from(path.trim());
+    if p.as_os_str().is_empty() {
+        return Err("要移除的是一个空路径".into());
+    }
+    crate::platform::forget_root(&p);
+    Ok(())
 }
 
 /* ====================== 新建游戏根目录 ====================== */
@@ -4525,6 +4537,13 @@ pub async fn set_data_root(
 
     // 它的错误本来就是给用户看的中文 String，直接透传（不再过 `err` 那层转换）
     crate::platform::set_data_root(&target, &previous)?;
+
+    /*
+     * ★ 换成功就**记进"用过的文件夹"列表**（PCL 那张「文件夹列表」就是这么攒出来的）：
+     *   换过去、又换回来，是这类功能最常见的用法 —— 列表里没有它，
+     *   用户就得再去系统对话框里翻一遍。
+     */
+    crate::platform::remember_root(&target);
 
     // 目标里是不是已经有游戏数据 —— 有的话用户可能选到了某个老目录，
     // 值得在界面上说一句（不是错误：他可能就是要用那份）

@@ -1697,15 +1697,16 @@
   gap: var(--space-4);
   pointer-events: none;
 }
-.droot-drive {
-  flex: 0 0 auto;
-  font-size: var(--text-lg);
+/* 名字 +（正在用 / 找不到 / 系统盘）角标。
+   ★ 宽度给够但不许吃掉路径那一列：`max-width` + `min-width: 0` 一起才压得住。 */
+.droot-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  max-width: 42%;
+  font-size: var(--text-base);
   font-weight: 600;
-}
-.droot-free {
-  flex: 0 0 auto;
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
 }
 /* 会建到哪个目录 —— 这一列吃掉所有弹性空间，长了就省略（完整值在 title 上） */
 .droot-target {

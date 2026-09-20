@@ -158,6 +158,21 @@ pub fn run() {
         say!("[IEML/paths] 创建数据目录失败：{e}（{}）", paths.root.display());
     }
 
+    /*
+     * ★ 把"现在用的这个目录"记进**用过的游戏文件夹**列表（PCL 那张「文件夹列表」）。
+     *
+     *   为什么在启动时也记一次（而不只在用户换目录时记）：老用户升级上来时
+     *   列表是空的 —— 而他现在用的这个目录显然该在里面，否则那张表第一眼
+     *   就是"什么都没有"。顺手也给 `%APPDATA%\IEML`（老位置）留一条，
+     *   只要它还在。
+     */
+    platform::remember_root(&paths.root);
+    for old in platform::legacy_data_roots() {
+        if old.is_dir() {
+            platform::remember_root(&old);
+        }
+    }
+
     // 元数据缓存目录（版本清单/加载器列表，避免每次联网重拉）
     net::metadata::set_cache_dir(paths.cache.clone());
 
@@ -304,8 +319,10 @@ pub fn run() {
             commands_real::open_data_dir,
             /* ★ 新建 / 切换游戏根目录（只记录选择，重启后生效；旧的目录不动） */
             commands_real::set_data_root,
-            /* ★ 候选盘列表（设置页在启动器里选目录用；只读） */
-            commands_real::list_data_volumes,
+            /* ★ 用过的游戏文件夹列表（PCL 那种「文件夹列表」，只读） */
+            commands_real::list_data_roots,
+            /* ★ 忘掉一个文件夹（只动那张列表，不碰磁盘上的东西） */
+            commands_real::forget_data_root,
             /* -------- 账号 -------- */
             /* ★★ 正版登录的可用性（client_id 配没配）+ 配置入口 */
             commands_real::ms_login_status,

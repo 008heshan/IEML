@@ -1209,45 +1209,40 @@ export const launcher = {
     }>('set_data_root', { path }),
 
   /**
-   * ★★ 可以放游戏数据的盘（设置页「新建/切换…」列表）。
+   * ★★ 用过的游戏文件夹（设置页「新建/切换…」里那张表）。
    *
-   * ★ 用户 2026-09-20：「我希望数据目录是在启动器里选，不需要到资源管理器里找」。
-   *   所以候选由**后端**列（它才知道盘符、剩余空间、哪块是系统盘），
-   *   界面只负责画出来。
+   * ★ 用户 2026-09-20（给了 PCL 的截图）：「**这个切换列表我想要 PCL 这样的**」——
+   *   列的是**你用过的文件夹**（名字 + 路径），不是"机器上有哪些盘"。
+   *   盘的列表每次都要你重新想"放哪"；这张表是"回到你去过的那个地方"。
    *
-   * ★ `suggested` 里那个目录名（`…\IEML`）来自 Rust 的 `DATA_DIR_NAME` ——
-   *   **前端不要自己拼 `path + '\\IEML'`**：拼错的话界面说的位置和文件真正
-   *   落下的位置就不是同一个地方，而且一点报错都没有。
+   * ★ `suggested` 那类路径由 Rust 拼（目录名来自 `DATA_DIR_NAME`）——
+   *   **前端不许自己拼 `<盘>\IEML`**：拼错的话界面说的位置和文件真正落下的位置
+   *   就不是同一个地方，而且一点报错都没有。
    */
-  dataVolumes: () => call<DataVolume[]>('list_data_volumes'),
+  dataRoots: () => call<DataRoot[]>('list_data_roots'),
+
+  /** 忘掉一个文件夹（目录已经没了时用）—— 只动那张列表，不碰磁盘 */
+  forgetDataRoot: (path: string) => call<void>('forget_data_root', { path }),
 };
 
 /**
- * 一块能放游戏数据的盘（与 Rust 侧 `platform::VolumeInfo` 一一对应）。
+ * 「用过的游戏文件夹」列表的一行（与 Rust 侧 `platform::KnownRoot` 一一对应）。
  *
- * ★ 字段名是后端 `rename_all = "camelCase"` 透传过来的（ADR 的跨 IPC 契约）。
+ * ★ 字段名是后端 `rename_all = "camelCase"` 透传过来的（跨 IPC 契约）。
  */
-export interface DataVolume {
-  /** 挂载点（Windows 上是 `D:\`） */
+export interface DataRoot {
+  /** 数据根目录（游戏数据在它下面的 `.minecraft`） */
   path: string;
-  /** 剩余空间（GB） */
-  freeGb: number;
-  /** 总容量（GB） */
-  totalGb: number;
-  /** 系统盘 —— 提示，不是错误（只有一块盘的机器上它就是唯一选择） */
-  isSystem: boolean;
-  /** 建议的根目录：`<挂载点>\IEML` */
-  suggested: string;
-  /** ★ 建议的那个目录**就是**现在正在用的那个（精确到路径，不是"同一块盘"） */
+  /** 显示名：路径最后一段（`D:\测试目录` → `测试目录`） */
+  name: string;
+  /** 目录还在不在。不在的照样列出来，但只能「移除」 */
+  exists: boolean;
+  /** ★ 就是现在正在用的那个（**精确到路径**，不是"同一块盘"） */
   isCurrent: boolean;
-  /**
-   * ★★ 现在用的根目录**在这块盘上**（但可能不是 `suggested` 那个目录）。
-   *
-   *   与 `isCurrent` 的区别是这一轮（beta.52）修的 bug：只按"哪块盘"判断，
-   *   玩家把根目录设成 `D:\测试目录` 之后，**D: 整行**会被标成「正在用」、
-   *   按钮禁用 —— 他就再也换不回 `D:\IEML` 了。
-   */
-  onCurrentDrive: boolean;
+  /** 在系统盘上 —— 提示，不是错误 */
+  onSystemDrive: boolean;
+  /** `known` = 记录里用过；`found` = 在盘上扫到的同款目录 */
+  source: 'known' | 'found';
 }
 
 /* ====================== 账号 ====================== */
