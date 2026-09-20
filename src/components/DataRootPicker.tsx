@@ -193,6 +193,12 @@ export function DataRootPicker({ open, onClose, current, toast, onChanged }: Dat
           /* 只剩不到 1 GB 的盘：装不下任何东西 —— **禁用并给理由**，
              而不是让他点了再看一句后端报错（"禁用必须给具体理由"）。 */
           const full = v.freeGb < 1;
+          /*
+           * ★★ 禁用的判据是 `isCurrent`（**精确到路径**），不是"同一块盘"。
+           *   第一版用了"当前盘"：玩家把根目录换成 `D:\测试目录` 之后，
+           *   D: 那一行整行被标成「正在用」、按钮禁用 —— 他就**再也换不回
+           *   `D:\IEML`** 了（2026-09-20 用户真踩到）。见 `DataVolume` 的说明。
+           */
           return (
             <div className="droot-row" key={v.path}>
               <span className="droot-drive mono">{v.path}</span>
@@ -201,17 +207,17 @@ export function DataRootPicker({ open, onClose, current, toast, onChanged }: Dat
               </span>
               {v.isSystem ? <Chip tone="warning">系统盘</Chip> : null}
               {v.freeGb >= 1 && v.freeGb < 5 ? <Chip tone="warning">快满了</Chip> : null}
-              {v.current ? <Chip tone="accent">正在用</Chip> : null}
+              {v.isCurrent ? <Chip tone="accent">正在用</Chip> : null}
               <span className="droot-target mono truncate" title={v.suggested}>
                 {v.suggested}
               </span>
               <Button
                 size="sm"
-                variant={v.current ? 'ghost' : 'primary'}
-                disabled={v.current || full || busy !== null}
+                variant={v.isCurrent ? 'ghost' : 'primary'}
+                disabled={v.isCurrent || full || busy !== null}
                 loading={busy === v.suggested}
                 title={
-                  v.current
+                  v.isCurrent
                     ? '现在用的就是这个目录'
                     : full
                       ? '这块盘没有可用空间了，装不下游戏'
@@ -219,7 +225,7 @@ export function DataRootPicker({ open, onClose, current, toast, onChanged }: Dat
                 }
                 onClick={() => void apply(v.suggested)}
               >
-                {v.current ? '当前' : '用这个'}
+                {v.isCurrent ? '当前' : '用这个'}
               </Button>
             </div>
           );

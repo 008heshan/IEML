@@ -450,8 +450,16 @@ pub struct VolumeInfo {
     pub is_system: bool,
     /// 建议的根目录：`<挂载点>\IEML`
     pub suggested: String,
-    /// 现在正在用的根目录就在这块盘上
-    pub current: bool,
+    /// ★ 建议的那个目录**就是**现在正在用的那个（**精确到路径**）
+    pub is_current: bool,
+    /// 现在用的根目录**在这块盘上**（可能不是 `suggested` 那个目录）
+    ///
+    /// ★★ 这两个字段为什么要分开：第一版只有"这块盘是不是当前盘"，
+    ///   于是玩家把根目录设成 `D:\测试目录` 之后，**D: 那一行整行被标成
+    ///   「正在用」、按钮禁用** —— 他就再也换不回 `D:\IEML` 了，
+    ///   只能去开系统文件夹对话框（而那个正是他想避开的）。
+    ///   2026-09-20 由用户自己的操作暴露：他真的把根目录换成了 `D:\测试目录`。
+    pub on_current_drive: bool,
 }
 
 /// 列出所有卷（**含系统盘**，一块都不藏 —— 藏了单盘机器就没得选）。
@@ -471,13 +479,15 @@ pub fn list_volumes(current: &Path) -> Vec<VolumeInfo> {
             .iter()
             .map(|d| {
                 let mount = d.mount_point().to_path_buf();
+                let suggested = mount.join(DATA_DIR_NAME);
                 VolumeInfo {
                     path: mount.to_string_lossy().to_string(),
                     free_gb: round1(d.available_space() as f64 / GB),
                     total_gb: round1(d.total_space() as f64 / GB),
                     is_system: is_on_system_drive(&mount),
-                    suggested: mount.join(DATA_DIR_NAME).to_string_lossy().to_string(),
-                    current: current.starts_with(&mount),
+                    is_current: same_path(&suggested, current),
+                    on_current_drive: current.starts_with(&mount),
+                    suggested: suggested.to_string_lossy().to_string(),
                 }
             })
             .collect();
@@ -498,6 +508,21 @@ pub fn list_volumes(current: &Path) -> Vec<VolumeInfo> {
         let _ = current;
         Vec::new()
     }
+}
+
+/// 两个路径是不是同一个地方。
+///
+/// ★ 只用来判"这一行是不是现在正在用的那个" —— 所以按 Windows 的规矩比：
+///   大小写不敏感、末尾分隔符不算差别（`D:\IEML` 与 `D:\IEML\` 是一个地方）。
+///   不解析 `..`、不碰符号链接：这里比的是**我们自己拼出来的**建议路径
+///   与用户记录里的路径，不是任意两个用户输入。
+fn same_path(a: &Path, b: &Path) -> bool {
+    let norm = |p: &Path| {
+        p.to_string_lossy()
+            .trim_end_matches(['\\', '/'])
+            .to_lowercase()
+    };
+    !a.as_os_str().is_empty() && norm(a) == norm(b)
 }
 
 /// ★★ 把老布局的 `shared/` 挪成 `.minecraft/`（**同盘改名，秒完成**）。
@@ -1492,16 +1517,44 @@ mod tests {
     ///   命中 0 块（界面上一片"正在用"都没有）或命中 2 块（两块都说正在用）
     ///   都是那种"看起来只是显示问题"、实际会让用户选错盘的错。
     #[test]
-    fn exactly_one_volume_holds_the_current_root() {
+    fn exactly_one_volume_is_the_suggested_one_of_the_current_root() {
         let vols = list_volumes(Path::new(r"D:\IEML"));
         if vols.is_empty() {
             return;
         }
         let probe = PathBuf::from(&vols[0].suggested);
         let marked = list_volumes(&probe);
-        let cur: Vec<&VolumeInfo> = marked.iter().filter(|v| v.current).collect();
-        assert_eq!(cur.len(), 1, "当前盘必须恰好标出一块：{marked:?}");
+        let cur: Vec<&VolumeInfo> = marked.iter().filter(|v| v.is_current).collect();
+        assert_eq!(cur.len(), 1, "当前那一行必须恰好标出一块：{marked:?}");
         assert_eq!(cur[0].path, vols[0].path);
+        assert!(cur[0].on_current_drive);
+    }
+
+    /// ★★ 用户在 D: 上选了一个**自定义目录**（`D:\测试目录`）时：
+    ///   建议行（`D:\IEML`）**不能**被标成"正在用" —— 否则那一行的按钮会被禁用，
+    ///   玩家就换不回 `D:\IEML` 了（2026-09-20 用户真踩到：他换成了 `D:\测试目录`）。
+    #[test]
+    fn a_custom_folder_does_not_disable_the_whole_drive() {
+        let custom = Path::new(r"D:\__ieml_test_custom__");
+        let vols = list_volumes(custom);
+        if vols.is_empty() {
+            return;
+        }
+        assert!(
+            vols.iter().all(|v| !v.is_current),
+            "建议目录都不是现在用的那个，谁都不该标『正在用』：{vols:?}"
+        );
+        let on_same_drive = vols.iter().find(|v| custom.starts_with(&v.path));
+        if let Some(v) = on_same_drive {
+            assert!(v.on_current_drive, "同一块盘要认出来：{v:?}");
+        }
+    }
+
+    #[test]
+    fn same_path_ignores_case_and_trailing_separator() {
+        assert!(same_path(Path::new(r"D:\IEML"), Path::new(r"d:\ieml\")));
+        assert!(!same_path(Path::new(r"D:\IEML"), Path::new(r"D:\IEML2")));
+        assert!(!same_path(Path::new(""), Path::new("")));
     }
 
     #[test]
