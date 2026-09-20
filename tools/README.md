@@ -28,6 +28,7 @@ tools/
 │   ├─ live-ms-login-check.mjs         正版登录（要自己的 client_id）
 │   ├─ live-optifine-incompat-check.mjs Fabric + 高清修复：有桥接包 / 真不兼容两段
 │   ├─ live-resource-check.mjs         资源中心：四种资源都能查到
+│   ├─ live-single-instance-check.mjs  单实例：再开一次是「调起在跑的那个」而不是多开
 │   └─ shot.mjs                        按 plan.json 驱动浏览器截图
 │
 ├─ probe/     ★ 打上游接口，先证明事实再写代码（要联网；结论会被固化成测试）
