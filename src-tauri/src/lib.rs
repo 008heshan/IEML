@@ -170,6 +170,33 @@ pub fn run() {
     net::curseforge::load_api_key_from_disk(&paths);
 
     tauri::Builder::default()
+        /*
+         * ★★ 单实例（用户 2026-09-20）：「**当 IEML 正在运行时，如果再次双击快捷方式，
+         *   我希望能调起正在运行的 IEML，而不是打开一个新的**」。
+         *
+         *   为什么必须做（不只是"体验问题"）：
+         *     · 两个启动器同时写 `instances.json` 与 `prefs.json`，后写的会把先写的**整份覆盖**；
+         *     · 同一份游戏目录被两个界面同时读改（Mod 管理 / 清理缓存），看着都"成功"。
+         *
+         *   ★ 这个插件必须**第一个注册**（它要在 setup 阶段就决定"我是第几个"）。
+         *   ★ 激活那一步是插件替我们铺好的：第二个实例在退出前会先
+         *     `AllowSetForegroundWindow(第一个实例的 pid)`，把"置前台"的权利交出去 ——
+         *     否则第一个实例调 `set_focus()` 只会让任务栏闪一下（Windows 的抢焦点限制）。
+         *
+         *   ★ 顺序说明（如实记）：`run()` 里在建 Builder **之前**还有一段
+         *     数据目录选址 + 一次性搬家的代码，所以第二实例会先跑完那段才退出。
+         *     那些操作是幂等的（搬家用"绝不覆盖"语义），代价是几十毫秒，不值得
+         *     为它把整段启动逻辑挪进 setup。
+         */
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            use tauri::Manager;
+            if let Some(w) = app.get_webview_window("main") {
+                // 三步都要：可能被最小化、可能被隐藏（自绘标题栏没有托盘，但留着不亏）
+                let _ = w.show();
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())

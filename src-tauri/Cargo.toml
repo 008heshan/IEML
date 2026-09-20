@@ -1,6 +1,6 @@
 [package]
 name = "ieml"
-version = "0.1.0-beta.51"
+version = "0.1.0-beta.52"
 description = "IEML - 极简 Minecraft 启动器"
 authors = ["IEML"]
 edition = "2021"
@@ -15,6 +15,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["custom-protocol"] }
+# ★ 单实例：第二次双击快捷方式时，把已经在跑的那个窗口调起来，而不是再开一个
+#   （见 lib.rs 里注册处的注释：两个启动器同时写 instances.json 是真会出事的）
+tauri-plugin-single-instance = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-opener = "2"

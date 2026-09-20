@@ -78,14 +78,28 @@ export function DataRootPicker({ open, onClose, current, toast, onChanged }: Dat
     setBusy(target);
     try {
       const r = await api.launcher.setDataRoot(target);
+      /*
+       * ★★ 三种情况都要说出来，而且**空目录那一条必须说**：
+       *
+       *   · 目标在系统盘上 → 提示（默认选址刻意躲开它）；
+       *   · 目标里已经有游戏数据 → 会说"直接用那一份"；
+       *   · **目标里什么都没有** → 必须提前讲清"版本列表会是空的"。
+       *
+       *   最后这条是 2026-09-20 补的，来自一次真实体验：换到一个新目录之后
+       *   启动器里**一个实例都不见了**（它们仍在旧目录里，只是新目录没有
+       *   `instances.json`）。界面上"东西没了"和"东西被删了"看起来一模一样，
+       *   而用户不会去读 toast 里那半句"旧目录里的东西一个都没动"。
+       */
       const extra = [
-        r.hasExistingData ? '这个目录里已经有游戏数据，会直接用那一份' : null,
+        r.hasExistingData
+          ? '这个目录里已经有游戏数据，会直接用那一份'
+          : '★ 这个目录里还没有游戏数据 —— 重启后版本列表会是空的（旧数据仍在原目录里，随时能换回来）',
         r.onSystemDrive ? '★ 它在系统盘上，游戏多了会把系统盘写满' : null,
       ]
         .filter(Boolean)
         .join('；');
       toast(
-        r.onSystemDrive ? 'warning' : 'ok',
+        r.onSystemDrive || !r.hasExistingData ? 'warning' : 'ok',
         '已记录新的游戏根目录（重启后生效）',
         `新的：${r.path}　旧的：${r.previous} —— 旧目录里的东西一个都没动，` +
           `想换回来重新选它就行。${extra}${extra ? '。' : ''}`,

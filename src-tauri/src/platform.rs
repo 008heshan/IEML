@@ -1527,10 +1527,29 @@ mod tests {
         assert_eq!(parse_java_version("no version here"), None);
     }
 
+    /// ★★ 2026-09-20：这条断言**原来写的是** `p.root.to_string_lossy().contains("IEML")`
+    ///   —— 那是错的，而且错得会咬人：
+    ///
+    ///   从「新建/切换游戏根目录」起（beta.46），玩家可以把数据目录设成**任意路径**；
+    ///   beta.51 把入口做成"在启动器里选"之后，用户第一次试就把根目录换成了
+    ///   `D:\测试目录` —— 于是 `cargo test --lib` 里这条**红给开发者看**，
+    ///   而它判的其实是"用户做了一个合法的选择"。
+    ///   （真事：这一轮 verify 就是这么红的。）
+    ///
+    ///   现在只断言真正该成立的事：**绝对路径**、且各子目录都挂在它下面。
     #[test]
     fn app_paths_shape() {
         let p = AppPaths::resolve();
-        assert!(p.root.to_string_lossy().contains("IEML"));
+        assert!(
+            p.root.is_absolute(),
+            "数据根目录必须是绝对路径：{}",
+            p.root.display()
+        );
+        assert!(
+            p.instances.starts_with(&p.root),
+            "实例目录必须在数据根目录下：{:?}",
+            p.instances
+        );
         assert!(p.instances.ends_with("instances"));
         // ★ 游戏数据在数据根目录内的 `.minecraft`（PCL 同款布局）
         assert!(
