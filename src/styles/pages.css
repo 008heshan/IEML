@@ -1653,6 +1653,89 @@
   flex: 0 0 auto;
 }
 
+/*
+ * 「换一个游戏根目录」弹窗（`components/DataRootPicker.tsx`）
+ * ------------------------------------------------------------------
+ * 用户 2026-09-20：「我希望数据目录是在启动器里选，不需要到资源管理器里找」。
+ * 所以候选盘**在启动器里列出来**：一块盘一行，右边一个按钮。
+ * 每行 = 盘符 · 容量 · （系统盘 / 正在用）· 会建到哪 · 按钮 ——
+ * 六件事一行说完，不摊成六行（这一页本来就有十几行 `.field-row`）。
+ */
+.droot-now {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  margin-bottom: var(--space-3);
+  font-size: var(--text-sm);
+}
+.droot-path {
+  min-width: 0;
+  color: var(--text-primary);
+}
+.droot-sec {
+  margin-bottom: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+.droot-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.droot-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-hover);
+}
+/* 骨架也长成行的样子（与资源中心同一条规矩：骨架要跟结果同形） */
+.droot-row-sk {
+  gap: var(--space-4);
+  pointer-events: none;
+}
+.droot-drive {
+  flex: 0 0 auto;
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+.droot-free {
+  flex: 0 0 auto;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+/* 会建到哪个目录 —— 这一列吃掉所有弹性空间，长了就省略（完整值在 title 上） */
+.droot-target {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+.droot-alt {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-top: var(--space-3);
+}
+.droot-note {
+  margin-top: var(--space-3);
+  line-height: 1.6;
+}
+/* 设置页那一行里的「重启后生效」角标（换完但还没重启） */
+.droot-pending {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  margin-top: 4px;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
 /* 设备码登录（比内嵌浏览器更安全，也更省事） */
 .device-code {
   margin-top: var(--space-3);

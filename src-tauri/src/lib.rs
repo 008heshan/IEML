@@ -271,6 +271,8 @@ pub fn run() {
             commands_real::open_data_dir,
             /* ★ 新建 / 切换游戏根目录（只记录选择，重启后生效；旧的目录不动） */
             commands_real::set_data_root,
+            /* ★ 候选盘列表（设置页在启动器里选目录用；只读） */
+            commands_real::list_data_volumes,
             /* -------- 账号 -------- */
             /* ★★ 正版登录的可用性（client_id 配没配）+ 配置入口 */
             commands_real::ms_login_status,
