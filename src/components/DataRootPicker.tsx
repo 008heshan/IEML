@@ -25,7 +25,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Button, Chip, Modal, Note } from '../ui';
 import { IconAlert, IconRefresh } from '../ui/Icons';
 import { useRealApi } from '../hooks/useRealApi';
-import type { DataVolume } from '../bridge/tauri';
+import type { DataRoot } from '../bridge/tauri';
 
 export interface DataRootPickerProps {
   open: boolean;
@@ -37,14 +37,10 @@ export interface DataRootPickerProps {
   onChanged?: (next: string) => void;
 }
 
-/** 剩余空间显示：整数 GB（这一栏不是审计报告，小数没有意义） */
-function gb(n: number): string {
-  return `${Math.round(n)} GB`;
-}
-
 export function DataRootPicker({ open, onClose, current, toast, onChanged }: DataRootPickerProps) {
   const { api } = useRealApi();
-  const [vols, setVols] = useState<DataVolume[]>([]);
+  /** 用过的游戏文件夹（PCL 那张「文件夹列表」） */
+  const [roots, setRoots] = useState<DataRoot[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** 正在写哪个目录（`null` = 没在写） */
@@ -55,19 +51,34 @@ export function DataRootPicker({ open, onClose, current, toast, onChanged }: Dat
     setLoading(true);
     setError(null);
     try {
-      setVols(await api.launcher.dataVolumes());
+      setRoots(await api.launcher.dataRoots());
     } catch (e) {
-      setVols([]);
+      setRoots([]);
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
   }, [api]);
 
-  /* 每次打开都重新列一遍：用户可能刚插了 U 盘 / 挂了个新盘 */
+  /* 每次打开都重新读一遍：用户可能刚新建过一个目录、或删掉了一个 */
   useEffect(() => {
     if (open) void load();
   }, [open, load]);
+
+  /** 把一个（已经不存在的）目录从列表里去掉 —— 只动列表，不碰磁盘 */
+  async function forget(path: string) {
+    if (!api || busy) return;
+    setBusy(path);
+    try {
+      await api.launcher.forgetDataRoot(path);
+      toast('info', '已从列表里去掉', `${path}（磁盘上的东西一个都没动）`);
+      await load();
+    } catch (e) {
+      toast('err', '去不掉这一条', e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
 
   /**
    * 真的去换。**校验与落盘全在后端**（`set_data_root`：拒绝嵌套、只读、
@@ -160,7 +171,7 @@ export function DataRootPicker({ open, onClose, current, toast, onChanged }: Dat
         <Note
           tone="danger"
           icon={<IconAlert />}
-          title="列不出磁盘"
+          title="列不出文件夹"
           actions={
             <Button size="sm" variant="secondary" onClick={() => void load()}>
               <IconRefresh /> 重试
@@ -173,14 +184,17 @@ export function DataRootPicker({ open, onClose, current, toast, onChanged }: Dat
 
       {/*
         ★★ 两条路分工（用户 2026-09-20 明确）：
-          · **切换** —— 在启动器里点（下面这个列表），**不打开资源管理器**；
+          · **切换** —— 在启动器里点（下面这张表），**不打开资源管理器**；
           · **新建** —— 走系统对话框（要进去新建文件夹），那是它该干的事。
-        所以列表上面直接写"切换"，新建那个按钮就叫「新建文件夹…」。
+        ★★ 这张表是 **PCL 那种「文件夹列表」**（用户给了 PCL 的截图：
+          "当前文件夹 / D:\Minecraft\.minecraft\"、"测试目录 / D:\测试目录\.minecraft\"）：
+          一行 = **一个你用过的游戏文件夹**（名字 + 路径），而不是"机器上有哪些盘"。
+          盘符列表每次都要你重新想"放哪"；这张表是"回到你去过的那个地方"。
       */}
       <div className="droot-sec">切换 · 点一下就用它（不会打开资源管理器）</div>
 
       <div className="droot-list">
-        {loading && vols.length === 0
+        {loading && roots.length === 0
           ? Array.from({ length: 2 }, (_, i) => (
               <div key={i} className="droot-row droot-row-sk">
                 <span className="sk sk-line w30" />
@@ -189,47 +203,49 @@ export function DataRootPicker({ open, onClose, current, toast, onChanged }: Dat
             ))
           : null}
 
-        {vols.map((v) => {
-          /* 只剩不到 1 GB 的盘：装不下任何东西 —— **禁用并给理由**，
-             而不是让他点了再看一句后端报错（"禁用必须给具体理由"）。 */
-          const full = v.freeGb < 1;
-          /*
-           * ★★ 禁用的判据是 `isCurrent`（**精确到路径**），不是"同一块盘"。
-           *   第一版用了"当前盘"：玩家把根目录换成 `D:\测试目录` 之后，
-           *   D: 那一行整行被标成「正在用」、按钮禁用 —— 他就**再也换不回
-           *   `D:\IEML`** 了（2026-09-20 用户真踩到）。见 `DataVolume` 的说明。
-           */
-          return (
-            <div className="droot-row" key={v.path}>
-              <span className="droot-drive mono">{v.path}</span>
-              <span className="droot-free">
-                {gb(v.freeGb)} 可用 <span className="dim">/ 共 {gb(v.totalGb)}</span>
+        {roots.map((r) => (
+          <div className="droot-row" key={r.path}>
+            <span className="droot-name">
+              <span className="truncate" title={r.path}>
+                {r.name}
               </span>
-              {v.isSystem ? <Chip tone="warning">系统盘</Chip> : null}
-              {v.freeGb >= 1 && v.freeGb < 5 ? <Chip tone="warning">快满了</Chip> : null}
-              {v.isCurrent ? <Chip tone="accent">正在用</Chip> : null}
-              <span className="droot-target mono truncate" title={v.suggested}>
-                {v.suggested}
-              </span>
+              {r.isCurrent ? <Chip tone="accent">正在用</Chip> : null}
+              {!r.exists ? <Chip tone="warning">找不到这个目录</Chip> : null}
+              {r.exists && r.onSystemDrive && !r.isCurrent ? (
+                <Chip tone="warning">系统盘</Chip>
+              ) : null}
+            </span>
+            <span className="droot-target mono truncate" title={r.path}>
+              {r.path}
+            </span>
+            {/*
+              ★ 目录已经不在的，只能「移除」—— 点"用这个"只会得到一句后端报错。
+                这是"禁用必须给具体理由"的另一种形态：**给一个能做的动作**。
+            */}
+            {r.exists ? (
               <Button
                 size="sm"
-                variant={v.isCurrent ? 'ghost' : 'primary'}
-                disabled={v.isCurrent || full || busy !== null}
-                loading={busy === v.suggested}
-                title={
-                  v.isCurrent
-                    ? '现在用的就是这个目录'
-                    : full
-                      ? '这块盘没有可用空间了，装不下游戏'
-                      : `把游戏根目录换成 ${v.suggested}`
-                }
-                onClick={() => void apply(v.suggested)}
+                variant={r.isCurrent ? 'ghost' : 'primary'}
+                disabled={r.isCurrent || busy !== null}
+                loading={busy === r.path}
+                title={r.isCurrent ? '现在用的就是这个目录' : `把游戏根目录换成 ${r.path}`}
+                onClick={() => void apply(r.path)}
               >
-                {v.isCurrent ? '当前' : '用这个'}
+                {r.isCurrent ? '当前' : '用这个'}
               </Button>
-            </div>
-          );
-        })}
+            ) : (
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={busy !== null}
+                title="把这个目录从列表里去掉（磁盘上什么都没有动）"
+                onClick={() => void forget(r.path)}
+              >
+                移除
+              </Button>
+            )}
+          </div>
+        ))}
       </div>
 
       <div className="droot-alt">
@@ -238,7 +254,7 @@ export function DataRootPicker({ open, onClose, current, toast, onChanged }: Dat
         </Button>
         <span className="dim">
           要<b>新建</b>一个目录（比如 <span className="mono">D:\Games\IEML</span>）走这里：
-          会打开系统对话框，在里面新建文件夹再选中它。
+          会打开系统对话框，在里面新建文件夹再选中它 —— 选完也会进上面这张表。
         </span>
       </div>
 

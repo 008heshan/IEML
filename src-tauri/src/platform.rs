@@ -525,6 +525,167 @@ fn same_path(a: &Path, b: &Path) -> bool {
     !a.as_os_str().is_empty() && norm(a) == norm(b)
 }
 
+/* ====================== 「用过的游戏文件夹」列表（PCL 那种） ====================== */
+
+/// 设置页那个**文件夹列表**的一行。
+///
+/// ★★ 用户 2026-09-20（直接给了 PCL 的截图）：「**这个切换列表我想要 PCL 这样的**」。
+///
+///   PCL 的「文件夹列表」列的是**你用过的 .minecraft 文件夹**（名字 + 路径），
+///   而不是"机器上有哪些盘"。盘符列表是我上一版的做法 —— 它每次都要你重新想
+///   "放哪"；而 PCL 那种是**回到你去过的那个地方**，一次点击。
+///
+///   ★ 两边都要有：用过的（`known`，存在记录文件里）+
+///     在盘上扫到的同款目录（`found`，`<盘>\IEML` 且**确实存在**）——
+///     后者让"第一次用这个功能"的人也有东西可点，而不是对着一行空白。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KnownRoot {
+    /// 完整路径（**数据根目录**；游戏数据在它下面的 `.minecraft`）
+    pub path: String,
+    /// 显示名：取路径最后一段（`D:\测试目录` → `测试目录`）
+    pub name: String,
+    /// 这个目录现在还在不在。**不在的照样列出来**（PCL 也是），
+    /// 但只能"移除"，不能"用这个" —— 点一个不存在的目录只会报错。
+    pub exists: bool,
+    /// 就是现在正在用的那个（**精确到路径**，不是"同一块盘"）
+    pub is_current: bool,
+    /// 在系统盘上 —— 提示，不是错误（只有一块盘的机器上它就是唯一选择）
+    pub on_system_drive: bool,
+    /// 这一行从哪来：`known` = 记录里用过；`found` = 在盘上扫到的同款目录
+    pub source: String,
+}
+
+/// 记录文件放**记录目录**（`%APPDATA%\IEML\`）里，与 `datadir.txt` 并排。
+///
+/// ★ 为什么不放数据根目录里：它记的是"启动器知道哪些文件夹" ——
+///   而这正是**在数据目录不可用/要换掉**时需要读的东西。放进数据目录里，
+///   一旦换到别处就看不到自己的历史了（自举问题）。
+fn known_roots_file() -> PathBuf {
+    AppPaths::location_file()
+        .parent()
+        .map(|d| d.join("known-roots.json"))
+        .unwrap_or_else(|| PathBuf::from("known-roots.json"))
+}
+
+/// 最多记几个。★ 有上限是为了**不让这个文件无限长大**（每换一次加一条）；
+/// 12 个足够覆盖"我有几个盘、几个测试目录"的真实使用。
+const MAX_KNOWN_ROOTS: usize = 12;
+
+/// 读记录（新→旧）。坏文件/没文件都当空表 —— **读不到不等于没有**，
+/// 但也绝不能因此拦启动（这个文件只是"便利"，不是数据）。
+pub fn load_known_roots() -> Vec<PathBuf> {
+    load_known_roots_from(&known_roots_file())
+}
+
+/// ★ 真正的实现带**文件参数** —— 与 `validate_data_root` 拆出来的理由一样：
+///   成功路径会**写**真实记录文件，测试直接跑它等于"跑一次单测就改掉开发机的列表"。
+fn load_known_roots_from(file: &Path) -> Vec<PathBuf> {
+    let Ok(text) = std::fs::read_to_string(file) else {
+        return Vec::new();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        say!("[IEML/paths] 文件夹列表读不出来（文件坏了），这次当空的");
+        return Vec::new();
+    };
+    v.get("roots")
+        .and_then(|r| r.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str())
+                .map(|s| PathBuf::from(s.trim()))
+                .filter(|p| !p.as_os_str().is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn write_known_roots(file: &Path, roots: &[PathBuf]) {
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let arr: Vec<String> = roots
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+    let body = serde_json::json!({ "roots": arr });
+    if let Err(e) = std::fs::write(file, serde_json::to_string_pretty(&body).unwrap_or_default()) {
+        // ★ 写失败**不拦任何事**：这只是"下次少一个快捷入口"，不是数据丢失
+        say!("[IEML/paths] 文件夹列表写不进去（{e}）：下次少一个入口，不影响别的事");
+    }
+}
+
+/// 把某个目录记进"用过"（**去重、置顶**）。
+///
+/// ★ 判重用 [`same_path`]（大小写与末尾分隔符不算差别）：
+///   否则 `D:\IEML` 与 `d:\ieml\` 会变成两条，用户看到两个一模一样的入口。
+pub fn remember_root(root: &Path) {
+    if root.as_os_str().is_empty() {
+        return;
+    }
+    remember_root_at(&known_roots_file(), root);
+}
+
+fn remember_root_at(file: &Path, root: &Path) {
+    let mut roots = load_known_roots_from(file);
+    roots.retain(|p| !same_path(p, root));
+    roots.insert(0, root.to_path_buf());
+    roots.truncate(MAX_KNOWN_ROOTS);
+    write_known_roots(file, &roots);
+}
+
+/// 从"用过"里去掉一条（目录已经没了时用户会点它）。
+pub fn forget_root(root: &Path) {
+    forget_root_at(&known_roots_file(), root);
+}
+
+fn forget_root_at(file: &Path, root: &Path) {
+    let mut roots = load_known_roots_from(file);
+    let before = roots.len();
+    roots.retain(|p| !same_path(p, root));
+    if roots.len() != before {
+        write_known_roots(file, &roots);
+    }
+}
+
+/// 组装设置页要显示的那张列表：**用过的 + 盘上扫到且确实存在的**，当前那个排最前。
+pub fn list_known_roots(current: &Path) -> Vec<KnownRoot> {
+    let mut out: Vec<KnownRoot> = Vec::new();
+    let mut push = |p: &Path, source: &str| {
+        if out.iter().any(|r| same_path(Path::new(&r.path), p)) {
+            return;
+        }
+        let name = p
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            // 盘根目录（`D:\`）没有 file_name —— 用盘符当名字
+            .unwrap_or_else(|| p.to_string_lossy().trim_end_matches(['\\', '/']).to_string());
+        out.push(KnownRoot {
+            path: p.to_string_lossy().to_string(),
+            name,
+            exists: p.is_dir(),
+            is_current: same_path(p, current),
+            on_system_drive: is_on_system_drive(p),
+            source: source.to_string(),
+        });
+    };
+
+    // ① 现在正在用的那个排最前（PCL 的截图里也是"当前文件夹"在最上面）
+    push(current, "known");
+    // ② 用过的（新 → 旧）
+    for p in load_known_roots() {
+        push(&p, "known");
+    }
+    // ③ 盘上扫到的同款目录（`<盘>\IEML`）—— **只收确实存在的**
+    for v in list_volumes(current) {
+        let p = PathBuf::from(&v.suggested);
+        if p.is_dir() {
+            push(&p, "found");
+        }
+    }
+    out
+}
+
 /// ★★ 把老布局的 `shared/` 挪成 `.minecraft/`（**同盘改名，秒完成**）。
 ///
 /// ## 为什么用 `rename` 而不是像 `migrate_data_root` 那样逐个复制
@@ -1555,6 +1716,86 @@ mod tests {
         assert!(same_path(Path::new(r"D:\IEML"), Path::new(r"d:\ieml\")));
         assert!(!same_path(Path::new(r"D:\IEML"), Path::new(r"D:\IEML2")));
         assert!(!same_path(Path::new(""), Path::new("")));
+    }
+
+    /* ---------- 「用过的游戏文件夹」列表（PCL 那种） ---------- */
+
+    /// ★ 这些测试**一律用临时文件**，绝不碰 `%APPDATA%\IEML\known-roots.json` ——
+    ///   与 `data_root_accepts_a_writable_temp_dir` 是同一条规矩：
+    ///   单测不许改开发机的真实状态。
+    fn tmp_roots_file(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("ieml-known-roots-{tag}-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        d.join("known-roots.json")
+    }
+
+    #[test]
+    fn known_roots_dedupe_and_move_to_front() {
+        let f = tmp_roots_file("dedupe");
+        let _ = std::fs::remove_file(&f);
+
+        remember_root_at(&f, Path::new(r"D:\IEML"));
+        remember_root_at(&f, Path::new(r"E:\IEML"));
+        // ★ 同一个地方的不同写法（大小写 + 末尾分隔符）**不许**变成两条
+        remember_root_at(&f, Path::new(r"d:\ieml\"));
+
+        let got = load_known_roots_from(&f);
+        assert_eq!(got.len(), 2, "应该只剩两条：{got:?}");
+        assert_eq!(got[0], PathBuf::from(r"d:\ieml\"), "最近用过的排最前");
+        assert_eq!(got[1], PathBuf::from(r"E:\IEML"));
+
+        let _ = std::fs::remove_dir_all(f.parent().unwrap());
+    }
+
+    #[test]
+    fn known_roots_are_capped_and_forgettable() {
+        let f = tmp_roots_file("cap");
+        let _ = std::fs::remove_file(&f);
+        for i in 0..(MAX_KNOWN_ROOTS + 5) {
+            remember_root_at(&f, Path::new(&format!(r"D:\ieml-{i}")));
+        }
+        assert_eq!(load_known_roots_from(&f).len(), MAX_KNOWN_ROOTS, "有上限");
+
+        forget_root_at(&f, Path::new(r"D:\ieml-24"));
+        assert!(
+            !load_known_roots_from(&f)
+                .iter()
+                .any(|p| p == Path::new(r"D:\ieml-24")),
+            "移除之后就没了"
+        );
+
+        let _ = std::fs::remove_dir_all(f.parent().unwrap());
+    }
+
+    /// ★ **坏文件不许拦启动**：这个文件只是"便利"，不是数据。
+    #[test]
+    fn a_corrupt_roots_file_is_treated_as_empty() {
+        let f = tmp_roots_file("corrupt");
+        std::fs::write(&f, b"{ this is not json").unwrap();
+        assert!(load_known_roots_from(&f).is_empty());
+
+        // 而且还能被重新写回一份好的
+        remember_root_at(&f, Path::new(r"D:\IEML"));
+        assert_eq!(load_known_roots_from(&f).len(), 1);
+
+        let _ = std::fs::remove_dir_all(f.parent().unwrap());
+    }
+
+    /// 列表里**当前那个排最前**、名字取最后一段、盘根目录不 panic。
+    #[test]
+    fn list_marks_the_current_root_first_with_a_readable_name() {
+        let custom = PathBuf::from(r"D:\__ieml_list_test__");
+        let list = list_known_roots(&custom);
+        assert!(!list.is_empty(), "至少要有当前这一条");
+        assert!(list[0].is_current, "当前那个必须排最前：{list:?}");
+        assert_eq!(list[0].name, "__ieml_list_test__", "名字取路径最后一段");
+        assert_eq!(list[0].source, "known");
+        // 同一个路径不许出现两次（known 与 found 去重）
+        let same = list
+            .iter()
+            .filter(|r| same_path(Path::new(&r.path), &custom))
+            .count();
+        assert_eq!(same, 1, "同一路径只该有一行：{list:?}");
     }
 
     #[test]
