@@ -410,7 +410,22 @@ export function SettingsPage() {
                       void loadDownloadedJava();
                       refreshJava(await backend.scanJava());
                     } catch (e) {
-                      toast('err', '下载失败', e instanceof Error ? e.message : String(e));
+                      /*
+                       * ★★ 2026-09-20：失败时**必须说清"这条路的唯一来源是境外官方"**。
+                       *
+                       *   Adoptium 没有可用的国内镜像（实测 TUNA 403、NJU/BFSU/SJTU/ZJU/PKU/
+                       *   阿里 404、USTC 反爬、BMCLAPI 302 到 Cloudflare），所以这一步在
+                       *   网络不好的时候是**真的会失败**，而且用户重试几次也一样。
+                       *   只说一句"下载失败：xxx"，他会以为是我们坏了 —— 而实际上
+                       *   他手边就有别的出路（本机已装的 Java 一直列在下面）。
+                       */
+                      toast(
+                        'err',
+                        '下载 Java 失败',
+                        `${e instanceof Error ? e.message : String(e)}　` +
+                          '—— Java 只能从 Adoptium 官方端点下（它没有国内镜像），网络不好时会失败。' +
+                          '可以稍后再试，或者直接用下面扫到的本机 Java（设置页能指定路径）。',
+                      );
                     } finally {
                       setBusy(false);
                     }

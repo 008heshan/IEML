@@ -112,7 +112,7 @@ pub fn load_client_id_from_disk(paths: &crate::platform::AppPaths) {
          *   处理方式：**不采用、不删除**（文件是用户的数据），只说清为什么。
          */
         if looks_like_placeholder(&first) {
-            eprintln!(
+            say!(
                 "[IEML/auth] 磁盘上的 client_id（{}…）看起来是占位符，已忽略 —— \
                  本次改用内置 / 环境变量里的 id；要固定使用就在设置里填一个真的",
                 &first[..first.len().min(8)]
@@ -120,7 +120,7 @@ pub fn load_client_id_from_disk(paths: &crate::platform::AppPaths) {
             return;
         }
         set_client_id(&first);
-        eprintln!(
+        say!(
             "[IEML/auth] 已载入正版登录用的 client_id（{}…）",
             &first[..first.len().min(8)]
         );

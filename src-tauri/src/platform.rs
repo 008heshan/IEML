@@ -196,7 +196,7 @@ pub fn resolve_data_root() -> PathBuf {
             if is_usable_data_root(&p) {
                 return p;
             }
-            eprintln!(
+            say!(
                 "[IEML/paths] 记录里的数据目录不可用（{}），重新选址",
                 p.display()
             );
@@ -215,7 +215,7 @@ pub fn resolve_data_root() -> PathBuf {
     if let Some(best) = pick_best_volume() {
         let root = best.path.join(DATA_DIR_NAME);
         if ensure_writable(&root) {
-            eprintln!(
+            say!(
                 "[IEML/paths] 默认数据目录在系统盘上，已改到 {}（空闲 {:.1} GB）",
                 root.display(),
                 best.free_gb
@@ -226,7 +226,7 @@ pub fn resolve_data_root() -> PathBuf {
     }
 
     // ⑥ 兜底：没有别的盘可用（单盘机器）
-    eprintln!(
+    say!(
         "[IEML/paths] 没有可用的非系统盘，数据目录仍放在 {}",
         legacy.display()
     );
@@ -291,7 +291,7 @@ fn ensure_writable(dir: &Path) -> bool {
 /// 判断权在他，我们只负责别让他不知情。
 pub fn set_data_root(target: &Path, current: &Path) -> Result<(), String> {
     validate_data_root(target, current)?;    write_location(&AppPaths::location_file(), target);
-    eprintln!(
+    say!(
         "[IEML/paths] 数据目录已改为 {}（旧目录 {} 保持原样，未搬未删）",
         target.display(),
         current.display()

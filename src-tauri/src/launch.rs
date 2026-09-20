@@ -312,11 +312,11 @@ pub fn watch_game_exit(
         );
         let crashed = verdict.crashed;
         if let Some(reason) = &verdict.reason {
-            eprintln!(
+            say!(
                 "[IEML/launch] {instance_id} 判定为异常退出：{reason}（退出码 {code:?}，玩了 {played} 秒）"
             );
             for e in &verdict.evidence {
-                eprintln!("[IEML/launch]   依据：{e}");
+                say!("[IEML/launch]   依据：{e}");
             }
         }
         let payload = GameExit {

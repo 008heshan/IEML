@@ -287,6 +287,8 @@ async fn live_install_and_launch_minecraft() {
         classpath,
         natives_dir: outcome.natives_dir.clone(),
         game_dir: game_dir.clone(),
+        // ★ 2026-09-20 补：集成测试漏了这个字段 → `cargo check --tests` 一直是红的
+        libraries_dir: shared.join("libraries"),
         assets_root: shared.join("assets"),
         asset_index_name: outcome.asset_index_id.clone(),
         version_name: "1.20.1".into(),

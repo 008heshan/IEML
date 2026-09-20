@@ -737,7 +737,7 @@ pub fn extract_overrides(bytes: &[u8], game_dir: &std::path::Path) -> Result<usi
         }
     }
     if skipped > 0 {
-        eprintln!("[IEML/modpack] overrides 里有 {skipped} 个条目被跳过（目录穿越或写入失败）");
+        say!("[IEML/modpack] overrides 里有 {skipped} 个条目被跳过（目录穿越或写入失败）");
     }
     Ok(written)
 }

@@ -10,6 +10,12 @@
 //! 铁律：**校验逻辑只实现一次**。前端 UI 的置灰/桥接提示/API 补全
 //! 全部是本 crate 结论的呈现，前端不得自己维护一份规则。
 
+/* ★★ 诊断输出的唯一出口（`say!`）。必须**排在最前**：`#[macro_use]` 要求宏
+   在被使用的模块之前定义 —— 而这个 crate 里几乎每个模块都在打印。
+   为什么不能直接用 eprintln!：它写失败会 panic，而 release 是 panic=abort，
+   于是"日志管道断了"会直接崩掉启动器（2026-09-20 实测 3/3 稳定复现）。 */
+#[macro_use]
+pub mod logx;
 pub mod auth;
 pub mod commands;
 pub mod commands_real;
@@ -75,7 +81,7 @@ pub fn run() {
         unsafe {
             let hr = SetCurrentProcessExplicitAppUserModelID(id.as_ptr());
             if hr < 0 {
-                eprintln!("[IEML] 设置 AppUserModelID 失败（hr={hr:#x}）—— 不影响功能");
+                say!("[IEML] 设置 AppUserModelID 失败（hr={hr:#x}）—— 不影响功能");
             }
         }
     }
@@ -98,12 +104,12 @@ pub fn run() {
      *        补齐只会填空，不会覆盖）
      */
     match platform::migrate_shared_into_game_dir(&paths.root) {
-        Ok(Some(p)) => eprintln!(
+        Ok(Some(p)) => say!(
             "[IEML/paths] 游戏数据已挪到 {}（PCL 同款布局：数据目录内的 .minecraft）",
             p.display()
         ),
         Ok(None) => {}
-        Err(e) => eprintln!(
+        Err(e) => say!(
             "[IEML/paths] 游戏数据挪进 .minecraft 失败（{e}）—— \
              本次仍按原路径读写，数据没有丢；下次启动会再试一遍"
         ),
@@ -134,14 +140,14 @@ pub fn run() {
         }
         match platform::migrate_data_root(&old, &paths.root) {
             Ok(0) => {}
-            Ok(bytes) => eprintln!(
+            Ok(bytes) => say!(
                 "[IEML/paths] 数据目录已搬到 {}（复制了 {:.1} MB）。\
                  原目录 {} 仍然保留，确认新位置没问题后可以自己删掉。",
                 paths.root.display(),
                 bytes as f64 / 1024.0 / 1024.0,
                 old.display()
             ),
-            Err(e) => eprintln!(
+            Err(e) => say!(
                 "[IEML/paths] 数据目录搬家失败（{e}）—— 本次继续使用 {}",
                 paths.root.display()
             ),
@@ -149,7 +155,7 @@ pub fn run() {
     }
 
     if let Err(e) = paths.ensure() {
-        eprintln!("[IEML/paths] 创建数据目录失败：{e}（{}）", paths.root.display());
+        say!("[IEML/paths] 创建数据目录失败：{e}（{}）", paths.root.display());
     }
 
     // 元数据缓存目录（版本清单/加载器列表，避免每次联网重拉）

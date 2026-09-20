@@ -151,6 +151,8 @@ async fn live_auto_download_java_and_launch() {
         classpath: classpath.clone(),
         natives_dir: natives_dir.clone(),
         game_dir: game_dir.clone(),
+        // ★ 2026-09-20 补：集成测试漏了这个字段 → `cargo check --tests` 一直是红的
+        libraries_dir: shared.join("libraries"),
         assets_root: shared.join("assets"),
         asset_index_name: version
             .asset_index

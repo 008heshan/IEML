@@ -2111,24 +2111,28 @@ End If
 
 ## 15. 仍未解决的开放问题
 
+> ★ 2026-09-20 核对：这张表是 2026-09-11 写的，其中**前三条已经有结论了**，
+> 标注在下面（结论不改写原问题，只标注它现在归哪儿）。
+> 剩下的是**还没轮到的设计题**，不是欠账清单 —— 要用到哪一条就在那一轮读完。
+
 | # | 问题 | 已知信息 | 待办 |
 |---|---|---|---|
-| 1 | OptiFine 官方列表解析 | PCL2 靠正则抓 HTML 表格（`colForge` / `colDate` / 文件名）；HMCL 走 BMCLAPI | 决定 IEML 用哪种，HTML 抓取易碎 |
-| 2 | CurseForge API Key | 需要申请；PCL2 未涉及（它直接抓 CurseForge 页面） | 需确认申请渠道与配额 |
-| 3 | 中文别名词表来源 | PCL2/HMCL 都有本地化，但未在本次研读范围内 | 单独调研 |
-| 4 | 备份保留份数 | HMCL Draft 只管单次事务，不做长期备份 | 仍需自行设计 |
-| 5 | macOS 签名证书 | 两边源码均未涉及 | 需查 Tauri 打包文档 |
+| 1 | OptiFine 官方列表解析 | PCL2 靠正则抓 HTML 表格；HMCL 走 BMCLAPI | ✅ **已有结论**：IEML 走 BMCLAPI 的结构化 JSON（`net/optifine.rs`），不抓 HTML —— 见 ADR 与 CHANGELOG 的 OptiFine 两轮 |
+| 2 | CurseForge API Key | 需要申请 | ✅ **已有结论**：内置一把（ADR-052），界面不提供填写入口 |
+| 3 | 中文别名词表来源 | PCL2/HMCL 都有本地化 | ✅ **已有结论**：**不做**（用户在 beta.38 明确「CFPA 这个先不做了」） |
+| 4 | 备份保留份数 | HMCL Draft 只管单次事务，不做长期备份 | 仍需自行设计（**注意**：项目至今没有备份/回滚实现，见 README 的已知限制） |
+| 5 | macOS 签名证书 | 两边源码均未涉及 | 0.1.0 只发 Windows，推到跨平台那一版再查 |
 | 6 | `mods.toml` 的 `side` 字段 | 解析了但未用于兼容判定 | 确认是否要区分 client/server |
 | 7 | HMCL 的 `ModpackUpdateTask` 细节 | 只知道存在（4KB） | 设计整合包更新时再精读 |
 | 8 | `GameInstancePatch` 的优先级体系 | 只知道 OptiFine 用 10000 | 设计叠加层顺序时需完整读 |
 | 9 | PCL2 更新检查的**限速策略** | Mod 列表模块未显式限速，推测在 `DlModRequest` 内 | 设计 Modrinth/CF 客户端时确认配额 |
 | 10 | `MyLocalModItem` 的**行内按钮完整事件集** | 只确认了 4 个按钮的语义 | 实现列表项时再精读 |
-| 11 | `LocalResourceLoaders` 的**资源包/光影包差异** | 本轮只看了 Mod 分支 | 设计资源包页时补 |
-| 12 | PCL2 的**整合包识别在 Mod 列表中的表现** | 未查（整合包实例的 Mod 更新按钮行为） | 与 ADR-025 一起确认 |
-| 13 | **替换标记语法**的完整清单 | 已知 `{verpath}` `{java}` `{verindie}` `${library_directory}`，源码在「更多 → 帮助」 | 实现变量替换时精读 |
-| 14 | **内存条宽度动画**的触发精度 | `Math.Round(x,5)` 比较后再决定是否动画；初值 4.7/2.5/0.7 | 实现紧凑版时确认逻辑 |
-| 15 | `ValidateFolderName` 的完整规则 | 已知会排除已存在文件夹 | 实现实例重命名时精读 |
-| 16 | **实例设置文件的存储格式** | `<版本目录>\PCL\Setup.ini`，含 DisplayType / Logo / CustomInfo / IsStar | 设计实例配置文件时对齐（我们倾向 JSON） |
+| 11 | `LocalResourceLoaders` 的**资源包/光影包差异** | 本轮只看了 Mod 分支 | ✅ **已实现**（资源中心四种资源共用一套抽象），这一条可以划掉 |
+| 12 | PCL2 的**整合包识别在 Mod 列表中的表现** | 未查 | 与 ADR-025 一起确认 |
+| 13 | **替换标记语法**的完整清单 | 已知 `{verpath}` `{java}` `{verindie}` `${library_directory}` | ✅ **已实现**（`game/launch_args.rs` 的替换表），这一条可以划掉 |
+| 14 | **内存条宽度动画**的触发精度 | `Math.Round(x,5)` 比较后再决定是否动画 | 实现紧凑版时确认逻辑 |
+| 15 | `ValidateFolderName` 的完整规则 | 已知会排除已存在文件夹 | ✅ **已实现**（`domain/validate.rs` 的规则表 + 两侧同名测试） |
+| 16 | **实例设置文件的存储格式** | `<版本目录>\PCL\Setup.ini` | ✅ **已定**：IEML 用 `instances.json` + `prefs.json`（JSON），不学 ini |
 | 17 | 版本「分类」6 档的判定依据 | 自动 / 隐藏 / 可装 Mod / 常规 / 不常用 / 愚人节 | 设计实例分组时确认自动判定逻辑 |
 
 ---

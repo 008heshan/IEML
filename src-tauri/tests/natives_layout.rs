@@ -161,6 +161,13 @@ fn natives_are_where_the_jvm_looks_for_them() {
         classpath,
         natives_dir: natives_dir.clone(),
         game_dir,
+        /*
+         * ★ 2026-09-20 补：`libraries_dir` 是 dev.12 加进 `LaunchSpec` 的
+         *   （`${library_directory}` 不再从 classpath 反推），而几个**集成测试**
+         *   的 initializer 没跟着改 —— 于是 `cargo check --tests` 一直是红的，
+         *   只因为 `pnpm verify` 只跑 `--lib`，谁都没看见。
+         */
+        libraries_dir: shared.join("libraries"),
         assets_root: shared.join("assets"),
         asset_index_name: version
             .asset_index

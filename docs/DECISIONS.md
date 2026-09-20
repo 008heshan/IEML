@@ -3683,6 +3683,11 @@ Note 是"用户需要据此做决定"的东西（缺前置包、组合不兼容�
 判据③部分满足（Windows 上的阻断项已清空，剩下的 ⚠️ 是"只测过 Windows""Quilt 未实测"
 "正版登录要自备 client_id"）。逐条判定写在 §3.3，这里不重复。
 
+> ★ 2026-09-20 更正：上面这几条**引用的是当时的 README**（那会儿有「功能状态」表与
+> 「已知会挡住用户的三件事」两节）。README 在 beta.45 重写之后**这两节都不存在了**，
+> 所以判据表也跟着改成了对得上现在的检查单（见 §3.3 与 README 的「已知限制」）。
+> **旧结论不改写，只标注它为什么不再适用** —— 与 ADR-051 同一条规矩。
+
 **相关**：ADR-001、ADR-006、ADR-033（密度三铁律）、ADR-051、ADR-053、
 `src/styles/app.css`、`src/styles/pages.css`、`src/pages/InstanceOverview.tsx`、
 `src/components/InstallComposer.tsx`、`CHANGELOG.md` 的 `0.1.0-beta.1` 一节。

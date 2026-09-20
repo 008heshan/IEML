@@ -132,7 +132,7 @@ pub async fn refresh_global() -> Vec<ProbeOutcome> {
     let manager = super::source::global();
     for o in &outcomes {
         manager.note_probe(o.source, o.ttfb_ms, o.ok_count);
-        eprintln!(
+        say!(
             "[IEML/probe] {} 中位 TTFB = {}（成功 {}/{}）",
             o.source.as_str(),
             match o.ttfb_ms {

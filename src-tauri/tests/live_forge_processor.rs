@@ -102,7 +102,13 @@ async fn forge_installer_produces_the_generated_client_jar() {
     // 重跑官方安装器 —— 它会重新执行 processors
     let state = AppState {
         paths: paths.clone(),
-        running: Mutex::new(None),
+        /*
+         * ★ 2026-09-20 补：`AppState.running` 从 `Mutex<Option<RunningGame>>`
+         *   改成了**按实例 id 索引的表**（beta.6 多开实例），这个集成测试
+         *   一直没跟着改 —— `cargo check --tests` 因此红着，而 `pnpm verify`
+         *   只跑 `--lib`，所以谁都没看见。
+         */
+        running: Mutex::new(std::collections::HashMap::new()),
     };
     let cancel = CancelToken::new();
     let progress = |m: String| println!("    · {m}");
