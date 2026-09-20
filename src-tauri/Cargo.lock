@@ -1906,7 +1906,7 @@ dependencies = [
 
 [[package]]
 name = "ieml"
-version = "0.1.0-beta.49"
+version = "0.1.0-beta.50"
 dependencies = [
  "base64 0.22.1",
  "bytes",
