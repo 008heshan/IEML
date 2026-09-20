@@ -284,7 +284,7 @@ pub async fn get_text_third_party_with_headers(
             let Some(mirror) = crate::net::mirror::mcimirror_url(url) else {
                 return Err(e);
             };
-            eprintln!("[IEML/net] {url} 失败（{e}），换 mcimirror 重试：{mirror}");
+            say!("[IEML/net] {url} 失败（{e}），换 mcimirror 重试：{mirror}");
             match get_text_with_headers(&mirror, headers).await {
                 Ok(t) => Ok(t),
                 Err(e2) => Err(NetError::Other(format!(
@@ -352,7 +352,7 @@ where
         let what = what.clone();
         tokio::spawn(async move {
             tokio::time::sleep(stagger).await;
-            eprintln!("[IEML/net] {what}：主路 {stagger:?} 还没回来，启动备路");
+            say!("[IEML/net] {what}：主路 {stagger:?} 还没回来，启动备路");
             fallback.await
         })
     };
@@ -370,7 +370,7 @@ where
                 // 主路失败 → 等备路（它可能已经开始，也可能还要等一会儿）
                 match fallback_handle.await {
                     Ok(Ok(v)) => {
-                        eprintln!("[IEML/net] {what}：主路失败（{e1}），备路成功");
+                        say!("[IEML/net] {what}：主路失败（{e1}），备路成功");
                         Ok(v)
                     }
                     Ok(Err(e2)) => Err(NetError::Other(format!("{e1}；备路也失败：{e2}"))),

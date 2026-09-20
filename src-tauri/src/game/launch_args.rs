@@ -399,7 +399,7 @@ pub fn build_command(spec: &LaunchSpec) -> BuiltCommand {
     let library_dir = spec.libraries_dir.to_string_lossy().to_string();
     if library_dir.is_empty() {
         // 空串会把 `-DlibraryDirectory=` 指到工作目录：宁可说出来
-        eprintln!(
+        say!(
             "[IEML/launch] 警告：共享库根目录为空，${{library_directory}} 会是空串\
              —— 装了 Forge 的版本会因此找不到库"
         );
@@ -878,7 +878,7 @@ mod tests {
         ];
         let cmd = build_command(&spec);
         let all = cmd.args.join(" ");
-        println!("游戏参数段：{}", cmd.args[cmd.args.len() - 5..].join(" "));
+        say!("游戏参数段：{}", cmd.args[cmd.args.len() - 5..].join(" "));
 
         assert!(
             cmd.args.iter().any(|a| a == "--tweakClass"),

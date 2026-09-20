@@ -442,7 +442,7 @@ pub async fn download_one_with(
             VerifyOutcome::Ok => return Ok(true),
             VerifyOutcome::Mismatch { expected, actual } => {
                 // ★ 校验失败 → 删掉重下（PCL2 的「校验失败：删除文件，重新下载」）
-                eprintln!(
+                say!(
                     "[IEML/download] {} 校验不匹配（期望 {}，实际 {}）→ 删除重下",
                     task.label,
                     short(&expected),
@@ -609,7 +609,7 @@ async fn finish_file_with_retry(
                 }
                 *busy_waits += 1;
                 let d = busy_delay(attempt);
-                eprintln!(
+                say!(
                     "[IEML/download] {} 落盘时文件被占用（第 {} 次）→ 等 {}ms 再试",
                     task.label,
                     attempt + 1,
@@ -646,7 +646,7 @@ async fn create_part(part: &Path) -> Result<tokio::fs::File> {
                 if !busy {
                     return Err(NetError::Io(e));
                 }
-                eprintln!(
+                say!(
                     "[IEML/download] {}",
                     describe_busy("创建临时文件", part, &e)
                 );
@@ -756,7 +756,7 @@ async fn download_to_part(
                     Err(e) => {
                         // 分片失败 → 回退单连接。
                         // ★ 不清掉已下好的段：下一次重试还能用（这就是分片续传的意义）
-                        eprintln!(
+                        say!(
                             "[IEML/download] {} 分片不可用（{e}）→ 回退单连接",
                             task.label
                         );
@@ -986,7 +986,7 @@ async fn download_single(
          *   补下三轮也一样 416。文件永远下不好，用户只看到"必定失败"。
          */
         if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
-            eprintln!(
+            say!(
                 "[IEML/download] 续传被拒（HTTP 416）：本地 .part 比服务端文件还大，\
                  丢掉坏临时文件、改用不带 Range 的请求重下 —— {url}"
             );
@@ -1034,18 +1034,18 @@ async fn download_single(
             if !offset_ok || !size_ok {
                 if !offset_ok {
                     match start {
-                        Some(s) => eprintln!(
+                        Some(s) => say!(
                             "[IEML/download] 续传偏移不符（想要 {:?}，服务端给 {s}）\
                              → 丢掉这份响应，改用不带 Range 的请求重下：{url}",
                             resume_from
                         ),
-                        None => eprintln!(
+                        None => say!(
                             "[IEML/download] 206 响应没有 Content-Range（不可信）\
                              → 改用不带 Range 的请求重下：{url}"
                         ),
                     }
                 } else {
-                    eprintln!(
+                    say!(
                         "[IEML/download] 服务端文件大小变了（任务记录 {task_size}，\
                          服务端 {declared_total:?}）→ 丢掉本地残留，\
                          改用不带 Range 的请求重下：{url}"
@@ -1184,7 +1184,7 @@ async fn download_single(
             // ★ 写入也可能撞到"文件被占用"：**日志必须能区分是哪一步**，
             //   否则只能看到"写入文件失败"却不知道要修 open 还是修 write。
             if let Err(e) = file.write_all(&chunk).await {
-                eprintln!(
+                say!(
                     "[IEML/download] {}",
                     describe_busy("写临时文件", part, &e)
                 );
@@ -1196,7 +1196,7 @@ async fn download_single(
         // flush 也可能报 os error 32（磁盘缓冲落盘时才发现占用），
         // 这一步的失败以前只说"写入文件失败"，看不出是 flush —— 必须点名
         if let Err(e) = file.flush().await {
-            eprintln!(
+            say!(
                 "[IEML/download] {}",
                 describe_busy("flush 临时文件", part, &e)
             );
@@ -1788,7 +1788,7 @@ pub async fn download_batch(tasks: Vec<DownloadTask>, opts: BatchOptions) -> Res
              *   因为事件里的 `failed_files` 必须是**本轮的结果**，
              *   不是上一轮的残值。
              */
-            eprintln!(
+            say!(
                 "[IEML/download] 第 {round} 轮补下 {} 个失败文件（并发 {}）",
                 pending.len(),
                 concurrency
@@ -1840,7 +1840,7 @@ pub async fn download_batch(tasks: Vec<DownloadTask>, opts: BatchOptions) -> Res
                     rest.push(ft);
                 }
             }
-            eprintln!(
+            say!(
                 "[IEML/download] 已暂停：本轮完成 {} 个，还剩 {} 个没下（已下的分片保留）",
                 processed_count(&stats),
                 rest.len()
@@ -1881,7 +1881,7 @@ pub async fn download_batch(tasks: Vec<DownloadTask>, opts: BatchOptions) -> Res
          *   而且**最后一轮的失败数永远没人报**（循环条件一不满足就出去了）。
          */
         if !pending.is_empty() && round <= MAX_BATCH_ROUNDS {
-            eprintln!(
+            say!(
                 "[IEML/download] 第 {round} 轮补下 {} 个失败文件",
                 pending.len()
             );
@@ -1995,7 +1995,7 @@ pub async fn download_batch(tasks: Vec<DownloadTask>, opts: BatchOptions) -> Res
                 .enumerate()
                 .map(|(i, ms)| format!("第{i}轮 {:.1}s", *ms as f64 / 1000.0))
                 .collect();
-            eprintln!(
+            say!(
                 "[IEML/download] 各轮耗时：{}（合计 {:.1}s，{} 个文件）",
                 detail.join(" · "),
                 total as f64 / 1000.0,
@@ -3380,8 +3380,8 @@ mod tests {
 
         let outcome = download_batch(tasks, opts).await.expect("不该崩");
         let events = seen.lock().await;
-        println!("\n进度事件：{:?}", events);
-        println!("批次结论：processed={} failed={}", outcome.processed_files, outcome.failed.len());
+        say!("\n进度事件：{:?}", events);
+        say!("批次结论：processed={} failed={}", outcome.processed_files, outcome.failed.len());
 
         assert!(!events.is_empty(), "一个进度事件都没发出来");
 
@@ -3469,8 +3469,8 @@ mod tests {
         });
 
         let outcome = download_batch(tasks, opts).await.expect("批量下载本身不该崩");
-        println!("\n失败明细：{:?}", outcome.failed);
-        println!("进度事件：{:?}", seen.lock().await);
+        say!("\n失败明细：{:?}", outcome.failed);
+        say!("进度事件：{:?}", seen.lock().await);
 
         assert_eq!(
             outcome.failed.len(),
@@ -3559,7 +3559,7 @@ mod tests {
         let _ = download_batch(tasks, opts).await.expect("批量下载本身不该崩");
 
         let events = seen.lock().await;
-        println!("\n进度事件：{:?}", events);
+        say!("\n进度事件：{:?}", events);
         let (last_done, last_total) = *events.last().expect("一个进度事件都没发出来");
         assert_eq!(
             last_done, last_total,
@@ -3614,7 +3614,7 @@ mod tests {
         opts.pause = Some(pause.clone());
 
         let outcome = download_batch(tasks, opts).await.expect("不该崩");
-        println!(
+        say!(
             "\n暂停结果：paused={} 剩余={} 已处理={}",
             outcome.paused,
             outcome.remaining.len(),
@@ -3646,7 +3646,7 @@ mod tests {
         let again = download_batch(outcome.remaining, opts2)
             .await
             .expect("续下不该崩");
-        println!(
+        say!(
             "续下结果：paused={} 已处理={} 失败={}",
             again.paused,
             again.processed_files,

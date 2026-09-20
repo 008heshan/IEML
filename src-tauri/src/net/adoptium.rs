@@ -184,7 +184,7 @@ pub async fn install_java(
 
     if ver != major {
         // 不致命，但要告知（例如请求 17 拿到 17.x）
-        eprintln!("请求 Java {major}，实际得到 Java {ver}");
+        say!("请求 Java {major}，实际得到 Java {ver}");
     }
 
     Ok(bin)

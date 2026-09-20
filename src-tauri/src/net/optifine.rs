@@ -495,7 +495,7 @@ async fn install_new_style(
     if let Some(produced) = &found_json {
         if produced != expected_id {
             // 以盘上的为准（第一版按文件名拼 id，结果与 OptiFine 实际产出的不同）
-            eprintln!(
+            say!(
                 "[IEML/optifine] 安装器产出的版本 id 是 {produced}，与预期的 {expected_id} 不同 —— 以盘上的为准"
             );
         }
@@ -508,7 +508,7 @@ fn tracing_progress(stdout: &str) {
     // OptiFine 安装器输出很多行；把最后几行打出来，方便排查
     for l in stdout.lines().rev().take(3).collect::<Vec<_>>().iter().rev() {
         if !l.trim().is_empty() {
-            eprintln!("[IEML/optifine] {l}");
+            say!("[IEML/optifine] {l}");
         }
     }
 }

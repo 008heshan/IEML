@@ -164,6 +164,34 @@ if (existsSync(join(root, 'src-tauri', 'Cargo.toml'))) {
       '--lib',
     ]),
   ]);
+
+  /*
+   * ★★ 2026-09-20 新增：**所有测试目标都要能编译**。
+   *
+   *   为什么单独来一条：上面那条只跑 `--lib`（单元测试），而
+   *   `src-tauri/tests/*.rs`（集成 / 真机测试）**根本不会被编译** ——
+   *   于是它们红着也没人知道。实测代价：`LaunchSpec` 多了个 `libraries_dir`
+   *   （dev.12）、`AppState.running` 从 `Option` 变成表（beta.6），四个集成测试
+   *   从那以后就编译不过，而 `pnpm test:live` / `test:fresh` / `test:416`
+   *   这些脚本全都跑不起来 —— 直到这一轮才被发现。
+   *
+   *   ★ 判据用 `check --tests`（只编译不运行）：真机测试要联网、要装好的游戏，
+   *     不能在交付门禁里跑；但"它们至少能编译"是必须守住的底线。
+   */
+  results.push([
+    'Rust 全部测试目标可编译',
+    run('Rust 全部测试目标可编译', 'powershell', [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      'tools/env/cargo.ps1',
+      'check',
+      '--manifest-path',
+      'src-tauri/Cargo.toml',
+      '--tests',
+    ]),
+  ]);
 }
 
 results.push(['前端生产构建', run('前端生产构建', 'pnpm', ['exec', 'vite', 'build'])]);

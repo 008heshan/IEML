@@ -120,7 +120,7 @@ pub fn load_api_key_from_disk(paths: &crate::platform::AppPaths) {
         let first = text.lines().next().unwrap_or("").trim().to_string();
         if !first.is_empty() {
             set_api_key(&first);
-            eprintln!(
+            say!(
                 "[IEML/curseforge] 已载入你填的 CurseForge API Key（{}…）—— 它会覆盖内置的那把",
                 &first[..first.len().min(6)]
             );
@@ -308,7 +308,7 @@ async fn api_post_json<B: serde::Serialize, T: serde::de::DeserializeOwned>(
             // 4xx 是确定的结论，换镜像也一样；其余（超时/5xx/被墙）换镜像再试
             let mirror_url = mirror::mcimirror_url(&url)
                 .ok_or_else(|| NetError::Other(format!("{e}（没有可用的镜像兜底）")))?;
-            eprintln!("[IEML/curseforge] POST {url} 失败（{e}），换 mcimirror 重试");
+            say!("[IEML/curseforge] POST {url} 失败（{e}），换 mcimirror 重试");
             post_once(&mirror_url, &payload, &key).await?
         }
     };
@@ -815,7 +815,7 @@ pub async fn match_fingerprints(fps: &[u32]) -> Result<HashMap<u32, FingerprintM
                  * 有命中却没有对应的指纹 → 说明上游的形状变了。
                  * **不猜**：这条丢掉并说出来（总比装错更新强）。
                  */
-                eprintln!(
+                say!(
                     "[IEML/curseforge] 指纹反查返回了第 {i} 条命中，但没有对应的 exactFingerprints —— \
                      这条不采信（上游形状可能变了）"
                 );

@@ -345,7 +345,7 @@ impl SourceManager {
         let cur = self.concurrency_hint.load(Ordering::Relaxed).max(1) as usize;
         let next = (cur / 2).max(MIN_CONCURRENCY);
         self.concurrency_hint.store(next as u64, Ordering::Relaxed);
-        eprintln!(
+        say!(
             "[IEML/source] {} 被限流（第 {} 次），冷却 {}s，并发上限降到 {}",
             source.as_str(),
             times,
@@ -388,7 +388,7 @@ impl SourceManager {
         let cur = self.concurrency_hint.load(Ordering::Relaxed).max(1) as usize;
         let next = (cur / 2).max(MIN_CONCURRENCY);
         self.concurrency_hint.store(next as u64, Ordering::Relaxed);
-        eprintln!(
+        say!(
             "[IEML/source] {} 回了一个明显过小的响应（限流页），冷却 5s，并发上限降到 {}",
             source.as_str(),
             next

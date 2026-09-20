@@ -83,7 +83,7 @@ pub fn pause_install(task_id: String) -> Result<bool, String> {
         ));
     };
     p.pause();
-    eprintln!("[IEML/install] 已请求暂停 {task_id}");
+    say!("[IEML/install] 已请求暂停 {task_id}");
     Ok(true)
 }
 
@@ -349,7 +349,7 @@ fn instance_usage(state: &AppState) -> HashMap<String, std::collections::HashSet
         instances: Vec<crate::domain::types::Instance>,
     }
     let Ok(store) = serde_json::from_str::<Store>(&text) else {
-        eprintln!("[IEML/manifest] instances.json 解析失败，本次不标注「有没有版本在用」");
+        say!("[IEML/manifest] instances.json 解析失败，本次不标注「有没有版本在用」");
         return out;
     };
     for inst in store.instances {
@@ -1436,7 +1436,7 @@ pub async fn scan_mods_detailed(
                     Some(l) if l.sha1.eq_ignore_ascii_case(&hit.sha1) => {
                         cf_remote.insert(fp, (hit, l.fingerprint));
                     }
-                    Some(l) => eprintln!(
+                    Some(l) => say!(
                         "[IEML/curseforge] 指纹 {} 命中了 {}，但它报的 SHA1（{}）与本地（{}）不一致 —— 不采信",
                         fp,
                         hit.file_name,
@@ -1600,7 +1600,7 @@ pub async fn check_mod_updates(
                      * ★ 降级但不装死：CurseForge 查不到时说清"这一路没工作"，
                      *   而不是让用户以为"所有 Mod 都没有更新"。
                      */
-                    eprintln!("[IEML/curseforge] 指纹反查失败（{e}）—— 这一轮只查 Modrinth");
+                    say!("[IEML/curseforge] 指纹反查失败（{e}）—— 这一轮只查 Modrinth");
                     break;
                 }
             }
@@ -1783,7 +1783,7 @@ pub async fn install_resource(
         .await
         .map_err(err)?;
 
-    eprintln!(
+    say!(
         "[IEML/resource] 已装{}「{safe_name}」→ {}",
         k.display(),
         path.display()
@@ -2606,7 +2606,7 @@ pub async fn install_version(
      *   已下好的文件会走"校验通过 → 跳过"，`.part` 分片也会接着用。
      */
     if installed.paused {
-        eprintln!(
+        say!(
             "[IEML/install] {mc_version} 安装被暂停：还剩 {} 个文件没下\
              （点「继续」会从断点接着下）",
             installed.remaining_files
@@ -2640,7 +2640,7 @@ pub async fn install_version(
     if let Some(kind) = loader_kind.as_deref() {
         if kind == "forge" || kind == "neoforge" {
             if pause.is_paused() {
-                eprintln!("[IEML/install] {mc_version}：用户已暂停，跳过 {kind} 安装器那一步");
+                say!("[IEML/install] {mc_version}：用户已暂停，跳过 {kind} 安装器那一步");
                 drop_task(&task_id);
                 return Ok(InstalledSummary {
                     id: installed.id.clone(),
@@ -2980,15 +2980,15 @@ pub async fn launch_minecraft(
      */
     match crate::game::locale::ensure_chinese_language(&game_dir, &req.mc_version) {
         Ok(crate::game::locale::LocaleAction::Created) => {
-            eprintln!("[IEML/launch] 首次启动：已写入 options.txt（语言=中文）");
+            say!("[IEML/launch] 首次启动：已写入 options.txt（语言=中文）");
         }
         Ok(crate::game::locale::LocaleAction::Appended) => {
-            eprintln!("[IEML/launch] options.txt 里没有语言设置，已补上中文");
+            say!("[IEML/launch] options.txt 里没有语言设置，已补上中文");
         }
         // 玩家已经选过语言 —— 这是最常见的情况，不需要任何输出
         Ok(crate::game::locale::LocaleAction::LeftAlone) => {}
         Err(e) => {
-            eprintln!("[IEML/launch] 写 options.txt（中文语言）失败，不影响启动：{e}");
+            say!("[IEML/launch] 写 options.txt（中文语言）失败，不影响启动：{e}");
         }
     }
 
@@ -3039,7 +3039,7 @@ pub async fn launch_minecraft(
      */
     let offline = spec.account.is_offline();
     if offline {
-        eprintln!("[IEML/launch] 这次是离线身份启动（日志里的 401 是必然的，不会当成崩溃原因）");
+        say!("[IEML/launch] 这次是离线身份启动（日志里的 401 是必然的，不会当成崩溃原因）");
     }
 
     let running = crate::launch::RunningGame {
@@ -3352,12 +3352,12 @@ pub fn merge_with_parents(
             break;
         }
         let Some(parent) = load_version_json(shared, &pid) else {
-            eprintln!("[IEML/launch] 找不到父版本 {pid} 的 JSON，停止向上合并");
+            say!("[IEML/launch] 找不到父版本 {pid} 的 JSON，停止向上合并");
             break;
         };
         let before = version.libraries.len();
         version = installer::merge_versions(&version, &parent);
-        eprintln!(
+        say!(
             "[IEML/launch] 合并父版本 {pid}：库 {before} → {}",
             version.libraries.len()
         );
@@ -3564,14 +3564,14 @@ async fn prepare_spec(req: &LaunchRequest, state: &AppState) -> Result<LaunchSpe
             crate::net::installer::InstallOptions::new(32, crate::net::download::CancelToken::new());
         match crate::net::installer::repair_missing(&repair_input, opts).await {
             Ok(r) => {
-                eprintln!(
+                say!(
                     "[IEML/launch] 启动前自愈：缺 {}，补回 {}，失败 {}",
                     r.missing,
                     r.repaired,
                     r.failed.len()
                 );
                 for (label, err) in r.failed.iter().take(5) {
-                    eprintln!("[IEML/launch]   补不上：{label} → {err}");
+                    say!("[IEML/launch]   补不上：{label} → {err}");
                 }
                 if r.failed.is_empty() {
                     // 真相以磁盘为准，不以"我们说补好了"为准
@@ -3597,7 +3597,7 @@ async fn prepare_spec(req: &LaunchRequest, state: &AppState) -> Result<LaunchSpe
             }
             Err(e) => {
                 // 自愈失败不拦住启动 —— 让下面原有的"缺库"检查给出完整清单
-                eprintln!("[IEML/launch] 启动前自愈失败：{e}");
+                say!("[IEML/launch] 启动前自愈失败：{e}");
             }
         }
     }
@@ -3741,13 +3741,13 @@ async fn prepare_spec(req: &LaunchRequest, state: &AppState) -> Result<LaunchSpe
     }
     if !extract_failures.is_empty() {
         // 解压失败不直接终止（缺的可能是别的平台的库），但必须让人看见
-        eprintln!(
+        say!(
             "[IEML/launch] natives 解压失败 {} 个：{}",
             extract_failures.len(),
             extract_failures.join("；")
         );
     }
-    eprintln!(
+    say!(
         "[IEML/launch] natives 解压完成：{} 个文件 → {}",
         extracted,
         native_targets
@@ -3942,7 +3942,7 @@ async fn prepare_spec(req: &LaunchRequest, state: &AppState) -> Result<LaunchSpe
                         Some(rt) if !rt.trim().is_empty() => {
                             match auth::refresh_msa(&rt).await {
                                 Ok(fresh) => {
-                                    eprintln!(
+                                    say!(
                                         "[IEML/launch] 正版令牌已过期，已静默续期（{}）",
                                         fresh.username
                                     );
@@ -3951,7 +3951,7 @@ async fn prepare_spec(req: &LaunchRequest, state: &AppState) -> Result<LaunchSpe
                                 Err(e) => {
                                     // ③ 续不上 —— 说清是哪一种
                                     let why = e.to_string();
-                                    eprintln!("[IEML/launch] 正版令牌续期失败：{why}");
+                                    say!("[IEML/launch] 正版令牌续期失败：{why}");
                                     account_note = Some(format!(
                                         "正版登录已过期，自动续期没成功（{why}）。\n\
                                          这次会用离线身份启动 —— 单机不受影响，\
@@ -3983,7 +3983,7 @@ async fn prepare_spec(req: &LaunchRequest, state: &AppState) -> Result<LaunchSpe
         _ => launch_args::Account::offline(&req.username),
     };
     if let Some(note) = &account_note {
-        eprintln!("[IEML/launch] {note}");
+        say!("[IEML/launch] {note}");
     }
 
     /*
@@ -4139,7 +4139,7 @@ fn find_java_by_requirement(
         .filter(|r| !r.disabled_by_default && in_range(r.major))
         .max_by_key(|r| r.major)
     {
-        eprintln!(
+        say!(
             "[IEML/launch] {mc_version}：区间 {} 内选到最高的 Java {}（{}）",
             requirement.range.format(),
             rt.major,
@@ -4275,9 +4275,9 @@ pub async fn stop_minecraft(
             &tail,
         );
         if !verdict.evidence.is_empty() {
-            eprintln!("[IEML/launch] 停止判定：crashed={}", verdict.crashed);
+            say!("[IEML/launch] 停止判定：crashed={}", verdict.crashed);
             for e in &verdict.evidence {
-                eprintln!("[IEML/launch]   依据：{e}");
+                say!("[IEML/launch]   依据：{e}");
             }
         }
 
@@ -4946,7 +4946,7 @@ pub async fn modpack_install(
     if installed.paused {
         drop_task(&task_id);
         let _ = tokio::fs::remove_file(&downloaded.path).await;
-        eprintln!(
+        say!(
             "[IEML/modpack] 整合包安装被暂停：还剩 {} 个文件没下",
             installed.remaining_files
         );
@@ -4976,7 +4976,7 @@ pub async fn modpack_install(
                 drop_task(&task_id);
                 let _ = tokio::fs::remove_file(&downloaded.path).await;
                 let stage = format!("运行 {kind} 安装器");
-                eprintln!("[IEML/modpack] 用户已暂停，跳过 {kind} 安装器那一步");
+                say!("[IEML/modpack] 用户已暂停，跳过 {kind} 安装器那一步");
                 return Ok(ModpackInstallResult {
                     mc_version: mc_version.clone(),
                     loader_kind: loader_kind.clone(),
@@ -5026,7 +5026,7 @@ pub async fn modpack_install(
      */
     if !unsafe_paths.is_empty() {
         let sample: Vec<String> = unsafe_paths.iter().take(3).cloned().collect();
-        eprintln!(
+        say!(
             "[IEML/modpack] 清单里有 {} 条路径指向游戏目录之外，已拒绝：{}",
             unsafe_paths.len(),
             sample.join("、")
@@ -5113,7 +5113,7 @@ pub async fn modpack_install(
         Err(e) => {
             // overrides 里是作者的配置，缺了游戏仍能起（只是少了他的设置）——
             // 如实报告但不阻断，用户至少能玩。
-            eprintln!("[IEML/modpack] overrides 解压失败：{e}");
+            say!("[IEML/modpack] overrides 解压失败：{e}");
         }
     }
 
@@ -5160,7 +5160,7 @@ pub async fn modpack_install(
                         }));
                     }
                     Err(e) => {
-                        eprintln!("[IEML/modpack] API 前置包安装失败：{e}");
+                        say!("[IEML/modpack] API 前置包安装失败：{e}");
                         note = Some(format!(
                             "整合包里没有 API 前置包，自动补装也失败了（{e}）—— \
                              进游戏若提示缺少前置，请手动去 Modrinth 下载。"
@@ -5337,11 +5337,11 @@ async fn neoforge_installer_url_for(mc_version: &str, version: &str, source: Sou
             .find(|b| b.normalized_version(mc_version) == version)
         {
             if let Some(u) = b.installer_url() {
-                eprintln!("[IEML/loader] NeoForge {mc_version}-{version} 用服务端给的安装器路径");
+                say!("[IEML/loader] NeoForge {mc_version}-{version} 用服务端给的安装器路径");
                 return u;
             }
         } else {
-            eprintln!(
+            say!(
                 "[IEML/loader] NeoForge 列表里没有 {mc_version}-{version}（共 {} 条），按规则拼地址",
                 list.len()
             );
@@ -5779,7 +5779,7 @@ mod wire_tests {
                 continue;
             };
             let scan = scan_classpath(&version, &shared);
-            println!(
+            say!(
                 "{id}: classpath {} 项 · natives {} 个 · 缺失 {} 个 {:?}",
                 scan.classpath.len(),
                 scan.natives.len(),
@@ -5886,7 +5886,7 @@ mod wire_tests {
             err.contains("1.12.2-forge-14.23.5.2860"),
             "报错里要写清挂载点，否则用户不知道该先装什么：{err}"
         );
-        println!("拒绝安装的理由：{err}");
+        say!("拒绝安装的理由：{err}");
 
         let _ = std::fs::remove_dir_all(&root);
     }

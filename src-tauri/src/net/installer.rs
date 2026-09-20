@@ -1124,7 +1124,7 @@ pub async fn install(input: &PlanInput, opts: InstallOptions) -> Result<Installe
     //   装失败一次就永久留几十 MB。此刻是安全的：还没有任务在写临时文件。
     let cleaned = super::download::clean_shared_parts(&shared).await;
     if cleaned > 0 {
-        eprintln!("[IEML/installer] 清理了 {cleaned} 个上次残留的下载临时文件");
+        say!("[IEML/installer] 清理了 {cleaned} 个上次残留的下载临时文件");
     }
 
     // ★ 期望源 = 用户设置 + 源健康度的综合结论（不是只看设置：
@@ -1164,7 +1164,7 @@ pub async fn install(input: &PlanInput, opts: InstallOptions) -> Result<Installe
                 .map(|mut rd| rd.next().is_some())
                 .unwrap_or(false);
             if has_any {
-                eprintln!(
+                say!(
                     "[IEML/installer] {vid} 的目录里没有版本描述（半成品，起不来也修不好）\
                      —— 删掉重下：{}",
                     vdir.display()
@@ -1177,7 +1177,7 @@ pub async fn install(input: &PlanInput, opts: InstallOptions) -> Result<Installe
     // 并发：用户要的并发 与 源管理器建议的并发 取小（被限流过就降下来）
     let concurrency = manager.recommended_concurrency(opts.concurrency);
     if concurrency < opts.concurrency {
-        eprintln!(
+        say!(
             "[IEML/installer] 源被限流过，并发从 {} 降到 {concurrency}",
             opts.concurrency
         );
@@ -1250,7 +1250,7 @@ pub async fn install(input: &PlanInput, opts: InstallOptions) -> Result<Installe
      */
     if stage1.paused {
         let remaining_files = stage1.remaining.len();
-        eprintln!(
+        say!(
             "[IEML/installer] 第一批被暂停：已完成 {} 个，还剩 {remaining_files} 个未开始",
             stage1.processed_files
         );
@@ -1291,7 +1291,7 @@ pub async fn install(input: &PlanInput, opts: InstallOptions) -> Result<Installe
     let mut assets_count = 0usize;
     let mut asset_retry_rounds = 0u32;
     let mut failed_assets: Vec<(String, String)> = Vec::new();
-    eprintln!(
+    say!(
         "[IEML/installer] 资源阶段：download_assets={} asset_index_path={:?} asset_limit={:?}",
         opts.download_assets,
         asset_index_path.as_ref().map(|p| p.display().to_string()),
@@ -1343,7 +1343,7 @@ pub async fn install(input: &PlanInput, opts: InstallOptions) -> Result<Installe
              */
             if outcome.paused {
                 let remaining_files = outcome.remaining.len();
-                eprintln!(
+                say!(
                     "[IEML/installer] 资源阶段被暂停：已完成 {} 个，还剩 {remaining_files} 个未开始",
                     outcome.processed_files
                 );
@@ -1383,7 +1383,7 @@ pub async fn install(input: &PlanInput, opts: InstallOptions) -> Result<Installe
                 let dest_root = shared.join("assets").join(&kind.dir);
                 let (done, failed) =
                     materialize_virtual_assets(&index, &shared, &dest_root).await;
-                eprintln!(
+                say!(
                     "[IEML/installer] 虚拟资源：{} 个文件铺到 {}（失败 {} 个）",
                     done,
                     dest_root.display(),
@@ -1421,14 +1421,14 @@ pub async fn install(input: &PlanInput, opts: InstallOptions) -> Result<Installe
                 // ★ 必须把**真实的错误文本**打出来。
                 //   踩过的坑：只报"23 个失败"，日志里查不到任何原因 ——
                 //   23 个是 404？是超时？还是校验失败？完全无法判断。
-                eprintln!(
+                say!(
                     "[IEML/installer] 资源文件失败 {} 个（已补下 {} 轮、修复 {} 个），样例：",
                     outcome.failed.len(),
                     outcome.retry_rounds,
                     outcome.repaired_files
                 );
                 for (label, err) in outcome.failed.iter().take(5) {
-                    eprintln!("    · {label} → {err}");
+                    say!("    · {label} → {err}");
                 }
                 (opts.on_progress)(
                     format!("资源文件有 {} 个失败（游戏启动时会自行补全）", outcome.failed.len()),
@@ -1482,7 +1482,7 @@ pub async fn install(input: &PlanInput, opts: InstallOptions) -> Result<Installe
      */
     let natives_target = instance.join("natives");
     if !natives.is_empty() {
-        eprintln!(
+        say!(
             "[IEML/installer] {} 个 natives jar 不在安装阶段解压（启动时解压到实例目录：{}）",
             natives.len(),
             natives_target.display()
@@ -1541,7 +1541,7 @@ pub async fn install(input: &PlanInput, opts: InstallOptions) -> Result<Installe
         let alt = dir.join(format!("{mc_like}.json"));
         if !alt.is_file() {
             tokio::fs::write(&alt, &json_text).await?;
-            eprintln!(
+            say!(
                 "[IEML/installer] 版本 JSON 写了两份：{}.json + {}.json（安装/启动两侧命名约定不同）",
                 alt_id, mc_like
             );
@@ -1644,7 +1644,7 @@ pub async fn repair_missing(
         });
     }
 
-    eprintln!(
+    say!(
         "[IEML/repair] {} 缺 {missing_count} 个文件，开始自愈（源 {}）",
         input.version.id,
         preferred.as_str()
@@ -1676,7 +1676,7 @@ pub async fn repair_missing(
     let repaired = outcome.finished_files + outcome.skipped_files;
     let failed = outcome.failed.clone();
     for (label, err) in failed.iter().take(5) {
-        eprintln!("[IEML/repair] 补不上：{label} → {err}");
+        say!("[IEML/repair] 补不上：{label} → {err}");
     }
 
     let summary = if failed.is_empty() {
@@ -1689,7 +1689,7 @@ pub async fn repair_missing(
             failed.len()
         )
     };
-    eprintln!("[IEML/repair] {}：{summary}", input.version.id);
+    say!("[IEML/repair] {}：{summary}", input.version.id);
 
     Ok(RepairReport {
         missing: missing_count,

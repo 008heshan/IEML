@@ -207,7 +207,7 @@ pub async fn get_text_via(url: &str, preferred: Source) -> Result<String> {
     match raced {
         Ok(t) => Ok(t),
         Err(e) => {
-            eprintln!("[IEML/meta] {what} 两条路都失败：{e}");
+            say!("[IEML/meta] {what} 两条路都失败：{e}");
             Err(e)
         }
     }
@@ -472,7 +472,7 @@ pub async fn fetch_manifest(source: Source) -> Result<VersionManifest> {
         Err(e) => {
             // 两个源都失败 → 用旧缓存，总比一片空白好
             if let Ok(Some(v)) = read_cache_if::<VersionManifest>(&cache_file, |_| true).await {
-                eprintln!("[IEML/meta] 两个源都拉不到版本清单，用旧缓存（可能是过期的）");
+                say!("[IEML/meta] 两个源都拉不到版本清单，用旧缓存（可能是过期的）");
                 return Ok(v);
             }
             Err(e)

@@ -521,7 +521,7 @@ pub fn load_prefs(state: State<'_, AppState>) -> Result<serde_json::Value, Strin
         Err(e) => {
             let bak = path.with_extension("json.bad");
             let _ = std::fs::rename(&path, &bak);
-            eprintln!(
+            say!(
                 "[IEML/prefs] 设置文件损坏（{e}），已备份到 {}，本次用默认设置",
                 bak.display()
             );
