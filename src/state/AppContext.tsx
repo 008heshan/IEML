@@ -341,8 +341,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     applyVfx(vfxLevel);
+    /*
+     * ★ 低性能损耗模式要**同时告诉控制器**：那一档的 CSS 用 !important 关掉了
+     *   所有 backdrop-filter（含折射），JS 这边如果还留着透镜，
+     *   就是"状态两边不一致 + 白按尺寸重烘法线图"（实测 low-perf 开着时
+     *   6 块玻璃仍挂着 data-lens）。
+     */
+    glassRef.current?.setLowPerf(lowPerf);
     glassRef.current?.setLevel(vfxLevel);
-  }, [vfxLevel]);
+  }, [vfxLevel, lowPerf]);
   /**
    * 当下这一份 state 的引用。
    *

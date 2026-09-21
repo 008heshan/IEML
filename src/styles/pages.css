@@ -2804,6 +2804,21 @@
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
 }
+/*
+ * ★★ 2026-09-22（第六轮加）：**装饰渐变层也要关掉** —— 否则这个开关名不副实。
+ *
+ *   实测（本机 Intel UHD，滚动设置页）：
+ *     · 只关 backdrop-filter（原来的行为）：平均 17.8ms / p95 26.4ms
+ *     · 连装饰渐变层一起关：           平均 **7.0ms** / p95 7.2ms
+ *   也就是说那两层渐变一个人吃掉 **11ms** —— 比它省下来的模糊还贵。
+ *   （这就是"弱化视效"档只有 7ms、而 low-perf 却要 27ms 的原因。）
+ *   ★ 阴影那 7 条**不花钱**（7.0 vs 6.9），所以留着 —— 这个开关承诺的是
+ *     "只关装饰、不动功能与布局"，把阴影也剥掉反而让卡片看起来像坏了。
+ */
+:root.low-perf .glass {
+  --glass-layers: none;
+  background-image: none;
+}
 :root.low-perf body::before {
   display: none !important;
 }
