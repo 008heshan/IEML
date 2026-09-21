@@ -252,10 +252,22 @@ export function vfxCapability(): VfxCapability {
   return cached;
 }
 
+/** 读**用户存的那个档位**（不做能力校正；坏值落回 `mid`）。
+ *
+ *  ★ 为什么要和 `readVfx()` 分开：界面上要分得清两件事 ——
+ *    「用户选的是什么」（`want`）与「实际生效的是什么」（`level`）。
+ *    只留后者的话，**降级就变成了"用户的选择被悄悄改掉"**：
+ *    设置页会显示"适中"被选中，而他明明选的是灵动，也没有任何说明
+ *    （这正是这个项目的规矩里点名不许出现的那类行为）。
+ */
+export function storedVfx(): VfxLevel {
+  const v = typeof localStorage === 'undefined' ? null : localStorage.getItem(VFX_KEY);
+  return isLevel(v) ? v : 'mid';
+}
+
 /** 读本机选择的档位（**已经过能力校正**；没选过 / 值不合法 / 被挡 → `mid`） */
 export function readVfx(): VfxDecision {
-  const stored = typeof localStorage === 'undefined' ? null : localStorage.getItem(VFX_KEY);
-  return decideVfx(stored, vfxCapability());
+  return decideVfx(storedVfx(), vfxCapability());
 }
 
 /**

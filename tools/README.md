@@ -30,6 +30,9 @@ tools/
 │   ├─ live-resource-check.mjs         资源中心：四种资源都能查到
 │   ├─ live-single-instance-check.mjs  单实例：再开一次是「调起在跑的那个」而不是多开
 │   ├─ live-glass-check.mjs            ★ 液态玻璃三档：折射状态 / 高光跟手 / 取色 / 帧时间（38 条）
+│   ├─ live-glass-pages-check.mjs      ★ 跨页面体检：每页的玻璃、报错、帧时间、截图
+│   ├─ live-glass-degrade-check.mjs    ★ 降级验收：用 --disable-webgl 真的关掉 WebGL2，
+│   │                                    验"默认适中 + 不开放灵动 + 材质仍在"
 │   ├─ live-pagehead-frost-check.mjs   ★ 标题条的遮挡到底有没有生效（逐像素，每步回读状态）
 │   ├─ probe-webview-glass.mjs         ★ 先证明"能不能真折射"：backdrop-filter 里的 SVG 滤镜
 │   │                                    + 截图像素对照（含"坏引用"正对照）—— 换机器先跑它
