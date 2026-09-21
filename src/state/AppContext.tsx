@@ -31,8 +31,8 @@ import {
   applyVfx,
   currentVfx,
   decideVfx,
-  readVfx,
   setVfx as persistVfx,
+  storedVfx,
   vfxCapability,
   type VfxCapability,
   type VfxLevel,
@@ -277,7 +277,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
    *   各挂一份的后果不是"重复劳动"，是**互相踩**：两个 GL 上下文里先建的那个
    *   会被 Chromium 丢掉（症状是背景忽然变黑），两个 rAF 循环会各推各的时间轴。
    */
-  const [vfxWant, setVfxWant] = useState<VfxLevel>(() => readVfx().level);
+  /**
+   * ★ `vfxWant` 存的是**用户选的那个档位**，不是校正后的结果 —— 两者必须分开：
+   *   只留校正结果的话，降级就变成"用户的选择被悄悄改掉"（设置页显示"适中"被选中，
+   *   而他明明选的是灵动，也没有任何说明）。分开之后界面才能说清
+   *   "你选了灵动，这台机器开不了，现在跑的是适中"。
+   */
+  const [vfxWant, setVfxWant] = useState<VfxLevel>(() => storedVfx());
   const vfxCap = useMemo(() => vfxCapability(), []);
   const glassRef = useRef<ReturnType<typeof createGlassController> | null>(null);
 
