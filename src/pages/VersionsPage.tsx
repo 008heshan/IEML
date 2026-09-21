@@ -9,7 +9,7 @@
  *   * 不做左侧筛选 + 右侧面板的两栏布局 —— 一行够放下所有信息
  *   * 不做"当前实例"概念 —— 打开哪个就编辑哪个，没有隐藏状态
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../state/AppContext';
 import { isInstanceRunning } from '../state/store';
 import { EmptyState, Button, Chip, Note, SearchBox, Segmented } from '../ui';
@@ -47,6 +47,52 @@ import type { InstalledLoader } from '../bridge/tauri';
 
 type Filter = 'all' | 'modded' | 'vanilla';
 
+/**
+ * 「⋯」菜单算好的位置。
+ *
+ * ★ `top` 与 `bottom` **只会有一个**：朝下用 `top`、朝上翻之后用 `bottom`
+ *   （fixed 定位里 `bottom` 是"离窗口底边多远"）。没给的那个是 `undefined`，
+ *   React 不会把它写进 style。
+ */
+interface MenuPos {
+  top?: number;
+  bottom?: number;
+  right: number;
+  /** ★ 兜底：上下都不够时**自己内部滚**，而不是被窗口切掉 */
+  maxHeight: number;
+}
+
+/**
+ * 菜单该朝下还是朝上 —— **按"按钮那一侧还剩多少地方"定**。
+ *
+ * ★★ 2026-09-21 用户（截图）：版本列表靠底部的行，点「⋯」出来的菜单
+ *   **被窗口底边切掉**，只剩下前两项，「打开目录 / 删除」根本够不着。
+ *   老实现是把 `top = 按钮.bottom + 4` 写死的 —— 它从来没问过"下面还有多少地方"。
+ *
+ * 判据与 `CustomSelect` 的 `measureDrop` **同一条**（那里也是这么翻的）：
+ *   下面放得下 → 朝下；放不下、而且上面更宽裕 → 翻上去。
+ * 另外无论朝哪边，都给出 `maxHeight`：真到了两边都不够的极端情况，
+ * 菜单自己滚，也不会被窗口裁掉。
+ *
+ * ★ 这里**不用"估算高度"**：条目数随版本类型变（原版那行少一项）。
+ *   高度由调用方量出真实值再传进来（`useLayoutEffect` 里量，绘制之前完成）。
+ */
+function menuLayout(anchor: DOMRect, height: number): MenuPos {
+  const GAP = 4; // 与按钮之间的缝
+  const EDGE = 8; // 离窗口边缘留一点，别贴着
+  const below = Math.round(window.innerHeight - anchor.bottom - EDGE);
+  const above = Math.round(anchor.top - EDGE);
+  const right = Math.round(window.innerWidth - anchor.right);
+  if (height <= below || above <= below) {
+    return { top: Math.round(anchor.bottom + GAP), right, maxHeight: Math.max(0, below) };
+  }
+  return {
+    bottom: Math.round(window.innerHeight - anchor.top + GAP),
+    right,
+    maxHeight: Math.max(0, above),
+  };
+}
+
 export function VersionsPage() {
   const { state, go, goDownloadTab, goDownloadFor, openVersion, toast, removeInstance, duplicateInstance, renameInstance } =
     useApp();
@@ -54,8 +100,15 @@ export function VersionsPage() {
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
   const [menuFor, setMenuFor] = useState<string | null>(null);
+  /**
+   * 菜单的锚点（打开那一刻，按钮的屏幕坐标）。
+   *
+   * ★ 为什么要把锚点也存下来：菜单最终位置要**量过它自己的高度**才能定
+   *   （见下面 `useLayoutEffect` 与 `menuLayout`）—— 只存"算好的坐标"就没法重算。
+   */
+  const [menuAnchor, setMenuAnchor] = useState<DOMRect | null>(null);
   /** 菜单的屏幕坐标（面板是 `position: fixed`，见按钮上的注释） */
-  const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
+  const [menuPos, setMenuPos] = useState<MenuPos | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   /*
@@ -66,6 +119,9 @@ export function VersionsPage() {
    *     · 点别处 → 用户以为关掉了，结果它还挂在那儿；
    *     · 滚动   → 菜单是 fixed，不跟着滚，会**浮在错的位置**上；
    *     · Esc    → 键盘用户唯一的"取消"手势就是这个。
+   *
+   * ★ 2026-09-21 补第四个：**窗口尺寸一变就关**。坐标是按"打开那一刻"的
+   *   按钮位置算的，窗口一改它们就过期 —— 留在屏幕上只会是一个浮错位置的框。
    */
   useEffect(() => {
     if (!menuFor) return;
@@ -76,15 +132,51 @@ export function VersionsPage() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setMenuFor(null);
     };
+    const onResize = () => setMenuFor(null);
     document.addEventListener('mousedown', onDown);
     window.addEventListener('scroll', onScroll, true);
     window.addEventListener('keydown', onKey);
+    window.addEventListener('resize', onResize);
     return () => {
       document.removeEventListener('mousedown', onDown);
       window.removeEventListener('scroll', onScroll, true);
       window.removeEventListener('keydown', onKey);
+      window.removeEventListener('resize', onResize);
     };
   }, [menuFor]);
+
+  /*
+   * ★★ 菜单挂上去之后**再按真实高度定一次位置**（用户 2026-09-21 截图：
+   *   最后几行的「⋯」菜单被窗口底边**切掉**，只剩前两项，后面的点不到）。
+   *
+   *   根因：位置是按"按钮下面 +4px"算死的，从没问过"下面还剩多少地方"。
+   *   版本列表是整屏的长列表，靠底部的行正是最常点的地方 ——
+   *   于是那个菜单**一半在窗口外面**，而且它自己既不能滚也没有第二方向。
+   *
+   *   两条一起上：
+   *     ① **朝上翻**（与 `CustomSelect` 的 `measureDrop` 同一条判据：
+   *        下面放不下、且上面更宽裕，就翻上去）；
+   *     ② `max-height` 兜底 —— 上下都不够时**自己内部滚动**，而不是被裁掉。
+   *
+   *   ★ 用 `useLayoutEffect`（不是 `useEffect`）：它在浏览器**绘制之前**跑完，
+   *     所以位置是"一次画对"的，用户看不到菜单先出现在下面再跳到上面。
+   */
+  useLayoutEffect(() => {
+    if (!menuFor || !menuAnchor) return;
+    const el = menuRef.current;
+    if (!el) return;
+    /*
+     * ★★ 必须用 `scrollHeight`，**不是** `offsetHeight`。
+     *
+     *   这是第一版修法的真 bug（真机测出来的）：点开时先给了一个"朝下 +
+     *   maxHeight=下面剩余"的临时位置，于是菜单**已经被那个 max-height 截短了**；
+     *   这时 `offsetHeight` 量到的是"截短后"的高度（实测 50px，而它本来有 206px），
+     *   翻转判据拿到 50 就认为"下面放得下" —— **永远翻不上去**。
+     *   `scrollHeight` 是内容高度，不受 max-height 影响 ✓。
+     */
+    const h = Math.max(el.scrollHeight, el.offsetHeight);
+    setMenuPos(menuLayout(menuAnchor, h));
+  }, [menuFor, menuAnchor]);
 
   /* ====================== 盘上到底装了什么（实时） ====================== */
   /**
@@ -437,12 +529,18 @@ export function VersionsPage() {
                        *   用 fixed + 坐标算：既躲开裁剪，也不受任何祖先的
                        *   stacking context 影响。代价是滚动时要关掉它 ——
                        *   下面那个 effect 就是干这个的。
+                       *
+                       * ★ 2026-09-21：这里**只记锚点**（按钮的坐标）并先给一个"朝下"的
+                       *   临时位置；真正的位置在菜单挂上之后由 `useLayoutEffect`
+                       *   按**量出来的高度**定（靠窗口底部的行会翻上去）。
+                       *   直接在这里写死 `top = bottom + 4` 就是那个 bug 的来源。
                        */
                       const r = e.currentTarget.getBoundingClientRect();
+                      setMenuAnchor(r);
                       setMenuPos({
                         top: Math.round(r.bottom + 4),
-                        // 贴右边缘：菜单右对齐到按钮右边缘
                         right: Math.round(window.innerWidth - r.right),
+                        maxHeight: Math.round(window.innerHeight - r.bottom - 8),
                       });
                       setMenuFor(openMenu ? null : inst.id);
                     }}
@@ -454,7 +552,21 @@ export function VersionsPage() {
                       className="row-menu"
                       role="menu"
                       ref={menuRef}
-                      style={menuPos ? { top: menuPos.top, right: menuPos.right } : undefined}
+                      /*
+                       * ★ `top` / `bottom` 只会有一个（见 `MenuPos`）：朝下时给 `top`、
+                       *   翻上去时给 `bottom`；`maxHeight` 是兜底，让它在
+                       *   "上下都不够"时自己滚，而不是被窗口切掉。
+                       */
+                      style={
+                        menuPos
+                          ? {
+                              top: menuPos.top,
+                              bottom: menuPos.bottom,
+                              right: menuPos.right,
+                              maxHeight: menuPos.maxHeight,
+                            }
+                          : undefined
+                      }
                     >
                       <button
                         type="button"
