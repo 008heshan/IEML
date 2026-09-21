@@ -27,6 +27,16 @@ import { instanceNameRules, validate } from '../domain/validate.ts';
 import { getBackend } from '../bridge';
 import type { Backend } from '../bridge';
 import { MOTION_KEY, setMotion } from '../ui/motion';
+import { useLauncherUpdate } from '../hooks/useLauncherUpdate';
+import type { UpdateState } from '../hooks/useLauncherUpdate';
+
+/** 启动器更新的三件事（见 `AppContextValue.update` 的说明） */
+export interface LauncherUpdate {
+  state: UpdateState;
+  checkNow: (opts?: { silent?: boolean }) => Promise<void>;
+  download: () => Promise<void>;
+  install: () => Promise<void>;
+}
 import {
   initialState,
   isForgeLike,
@@ -192,6 +202,16 @@ interface AppContextValue {  state: AppState;
    * 而原来的空 catch 让它毫无痕迹。界面据此显示一条提示条。
    */
   prefsSaveFailed: string | null;
+
+  /**
+   * ★★ 启动器自身的更新（**热更新**：开机自动查 → 后台下 → 一键换 → 自己回来）。
+   *
+   * 为什么放在 AppContext 而不是各页面自己 `useLauncherUpdate()`：
+   *   顶栏的「新版本」角标与设置页那一行**看的是同一件事**。两个组件各挂一份
+   *   hook 就是两份独立状态 —— 一边显示"下载中 40%"、另一边显示"发现新版本"，
+   *   而且会**各查一次、各下一次**。状态只有一份，所以挂在全局。
+   */
+  update: LauncherUpdate;
 
   /* --- Toast --- */
   toast: (kind: ToastItem['kind'], title: string, desc?: string) => void;
@@ -996,6 +1016,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  /* ★★ 启动器自身的更新：**只挂这一次**（顶栏角标与设置页共用这一份状态） */
+  const update = useLauncherUpdate();
+
   const value: AppContextValue = {
     state,
     backend,
@@ -1019,6 +1042,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     rescanJava,
     refreshJava,
     prefsSaveFailed,
+    update,
     toast,
     dismissToast,
     upsertTask,

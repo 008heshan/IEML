@@ -23,7 +23,6 @@ import {
 } from '../ui/Icons';
 import { useRealApi } from '../hooks/useRealApi';
 import { humanBytes } from '../hooks/useRealApi';
-import { useLauncherUpdate } from '../hooks/useLauncherUpdate';
 import { DataRootPicker } from '../components/DataRootPicker';
 import {
   MOTION_HINT,
@@ -58,10 +57,16 @@ function stageLabelOf(version: string): string {
 }
 
 export function SettingsPage() {
-  const { state, rescanJava, toast, backend, refreshJava, prefsSaveFailed } = useApp();
+  const { state, rescanJava, toast, backend, refreshJava, prefsSaveFailed, update } = useApp();
   const { api } = useRealApi();
-  /** 启动器自身的更新（不是 Mod 更新，见 useLauncherUpdate 顶部说明） */
-  const upd = useLauncherUpdate();
+  /**
+   * 启动器自身的更新（不是 Mod 更新，见 `useLauncherUpdate` 顶部说明）。
+   *
+   * ★ 2026-09-21：改成从**全局**取（`useApp().update`）—— 顶栏的「新版本」角标
+   *   和这一行必须是同一份状态，否则会出现"顶栏说下载中 40%、这里说发现新版本"，
+   *   而且会各查一次、各下一次（`AppContext` 里挂着唯一那份）。
+   */
+  const upd = update;
 
   const [downloaded, setDownloaded] = useState<Array<{ major: number; path: string; bytes: number; usable: boolean }>>([]);
   const [busy, setBusy] = useState(false);
@@ -906,6 +911,10 @@ export function SettingsPage() {
               用户看到版本号，下一个问题必然是"那有没有新的" —— 两者分开就是让人找。
               按钮文案特意写成「检查启动器更新」（而不是 ModsPanel 那种「检查更新」），
               因为这个程序里同时存在两种更新，同名会点错。
+
+            ★ 2026-09-21（用户："我想要热更新和静默安装"）：状态改由**全局那一份**提供
+              （`useApp().update`）—— 顶栏的「新版本」角标和这一行看的是同一件事。
+              并且多了 `ready`：包已经下好了，按钮变成「重启并更新」。
           */}
           <div className="field-row">
             <span className="field-label">
@@ -913,7 +922,7 @@ export function SettingsPage() {
               <span className="field-hint">
                 {upd.state.phase === 'unsupported'
                   ? '浏览器演示模式下没有更新能力'
-                  : '更新的是启动器自己，装完需要重启'}
+                  : '开机自动检查、后台下载；安装是静默的，装完自己重开'}
               </span>
             </span>
             <div className="field-control">
@@ -925,6 +934,14 @@ export function SettingsPage() {
                 >
                   发现新版本 {upd.state.version}
                 </span>
+              ) : upd.state.phase === 'ready' ? (
+                <span
+                  className="field-hint"
+                  style={{ color: 'var(--ok, #6cc06c)' }}
+                  title={upd.state.notes || undefined}
+                >
+                  新版本 {upd.state.version} 已经下好了，点右边就能换
+                </span>
               ) : upd.state.phase === 'downloading' ? (
                 <span className="field-hint">
                   正在下载 {humanBytes(upd.state.downloaded ?? 0)}
@@ -932,7 +949,7 @@ export function SettingsPage() {
                 </span>
               ) : upd.state.phase === 'installing' ? (
                 <span className="field-hint" style={{ color: 'var(--ok, #6cc06c)' }}>
-                  已开始安装，启动器马上退出；装完会自动打开（没打开就手动开一次）
+                  已开始静默安装，启动器马上退出；装完会自动打开（没打开就手动开一次）
                 </span>
               ) : upd.state.phase === 'uptodate' ? (
                 <span className="field-hint">已是最新版本</span>
@@ -945,13 +962,23 @@ export function SettingsPage() {
               ) : null}
               <Button
                 size="sm"
-                variant={upd.state.phase === 'available' ? 'primary' : 'ghost'}
+                variant={upd.state.phase === 'available' || upd.state.phase === 'ready' ? 'primary' : 'ghost'}
                 loading={upd.state.phase === 'checking' || upd.state.phase === 'downloading'}
                 disabled={upd.state.phase === 'unsupported' || upd.state.phase === 'installing'}
-                onClick={() => void (upd.state.phase === 'available' ? upd.install() : upd.checkNow())}
+                onClick={() =>
+                  void (upd.state.phase === 'ready'
+                    ? upd.install()
+                    : upd.state.phase === 'available'
+                      ? upd.download()
+                      : upd.checkNow())
+                }
               >
                 {upd.state.phase !== 'checking' && upd.state.phase !== 'downloading' ? <IconRefresh /> : null}
-                {upd.state.phase === 'available' ? '下载并安装' : '检查启动器更新'}
+                {upd.state.phase === 'ready'
+                  ? '重启并更新'
+                  : upd.state.phase === 'available'
+                    ? '重新下载'
+                    : '检查启动器更新'}
               </Button>
             </div>
             <span />
