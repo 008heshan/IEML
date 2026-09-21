@@ -29,6 +29,9 @@ tools/
 │   ├─ live-optifine-incompat-check.mjs Fabric + 高清修复：有桥接包 / 真不兼容两段
 │   ├─ live-resource-check.mjs         资源中心：四种资源都能查到
 │   ├─ live-single-instance-check.mjs  单实例：再开一次是「调起在跑的那个」而不是多开
+│   ├─ live-glass-check.mjs            ★ 液态玻璃三档：折射状态 / 高光跟手 / 取色 / 帧时间（32 条）
+│   ├─ probe-webview-glass.mjs         ★ 先证明"能不能真折射"：backdrop-filter 里的 SVG 滤镜
+│   │                                    + 截图像素对照（含"坏引用"正对照）—— 换机器先跑它
 │   └─ shot.mjs                        按 plan.json 驱动浏览器截图
 │
 ├─ probe/     ★ 打上游接口，先证明事实再写代码（要联网；结论会被固化成测试）

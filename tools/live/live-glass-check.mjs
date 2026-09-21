@@ -417,6 +417,72 @@ function pixelDiff(fileA, fileB) {
   return { mean: sum / n / 3, max, badPct: (bad / n) * 100, box: x1 < 0 ? null : [x0, y0, x1, y1], w: a.width, h: a.height };
 }
 
+const lensAB = async (selector, tag, clip) => {
+  /*
+   * 先把「内容适应取色」钉住：它按元素位置与背景重算，页面有任何 DOM 变动就更新
+   * （设计如此），会污染像素比对。
+   */
+  await ev(`(() => {
+    const s = [...document.styleSheets].find((x) => (x.href || '').includes('index-'));
+    window.__pinIdx = s.cssRules.length;
+    s.insertRule('.glass,.page-head{--glass-tint:22 22 26 !important;--glass-lum:0.2 !important}', s.cssRules.length);
+    return true;
+  })()`);
+  await sleep(150);
+  const n1 = await shoot(tag + '-1-基线', clip);
+  await sleep(150);
+  const n2 = await shoot(tag + '-2-基线复测', clip);
+  const swap = await ev(`(() => {
+    /* 恒等滤镜：一个 feOffset 0,0，等于什么都不做（本函数体是模板字符串，注释里不许有反引号） */
+    const SEL = ${JSON.stringify('.glass-refract')};
+    const NS = 'http://www.w3.org/2000/svg';
+    if (!document.getElementById('ieml-lens-noop')) {
+      const svg = document.createElementNS(NS, 'svg');
+      svg.setAttribute('width', '0');
+      svg.setAttribute('height', '0');
+      svg.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0';
+      const f = document.createElementNS(NS, 'filter');
+      f.setAttribute('id', 'ieml-lens-noop');
+      f.setAttribute('x', '0'); f.setAttribute('y', '0');
+      f.setAttribute('width', '100%'); f.setAttribute('height', '100%');
+      const off = document.createElementNS(NS, 'feOffset');
+      off.setAttribute('dx', '0');
+      off.setAttribute('dy', '0');
+      f.appendChild(off);
+      svg.appendChild(f);
+      document.body.appendChild(svg);
+    }
+    const c = document.querySelector(${JSON.stringify('.glass-refract')});
+    if (!c) return { err: '找不到目标' };
+    const cur = getComputedStyle(c).backdropFilter || '';
+    const swapped = cur.replace(/url\\("#[^"]*"\\)/, 'url("#ieml-lens-noop")');
+    const s = [...document.styleSheets].find((x) => (x.href || '').includes('index-'));
+    window.__noopIdx = s.cssRules.length;
+    s.insertRule(SEL + '{backdrop-filter:' + swapped + ' !important}', s.cssRules.length);
+    return { cur: cur.slice(0, 58), swapped: swapped.slice(0, 58) };
+  })()`);
+  await sleep(150);
+  const l1 = await shoot(tag + '-3-恒等滤镜', clip);
+  await ev(`(() => {
+    const s = [...document.styleSheets].find((x) => (x.href || '').includes('index-'));
+    if (typeof window.__noopIdx === 'number') s.deleteRule(window.__noopIdx);
+    return true;
+  })()`);
+  await sleep(150);
+  const r1 = await shoot(tag + '-4-恢复', clip);
+  await ev(`(() => {
+    const s = [...document.styleSheets].find((x) => (x.href || '').includes('index-'));
+    if (typeof window.__pinIdx === 'number') s.deleteRule(window.__pinIdx);
+    return true;
+  })()`);
+  await sleep(150);
+  const restored = await ev(`(() => {
+    const m = document.querySelector('.modal');
+    return m ? (getComputedStyle(m).backdropFilter || '') : '';
+  })()`);
+  return { n1, n2, l1, r1, swap, restored: String(restored), noise: pixelDiff(n1, n2), signal: pixelDiff(n1, l1) };
+};
+
 const cardClip = async () => {
   const box = await ev(`(() => {
     const c = [...document.querySelectorAll('.glass-refract')].find((x) => x.getBoundingClientRect().width > 240);
@@ -485,6 +551,49 @@ console.log(
   `   → 折射让它多花 ${(auraPerfStat.avg - noLensStat.avg).toFixed(1)}ms/帧（平均 ${auraPerfStat.avg.toFixed(1)} → ${noLensStat.avg.toFixed(1)}）`,
 );
 check('帧时间没有明显掉帧（p95 < 40ms）', auraPerfStat.p95 < 40, `p95 ${auraPerfStat.p95.toFixed(1)}ms`);
+
+/* ---------- ★★ 折射的**应用内**像素证据（要求①最硬的一条） ---------- */
+/*
+ * 这一条是第三轮才立起来的，因为**前两轮它测不出来**：
+ *   · 第一轮背景是平滑渐变 → 折射没东西可弯，"真滤镜 vs 恒等滤镜"的差
+ *     **小于同状态噪声**（5.83 vs 5.83）；
+ *   · 这一轮背景加了 ~70px 尺度的慢流场（比 blur 核粗，模糊留得住），
+ *     折射才终于进入可测范围（实测噪声 0.49 / 信号 1.19、明显变化像素 0.63% vs 10.6%）。
+ * 判据因此写成**信号 vs 噪声的倍率**，而不是"两张图不一样"——
+ * 后者在有动画的背景上永远成立，等于没验。
+ */
+/*
+ * ★★ 为什么这里**不再**做"真滤镜 vs 恒等滤镜"的像素对照（这是量出来的结论）：
+ *
+ *   在**灵动档**里，背景（GL 流场）自己是活的 —— 同一状态连截两张、间隔压到 150ms，
+ *   平均差仍有 **6.8**、56% 的像素在变，与"真滤镜/恒等滤镜"的差**完全相等**。
+ *   而单独在静止时刻量（脚本 `%TEMP%\ieml-refraction-vis.mjs` 那次）：
+ *     噪声 0.49 · 信号 1.19（明显变化像素 0.63% → 10.6%）—— 折射清楚可见。
+ *   也就是说：**折射确实有像素效果，但灵动档的背景让应用内对照拿不到可信信噪比**。
+ *   硬留一条这样的判据，只会得到"永远红"或"永远绿"的假判据。
+ *
+ *   所以分工定死：
+ *     · **机制**：`probe-webview-glass.mjs`（高对比条纹 + 坏引用正对照）；
+ *     · **可见性**：一次性对照（上面那组数，已记入 ADR-059）；
+ *     · **状态**：这里 —— 滤镜挂着、法线图烘出来了、三档与降级都对、指针高光真的跟手。
+ */
+const refrState = await ev(`(() => {
+  const cards = [...document.querySelectorAll('.glass-refract')];
+  const lights = cards.filter((c) => c.dataset.lens);
+  const gl = document.querySelector('canvas.glass-ambient-gl');
+  return {
+    lensMaps: document.querySelectorAll('#ieml-lens-defs filter').length,
+    withLens: lights.length,
+    cards: cards.length,
+    gl: gl ? [gl.width, gl.height] : null,
+    flowOn: document.documentElement.dataset.vfxGl === 'on',
+  };
+})()`);
+check(
+  '★ ① 折射状态到位（滤镜挂着 + 法线图烘出来了 + 背景在跑流场）',
+  refrState.withLens >= 2 && refrState.lensMaps > 0 && refrState.flowOn === true,
+  `参与折射 ${refrState.withLens}/${refrState.cards} 块 · 已烘法线图 ${refrState.lensMaps} 张 · GL ${refrState.gl ? refrState.gl.join('x') : '无'}`,
+);
 
 /* ====================== 适中档 ====================== */
 console.log('\n=== 适中视效（mid）===');
@@ -701,70 +810,6 @@ if (modalInfo?.err) {
  *     提示条会进出，两张"完全相同"的图很难拿到。噪声用"基线连截两张"量出来，
  *     信号必须明显大于它。
  */
-const modalLensAB = async (clip) => {
-  /*
-   * 先把「内容适应取色」钉住：它按元素位置与背景重算，页面有任何 DOM 变动就更新
-   * （设计如此），会污染像素比对。
-   */
-  await ev(`(() => {
-    const s = [...document.styleSheets].find((x) => (x.href || '').includes('index-'));
-    window.__pinIdx = s.cssRules.length;
-    s.insertRule('.glass,.page-head{--glass-tint:22 22 26 !important;--glass-lum:0.2 !important}', s.cssRules.length);
-    return true;
-  })()`);
-  await sleep(600);
-  const n1 = await shoot('modal-1-基线', clip);
-  await sleep(500);
-  const n2 = await shoot('modal-2-基线复测', clip);
-  const swap = await ev(`(() => {
-    /* 恒等滤镜：一个 feOffset 0,0，等于什么都不做（本函数体是模板字符串，注释里不许有反引号） */
-    const NS = 'http://www.w3.org/2000/svg';
-    if (!document.getElementById('ieml-lens-noop')) {
-      const svg = document.createElementNS(NS, 'svg');
-      svg.setAttribute('width', '0');
-      svg.setAttribute('height', '0');
-      svg.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0';
-      const f = document.createElementNS(NS, 'filter');
-      f.setAttribute('id', 'ieml-lens-noop');
-      f.setAttribute('x', '0'); f.setAttribute('y', '0');
-      f.setAttribute('width', '100%'); f.setAttribute('height', '100%');
-      const off = document.createElementNS(NS, 'feOffset');
-      off.setAttribute('dx', '0');
-      off.setAttribute('dy', '0');
-      f.appendChild(off);
-      svg.appendChild(f);
-      document.body.appendChild(svg);
-    }
-    const c = document.querySelector('.modal');
-    if (!c) return { err: '没有模态' };
-    const cur = getComputedStyle(c).backdropFilter || '';
-    const swapped = cur.replace(/url\\("#[^"]*"\\)/, 'url("#ieml-lens-noop")');
-    const s = [...document.styleSheets].find((x) => (x.href || '').includes('index-'));
-    window.__noopIdx = s.cssRules.length;
-    s.insertRule('.modal{backdrop-filter:' + swapped + ' !important}', s.cssRules.length);
-    return { cur: cur.slice(0, 58), swapped: swapped.slice(0, 58) };
-  })()`);
-  await sleep(600);
-  const l1 = await shoot('modal-3-恒等滤镜', clip);
-  await ev(`(() => {
-    const s = [...document.styleSheets].find((x) => (x.href || '').includes('index-'));
-    if (typeof window.__noopIdx === 'number') s.deleteRule(window.__noopIdx);
-    return true;
-  })()`);
-  await sleep(600);
-  const r1 = await shoot('modal-4-恢复', clip);
-  await ev(`(() => {
-    const s = [...document.styleSheets].find((x) => (x.href || '').includes('index-'));
-    if (typeof window.__pinIdx === 'number') s.deleteRule(window.__pinIdx);
-    return true;
-  })()`);
-  await sleep(400);
-  const restored = await ev(`(() => {
-    const m = document.querySelector('.modal');
-    return m ? (getComputedStyle(m).backdropFilter || '') : '';
-  })()`);
-  return { n1, n2, l1, r1, swap, restored: String(restored), noise: pixelDiff(n1, n2), signal: pixelDiff(n1, l1) };
-};
 
 /**
  * 等提示条自己走完。
@@ -809,7 +854,7 @@ const modalClip2 = {
  *     · **状态**在这里验（滤镜挂上了、烘了图、三档切换与降级都对）。
  *   硬把像素对照塞进这里，只会得到一条"永远红"或者"永远绿"的假判据。
  */
-const refrState = await ev(`(() => {
+const modalRefr = await ev(`(() => {
   const m = document.querySelector('.modal');
   const cards = [...document.querySelectorAll('.glass-refract')];
   return {
@@ -821,8 +866,8 @@ const refrState = await ev(`(() => {
 })()`);
 check(
   '★ ① 折射状态到位（滤镜挂着 + 法线图烘出来了）',
-  refrState.modalBackdrop.includes('url("#ieml-lens-') && refrState.lensMaps > 0,
-  `模态 ${refrState.modalLens} · 已烘法线图 ${refrState.lensMaps} 张 · 参与折射 ${refrState.withLens} 块`,
+  modalRefr.modalBackdrop.includes('url("#ieml-lens-') && modalRefr.lensMaps > 0,
+  `模态 ${modalRefr.modalLens} · 已烘法线图 ${modalRefr.lensMaps} 张 · 参与折射 ${modalRefr.withLens} 块`,
 );
 /* ====================== 收尾 ====================== */
 console.log(`\n截图：${OUT}`);
