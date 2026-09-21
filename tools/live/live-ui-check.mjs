@@ -18,11 +18,14 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 const PORT = 9333;
-const EXE = path.join(
-  process.env.USERPROFILE ?? '',
-  'Desktop',
-  'IEML 启动器.exe',
-);
+/*
+ * ★ 可以指定 exe：`node tools/live/live-ui-check.mjs [<exe>]`。
+ *   默认仍是桌面那份（"用户双击到的那一份"才是它要验的对象），
+ *   但开发时可以拿 `src-tauri/target/debug/ieml.exe` 跑 ——
+ *   2026-09-22 有过一次教训：反复跑真机脚本触发了 Defender 的行为式 ML，
+ *   把桌面交付物与 release 产物一起隔离了。**验证不一定要拿交付物去冒险。**
+ */
+const EXE = process.argv[2] ?? path.join(process.env.USERPROFILE ?? '', 'Desktop', 'IEML.exe');
 
 /**
  * 期望的版本号 —— 从 `package.json` 读，**不写死**。
@@ -146,28 +149,56 @@ console.log('\n--- 首屏文字 ---');
 console.log(report.textHead);
 
 /* ---------- ④ 点进一个版本，检查二级页真的有「安装 Mod」入口 ---------- */
+/*
+ * ★★ 2026-09-22 修（这一条以前是**假红**，而且红了很久没人发现）：
+ *   原脚本只点**版本列表的第一行** —— 而第一行往往是**原版**，原版按设计
+ *   **不给「Mod 管理」**（用户当年就说过"主页这里也不给原版 mod 管理的键"）。
+ *   于是"没有 Mod 管理 / 没有安装 Mod"这几条永远是红的，看着像功能丢了。
+ *   现在改成**逐行点进去找**：第一个真的有「Mod 管理」页签的行才算数。
+ *   ★ 另外：进了实例页之后主菜单的「版本列表」点不动 —— 得先按页内那个「返回版本列表」。
+ */
 const sub = await evaluate(`(async () => {
-  // 找到版本列表里第一行（role=button 的 .ver-item）
-  const nav = [...document.querySelectorAll('button')].find(b => /版本列表/.test(b.textContent||''));
-  nav?.click();
-  await new Promise(r => setTimeout(r, 900));
-  const row = document.querySelector('.ver-item');
-  if (!row) return { ok: false, why: '没有版本行（可能一个版本都没建）' };
-  row.click();
-  await new Promise(r => setTimeout(r, 900));
-  const text = document.body.innerText || '';
-  const buttons = [...document.querySelectorAll('button')].map(b => (b.textContent||'').trim());
-  return {
-    ok: true,
-    hasInstallMod: text.includes('安装 Mod') || buttons.some(b => b.includes('安装 Mod')),
-    hasModTab: buttons.some(b => b.includes('Mod 管理')),
-    buttons: buttons.slice(0, 40),
-    textHead: text.slice(0, 500),
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const goList = async () => {
+    for (let i = 0; i < 10; i += 1) {
+      const back = [...document.querySelectorAll('button')].find((b) => /返回版本列表/.test(b.textContent || ''));
+      if (back) { back.click(); await sleep(700); }
+      const nav = [...document.querySelectorAll('button')].find((b) => /版本列表/.test(b.textContent || ''));
+      nav?.click();
+      await sleep(700);
+      if (document.querySelectorAll('.ver-item').length) return true;
+    }
+    return false;
   };
+  if (!(await goList())) return { ok: false, why: '没有版本行（可能一个版本都没建）' };
+  const total = document.querySelectorAll('.ver-item').length;
+  const tried = [];
+  for (let idx = 0; idx < Math.min(total, 8); idx += 1) {
+    if (idx > 0 && !(await goList())) break;
+    const row = [...document.querySelectorAll('.ver-item')][idx];
+    if (!row) continue;
+    const label = (row.textContent || '').replace(/\\s+/g, ' ').slice(0, 40);
+    row.click();
+    await sleep(1300);
+    const text = document.body.innerText || '';
+    const buttons = [...document.querySelectorAll('button')].map((b) => (b.textContent || '').trim());
+    const hasModTab = buttons.some((b) => b.includes('Mod 管理'));
+    tried.push({ idx, label, hasModTab });
+    if (hasModTab) {
+      return {
+        ok: true,
+        第几行: idx,
+        行: label,
+        试过: tried,
+        hasInstallMod: text.includes('安装 Mod') || buttons.some((b) => b.includes('安装 Mod')),
+        hasModTab,
+        buttons: buttons.slice(0, 40),
+        textHead: text.slice(0, 500),
+      };
+    }
+  }
+  return { ok: false, why: '点了 ' + tried.length + ' 行，没有一行有「Mod 管理」', 试过: tried };
 })()`);
-
-console.log('\n=== 二级页（概览）检查 ===');
-console.log(JSON.stringify(sub, null, 2));
 
 /* ---------- ⑤ 点「安装 Mod」，确认真的弹出搜索框（不是点了没反应） ---------- */
 const browse = await evaluate(`(async () => {
@@ -290,7 +321,20 @@ if (sub.ok) {
   checks.push(['版本列表里能点进一个版本', true]);
   checks.push(['★ 概览页有「安装 Mod」这个功能键（用户报"根本没这个键"）', sub.hasInstallMod]);
   checks.push(['侧栏有「Mod 管理」二级页签', sub.hasModTab]);
-  checks.push(['★ 点下去真的弹出 Mod 搜索框（不是"点了没反应"）', browse.clicked && browse.hasSearch]);
+  /*
+   * ★★ 2026-09-22 修（**第三处过期假设**）：原来要求"点下去弹出**模态**"
+   *   （`browse.dialogs > 0`）。但「安装 Mod」早就改成
+   *   `goDownloadFor('mod', inst.id)` —— **跳下载页并切到 Mod 标签**，
+   *   不再开模态（改动记在 `VersionsPage.tsx` / `InstanceOverview.tsx` 的注释里）。
+   *   于是这条一直假红，而它旁边那条"按 Modrinth 过滤"反而一直是绿的 ——
+   *   **两条断言互相矛盾**本身就说明其中一条错了，可惜没人看。
+   *   现在按真实行为验：**跳过去了、并且在 Mod 那一档**（页面上出现 Modrinth 源说明）。
+   */
+  checks.push([
+    '★ 点下去真的到了 Mod 搜索（跳下载页的 Mod 标签，不是"点了没反应"）',
+    browse.clicked && (browse.hasSearch || browse.hasModrinth),
+    browse.why ? String(browse.why) : '',
+  ]);
   checks.push(['搜索框说明是按 Modrinth 过滤的', browse.hasModrinth]);
 } else {
   console.log(`（跳过二级页断言：${sub.why}）`);

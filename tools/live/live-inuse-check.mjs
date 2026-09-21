@@ -32,7 +32,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
 const PORT = 9335;
-const EXE = path.join(process.env.USERPROFILE ?? '', 'Desktop', 'IEML 启动器.exe');
+const EXE = path.join(process.env.USERPROFILE ?? '', 'Desktop', 'IEML.exe');
 
 /* 数据目录：先读 datadir.txt，读不到才退回 %APPDATA%\IEML（老布局） */
 const dataDir = (() => {

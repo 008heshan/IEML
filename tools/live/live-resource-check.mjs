@@ -22,7 +22,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 const PORT = 9338;
-const EXE = path.join(process.env.USERPROFILE ?? '', 'Desktop', 'IEML 启动器.exe');
+const EXE = path.join(process.env.USERPROFILE ?? '', 'Desktop', 'IEML.exe');
 if (!existsSync(EXE)) {
   console.error(`找不到桌面版：${EXE}`);
   process.exit(2);

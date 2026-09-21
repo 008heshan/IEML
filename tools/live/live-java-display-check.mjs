@@ -23,7 +23,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 const PORT = 9336;
-const EXE = path.join(process.env.USERPROFILE ?? '', 'Desktop', 'IEML 启动器.exe');
+const EXE = path.join(process.env.USERPROFILE ?? '', 'Desktop', 'IEML.exe');
 
 const dataDir = (() => {
   const legacy = path.join(process.env.APPDATA ?? '', 'IEML');

@@ -21,7 +21,7 @@ import { existsSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 
 const PORT = 9334;
-const EXE = path.join(process.env.USERPROFILE ?? '', 'Desktop', 'IEML 启动器.exe');
+const EXE = path.join(process.env.USERPROFILE ?? '', 'Desktop', 'IEML.exe');
 
 /**
  * client_id 落在**数据目录**里，不是 `%APPDATA%\IEML`。
