@@ -212,6 +212,15 @@ class LensRegistry {
 export interface GlassController {
   /** 换档（设置页改档 / 启动时施加） */
   setLevel(level: VfxLevel): void;
+  /**
+   * 低性能损耗模式开关（<html> 上的 low-perf 类）。
+   *
+   * ★ 为什么控制器要知道它：那一档的 CSS 用 `!important` 把所有 backdrop-filter
+   *   关掉了（包括折射），但 JS 这边**还在维护透镜** —— 实测 low-perf 开着时
+   *   6 块玻璃仍然挂着 `data-lens`、仍在按尺寸重烘法线图。
+   *   状态两边不一致 = 白干活，而且以后谁读 `data-lens` 都会被误导。
+   */
+  setLowPerf(on: boolean): void;
   /** 当前生效的档位 */
   level(): VfxLevel;
   /** 诊断信息（真机验证脚本读它，比翻 DOM 可靠） */
@@ -407,8 +416,11 @@ export function createGlassController(initial: VfxLevel): GlassController {
     delete el.dataset.lens;
   };
 
+  /** 低性能损耗模式：CSS 会把所有 backdrop-filter 关掉，所以这里也不该装透镜 */
+  let lowPerfOn = false;
+
   /** 这一档该不该装透镜滤镜 */
-  const lensWanted = () => canRefract && (level === 'aura' || level === 'mid');
+  const lensWanted = () => canRefract && !lowPerfOn && (level === 'aura' || level === 'mid');
 
   /**
    * 回收没被引用的透镜滤镜（见 `LensRegistry.prune`）。
@@ -545,6 +557,12 @@ export function createGlassController(initial: VfxLevel): GlassController {
     setLevel(next) {
       if (disposed || next === level) return;
       applyLevel(next);
+    },
+    setLowPerf(on) {
+      if (disposed || on === lowPerfOn) return;
+      lowPerfOn = on;
+      // 重新施加一遍：该收的收（low-perf 开）、该装回来的装回来
+      applyLevel(level);
     },
     level: () => level,
     stats: () => ({
