@@ -26,6 +26,15 @@ import { humanBytes } from '../hooks/useRealApi';
 import { useLauncherUpdate } from '../hooks/useLauncherUpdate';
 import { DataRootPicker } from '../components/DataRootPicker';
 import {
+  MOTION_HINT,
+  MOTION_LABEL,
+  MOTION_LEVELS,
+  readMotion,
+  setMotion,
+  systemWantsReduced,
+} from '../ui/motion';
+import type { MotionLevel } from '../ui/motion';
+import {
   deleteIntent,
   describeDelete,
   trashUnavailablePrompt,
@@ -65,7 +74,17 @@ export function SettingsPage() {
   const [javaListError, setJavaListError] = useState<string | null>(null);
   /** 低性能损耗模式（本机偏好，存 localStorage；见 main.tsx 的说明） */
   const [lowPerf, setLowPerf] = useState(() => localStorage.getItem('ieml.lowPerf') === '1');
-  /** 「换一个游戏根目录」弹窗开没开 */
+  /**
+   * 动效档位（本机偏好，存 localStorage；判据在 `ui/motion.ts`）。
+   *
+   * ★ `motion` 是**界面上的值**，真正生效靠 [`setMotion`] 写 `<html data-motion>`
+   *   —— 两者在同一次调用里一起发生，不会分叉。
+   * ★ `systemReduced` 是"操作系统要求减少动效"（Windows 的辅助功能）。
+   *   它**盖过**我们的三档，所以要跟着系统变化实时重算（下面的 effect）。
+   */
+  const [motion, setMotionLevel] = useState<MotionLevel>(() => readMotion());
+  const [systemReduced, setSystemReduced] = useState(() => systemWantsReduced());
+  /** 换游戏根目录的弹窗开没开 */
   const [rootPicker, setRootPicker] = useState(false);
   /**
    * 已经记下、但**还没重启**的新数据目录（null = 没换过）。
@@ -100,6 +119,18 @@ export function SettingsPage() {
     void loadDownloadedJava();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api]);
+
+  /**
+   * 跟着系统设置变：用户可能在 Windows 里改了"减少动态效果"再切回来，
+   * 这时设置页那一行必须**立刻**跟着变（否则它会说"没被覆盖"，而屏幕上已经不动了）。
+   */
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const on = () => setSystemReduced(mq.matches);
+    mq.addEventListener('change', on);
+    return () => mq.removeEventListener('change', on);
+  }, []);
 
   return (
     <>
@@ -166,22 +197,57 @@ export function SettingsPage() {
             <span />
           </div>
 
+          {/*
+            ★★ 动效档位（用户 2026-09-20：「我想要更好的更高级的动效，
+            把动效选项设为三档：减少动效、适中动效、灵韵动效」）。
+
+            ★ 这一行**替换掉**了原来的「减少动效」开关（布尔）。三档的名字是
+              用户给的三个词，原样用；三档各自"多了什么"写在下面的 `.field-hint`
+              里 —— 别让用户靠试点来猜（"灵韵"这种词更是必须解释）。
+            ★ 判据与施加全在 `ui/motion.ts`：这里只负责读写 + 说清现状。
+            ★ 系统开着"减少动态效果"时**这一行是禁用的**，并写明为什么 ——
+              否则用户在这里选了灵韵、界面纹丝不动，只会以为是我们坏了。
+          */}
           <div className="field-row">
             <span className="field-label">
-              减少动效
-              <span className="field-hint">关闭过渡动画</span>
+              动效
+              <span className="field-hint">{MOTION_HINT[motion]}</span>
+              {systemReduced ? (
+                <span className="field-hint">
+                  <Chip tone="warning">被系统设置覆盖</Chip>
+                  {' '}
+                  Windows 里开着「减少动态效果」，它在系统层面把动画关掉了 ——
+                  这里选什么都不会动。要改就去系统的辅助功能里关掉它。
+                </span>
+              ) : null}
+              {/* ★ 两个开关的交叉影响要**说出来**：低性能损耗模式关掉了背景那一层，
+                  所以灵韵里的"光晕漂移"看不到（其余动效照常）。不说的话，
+                  用户会以为是灵韵没生效。 */}
+              {lowPerf && motion === 'aura' ? (
+                <span className="field-hint">
+                  <Chip tone="warning">低性能损耗模式开着</Chip>
+                  {' '}
+                  背景光晕那一层被它关掉了，所以"光晕漂移"看不到（其余动效照常）。
+                </span>
+              ) : null}
             </span>
             <div className="field-control">
-              <Switch
-                label="减少动效"
-                checked={state.prefs.reducedMotion}
+              <Segmented
+                label="动效档位"
+                size="sm"
+                value={motion}
                 onChange={(v) => {
-                  window.dispatchEvent(
-                    new CustomEvent('ieml:prefs', { detail: { reducedMotion: v } }),
-                  );
-                  document.documentElement.classList.toggle('reduce-motion', v);
-                  toast('ok', v ? '已开启减少动效' : '已关闭减少动效');
+                  setMotion(v);
+                  setMotionLevel(v);
+                  toast('ok', `动效已设为「${MOTION_LABEL[v]}」`);
                 }}
+                options={MOTION_LEVELS.map((lv) => ({
+                  value: lv,
+                  label: MOTION_LABEL[lv],
+                  disabledReason: systemReduced
+                    ? 'Windows 里开着「减少动态效果」，它盖过这里的档位'
+                    : undefined,
+                }))}
               />
             </div>
             <span />

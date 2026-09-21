@@ -26,6 +26,7 @@ import type { ModEntry, ModFilter, ModStateResult } from '../domain/mods.ts';
 import { instanceNameRules, validate } from '../domain/validate.ts';
 import { getBackend } from '../bridge';
 import type { Backend } from '../bridge';
+import { MOTION_KEY, setMotion } from '../ui/motion';
 import {
   initialState,
   isForgeLike,
@@ -337,6 +338,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       if (prefsR.status === 'rejected') {
         console.error('[IEML] 读取偏好失败：', prefsR.reason);
+      }
+
+      /*
+       * ★★ 老字段迁移：`prefs.json` 里的 `reducedMotion`（布尔）→ 三档动效
+       *   （用户 2026-09-20 要求"减少 / 适中 / 灵韵"）。
+       *
+       *   补记一件旧事：那个布尔值**启动时从来没被应用过** —— 设置页里改它
+       *   只当次生效（`classList.toggle`），重启就回到有动画的样子，
+       *   而开关本身还是"关着"的。所以这里不只是迁移，也把那条老账还上：
+       *   老用户升级上来，第一次启动就会按他当年选的"减少动效"跑。
+       *
+       *   ★ 只在"本机还没选过档位"时才采纳它（localStorage 里没有 `ieml.motion`）：
+       *     用户在新版本里选过之后，以新值为准。
+       */
+      if (!localStorage.getItem(MOTION_KEY) && prefs.reducedMotion === true) {
+        setMotion('lite');
       }
 
       const installedIds = new Set(inst.instances.map((i) => i.mcVersion));

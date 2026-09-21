@@ -2343,7 +2343,7 @@
   }
 }
 /* 尊重"减少动效" */
-:root.reduce-motion .sk {
+:root[data-motion='lite'] .sk {
   animation: none;
 }
 
@@ -2424,7 +2424,7 @@
 .fold-caret.folded {
   transform: rotate(-90deg);
 }
-:root.reduce-motion .fold-caret {
+:root[data-motion='lite'] .fold-caret {
   transition: none;
 }
 
@@ -2806,4 +2806,51 @@
 }
 .res-target-where.warn {
   color: var(--warning);
+}
+
+/* ============================================================================
+   ★★ 灵韵动效：卡片网格的**错峰入场**（2026-09-20，见 app.css 的「动效档位」）
+   ----------------------------------------------------------------------------
+   为什么写在 pages.css：它绑的是**具体的网格**（资源中心 / 整合包），
+   跟着网格自己走，比塞进全局动效那一节好找。
+
+   ★ 只给**前 7 张**逐个加延迟（第 8 张起一律 245ms）：第 40 张要等 1.4 秒才出现，
+     那就不是"高级"是"卡"。一屏里通常也就看得到 6~9 张。
+   ★ 只挑**卡片网格**，不碰长列表（`.ver-list` 900 行、`.list-*`）：
+     几百个元素同时做 transform 动画是实打实的掉帧，而它们本身也没有"逐个登场"
+     的叙事需要。
+   ============================================================================ */
+@keyframes ieml-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+:root[data-motion='aura'] :is(.res-grid, .grid-cards) > * {
+  animation: ieml-card-in 280ms var(--ease-out) both;
+}
+:root[data-motion='aura'] :is(.res-grid, .grid-cards) > *:nth-child(2) {
+  animation-delay: 35ms;
+}
+:root[data-motion='aura'] :is(.res-grid, .grid-cards) > *:nth-child(3) {
+  animation-delay: 70ms;
+}
+:root[data-motion='aura'] :is(.res-grid, .grid-cards) > *:nth-child(4) {
+  animation-delay: 105ms;
+}
+:root[data-motion='aura'] :is(.res-grid, .grid-cards) > *:nth-child(5) {
+  animation-delay: 140ms;
+}
+:root[data-motion='aura'] :is(.res-grid, .grid-cards) > *:nth-child(6) {
+  animation-delay: 175ms;
+}
+:root[data-motion='aura'] :is(.res-grid, .grid-cards) > *:nth-child(7) {
+  animation-delay: 210ms;
+}
+:root[data-motion='aura'] :is(.res-grid, .grid-cards) > *:nth-child(n + 8) {
+  animation-delay: 245ms;
 }

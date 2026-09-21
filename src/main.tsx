@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AppProvider } from './state/AppContext';
 import { App } from './app/AppShell';
+import { applyMotion, readMotion } from './ui/motion';
 import './styles/tokens.css';
 import './styles/app.css';
 import './styles/pages.css';
@@ -15,6 +16,18 @@ import './styles/pages.css';
 if (localStorage.getItem('ieml.lowPerf') === '1') {
   document.documentElement.classList.add('low-perf');
 }
+
+/*
+ * ★★ 动效档位（用户 2026-09-20 要求三档：减少 / 适中 / 灵韵）。
+ *
+ *   与 lowPerf 一样**必须在首屏之前**挂上，而且理由更硬：
+ *   灵韵那一档有入场动画 —— 等 React 挂载后再切档，用户会先看一遍"满血动效"
+ *   再被降级（甚至看到两次入场）。
+ *
+ *   判据与合法性**只有一份**（`ui/motion.ts`）：这里只负责"启动时先执行一次"。
+ */
+applyMotion(readMotion());
+
 const root = document.getElementById('root');
 if (!root) throw new Error('找不到 #root 挂载点');
 
