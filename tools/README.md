@@ -33,6 +33,7 @@ tools/
 │   ├─ live-glass-pages-check.mjs      ★ 跨页面体检：每页的玻璃、报错、帧时间、截图
 │   ├─ live-glass-degrade-check.mjs    ★ 降级验收：用 --disable-webgl 真的关掉 WebGL2，
 │   │                                    验"默认适中 + 不开放灵动 + 材质仍在"
+│   ├─ live-glass-resize-check.mjs     ★ 改窗口尺寸：折射要重烘、法线图要回收、GL 不泄漏
 │   ├─ live-pagehead-frost-check.mjs   ★ 标题条的遮挡到底有没有生效（逐像素，每步回读状态）
 │   ├─ probe-webview-glass.mjs         ★ 先证明"能不能真折射"：backdrop-filter 里的 SVG 滤镜
 │   │                                    + 截图像素对照（含"坏引用"正对照）—— 换机器先跑它

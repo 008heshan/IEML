@@ -180,6 +180,27 @@ class LensRegistry {
     return this.made.size;
   }
 
+  /**
+   * **回收没人在用的滤镜**。
+   *
+   * ★ 为什么需要：每次元素尺寸一变（拖窗口、切页面、开合模态）就会烘一张新的 ——
+   *   量化到 8px 只是让增长变慢，**不是不增长**。实测：三次改尺寸 +4 张、
+   *   档位来回切再 +1 张。一个开着几小时的启动器会攒下几百张
+   *   （每张 = 一个 SVG filter 节点 + 一段 96×96 的 PNG dataURI，约 3 KB）。
+   *   这里只回收**当前没有任何元素引用**的那些（`data-lens` 里出现的 id 一律留着），
+   *   所以不会把正在用的滤镜摘掉。
+   */
+  prune(active: Set<string>): number {
+    let dropped = 0;
+    for (const [key, id] of [...this.made]) {
+      if (active.has(id)) continue;
+      this.host.querySelector(`filter[id="${id}"]`)?.remove();
+      this.made.delete(key);
+      dropped += 1;
+    }
+    return dropped;
+  }
+
   destroy(): void {
     this.host.remove();
     this.made.clear();
@@ -194,7 +215,7 @@ export interface GlassController {
   /** 当前生效的档位 */
   level(): VfxLevel;
   /** 诊断信息（真机验证脚本读它，比翻 DOM 可靠） */
-  stats(): { level: VfxLevel; surfaces: number; lenses: number; gl: boolean };
+  stats(): { level: VfxLevel; surfaces: number; lenses: number; pruned: number; gl: boolean; canRefract: boolean };
   dispose(): void;
 }
 
@@ -389,12 +410,27 @@ export function createGlassController(initial: VfxLevel): GlassController {
   /** 这一档该不该装透镜滤镜 */
   const lensWanted = () => canRefract && (level === 'aura' || level === 'mid');
 
+  /**
+   * 回收没被引用的透镜滤镜（见 `LensRegistry.prune`）。
+   * ★ 必须在**一轮重烘之后**调：那时每个元素的 `data-lens` 才都是它当前真正用的 id。
+   */
+  let prunedTotal = 0;
+  const pruneLenses = () => {
+    const active = new Set<string>();
+    for (const el of registered) {
+      const id = el.dataset.lens;
+      if (id) active.add(id);
+    }
+    prunedTotal += lenses.prune(active);
+  };
+
   const register = (el: HTMLElement) => {
     if (registered.has(el)) return;
     registered.add(el);
     if (lensWanted() && el.matches(REFRACT_SELECTOR)) applyLens(el);
     const ro = new ResizeObserver(() => {
       if (lensWanted() && el.matches(REFRACT_SELECTOR)) applyLens(el);
+      pruneLenses();
       scheduleTint();
     });
     ro.observe(el);
@@ -478,6 +514,7 @@ export function createGlassController(initial: VfxLevel): GlassController {
       for (const el of registered) clearLens(el);
       stopGL();
     }
+    pruneLenses();
     sampler.refresh();
     scheduleTint();
   };
@@ -514,6 +551,7 @@ export function createGlassController(initial: VfxLevel): GlassController {
       level,
       surfaces: registered.size,
       lenses: lenses.size,
+      pruned: prunedTotal,
       gl: !!gl,
       canRefract,
     }),
