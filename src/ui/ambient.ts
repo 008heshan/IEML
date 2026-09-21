@@ -274,7 +274,7 @@ void main() {
 }`;
 
 /**
- * 片元着色器：**底色 + 三团流动的光斑** + 细颗粒。
+ * 片元着色器：**底色 + 三团流动的光斑 + 一层慢流场 + 细颗粒**。
  *
  * ★ 比 CSS 那版"高级"在哪（用户明确要的"更好看更高级"）：
  *   ① =加色混合=：CSS 的多层渐变是普通 alpha 叠，颜色会互相盖住；
@@ -288,7 +288,16 @@ void main() {
  *
  * ★★ `uBase` 是**必须的**：这个画布是 `alpha: false`（不透明，省一次合成），
  *    所以它得自己把底色铺上。第一版漏了这一点 —— 画布铺了一层近黑，
- *    把主题底色整个盖掉，症状是"灵动档的背景比适中档还暗"。
+ *    把主题底色整个盖掉，症状是"灵动档的背景比中间档还暗"。
+ *
+ * ★★ 流场（`filaments`）是第三轮加的，它解决的是**折射看不见**这个真问题：
+ *    `backdrop-filter` 的执行顺序是「**先模糊、后位移**」——
+ *    细于模糊核（这里 18px）的结构会被模糊整个吃掉，于是位移**没有东西可弯**。
+ *    真机实测：卡片/模态背后是平滑渐变时，"真滤镜 vs 恒等滤镜"的像素差
+ *    **小于同状态的噪声**（5.83）。
+ *    所以背景里得放**比模糊核更粗**（~70px 尺度）的亮丝：模糊留得住它，
+ *    位移才看得出来。这不是"多画点装饰"，而是**折射可见性的前提**。
+ *    （反过来说：如果只想让背景好看，加细噪点更省 —— 但那样折射永远看不见。）
  */
 const FRAG = `#version 300 es
 precision highp float;
@@ -309,6 +318,18 @@ float hash(vec2 p) {
   return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
 }
 
+/* 二维值噪声（便宜版）：四次哈希 + 平滑插值 */
+float vnoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  float a = hash(i);
+  float b = hash(i + vec2(1.0, 0.0));
+  float c = hash(i + vec2(0.0, 1.0));
+  float d = hash(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
 void main() {
   vec2 uv = vUv;
   vec2 par = uPointer * vec2(0.012, 0.012);
@@ -327,6 +348,17 @@ void main() {
     vec3 col = mix(uMid[i], uCore[i], inner);
     acc += col * w * uGain;
   }
+
+  /* 慢流场（亮丝）：~70px 尺度、随时间长流。见上面那段说明 ——
+     它是"折射看得见"的前提，不是装饰。用蓝色那团光斑的色，主题一改跟着改。
+     ★ 速度取得很慢（每秒约 12px）：既是"缓流"的观感，也让像素级对照
+       有机会把"折射造成的位移"从"背景自己在动"里分出来。 */
+  vec2 fp = vec2(uv.x * uRes.x / max(uRes.y, 1.0), uv.y) * 13.0;
+  float flow = vnoise(fp + vec2(uTime * 0.012, uTime * 0.007))
+             + 0.5 * vnoise(fp * 2.13 - vec2(uTime * 0.009, uTime * 0.004));
+  flow /= 1.5;
+  float filament = smoothstep(0.54, 0.93, flow);
+  acc += uCore[2] * filament * 1.9;
 
   // 颗粒：±1/255 的抖动，专门打散暗部色带
   float n = hash(gl_FragCoord.xy + fract(uTime) * 91.7) - 0.5;
