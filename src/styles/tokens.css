@@ -264,10 +264,19 @@ body::before {
   position: fixed;
   inset: 0;
   pointer-events: none;
-  background:
-    radial-gradient(60% 55% at 12% 12%, var(--ambient-violet) 0%, var(--ambient-violet-soft) 45%, transparent 85%),
-    radial-gradient(55% 50% at 88% 88%, var(--ambient-green) 0%, var(--ambient-green-soft) 45%, transparent 85%),
-    radial-gradient(40% 35% at 70% 15%, var(--ambient-blue) 0%, transparent 80%);
+  /*
+   * ★★ 2026-09-21：背景光斑的几何**不再写在这里**，改成 `--ambient-image`。
+   *
+   *   原因：这一轮加了两条新用途，它们必须和"画出来的那三团"是**同一份数据** ——
+   *     ① 玻璃的「内容适应性」要按元素位置**采样**背景色（`ui/ambient.ts` 的采样器）；
+   *     ② 灵动档的背景换成一版 WebGL 流体（着色器里的光斑位置来自同一个 `drift()`）。
+   *   三处各写一份几何 = 必然对不上（取色会和画面错拍、GL 和 CSS 切换时会跳一下）。
+   *   所以几何搬进 `ui/ambient.ts`，首屏前由 `installAmbientCss()` 挂上来。
+   *
+   *   ★ 兜底：万一那段 JS 没跑到（极端情况），这里的 `var()` 落空 → 背景变没有，
+   *     界面仍然可用（深色底 + 卡片），不会白屏。
+   */
+  background: var(--ambient-image, none);
   z-index: 0;
 }
 #root {

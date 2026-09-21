@@ -92,6 +92,17 @@ results.push([
   run('输入校验规则', 'node', ['--test', 'tests/validate-rules.test.mjs']),
 ]);
 /*
+ * ★★ 视效档位（`ui/vfx.ts`）—— 三档 + 降级。
+ *
+ *   为什么这条必须有：降级**只会在别人的机器上发生**（Win7 / 无 WebGL2 / 软渲染），
+ *   开发机永远跑不到那条分支。跑不到的判据等于没有判据，所以把它拆成纯函数
+ *   （`osFromUA` / `isSoftwareRenderer` / `auraGate` / `decideVfx`）用真 UA 串喂。
+ */
+results.push([
+  '视效档位规则',
+  run('视效档位规则', 'node', ['--test', 'tests/vfx-rules.test.mjs']),
+]);
+/*
  * ★ 子进程窗口抑制审计（用户报"安装 Forge 调出来个啥也没有的 cmd"）。
  *
  *   这类遗漏是**逐处**的：修的时候全仓库 4 处加了标志、13 处没加，

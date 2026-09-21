@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client';
 import { AppProvider } from './state/AppContext';
 import { App } from './app/AppShell';
 import { applyMotion, readMotion } from './ui/motion';
+import { applyVfx, readVfx } from './ui/vfx';
+import { installAmbientCss } from './ui/ambient';
 import './styles/tokens.css';
 import './styles/app.css';
 import './styles/pages.css';
@@ -27,6 +29,23 @@ if (localStorage.getItem('ieml.lowPerf') === '1') {
  *   判据与合法性**只有一份**（`ui/motion.ts`）：这里只负责"启动时先执行一次"。
  */
 applyMotion(readMotion());
+
+/*
+ * ★★ 视效档位（用户 2026-09-21：液态玻璃 + 「弱化 / 适中 / 灵动」三档）。
+ *
+ *   同一条理由：**首屏之前**就得定下来。灵动档的玻璃会装 SVG 折射滤镜、
+ *   起 WebGL2 背景 —— 等 React 挂载后再切，用户会先看到一版"没有折射的玻璃"
+ *   再跳成有折射的，比一直用适中更难受。
+ *
+ *   `readVfx()` 返回的是**已经过能力校正**的档位：机器不支持 WebGL2 / 是老系统时，
+ *   即便用户存的是灵动，这里读出来也是适中（判据在 `ui/vfx.ts`，用的是真机探针
+ *   验过的那套逻辑）。
+ *
+ *   背景光斑的几何也从这里注入（`--ambient-image`）：它是"一份数据三处消费"里的
+ *   那一份，见 `ui/ambient.ts` 的头注释。
+ */
+installAmbientCss();
+applyVfx(readVfx().level);
 
 const root = document.getElementById('root');
 if (!root) throw new Error('找不到 #root 挂载点');

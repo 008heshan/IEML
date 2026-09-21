@@ -151,7 +151,7 @@ export function Card({
   id?: string;
 }) {
   return (
-    <div id={id} className={`card${padded ? ' card-padded' : ''} ${className}`}>
+    <div id={id} className={`card glass glass-refract${padded ? ' card-padded' : ''} ${className}`}>
       {children}
     </div>
   );
@@ -733,7 +733,7 @@ export function Modal({
     <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div
         ref={dialogRef}
-        className={`modal${size === 'lg' ? ' modal-lg' : ''}${size === 'xl' ? ' modal-xl' : ''}`}
+        className={`modal glass glass-refract glass-sheen${size === 'lg' ? ' modal-lg' : ''}${size === 'xl' ? ' modal-xl' : ''}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

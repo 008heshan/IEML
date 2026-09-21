@@ -33,6 +33,8 @@ import {
   systemWantsReduced,
 } from '../ui/motion';
 import type { MotionLevel } from '../ui/motion';
+import { VFX_HINT, VFX_LABEL, VFX_LEVELS } from '../ui/vfx';
+import type { VfxLevel } from '../ui/vfx';
 import {
   deleteIntent,
   describeDelete,
@@ -57,7 +59,7 @@ function stageLabelOf(version: string): string {
 }
 
 export function SettingsPage() {
-  const { state, rescanJava, toast, backend, refreshJava, prefsSaveFailed, update } = useApp();
+  const { state, rescanJava, toast, backend, refreshJava, prefsSaveFailed, update, vfx } = useApp();
   const { api } = useRealApi();
   /**
    * 启动器自身的更新（不是 Mod 更新，见 `useLauncherUpdate` 顶部说明）。
@@ -252,6 +254,64 @@ export function SettingsPage() {
                   disabledReason: systemReduced
                     ? 'Windows 里开着「减少动态效果」，它盖过这里的档位'
                     : undefined,
+                }))}
+              />
+            </div>
+            <span />
+          </div>
+
+          {/*
+            ★★ 视效档位（用户 2026-09-21：「我想要真实的液态玻璃」+「视效也要三档，
+            弱化视效，适中视效，灵动视效」+「win7 或显卡不支持 WebGL 2.0 时默认适中，
+            并且不开放灵动视效」）。
+
+            ★ 与上面那一行「动效」**正交**，所以是单独一行而不是同一个滑杆：
+              动效管"时间"（动画多少），视效管"材质"（玻璃多厚）。
+              "减少动效 + 灵动视效"（不动，但玻璃满血）是合理组合；
+              合成一个滑杆就变成"我只想静一点，结果玻璃也被降级了"。
+
+            ★ 灵动不可用时**不是把它藏起来**，而是显示成禁用 + 写明原因：
+              藏起来用户会以为"这软件没有高级档"，禁用 + 原因才是"你的机器撑不住"。
+              判据与文案来自 `ui/vfx.ts`（唯一一份），这里只负责显示。
+          */}
+          <div className="field-row">
+            <span className="field-label">
+              视效
+              <span className="field-hint">{VFX_HINT[vfx.level]}</span>
+              {vfx.clamped ? (
+                <span className="field-hint">
+                  <Chip tone="warning">已自动降到「{VFX_LABEL[vfx.level]}」</Chip>
+                  {' '}
+                  {vfx.why}
+                </span>
+              ) : null}
+              {!vfx.capability.auraAllowed ? (
+                <span className="field-hint mono truncate" title={vfx.capability.renderer ?? '未知'}>
+                  显卡：{vfx.capability.renderer ?? '未知'}
+                </span>
+              ) : null}
+            </span>
+            <div className="field-control">
+              <Segmented
+                label="视效档位"
+                size="sm"
+                value={vfx.want}
+                onChange={(v) => {
+                  const after = v as VfxLevel;
+                  vfx.choose(after);
+                  const ok = after !== 'aura' || vfx.capability.auraAllowed;
+                  toast(
+                    'ok',
+                    ok ? `视效已设为「${VFX_LABEL[after]}」` : `这台机器开不了「${VFX_LABEL.aura}」，已用「${VFX_LABEL.mid}」`,
+                  );
+                }}
+                options={VFX_LEVELS.map((lv) => ({
+                  value: lv,
+                  label: VFX_LABEL[lv],
+                  disabledReason:
+                    lv === 'aura' && !vfx.capability.auraAllowed
+                      ? (vfx.capability.reason ?? '这台机器不支持灵动视效')
+                      : undefined,
                 }))}
               />
             </div>
