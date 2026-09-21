@@ -32,6 +32,7 @@ import {
   IconTerminal,
 } from '../ui/Icons';
 import { VersionIcon } from '../components/VersionIcon';
+import { UpdateChip } from '../components/UpdateChip';
 import { LaunchPage } from '../pages/LaunchPage';
 import { VersionsPage } from '../pages/VersionsPage';
 import { DownloadPage } from '../pages/DownloadPage';
@@ -277,6 +278,21 @@ export function App() {
           理由：账号不是"设置"，是**状态** —— "我现在是谁、能不能进正版服务器"
           应该一直看得见。点开就是完整的登录面板（`AccountPanel`，与设置页同一份实现）。
         */}
+        {/*
+          ★★ 「新版本」角标（用户 2026-09-21：「我想要热更新和静默安装」）。
+
+          放在顶栏，紧挨账号 —— 理由是**它必须随时看得见**：
+          更新是"你该做的一件事"，藏在设置页最下面那张卡里等于没做。
+          开机自动查一次（延迟 8 秒、静默失败）、查到就后台下载，
+          所以用户看到它时通常已经能"一键换"了。
+
+          ★ 三种可点/不可点状态各有各的话：
+            · 下载中 → **不可点**（title 给理由："正在后台下载，下完就能一键更新"）
+            · 已下好 → 「重启并更新」→ install()（静默安装 + 装完自己回来）
+            · 下失败 → 「重试」→ download()
+        */}
+        <UpdateChip />
+
         <button
           type="button"
           className={`acct-chip${state.prefs.accountUuid ? ' on' : ''}`}

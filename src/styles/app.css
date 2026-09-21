@@ -894,6 +894,18 @@
   background: var(--bg-hover);
   color: var(--text-primary);
 }
+
+/*
+ * 顶栏的「新版本」角标（热更新，2026-09-21）。
+ * ★ 只做一件事：**限宽**。版本号 + 「重启并更新」比账号那枚角标长，
+ *   不限制的话它会把窗口控制按钮往右顶出去（顶栏是一行 flex）。
+ */
+.upd-chip {
+  max-width: 240px;
+}
+.upd-chip:disabled {
+  cursor: default;
+}
 .acct-chip-dot {
   width: 7px;
   height: 7px;
