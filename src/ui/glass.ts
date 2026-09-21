@@ -5,7 +5,7 @@
  *      塞进 `backdrop-filter: url(#…)`，于是背后内容在边缘被真的扭断
  *      （要求 1「边缘折射」。真机探针见 `tools/live/probe-webview-glass.mjs`）。
  *   ② **指针高光**：一个**委托**的 `pointermove`，把光标位置写进元素的
- *      `--gx/--gy`，CSS 用它摆那层流动的反光（要求 2）。
+ *      `--glass-gx/--glass-gy`，CSS 用它摆那层流动的反光（要求 2）。
  *   ③ **内容适应取色**：按元素在视口里的位置，从 `ambient.ts` 的采样器里
  *      取"它下面那团光斑是什么颜色"，写进 `--glass-tint`（要求 5）。
  *
@@ -43,8 +43,13 @@ const MAP_MAX = 96;
 const MAP_SCALE = 0.22;
 /** 边缘带占短边的比例（决定了"折射带"有多宽） */
 const BAND_RATIO = 0.085;
-/** 位移强度（像素）—— 越大越"厚"，超过 ~30 就开始像哈哈镜 */
-const DISPLACE_PX = 26;
+/** 位移强度（像素）—— 越大越"厚"。
+ *
+ *  ★ 2026-09-21 把它从 26 提到 **44**：真机对照发现，26 的时候折射在**卡片的像素上
+ *    几乎测不出来**（那些表面背后是平滑的氛围背景，弯一点点看不出来）。
+ *    提到 44 之后差异才进入可测范围。再往上（>60）边缘就开始像哈哈镜了。
+ */
+const DISPLACE_PX = 44;
 
 function quantize(v: number, step = 8): number {
   return Math.max(step, Math.round(v / step) * step);
@@ -193,7 +198,16 @@ export interface GlassController {
   dispose(): void;
 }
 
-/** 参与折射的玻璃（`.glass-refract`）—— **有意只收大的、尺寸稳定的表面** */
+/**
+ * 参与折射的玻璃 —— **有意只收大的、尺寸稳定的表面**。
+ *
+ * ★ 曾经把 `.page-head`（粘性标题条）也放进来过，想的是"它下面滚过的全是文字，
+ *   最该有东西可弯"。**真机测下来它在像素上没有任何效果**（用恒等滤镜做对照，
+ *   信号与噪声同为 0.98），已撤回。原因还没查清：同一台机器上探针证明
+ *   `backdrop-filter` 对"滚动容器内的元素"和"fixed 元素"都有效，
+ *   标题条的 `::before` 也确实画得出来（去 mask 涂红可见）—— 但那个位置上
+ *   折射就是测不出差别。**没效果的代码不留**，等有人把那条链路查清再放回来。
+ */
 const REFRACT_SELECTOR = '.glass-refract';
 
 export function createGlassController(initial: VfxLevel): GlassController {
@@ -331,6 +345,16 @@ export function createGlassController(initial: VfxLevel): GlassController {
   };
 
   /* ---------- 折射：按元素尺寸注册滤镜 ---------- */
+  /**
+   * 给一块玻璃装折射滤镜。
+   *
+   * ★ 两种装法，取决于"滤镜挂在哪一层"：
+   *   · 普通玻璃（卡片 / 模态）→ 直接写元素的内联 `backdrop-filter`；
+   *   · **标题条**（材质挂在 `::before` 上，伪元素设不了内联样式）
+   *     → 把 `url(#…)` 写进 `--glass-lens-url`，由 CSS 变量喂给 `::before`。
+   *   标题条那一处才是折射**最看得出来**的地方（它下面滚过的全是文字与列表），
+   *   详见 `app.css` 里 `.page-head::before` 的注释。
+   */
   const applyLens = (el: HTMLElement) => {
     const r = el.getBoundingClientRect();
     if (r.width < 24 || r.height < 24) return;
@@ -345,6 +369,7 @@ export function createGlassController(initial: VfxLevel): GlassController {
   const clearLens = (el: HTMLElement) => {
     el.style.removeProperty('backdrop-filter');
     el.style.removeProperty('-webkit-backdrop-filter');
+    el.style.removeProperty('--glass-lens-url');
     delete el.dataset.lens;
   };
 
@@ -411,8 +436,17 @@ export function createGlassController(initial: VfxLevel): GlassController {
     requestAnimationFrame(() => {
       pointerQueued = false;
       if (disposed || !el.isConnected) return;
-      el.style.setProperty('--gx', `${(nx * 100).toFixed(1)}%`);
-      el.style.setProperty('--gy', `${(ny * 100).toFixed(1)}%`);
+      /*
+       * ★★ 变量名必须和 CSS 里**逐字一致**（`--glass-gx` / `--glass-gy`）。
+       *
+       *   这里踩过一次，而且是"看着完全正常"的那种踩法：写的是 `--gx`，
+       *   CSS 读的是 `--glass-gx` —— 于是**设置成功、没人读**，
+       *   高光永远停在 CSS 的初始值（26% / 4%）。
+       *   代码读起来毫无破绽（setProperty 不报错、变量也确实写进去了），
+       *   只有"移两次指针看这两个数有没有变"才抓得到。
+       */
+      el.style.setProperty('--glass-gx', `${(nx * 100).toFixed(1)}%`);
+      el.style.setProperty('--glass-gy', `${(ny * 100).toFixed(1)}%`);
     });
   };
 
