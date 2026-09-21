@@ -1798,6 +1798,15 @@
   background: var(--bg-overlay);
   border: 1px solid var(--border-default);
   box-shadow: var(--shadow-lg);
+  /*
+   * ★★ 2026-09-21（用户截图：靠窗口底部的行，菜单被切掉、够不着后面几项）：
+   *   位置现在由 JS 按**量出来的高度**决定朝上还是朝下，并把"那一侧还剩多少"
+   *   当成 `max-height` 传进来。
+   *   这里必须配 `overflow-y: auto` —— 否则 max-height 只会把它**裁掉**，
+   *   那正是我们要修的症状（"菜单一半在窗口外面，后面几项点不到"）。
+   */
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .row-menu button {
   display: flex;
