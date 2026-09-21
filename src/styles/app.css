@@ -1815,7 +1815,7 @@ tbody tr.clickable:focus-visible {
   animation: spin 0.9s linear infinite;
 }
 /* 尊重"减少动效"：不转，改成呼吸 */
-:root.reduce-motion .spinner-ring {
+:root[data-motion='lite'] .spinner-ring {
   animation: pulse 1.4s ease-in-out infinite;
 }
 @keyframes pulse {
@@ -2311,4 +2311,182 @@ tbody tr.clickable:focus-visible {
 .cs-trigger:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* ============================================================================
+   ★★ 动效档位（三档：减少 / 适中 / 灵韵）
+   ----------------------------------------------------------------------------
+   用户 2026-09-20：「我想要更好的更高级的动效，把动效选项设为三档：
+   减少动效、适中动效、灵韵动效」。
+
+   判据与合法值只有一份（`src/ui/motion.ts`），档位挂在 `<html data-motion="…">` 上。
+   这里只放**跨页面共用**的那几件：
+
+     ① 页面进出        ② 弹窗 / 提示条
+     ③ 按钮            ④ 可点卡片（悬停）
+     ⑤ 背景光晕漂移（灵韵）   ⑥ 启动按钮呼吸（灵韵）
+
+   ★ 卡片网格的**错峰入场**跟着各自的网格写在 `pages.css` 里（就近原则）。
+   ★ `lite` 那一档在 `tokens.css` 里把一切压平（连这里的规则一起）；
+     所以下面每条都带 `[data-motion='mid'|'aura']`，不需要再写一遍"lite 不算"。
+   ★ 系统级的 `prefers-reduced-motion: reduce` 在 `tokens.css` 里**盖过**这三档 ——
+     那是用户在操作系统里表达的"我晕动效"，比我们的档位更权威。
+   ============================================================================ */
+
+/* ---------- ① 页面进出 ---------- */
+@keyframes ieml-page-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes ieml-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* ★ 挂在哪一层：`.content > *` —— **不是 `.page-fill`**。
+   实测（2026-09-21 真机）：全仓只有下载页渲染 `.page-fill`，其余页面返回的是
+   片段（`<><div className="page-head">…</>`），直接挂在 `.content` 下面。
+   挂 `.page-fill` 的结果是"只有下载页有入场动画"，而且**看起来还挺正常** ——
+   这种"部分生效"最难发现。
+   `.content` 的直接子元素在切页时整批换掉（React 卸载旧的、挂载新的），
+   所以动画每次切页都会重放；而 `.content` 自己**不重挂**，所以不能挂在它身上。 */
+:root[data-motion='mid'] .content > * {
+  animation: ieml-page-fade 160ms var(--ease-out) both;
+}
+:root[data-motion='aura'] .content > * {
+  animation: ieml-page-fade 200ms var(--ease-out) both;
+}
+/* 灵韵：正文再"抬起来"一点，晚 60ms —— 标题先到、内容随后。
+   ★ `:not(.page-head)`：页头是 sticky 的，抬它会牵动吸顶那次布局。 */
+:root[data-motion='aura'] .content > *:not(.page-head) {
+  animation: ieml-rise 300ms var(--ease-out) 60ms both;
+}
+
+/* ---------- ② 弹窗 / 提示条 ---------- */
+@keyframes ieml-pop-soft {
+  from {
+    opacity: 0;
+    transform: scale(0.965) translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes ieml-toast-slide {
+  from {
+    opacity: 0;
+    transform: translateX(22px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* ★ 灵韵的"弹性"来自 `cubic-bezier(.2,1.2,.4,1)`：**末端过冲一点点**（1.2 > 1），
+   像被轻轻按下去又弹回来 —— 幅度必须小，过冲大了就成了"卡通"。 */
+:root[data-motion='aura'] .overlay {
+  animation-duration: 220ms;
+}
+:root[data-motion='aura'] .modal {
+  animation: ieml-pop-soft 300ms cubic-bezier(0.2, 1.2, 0.4, 1) both;
+}
+:root[data-motion='aura'] .toast {
+  animation: ieml-toast-slide 320ms cubic-bezier(0.2, 1.2, 0.4, 1) both;
+}
+
+/* ---------- ③ 按钮 ---------- */
+:root[data-motion='mid'] .btn,
+:root[data-motion='aura'] .btn {
+  transition:
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-base) var(--ease-out),
+    transform var(--dur-instant) var(--ease);
+}
+:root[data-motion='mid'] .btn:not(:disabled):hover,
+:root[data-motion='aura'] .btn:not(:disabled):hover {
+  transform: translateY(-1px);
+}
+:root[data-motion='aura'] .btn:active:not(:disabled) {
+  transform: translateY(0) scale(0.975);
+}
+/* 灵韵：主按钮悬停时"亮起来"（同色系外发光，不是黑影） */
+:root[data-motion='aura'] .btn-primary:not(:disabled):hover {
+  box-shadow: 0 8px 22px rgba(74, 123, 224, 0.38);
+}
+
+/* ---------- ④ 可点卡片：悬停抬升（适中）/ 辉光（灵韵） ---------- */
+:root[data-motion='mid'] :is(.pack-card, .res-card),
+:root[data-motion='aura'] :is(.pack-card, .res-card) {
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    transform var(--dur-base) var(--ease-out),
+    box-shadow var(--dur-base) var(--ease-out);
+}
+:root[data-motion='mid'] :is(.pack-card, .res-card):hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-card);
+}
+:root[data-motion='aura'] :is(.pack-card, .res-card):hover {
+  transform: translateY(-3px);
+  box-shadow:
+    0 12px 32px rgba(0, 0, 0, 0.42),
+    0 0 0 1px var(--accent-border);
+}
+
+/* ---------- ⑤ 背景光晕漂移（只有灵韵） ---------- */
+/*
+ * ★ 幅度刻意小到"几乎看不出在动"：46 秒一轮、位移 1~2% —— 它要做的是让静态
+ *   界面**不像一张图**，而不是让人盯着背景看。位移再大一点就会在文字后面
+ *   晃，那是干扰不是高级。
+ * ★ 低性能损耗模式会把这一整层 `display:none`（见 pages.css），
+ *   所以弱机上选了灵韵也不会多花 GPU —— 这一点在设置页的提示里写明。
+ */
+@keyframes ieml-aura-drift {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(-1.6%, 1.2%, 0) scale(1.055);
+  }
+  100% {
+    transform: translate3d(1.4%, -1.1%, 0) scale(1.02);
+  }
+}
+:root[data-motion='aura'] body::before {
+  animation: ieml-aura-drift 46s var(--ease-in-out) infinite alternate;
+  will-change: transform;
+}
+
+/* ---------- ⑥ 启动按钮的呼吸（灵韵） ---------- */
+@keyframes ieml-breathe {
+  0%,
+  100% {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.24),
+      0 6px 18px rgba(74, 123, 224, 0.32);
+  }
+  50% {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.24),
+      0 10px 26px rgba(74, 123, 224, 0.46);
+  }
+}
+:root[data-motion='aura'] .launch-btn:not(:disabled) {
+  animation: ieml-breathe 3.6s var(--ease-in-out) infinite;
+}
+/* 悬停时交给 `.launch-btn:hover` 那套（亮一档 + 抬 1px），两套发光不许打架 */
+:root[data-motion='aura'] .launch-btn:not(:disabled):hover {
+  animation: none;
 }

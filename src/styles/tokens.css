@@ -315,10 +315,26 @@ a:focus-visible,
   }
 }
 
-/* ★ 应用内的「减少动效」开关 —— 系统没开也要能生效，所以用 class 而不是只靠媒体查询 */
-:root.reduce-motion *,
-:root.reduce-motion *::before,
-:root.reduce-motion *::after {
+/*
+ * ★★ 应用内的动效档位（2026-09-20：用户要求三档 —— 减少 / 适中 / 灵韵）。
+ *
+ *   靠 `<html data-motion="lite|mid|aura">` 分档，**默认 mid**（见 `ui/motion.ts`：
+ *   判据只有那一份，读到不认识的值也落回 mid）。
+ *
+ *   为什么用属性而不是类：三档是**同一个开关的三个值**，属性天然互斥；
+ *   用类的话 `lite` 与 `aura` 同时挂着时谁赢取决于源码顺序 —— 那种"看起来
+ *   只是样式问题"的错最难查。
+ *
+ *   ★ `lite` 这一档与上面的系统媒体查询**效果相同、理由不同**：
+ *     系统那条是"用户晕动效"，这条是"用户在本应用里选的"。两条都要留。
+ *
+ *   ★ 这里**只负责"减少"**（把一切压平）；`mid` 不加任何规则（＝各组件自己的
+ *     基础过渡）；`aura` 的那些额外效果写在 `app.css` 的「灵韵」一节里 ——
+ *     因为它们要动具体的组件（卡片网格、按钮、光晕），放在令牌文件里不合适。
+ */
+:root[data-motion='lite'] *,
+:root[data-motion='lite'] *::before,
+:root[data-motion='lite'] *::after {
   transition-duration: 0.01ms !important;
   animation-duration: 0.01ms !important;
   animation-iteration-count: 1 !important;
