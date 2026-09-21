@@ -455,7 +455,24 @@
    *   所以把磨砂**单独做成一层伪元素**：它管羽化，文字在上面不受影响。
    *   三层一起羽化：左、右、下（下边缘那道横线同样硬）。
    */
-  isolation: isolate;
+  /*
+   * ★★ 2026-09-21（第三轮）**删掉了这里的 `isolation: isolate`** —— 它是
+   *   "磨砂在磨空气"的真凶，查到它花了三轮：
+   *
+   *     `isolation: isolate` 会让元素成为 **backdrop root**，
+   *     于是 `.page-head::before` 的 backdrop 只剩"页头自己那个栈里的东西"
+   *     = **空的** —— `blur(16px)` 磨的是一片空。
+   *     真机证据（逐像素，适中档静止背景，噪声仅 0.01）：
+   *       · 原来：磨砂开 / 关，画面差 **0.000**（完全没有作用）；
+   *       · 去掉 `isolation` 后：磨砂开关差 **7.18**、76% 的像素在变 —— 真的在遮挡了。
+   *
+   *   ★ 而它本来就是**多余**的：`.page-head` 已经有 `position: sticky;
+   *     z-index: 20`，那本身就形成层叠上下文，`::before` 的 `z-index: -1`
+   *     照样待在页头内容之下、页面内容之上。
+   *   ★ 教训（比这个 bug 值钱）：**"我去掉了 X，结果没变化"这句话，
+   *     必须先回读"X 真的被去掉了吗"**。我上一轮就是没回读，
+   *     于是误判成"isolation 不是原因"，白绕了一圈。
+   */
 }
 .page-head::before {
   content: '';
@@ -2629,15 +2646,43 @@ tbody tr.clickable:focus-visible {
 
 /* 标题条的磨砂层吃同一套层（它原来是"只磨砂、不填色"，现在多一层调色） */
 .page-head::before {
-  background-image: var(--glass-layers);
+  /*
+   * ★★ 2026-09-21（第三轮）：**遮挡不再依赖 `backdrop-filter`**。
+   *
+   *   真机把它查死了：`.page-head::before` 上的 `backdrop-filter` 在本机
+   *   （WebView2 / Chromium 153）**完全没有视觉作用** —— 开 / 关两张图的
+   *   逐像素平均差是 **0.000**（噪声本身就是 0.000，也就是画面一模一样）。
+   *   逐个排除过：`isolation: isolate`（已删）、`z-index: -1`、mask、
+   *   兄弟卡片的滤镜层、伪元素 vs 真实元素 —— 都不是。最后一个变量是
+   *   **"它住在 `position: sticky` 的页头里"**：同样一个带 backdrop-filter 的
+   *   div，放进 `.content` 能把背后的卡片糊掉，放进 `.page-head` 就什么都不做。
+   *   （这是平台行为，不是我们写错了。）
+   *
+   *   ★ 用户当初要的是"页面标题区去掉黑底…做一个磨砂玻璃的底，
+   *     这样没有割裂感**还能作遮挡**"——遮挡是硬需求，所以这里改用
+   *     **"底色 → 透明"的软渐变**：不挑机器、不吃 GPU、结果可预测。
+   *     横向与下方的羽化仍然交给 mask（那两层本来就是干这个的）。
+   *
+   *   ★ 颜色这里写的是 rgba(18,21,26) = `--bg-base` 的字面值：
+   *     要跟它保持一致（改主题底色时记得同步这一处）。
+   */
+  background-image:
+    linear-gradient(
+      180deg,
+      rgba(18, 21, 26, 0.94) 0%,
+      rgba(18, 21, 26, 0.86) 55%,
+      rgba(18, 21, 26, 0.45) 84%,
+      rgba(18, 21, 26, 0) 100%
+    ),
+    var(--glass-layers);
   background-color: transparent;
+  /*
+   * ★ 保留模糊：它在**别的**机器 / 别的 WebView2 版本上有效（而且成本很低）。
+   *   但**绝不能加 `url(#滤镜)`** —— 实测一旦带上 url()，整条 backdrop-filter
+   *   连模糊一起失效。回归判据：`tools/live/live-pagehead-frost-check.mjs`。
+   */
   backdrop-filter: blur(16px) saturate(140%);
   -webkit-backdrop-filter: blur(16px) saturate(140%);
-  /*
-   * ★ 试过在这里也挂真折射（读 `--glass-lens-url`），**真机测不出任何像素效果**
-   *   （恒等滤镜对照：信号与噪声同为 0.98）。已在 `ui/glass.ts` 的
-   *   `REFRACT_SELECTOR` 里撤掉 —— 没效果的代码不留。原因待查，见 ADR-059。
-   */
 }
 
 /* ---------- ① 边缘折射：中/灵动档用 JS 装真滤镜；这两条只是"便宜的兜底" ---------- */

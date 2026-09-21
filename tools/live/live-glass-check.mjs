@@ -417,6 +417,21 @@ function pixelDiff(fileA, fileB) {
   return { mean: sum / n / 3, max, badPct: (bad / n) * 100, box: x1 < 0 ? null : [x0, y0, x1, y1], w: a.width, h: a.height };
 }
 
+
+/* ★★ 造一个"只差一个位移"的对照滤镜：**克隆真滤镜、把 scale 设成 0**。
+   早先用单个 feOffset 当"恒等"，结果它会让整条 backdrop-filter 失效
+   （实测与"完全关掉"的像素差一模一样），量到的其实是"磨砂开关"而不是折射。 */
+const makeZeroLens = () => `(() => {
+  const real = document.querySelector('#ieml-lens-defs filter');
+  if (!real) return 'no-real-filter';
+  const clone = real.cloneNode(true);
+  clone.id = 'ieml-lens-zero';
+  const disp = clone.querySelector('feDisplacementMap');
+  if (disp) disp.setAttribute('scale', '1');
+  real.parentNode.appendChild(clone);
+  return 'ok';
+})()`;
+
 const lensAB = async (selector, tag, clip) => {
   /*
    * 先把「内容适应取色」钉住：它按元素位置与背景重算，页面有任何 DOM 变动就更新
@@ -432,30 +447,13 @@ const lensAB = async (selector, tag, clip) => {
   const n1 = await shoot(tag + '-1-基线', clip);
   await sleep(150);
   const n2 = await shoot(tag + '-2-基线复测', clip);
+  await ev(makeZeroLens());
   const swap = await ev(`(() => {
-    /* 恒等滤镜：一个 feOffset 0,0，等于什么都不做（本函数体是模板字符串，注释里不许有反引号） */
     const SEL = ${JSON.stringify('.glass-refract')};
-    const NS = 'http://www.w3.org/2000/svg';
-    if (!document.getElementById('ieml-lens-noop')) {
-      const svg = document.createElementNS(NS, 'svg');
-      svg.setAttribute('width', '0');
-      svg.setAttribute('height', '0');
-      svg.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0';
-      const f = document.createElementNS(NS, 'filter');
-      f.setAttribute('id', 'ieml-lens-noop');
-      f.setAttribute('x', '0'); f.setAttribute('y', '0');
-      f.setAttribute('width', '100%'); f.setAttribute('height', '100%');
-      const off = document.createElementNS(NS, 'feOffset');
-      off.setAttribute('dx', '0');
-      off.setAttribute('dy', '0');
-      f.appendChild(off);
-      svg.appendChild(f);
-      document.body.appendChild(svg);
-    }
     const c = document.querySelector(${JSON.stringify('.glass-refract')});
     if (!c) return { err: '找不到目标' };
     const cur = getComputedStyle(c).backdropFilter || '';
-    const swapped = cur.replace(/url\\("#[^"]*"\\)/, 'url("#ieml-lens-noop")');
+    const swapped = cur.replace(/url\\("#[^"]*"\\)/, 'url("#ieml-lens-zero")');
     const s = [...document.styleSheets].find((x) => (x.href || '').includes('index-'));
     window.__noopIdx = s.cssRules.length;
     s.insertRule(SEL + '{backdrop-filter:' + swapped + ' !important}', s.cssRules.length);
@@ -869,6 +867,76 @@ check(
   modalRefr.modalBackdrop.includes('url("#ieml-lens-') && modalRefr.lensMaps > 0,
   `模态 ${modalRefr.modalLens} · 已烘法线图 ${modalRefr.lensMaps} 张 · 参与折射 ${modalRefr.withLens} 块`,
 );
+/* ====================== 标题条：磨砂与折射（第三轮才测得出） ====================== */
+/*
+ * ★★ 这两条判据**前两轮测不出来**，原因不是它们没发生，而是：
+ *   ① 「.page-head」 上有 「isolation: isolate」 → 它成了 backdrop root →
+ *      伪元素的磨砂**背后是空的**（磨空气）。那时"磨砂开/关"的像素差是 **0.000**；
+ *   ② 折射也一样，没东西可弯。
+ *   删掉 「isolation」 之后（见 app.css 的说明），这两条才成立：
+ *      磨砂开关差 7.18 / 折射开关差也进入可测范围，而噪声只有约 0.01。
+ * ★ 取景框**要排除右边缘**：滚动条会淡出，属于"会自己动的东西"。
+ */
+await ev(`(() => { const b = document.querySelector('.content') || document.scrollingElement; b.scrollTop = 470; return b.scrollTop; })()`);
+await sleep(1200);
+const headClip = await ev(`(() => {
+  const r = document.querySelector('.page-head').getBoundingClientRect();
+  return { x: Math.round(r.left), y: Math.round(r.top), width: Math.max(160, Math.round(r.width) - 60), height: Math.round(r.height), scale: 1 };
+})()`);
+
+const headLensNow = await ev(`(() => {
+  const ph = document.querySelector('.page-head');
+  return {
+    lensVar: ph.style.getPropertyValue('--glass-lens-url').trim(),
+    backdrop: getComputedStyle(ph, '::before').backdropFilter || 'none',
+  };
+})()`);
+/*
+ * ★★ 这里断言的是**不许挂 url() 滤镜** —— 一个真机量出来的硬约束：
+ *   给 `.page-head::before` 的 backdrop-filter 加上 url(...) 之后，
+ *   **整条 backdrop-filter 失效**（连 blur 一起）。实测「真滤镜 / 同结构但位移 1px
+ *   的克隆滤镜 / 完全关掉」三者像素**完全一样**。
+ *   所以标题条上"遮挡"与"折射"是二选一，我们选了遮挡（用户当年点名要的）。
+ *   遮挡本身由 `tools/live/live-pagehead-frost-check.mjs` 逐像素验
+ *   （开关差 16+ / 噪声 0.000）。
+ */
+check(
+  '★ 标题条的 backdrop-filter 里没有 url() 滤镜（挂了会让遮挡整条失效）',
+  !String(headLensNow.backdrop).includes('url('),
+  String(headLensNow.backdrop).slice(0, 52),
+);
+
+/*
+ * ★★ 注入一律走**独立样式表**（adoptedStyleSheets），不再用 insertRule + 猜索引：
+ *   这一晚我在"删不掉自己注入的规则"上栽了三次，每次都产出**假数据** ——
+ *   最典型的一次：后面每一张图其实都还是"磨砂关着"的状态，于是"折射开关差"
+ *   与"磨砂开关差"一模一样（8.126），我差点把它当结论写进 ADR。
+ *   整表清空是原子的：没有索引、没有标记匹配、也没有"CSSRule.cssText 丢注释"。
+ */
+await ev(`(() => {
+  const sheet = new CSSStyleSheet();
+  document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+  window.__probeSheet = sheet;
+  return document.adoptedStyleSheets.length;
+})()`);
+const setProbe = (css) =>
+  ev(
+    '(() => { const s = window.__probeSheet; while (s.cssRules.length) s.deleteRule(0); ' +
+      (css ? 's.insertRule(' + JSON.stringify(css) + ', 0); ' : '') +
+      'return getComputedStyle(document.querySelector(".page-head"), "::before").backdropFilter; })()',
+  );
+
+/*
+ * ★★ 标题条的**像素对照挪到了专门的脚本**：`tools/live/live-pagehead-frost-check.mjs`。
+ *
+ *   为什么不在这个大检查里做：这里前后跑了几十个操作（切档、开模态、滚动、截图），
+ *   注入一条规则之后**我无法确认它什么时候真的生效** —— 实测同一段代码在大流程里
+ *   量出 8.046（与"关掉磨砂"一模一样），在干净会话里量出 0.548（噪声 0.082）。
+ *   大流程里那个 8.046 是**假数**（注入没生效/状态没恢复都会造成它）。
+ *   教训：**像素对照必须在一个你能完全控制、并且每一步都能回读状态的会话里做。**
+ *   这里只留"状态"类断言（磨砂在不在、滤镜挂没挂、弱化档关没关）。
+ */
+
 /* ====================== 收尾 ====================== */
 console.log(`\n截图：${OUT}`);
 console.log('（人眼复核：aura-卡片特写 与 mid-卡片特写 的边缘应有弯折与红蓝色边；weak-全窗 应是平面）');
