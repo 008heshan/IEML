@@ -201,12 +201,16 @@ export interface GlassController {
 /**
  * 参与折射的玻璃 —— **有意只收大的、尺寸稳定的表面**。
  *
- * ★ 曾经把 `.page-head`（粘性标题条）也放进来过，想的是"它下面滚过的全是文字，
- *   最该有东西可弯"。**真机测下来它在像素上没有任何效果**（用恒等滤镜做对照，
- *   信号与噪声同为 0.98），已撤回。原因还没查清：同一台机器上探针证明
- *   `backdrop-filter` 对"滚动容器内的元素"和"fixed 元素"都有效，
- *   标题条的 `::before` 也确实画得出来（去 mask 涂红可见）—— 但那个位置上
- *   折射就是测不出差别。**没效果的代码不留**，等有人把那条链路查清再放回来。
+ * ★★ `.page-head`（粘性标题条）**不能进来** —— 这一条是真机量出来的，而且
+ *   它是"标题条上磨砂与折射**二选一**"这个事实：
+ *
+ *   · 给 `.page-head::before` 挂 `backdrop-filter: … url(#滤镜)` 之后，
+ *     **整条 backdrop-filter 失效**（连 blur 一起没了）——
+ *     实测："挂真滤镜 / 挂同结构但位移 1px 的克隆滤镜 / 完全关掉"三者像素**完全一样**；
+ *   · 而不挂 url() 时，磨砂是**真的在遮挡**（开关差远大于噪声）。
+ *
+ *   用户当初要的是"没有割裂感**还能作遮挡**"——遮挡是硬需求，折射是锦上添花，
+ *   所以这里选磨砂。**谁想给标题条加折射，先解决"url() 会让它整条失效"这件事。**
  */
 const REFRACT_SELECTOR = '.glass-refract';
 
@@ -360,6 +364,15 @@ export function createGlassController(initial: VfxLevel): GlassController {
     if (r.width < 24 || r.height < 24) return;
     const radius = parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0;
     const id = lenses.idFor(r.width, r.height, radius);
+
+    if (el.classList.contains('page-head')) {
+      // 材质挂在 `::before` 上，而伪元素设不了内联样式 → 只能走变量。
+      // `data-lens` 则是 CSS 里那条规则的开关（见 app.css 的说明）。
+      el.style.setProperty('--glass-lens-url', `url(#${id})`);
+      el.dataset.lens = id;
+      return;
+    }
+
     const blur = getComputedStyle(el).getPropertyValue('--glass-blur').trim() || '12px';
     el.style.backdropFilter = `blur(${blur}) saturate(150%) url(#${id})`;
     el.style.setProperty('-webkit-backdrop-filter', `blur(${blur}) saturate(150%) url(#${id})`);
