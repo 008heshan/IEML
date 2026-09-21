@@ -2631,6 +2631,13 @@ tbody tr.clickable:focus-visible {
 .page-head::before {
   background-image: var(--glass-layers);
   background-color: transparent;
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  /*
+   * ★ 试过在这里也挂真折射（读 `--glass-lens-url`），**真机测不出任何像素效果**
+   *   （恒等滤镜对照：信号与噪声同为 0.98）。已在 `ui/glass.ts` 的
+   *   `REFRACT_SELECTOR` 里撤掉 —— 没效果的代码不留。原因待查，见 ADR-059。
+   */
 }
 
 /* ---------- ① 边缘折射：中/灵动档用 JS 装真滤镜；这两条只是"便宜的兜底" ---------- */

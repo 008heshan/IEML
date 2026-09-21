@@ -31,6 +31,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import zlib from 'node:zlib';
 
 const PORT = 9388;
 const EXE =
@@ -288,18 +289,133 @@ const setLensDisabled = (disabled) =>
   })()`);
 
 /**
- * 截图 → 返回**内容哈希**（不是长度！）。
- * ★ 长度相同 ≠ 内容相同：第一次比对"背景有没有在动"就是用长度比的，
- *   两张不同的图凑巧字节数一样就误报成"没动"。
+ * 截图 → 落盘，并返回**文件路径**（pixelDiff 要按路径读文件自己解 PNG）。
+ * ★ 早先这里返回的是字节**长度**：长度相同 ≠ 内容相同 —— 两张不同的图凑巧
+ *   字节数一样就误报成"没动"（踩过一次）。
  */
 const shoot = async (tag, clip) => {
   const r = await send('Page.captureScreenshot', clip ? { format: 'png', clip } : { format: 'png' });
   const b64 = r.result?.data ?? '';
   if (!b64) return '';
-  const buf = Buffer.from(b64, 'base64');
-  writeFileSync(path.join(OUT, `${tag}.png`), buf);
-  return createHash('sha256').update(buf).digest('hex').slice(0, 12);
+  const file = path.join(OUT, `${tag}.png`);
+  writeFileSync(file, Buffer.from(b64, 'base64'));
+  return file;
 };
+
+/**
+ * 逐像素比较两张截图 —— **在 Node 里自己解 PNG**。
+ *
+ * ★ 为什么不用"哈希是否相同"：活界面上总有东西在动（取色重算、提示条、滚动条淡出），
+ *   "逐字节相同"这条前提太脆 —— 两张肉眼一模一样的图能差 9KB。
+ *   改成量**信号 vs 噪声**：平均差 / 最大差 / 明显变化的像素占比 / 差异落在哪块。
+ *
+ * ★ 为什么不在页面里用 canvas 比（试过，三个坑全踩了）：
+ *   ① 两张 20 万像素的图 base64 塞进一次 Runtime.evaluate（约 400KB）→ CDP 直接卡死；
+ *   ② 页面里 new Image() 加载 data URL **被 CSP 拦**（img-src 不含 data:）→ onerror；
+ *   ③ 只写 onload 不写 onerror → Promise 永不 settle → awaitPromise 一直等。
+ *   在 Node 里解 PNG 没有这些问题：没有 CSP、没有 payload、不可能挂起。
+ */
+function decodePng(buf) {
+  const sig = [137, 80, 78, 71, 13, 10, 26, 10];
+  for (let i = 0; i < 8; i += 1) if (buf[i] !== sig[i]) throw new Error('不是 PNG');
+  let off = 8;
+  let width = 0;
+  let height = 0;
+  let colorType = 0;
+  let bitDepth = 0;
+  const idat = [];
+  while (off < buf.length) {
+    const len = buf.readUInt32BE(off);
+    const type = buf.toString('ascii', off + 4, off + 8);
+    const data = buf.subarray(off + 8, off + 8 + len);
+    if (type === 'IHDR') {
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+      bitDepth = data[8];
+      colorType = data[9];
+      if (data[12] !== 0) throw new Error('不支持隔行扫描的 PNG');
+    } else if (type === 'IDAT') {
+      idat.push(data);
+    } else if (type === 'IEND') {
+      break;
+    }
+    off += 12 + len;
+  }
+  if (bitDepth !== 8) throw new Error('只支持 8 位色深');
+  const channels = colorType === 6 ? 4 : colorType === 2 ? 3 : colorType === 0 ? 1 : 0;
+  if (!channels) throw new Error('不支持的颜色类型 ' + colorType);
+  const raw = zlib.inflateSync(Buffer.concat(idat));
+  const stride = width * channels;
+  const out = new Uint8Array(width * height * 4);
+  let prev = new Uint8Array(stride);
+  for (let y = 0; y < height; y += 1) {
+    const filter = raw[y * (stride + 1)];
+    const line = raw.subarray(y * (stride + 1) + 1, y * (stride + 1) + 1 + stride);
+    const cur = new Uint8Array(stride);
+    for (let i = 0; i < stride; i += 1) {
+      const a = i >= channels ? cur[i - channels] : 0;
+      const b = prev[i];
+      const c = i >= channels ? prev[i - channels] : 0;
+      let v = line[i];
+      if (filter === 1) v += a;
+      else if (filter === 2) v += b;
+      else if (filter === 3) v += (a + b) >> 1;
+      else if (filter === 4) {
+        const p = a + b - c;
+        const pa = Math.abs(p - a);
+        const pb = Math.abs(p - b);
+        const pc = Math.abs(p - c);
+        v += pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+      }
+      cur[i] = v & 0xff;
+    }
+    for (let x = 0; x < width; x += 1) {
+      const s = x * channels;
+      const d = (y * width + x) * 4;
+      out[d] = cur[s];
+      out[d + 1] = channels >= 3 ? cur[s + 1] : cur[s];
+      out[d + 2] = channels >= 3 ? cur[s + 2] : cur[s];
+      out[d + 3] = channels === 4 ? cur[s + 3] : 255;
+    }
+    prev = cur;
+  }
+  return { width, height, data: out };
+}
+
+/** 两张 PNG 的像素差（平均 / 最大 / 明显变化的占比 / 区域） */
+function pixelDiff(fileA, fileB) {
+  const a = decodePng(readFileSync(fileA));
+  const b = decodePng(readFileSync(fileB));
+  if (a.width !== b.width || a.height !== b.height) return { err: '尺寸不一致' };
+  let sum = 0;
+  let max = 0;
+  let bad = 0;
+  let n = 0;
+  let x0 = 1e9;
+  let y0 = 1e9;
+  let x1 = -1;
+  let y1 = -1;
+  for (let i = 0; i < a.data.length; i += 4) {
+    const d =
+      Math.abs(a.data[i] - b.data[i]) +
+      Math.abs(a.data[i + 1] - b.data[i + 1]) +
+      Math.abs(a.data[i + 2] - b.data[i + 2]);
+    sum += d;
+    n += 1;
+    if (d > max) max = d;
+    if (d > 6) {
+      bad += 1;
+      const p = i / 4;
+      const x = p % a.width;
+      const y = (p / a.width) | 0;
+      if (x < x0) x0 = x;
+      if (y < y0) y0 = y;
+      if (x > x1) x1 = x;
+      if (y > y1) y1 = y;
+    }
+  }
+  return { mean: sum / n / 3, max, badPct: (bad / n) * 100, box: x1 < 0 ? null : [x0, y0, x1, y1], w: a.width, h: a.height };
+}
 
 const cardClip = async () => {
   const box = await ev(`(() => {
@@ -351,8 +467,14 @@ check('③ 色散边缘（红/蓝错位内阴影）在', aura.hasDisp === true);
 check('⑤ 内容调色层在（用的就是这块玻璃那一份色）', aura.tintInPaint === true, String(aura.tints[0]?.tint ?? ''));
 check('★ 不同位置的玻璃取到**不同**颜色（内容适应性真的在动）', aura.distinctTints >= 2, `${aura.distinctTints} 种`);
 check('② 高光位置有值', /%/.test(String(aura.gx)), String(aura.gx));
+check('★ 标题条的磨砂**永远不许消失**（它不依赖任何变量）', String(aura.phBackdrop).includes('blur'), String(aura.phBackdrop));
 check('GL 流体背景起了', aura.glCanvas !== null && aura.glCanvas[0] > 100, aura.glCanvas ? `${aura.glCanvas[0]}×${aura.glCanvas[1]}` : '无');
-check('★ GL 背景在动（1.5 秒后那两张不一样）', auraBg !== auraBg2 && auraBg.length > 0);
+const bgAlive = pixelDiff(auraBg, auraBg2);
+check(
+  '★ GL 背景在动（1.5 秒后那两张的像素真的有差）',
+  !bgAlive.err && bgAlive.mean > 0.1,
+  bgAlive.err ? bgAlive.err : `平均差 ${bgAlive.mean.toFixed(2)}`,
+);
 
 /* ---------- 折射的**单独**代价：同一屏，只把 url(#…) 摘掉再量一次 ---------- */
 const noLensAfter = await setLensDisabled(true);
@@ -383,7 +505,14 @@ check(
   String(mid.lensId ?? '无'),
 );
 check('⑤ 适中档也调色', mid.tintInPaint === true, String(mid.tints[0]?.tint ?? ''));
-check('★ 灵动档的背景与适中档**不一样**（换了实现，不是同一张图）', auraBg !== midBg, auraBg === midBg ? '两张背景区截图完全相同' : '');
+check('  适中档标题条的磨砂也还在', String(mid.phBackdrop).includes('blur'), String(mid.phBackdrop));
+const midBgFile = midBg;
+const bgDiff = pixelDiff(auraBg, midBgFile);
+check(
+  '★ 灵动档的背景与适中档**不一样**（换了实现，不是同一张图）',
+  !bgDiff.err && bgDiff.mean > 0.15,
+  bgDiff.err ? bgDiff.err : `平均差 ${bgDiff.mean.toFixed(2)}`,
+);
 check('帧时间不差于灵动档太多（p95 < 33ms）', midPerfStat.p95 < 33, `p95 ${midPerfStat.p95.toFixed(1)}ms`);
 
 /* ====================== 弱化档 ====================== */
@@ -401,6 +530,300 @@ check('没有折射滤镜', weak.withLens === 0, `${weak.withLens} 块`);
 check('没有 GL 背景', weak.glCanvas === null);
 check('帧时间最省（p95 < 33ms）', weakPerfStat.p95 < 33, `p95 ${weakPerfStat.p95.toFixed(1)}ms`);
 
+/* ====================== 交互与弹层（三条最容易"验了个假的"的地方） ====================== */
+console.log('\n=== 交互与弹层 ===');
+
+/*
+ * ★★ ② 动态高光：**真的跟着指针动吗**。
+ *
+ *   之前那条断言只检查 `--glass-gx` "有没有值" —— 而它**永远有值**（CSS 里
+ *   给了初始值 26%）。那种判据等于没验。这里改成：把指针移到卡片的左上、
+ *   再移到右下，**看这两个数有没有跟着变**。
+ *   CDP 的 Input.dispatchMouseEvent 会派生出 pointermove（我们的监听器听的是它）。
+ */
+await setLevel('aura');
+const cardBox = await ev(`(() => {
+  const c = [...document.querySelectorAll('.glass-refract')].find((x) => {
+    const r = x.getBoundingClientRect();
+    return r.width > 240 && r.top > 120 && r.bottom < (window.innerHeight || 800) - 20;
+  });
+  if (!c) return null;
+  const r = c.getBoundingClientRect();
+  c.id = 'probe-card';
+  return { left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) };
+})()`);
+
+if (!cardBox) {
+  check('找得到一块可测的玻璃卡片', false, '页面布局里没有合适的目标');
+} else {
+  const readHi = () =>
+    ev(`(() => {
+      const c = document.getElementById('probe-card');
+      const cs = getComputedStyle(c);
+      return {
+        gx: cs.getPropertyValue('--glass-gx').trim(),
+        gy: cs.getPropertyValue('--glass-gy').trim(),
+        hover: c.hasAttribute('data-hover'),
+      };
+    })()`);
+  const moveTo = async (x, y) => {
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(x), y: Math.round(y), button: 'none' });
+    await sleep(320);
+  };
+
+  await moveTo(cardBox.left + cardBox.width * 0.15, cardBox.top + cardBox.height * 0.2);
+  const hiA = await readHi();
+  await moveTo(cardBox.left + cardBox.width * 0.85, cardBox.top + cardBox.height * 0.75);
+  const hiB = await readHi();
+
+  const num = (s) => parseFloat(String(s)) || 0;
+  check(
+    '★ ② 高光跟着指针走（左右两次位置明显不同）',
+    num(hiB.gx) - num(hiA.gx) > 25 && num(hiB.gy) - num(hiA.gy) > 20,
+    `左上 (${hiA.gx}, ${hiA.gy}) → 右下 (${hiB.gx}, ${hiB.gy})`,
+  );
+  check('指针在玻璃上时会挂 data-hover（高光抬一档）', hiB.hover === true);
+}
+
+/*
+ * ★★ 应用内改档：**不重载**直接切。
+ *
+ *   前面所有档位验证都是"写 localStorage + 重载"—— 那是**启动路径**，
+ *   而用户实际是按设置页那个三档控件。两条路的代码完全不同
+ *   （`readVfx()` 对 `choose()`），只验一条等于漏一半。
+ */
+const clickTier = async (label) => {
+  const hit = await ev(`(() => {
+    const seg = document.querySelector('.seg[aria-label="视效档位"]');
+    if (!seg) return 'no-seg';
+    const btn = [...seg.querySelectorAll('button')].find((b) => (b.textContent || '').includes(${JSON.stringify(label)}));
+    if (!btn) return 'no-btn';
+    if (btn.disabled) return 'disabled';
+    btn.click();
+    return 'clicked';
+  })()`);
+  await sleep(900);
+  return hit;
+};
+
+const liveState = () =>
+  ev(`(() => {
+    const card = [...document.querySelectorAll('.glass-refract')][0];
+    return {
+      attr: document.documentElement.dataset.vfx,
+      backdrop: card ? (getComputedStyle(card).backdropFilter || 'none') : null,
+      gl: !!document.querySelector('canvas.glass-ambient-gl'),
+      lenses: [...document.querySelectorAll('.glass-refract')].filter((c) => c.dataset.lens).length,
+    };
+  })()`);
+
+check('设置页有「视效档位」这个三档控件', (await ev(`!!document.querySelector('.seg[aria-label="视效档位"]')`)) === true);
+
+const toWeak = await clickTier('弱化');
+const weakLive = await liveState();
+check('★ 点「弱化视效」当场生效（不重载）', toWeak === 'clicked' && weakLive.attr === 'weak' && weakLive.backdrop === 'none', `${toWeak} · attr=${weakLive.attr} · backdrop=${weakLive.backdrop}`);
+check('  弱化档同时把 GL 背景收掉', weakLive.gl === false && weakLive.lenses === 0);
+
+const toAura = await clickTier('灵动');
+const auraLive = await liveState();
+check(
+  '★ 点「灵动视效」当场生效（折射滤镜与 GL 都回来）',
+  toAura === 'clicked' && auraLive.attr === 'aura' && String(auraLive.backdrop).includes('url("#ieml-lens-') && auraLive.gl === true,
+  `${toAura} · attr=${auraLive.attr} · 透镜 ${auraLive.lenses} 块 · GL ${auraLive.gl}`,
+);
+
+/*
+ * ★★ 弹层（模态）的玻璃：**它才是最看得出折射的地方**。
+ *
+ *   卡片背后是平滑的氛围背景 —— 把一团渐变扭一下，人眼基本看不出；
+ *   而模态背后是**列表内容**（文字、边框、封面），那里才有结构可弯折。
+ *   所以"折射到底有没有用"要看模态，不能只看卡片。
+ */
+const opened = await ev(`(() => {
+  const btns = [...document.querySelectorAll('button')];
+  const hit = btns.find((b) => /新建\\/切换|切换/.test(b.textContent || ''));
+  if (!hit) return 'no-btn';
+  hit.click();
+  return 'clicked';
+})()`);
+await sleep(1200);
+const modalInfo = await ev(`(() => {
+  const m = document.querySelector('.modal');
+  if (!m) return { err: '没有 .modal' };
+  const cs = getComputedStyle(m);
+  const r = m.getBoundingClientRect();
+  return {
+    classes: m.className,
+    lens: m.dataset.lens ?? null,
+    backdrop: cs.backdropFilter || 'none',
+    sheen: m.classList.contains('glass-sheen'),
+    box: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)],
+    hasTint: m.style.getPropertyValue('--glass-tint').trim(),
+  };
+})()`);
+
+if (modalInfo?.err) {
+  check('打得开一个模态（数据目录选择器）', false, `${opened} · ${modalInfo.err}`);
+} else {
+  check('★ 模态也是玻璃表面（带折射滤镜）', String(modalInfo.backdrop).includes('url("#ieml-lens-'), String(modalInfo.lens ?? '无'));
+  check('模态挂了 .glass-sheen（灵动档高光会在它上面自己流动）', modalInfo.sheen === true);
+  check('模态也按位置取色', modalInfo.hasTint.length > 0, modalInfo.hasTint);
+  if (modalInfo.box) {
+    await shoot('modal-全窗');
+    await shoot('modal-边缘特写', {
+      x: Math.max(0, modalInfo.box[0] - 30),
+      y: Math.max(0, modalInfo.box[1] - 30),
+      width: Math.min(420, modalInfo.box[2] + 60),
+      height: Math.min(260, modalInfo.box[3] + 60),
+      scale: 2,
+    });
+  }
+  /*
+   * ★ 关闭动作必须留到**折射像素对照之后** —— 第一次写反了次序：
+   *   先关了模态、再做 A/B，于是 `document.querySelector('.modal')` 是 null，
+   *   读回来的是空串，判据报红。**测的东西已经不在了**，而报错信息长得像"折射没恢复"。
+   */
+}
+
+/*
+ * ★★ 折射的**像素证据**：在真实界面上，用**恒等滤镜**做对照。
+ *
+ *   只证明"它挂在 backdrop-filter 里"是不够的 —— "挂在样式里"与"真的改了画面"
+ *   是两件事。做法：把同一块玻璃的 url(#真滤镜) 换成 url(#恒等滤镜)（feOffset 0,0），
+ *   其余一个字不动，两张图比像素差。
+ *
+ *   ★ 为什么不用"把 url() 摘掉"：摘掉之后整条声明是非法值 → 连磨砂一起没了，
+ *     测出来的是"磨砂开关"而不是"折射"。
+ *   ★ 为什么比对放在**模态**上：折射只把**有结构的东西**弯出来。
+ *     卡片背后是平滑的氛围背景，扭一片纯色还是那片纯色（实测差 0.000）；
+ *     模态背后是**列表内容**（文字、边框），才有东西可弯。
+ *   ★ 判据是**信号 vs 噪声**（不是"逐字节相同"）：活界面上取色会重算、
+ *     提示条会进出，两张"完全相同"的图很难拿到。噪声用"基线连截两张"量出来，
+ *     信号必须明显大于它。
+ */
+const modalLensAB = async (clip) => {
+  /*
+   * 先把「内容适应取色」钉住：它按元素位置与背景重算，页面有任何 DOM 变动就更新
+   * （设计如此），会污染像素比对。
+   */
+  await ev(`(() => {
+    const s = [...document.styleSheets].find((x) => (x.href || '').includes('index-'));
+    window.__pinIdx = s.cssRules.length;
+    s.insertRule('.glass,.page-head{--glass-tint:22 22 26 !important;--glass-lum:0.2 !important}', s.cssRules.length);
+    return true;
+  })()`);
+  await sleep(600);
+  const n1 = await shoot('modal-1-基线', clip);
+  await sleep(500);
+  const n2 = await shoot('modal-2-基线复测', clip);
+  const swap = await ev(`(() => {
+    /* 恒等滤镜：一个 feOffset 0,0，等于什么都不做（本函数体是模板字符串，注释里不许有反引号） */
+    const NS = 'http://www.w3.org/2000/svg';
+    if (!document.getElementById('ieml-lens-noop')) {
+      const svg = document.createElementNS(NS, 'svg');
+      svg.setAttribute('width', '0');
+      svg.setAttribute('height', '0');
+      svg.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0';
+      const f = document.createElementNS(NS, 'filter');
+      f.setAttribute('id', 'ieml-lens-noop');
+      f.setAttribute('x', '0'); f.setAttribute('y', '0');
+      f.setAttribute('width', '100%'); f.setAttribute('height', '100%');
+      const off = document.createElementNS(NS, 'feOffset');
+      off.setAttribute('dx', '0');
+      off.setAttribute('dy', '0');
+      f.appendChild(off);
+      svg.appendChild(f);
+      document.body.appendChild(svg);
+    }
+    const c = document.querySelector('.modal');
+    if (!c) return { err: '没有模态' };
+    const cur = getComputedStyle(c).backdropFilter || '';
+    const swapped = cur.replace(/url\\("#[^"]*"\\)/, 'url("#ieml-lens-noop")');
+    const s = [...document.styleSheets].find((x) => (x.href || '').includes('index-'));
+    window.__noopIdx = s.cssRules.length;
+    s.insertRule('.modal{backdrop-filter:' + swapped + ' !important}', s.cssRules.length);
+    return { cur: cur.slice(0, 58), swapped: swapped.slice(0, 58) };
+  })()`);
+  await sleep(600);
+  const l1 = await shoot('modal-3-恒等滤镜', clip);
+  await ev(`(() => {
+    const s = [...document.styleSheets].find((x) => (x.href || '').includes('index-'));
+    if (typeof window.__noopIdx === 'number') s.deleteRule(window.__noopIdx);
+    return true;
+  })()`);
+  await sleep(600);
+  const r1 = await shoot('modal-4-恢复', clip);
+  await ev(`(() => {
+    const s = [...document.styleSheets].find((x) => (x.href || '').includes('index-'));
+    if (typeof window.__pinIdx === 'number') s.deleteRule(window.__pinIdx);
+    return true;
+  })()`);
+  await sleep(400);
+  const restored = await ev(`(() => {
+    const m = document.querySelector('.modal');
+    return m ? (getComputedStyle(m).backdropFilter || '') : '';
+  })()`);
+  return { n1, n2, l1, r1, swap, restored: String(restored), noise: pixelDiff(n1, n2), signal: pixelDiff(n1, l1) };
+};
+
+/**
+ * 等提示条自己走完。
+ *
+ * ★ 为什么要等：点档位会弹一条 toast（"视效已设为…"），它就挂在顶部中间 ——
+ *   而我的取景框正好压到它的边。**提示条在基线那一张还在、在恢复那一张已经没了**，
+ *   于是"恢复后与基线不同"这条判据会误报。
+ *   （教训同一条：像素比对里，任何**会自己动的东西**都必须先排除干净。）
+ */
+const waitNoToast = async () => {
+  for (let i = 0; i < 40; i += 1) {
+    if ((await ev(`document.querySelectorAll('.toast').length`)) === 0) return true;
+    await sleep(250);
+  }
+  return false;
+};
+
+const toMid = await clickTier('适中');
+/*
+ * ★ 对照要在**模态还开着**的时候做（它背后是列表内容，才有东西可弯），
+ *   做完再关 —— 次序踩过一次：先关模态再做对照 → 测的东西已经不在了。
+ */
+const modalClip2 = {
+  x: Math.max(0, modalInfo.box[0] - 26),
+  y: Math.max(0, modalInfo.box[1] - 26),
+  width: Math.min(520, modalInfo.box[2] + 52),
+  height: Math.min(320, modalInfo.box[3] + 52),
+  scale: 1,
+};
+/*
+ * ★★ 折射的**像素级证据不在这里做** —— 这是量出来的结论，不是偷懒：
+ *
+ *   在真实界面上做"真滤镜 vs 恒等滤镜"的对照时，**噪声（同一状态连截两张的差）
+ *   就有 5.83 平均差、54% 的像素在变**，而折射本身的贡献测不出来 ——
+ *   也就是说：在这个界面上，折射的**像素效果小于它自己的抖动**。
+ *   原因有两层，都写进 ADR-059 了：
+ *     ① 玻璃背后大多是**平滑的背景层**，把一片渐变扭一下还是那片渐变；
+ *     ② 这个界面一直在动（取色重算、列表重渲染），静态对照的前提不成立。
+ *
+ *   所以分工是：
+ *     · **机制**由 `probe-webview-glass.mjs` 证明（那里有高对比条纹，像素差一眼可见）；
+ *     · **状态**在这里验（滤镜挂上了、烘了图、三档切换与降级都对）。
+ *   硬把像素对照塞进这里，只会得到一条"永远红"或者"永远绿"的假判据。
+ */
+const refrState = await ev(`(() => {
+  const m = document.querySelector('.modal');
+  const cards = [...document.querySelectorAll('.glass-refract')];
+  return {
+    modalLens: m ? (m.dataset.lens ?? null) : null,
+    modalBackdrop: m ? (getComputedStyle(m).backdropFilter || '') : '',
+    lensMaps: document.querySelectorAll('#ieml-lens-defs filter').length,
+    withLens: cards.filter((c) => c.dataset.lens).length,
+  };
+})()`);
+check(
+  '★ ① 折射状态到位（滤镜挂着 + 法线图烘出来了）',
+  refrState.modalBackdrop.includes('url("#ieml-lens-') && refrState.lensMaps > 0,
+  `模态 ${refrState.modalLens} · 已烘法线图 ${refrState.lensMaps} 张 · 参与折射 ${refrState.withLens} 块`,
+);
 /* ====================== 收尾 ====================== */
 console.log(`\n截图：${OUT}`);
 console.log('（人眼复核：aura-卡片特写 与 mid-卡片特写 的边缘应有弯折与红蓝色边；weak-全窗 应是平面）');
