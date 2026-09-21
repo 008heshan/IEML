@@ -27,6 +27,17 @@ import { instanceNameRules, validate } from '../domain/validate.ts';
 import { getBackend } from '../bridge';
 import type { Backend } from '../bridge';
 import { MOTION_KEY, setMotion } from '../ui/motion';
+import {
+  applyVfx,
+  currentVfx,
+  decideVfx,
+  readVfx,
+  setVfx as persistVfx,
+  vfxCapability,
+  type VfxCapability,
+  type VfxLevel,
+} from '../ui/vfx';
+import { createGlassController } from '../ui/glass';
 import { useLauncherUpdate } from '../hooks/useLauncherUpdate';
 import type { UpdateState } from '../hooks/useLauncherUpdate';
 
@@ -213,6 +224,27 @@ interface AppContextValue {  state: AppState;
    */
   update: LauncherUpdate;
 
+  /**
+   * ★★ 视效档位（**液态玻璃的材质**：弱化 / 适中 / 灵动）。
+   *
+   * 为什么在全局而不是设置页自己存：
+   *   玻璃表面**全都在别的组件里**（卡片在 `ui/Card`、模态在 `ui/Modal`、
+   *   还有各页的 `.page-head`）。运行时控制器必须**全应用只有一个**：
+   *   多一份就是两套透镜滤镜注册表 + 两个 rAF 循环 + 两个 WebGL 上下文
+   *   （Chromium 的上下文数量有限，超了会丢掉最早的那个 —— 症状是背景忽然变黑）。
+   *
+   * `level` 是**已经过能力校正**的档位（读不出来就是适中），`want` 是用户真正选的那个
+   * （用来显示"你选的灵动被挡下来了，因为…"）。
+   */
+  vfx: {
+    level: VfxLevel;
+    want: VfxLevel;
+    clamped: boolean;
+    why: string | null;
+    capability: VfxCapability;
+    choose: (level: VfxLevel) => void;
+  };
+
   /* --- Toast --- */
   toast: (kind: ToastItem['kind'], title: string, desc?: string) => void;
   dismissToast: (id: string) => void;
@@ -236,6 +268,75 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const backend = useMemo(() => getBackend(), []);
   const bootedRef = useRef(false);
+
+  /* ====================== 视效档位 + 玻璃运行时 ====================== */
+  /**
+   * ★★ 为什么"运行时控制器"必须活在 provider 里（而不是各页面各挂一份）：
+   *   玻璃表面散落在所有页面（卡片、模态、各页的标题条），而控制器里握着
+   *   三样**只能有一份**的东西 —— 透镜滤镜注册表、rAF 循环、WebGL 上下文。
+   *   各挂一份的后果不是"重复劳动"，是**互相踩**：两个 GL 上下文里先建的那个
+   *   会被 Chromium 丢掉（症状是背景忽然变黑），两个 rAF 循环会各推各的时间轴。
+   */
+  const [vfxWant, setVfxWant] = useState<VfxLevel>(() => readVfx().level);
+  const vfxCap = useMemo(() => vfxCapability(), []);
+  const glassRef = useRef<ReturnType<typeof createGlassController> | null>(null);
+
+  useEffect(() => {
+    const ctl = createGlassController(currentVfx());
+    glassRef.current = ctl;
+    return () => {
+      ctl.dispose();
+      glassRef.current = null;
+    };
+  }, []);
+
+  /**
+   * 低性能损耗模式**压过**视效档位。
+   *
+   * ★ 两个开关说的是同一件事的两面：`low-perf` 是"我这台机器别搞花样"，
+   *   视效档位是"我想要多花的材质"。用户同时打开时，**省电那条赢** ——
+   *   否则"低性能损耗模式"就变成了一个骗人的开关（开了还在跑 WebGL）。
+   *   CSS 那边已经用 `!important` 关掉了模糊，这里补的是 JS 侧：
+   *   GL 背景不起、透镜滤镜不装。
+   *
+   * ★ 为什么盯着 `<html>` 的类而不是读 localStorage：那个开关的**真源就是类**
+   *   （`main.tsx` 首屏前挂、设置页切换时改）。盯类 = 只有一份判据；
+   *   读 localStorage 就是第二份判据，迟早会出现"开关关了但界面还在跑 GL"。
+   */
+  const [lowPerf, setLowPerfState] = useState(() =>
+    typeof document === 'undefined' ? false : document.documentElement.classList.contains('low-perf'),
+  );
+  useEffect(() => {
+    const mo = new MutationObserver(() =>
+      setLowPerfState(document.documentElement.classList.contains('low-perf')),
+    );
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    return () => mo.disconnect();
+  }, []);
+
+  const vfxDecision = useMemo(() => decideVfx(vfxWant, vfxCap), [vfxWant, vfxCap]);
+  const vfxDowngradedByLowPerf = lowPerf && vfxDecision.level === 'aura';
+  /** 实际生效的档位（能力校正 + 低性能模式压制之后的那一个） */
+  const vfxLevel: VfxLevel = vfxDowngradedByLowPerf ? 'mid' : vfxDecision.level;
+  const vfxClamped = vfxDecision.clamped || vfxDowngradedByLowPerf;
+  const vfxWhy = vfxDowngradedByLowPerf
+    ? '低性能损耗模式开着，灵动视效被压到「适中」（关掉它就能回来）'
+    : vfxDecision.why;
+
+  /** 换档：写盘 + 立刻改 `data-vfx`（**不等 React 重渲染**，否则会闪一帧旧材质） */
+  const chooseVfx = useCallback(
+    (level: VfxLevel) => {
+      persistVfx(level);
+      applyVfx(decideVfx(level, vfxCap).level);
+      setVfxWant(level);
+    },
+    [vfxCap],
+  );
+
+  useEffect(() => {
+    applyVfx(vfxLevel);
+    glassRef.current?.setLevel(vfxLevel);
+  }, [vfxLevel]);
   /**
    * 当下这一份 state 的引用。
    *
@@ -1043,6 +1144,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     refreshJava,
     prefsSaveFailed,
     update,
+    vfx: {
+      level: vfxLevel,
+      want: vfxWant,
+      clamped: vfxClamped,
+      why: vfxWhy,
+      capability: vfxCap,
+      choose: chooseVfx,
+    },
     toast,
     dismissToast,
     upsertTask,

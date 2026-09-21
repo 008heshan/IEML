@@ -2502,3 +2502,221 @@ tbody tr.clickable:focus-visible {
 :root[data-motion='aura'] .launch-btn:not(:disabled):hover {
   animation: none;
 }
+
+/* ============================================================================
+   ★★ 液态玻璃（2026-09-21，用户：「我想要真实的液态玻璃」）
+
+   用户点名要五条，逐条对应到下面哪一行（别删注释，不然下一轮没人知道
+   某条渐变是干什么的）：
+
+     ① 边缘折射  → `aura`/`mid` 档由 JS 装 `backdrop-filter: … url(#ieml-lens-*)`
+                    （按元素真实尺寸烘的镜片法线图，见 `ui/glass.ts`）；
+     ② 动态高光  → 高光层用 `--glass-gx/--glass-gy`，由指针位置驱动；
+                    灵动档还会**自己缓慢流动**（`ieml-glass-sheen`）
+     ③ 色散边缘  → 两条 1–2px 的红/蓝错位渐变（真实玻璃的色差）
+     ④ 厚度感    → 边缘增亮的那圈径向渐变 + 内阴影（"边缘比中间厚"）
+     ⑤ 内容适应  → `--glass-tint` / `--glass-lum`：JS 按元素位置采样**下方背景光斑**
+                    的实际颜色写进来（暖色背景 → 玻璃偏暖）
+
+   ## 三档（判据在 `ui/vfx.ts`，这里只管"长什么样"）
+
+     · `weak` 弱化视效：**平玻璃** —— 底色 + 投影，不模糊、不折射、无色散、无高光
+     · `mid`  适中视效：上面五条全有，但背景是静的、高光只跟指针
+     · `aura` 灵动视效：折射更强 + 高光自己流动 + 背景换成 WebGL 流体
+
+   ## 层序（从上到下，写在 `--glass-layers` 里）
+     厚度缘光 → 色散(横) → 色散(纵) → 动态高光 → 内容调色
+
+   ★ 单独抽成 `--glass-layers` 是为了**只有一份定义**：`.glass` 与
+     `.page-head::before` 都吃它。否则"标题条"和"卡片"迟早会长得不一样。
+   ============================================================================ */
+
+/* 高光位置要能被 CSS 动画平滑插值 → 必须注册（未注册的自定义属性不能插值） */
+@property --glass-gx {
+  syntax: '<percentage>';
+  inherits: true;
+  initial-value: 26%;
+}
+@property --glass-gy {
+  syntax: '<percentage>';
+  inherits: true;
+  initial-value: 4%;
+}
+
+:root {
+  /* 材质的**档位参数**（三档各自覆盖下面这几条） */
+  --glass-blur: 14px;
+  --glass-tint: 91 141 239; /* 由 JS 按位置覆盖；这是 accent 蓝的兜底 */
+  --glass-lum: 0.25; /* 下方亮度 0..1，由 JS 覆盖：越亮高光越淡 */
+  --glass-alpha: 0.12; /* 调色层不透明度 */
+  --glass-hi: 0.13; /* 高光强度 */
+  --glass-rim: 0.1; /* ④ 边缘厚度亮 */
+  --glass-disp: 1.5px; /* ③ 色散错位量（用户要求 1–2px） */
+  --glass-disp-a: 0.12; /* ③ 色散强度 */
+  --glass-gx: 26%;
+  --glass-gy: 4%;
+}
+
+/*
+ * ★★ 层序（从上到下）：动态高光 → 内容调色
+ *
+ * ★★ 只有**两层**，这是量出来的，不是省出来的（真机实测，同一屏滚动帧时间）：
+ *     · 5 层（缘光 + 色散横 + 色散纵 + 高光 + 调色）= **24.7ms/帧**
+ *     · 2 层（高光 + 调色，其余改走 box-shadow）  = **15.6ms/帧**
+ *     · 完全没有玻璃（低性能损耗模式）            = 11.8ms/帧
+ *   也就是说：三个"装饰"渐变层一个人吃掉 **9ms** —— 因为它们要跟着
+ *   `backdrop-filter` 每帧重新栅格化（滚动时背后内容一直在变）。
+ *   缘光与色散都是 **1–2px 的贴边效果**，用内阴影（`box-shadow` inset）表达
+ *   一模一样，但那是合成器最擅长的一类绘制。所以：**能让 box-shadow 干的，
+ *   不要用渐变层**。
+ *   （反面案例也测过：把装饰挪到 `.glass::after` 独立合成层反而**更慢**，26.6ms。）
+ *
+ * ★★ 这一坨**必须声明在元素上，不能放 `:root`** —— 这是踩出来的：
+ *   CSS 自定义属性里的 `var()` 是在**声明它的那个元素**上求值的，
+ *   值算完之后才作为"已解析的字符串"继承下去。
+ *   第一版我把它放在 `:root`，于是 `var(--glass-tint)` 在 `:root` 就被替换成了
+ *   兜底的那个蓝色（91 141 239），元素自己（JS 按位置算出来的 `25 16 43`）
+ *   **根本进不来** —— 症状是"取色算对了、画面却全都一个颜色"。
+ *   （实测证据：卡片 bg 里最后一层是 rgba(91,141,239,.12)，而元素的
+ *     `--glass-tint` 是 `25 16 43`。）
+ *
+ * ★ 只写**一份**（两个选择器共用一块），否则标题条与卡片迟早长得不一样。
+ */
+.glass,
+.page-head::before {
+  --glass-layers:
+    radial-gradient(
+      58% 46% at var(--glass-gx) var(--glass-gy),
+      rgba(255, 255, 255, calc(var(--glass-hi) - var(--glass-lum) * 0.05)),
+      transparent 68%
+    ),
+    linear-gradient(rgb(var(--glass-tint) / var(--glass-alpha)), rgb(var(--glass-tint) / var(--glass-alpha)));
+}
+
+.glass {
+  position: relative;
+  isolation: isolate;
+  /* ★ 底色仍是**不透明**的 `--bg-raised`：玻璃压在文字下面，透过头会读不清。
+     调色是叠在它上面的一层透明色（`--glass-layers` 最后一条）。 */
+  background-color: var(--bg-raised);
+  background-image: var(--glass-layers);
+  backdrop-filter: blur(var(--glass-blur)) saturate(145%);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(145%);
+  /*
+   * ★★ ③ 色散与 ④ 厚度都走**内阴影**，不走渐变层（理由见上面 `--glass-layers` 的实测）。
+   *   顺序（从下往上画）：投影 → 底影 → 顶光 → 厚度内辉光 → 色散四边。
+   */
+  box-shadow:
+    var(--shadow-card),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, calc(0.1 + var(--glass-lum) * 0.05)),
+    /* ④ 厚度感：贴着内边缘的一圈辉光 —— "边缘比中间厚" */
+    inset 0 0 26px -14px rgba(255, 255, 255, calc(var(--glass-rim) * 2.6)),
+    /* ③ 色散边缘：红蓝各错开 1–2px —— 这就是用户要的"红蓝通道偏移"。
+       ★ 只做**横向**那一对：上下那对（青/琥珀）在实测里每帧多花约 2ms，
+         而 1px 的上下色边人眼几乎看不出 —— 按需求原文（红/蓝）与实测成本取横向。 */
+    inset var(--glass-disp) 0 0 rgba(255, 64, 64, var(--glass-disp-a)),
+    inset calc(-1 * var(--glass-disp)) 0 0 rgba(64, 150, 255, var(--glass-disp-a));
+  transition:
+    box-shadow var(--dur-base) var(--ease),
+    background-color var(--dur-base) var(--ease);
+}
+
+/* 指针在玻璃上时高光抬一档（JS 挂 `data-hover`） */
+.glass[data-hover] {
+  --glass-hi: 0.19;
+}
+
+/* 标题条的磨砂层吃同一套层（它原来是"只磨砂、不填色"，现在多一层调色） */
+.page-head::before {
+  background-image: var(--glass-layers);
+  background-color: transparent;
+}
+
+/* ---------- ① 边缘折射：中/灵动档用 JS 装真滤镜；这两条只是"便宜的兜底" ---------- */
+
+/* ---------- ② 动态高光：灵动档自己流动（悬停时让位给指针） ---------- */
+@keyframes ieml-glass-sheen {
+  0% {
+    --glass-gx: 12%;
+    --glass-gy: 2%;
+  }
+  35% {
+    --glass-gx: 74%;
+    --glass-gy: 16%;
+  }
+  70% {
+    --glass-gx: 38%;
+    --glass-gy: 8%;
+  }
+  100% {
+    --glass-gx: 88%;
+    --glass-gy: 3%;
+  }
+}
+:root[data-vfx='aura'] .glass-sheen:not([data-hover]) {
+  animation: ieml-glass-sheen 21s var(--ease-in-out) infinite alternate;
+}
+
+/* ---------- WebGL 流体背景（只有灵动档显示它） ---------- */
+.glass-ambient-gl {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  display: none;
+  pointer-events: none;
+  /* 底色交给 body（深色底），画布只负责光斑 */
+  background: transparent;
+}
+:root[data-vfx='aura'] .glass-ambient-gl {
+  display: block;
+}
+/* GL 起不来（驱动崩了/被策略拦了）→ 退回 CSS 光斑，别留一块黑 */
+:root[data-vfx='aura'][data-vfx-gl='fallback'] .glass-ambient-gl {
+  display: none;
+}
+:root[data-vfx='aura']:not([data-vfx-gl='fallback']) body::before {
+  display: none;
+}
+
+/* ============================ 三档各自的样子 ============================ */
+
+/* 弱化视效：平玻璃 —— 一个滤镜都不发（**含标题条、小按钮、遮罩那几处**：
+   只关 `.glass` 的话，标题条还在磨砂，用户切到"弱化"却看到一条糊的带子） */
+:root[data-vfx='weak'] .glass,
+:root[data-vfx='weak'] .page-head::before {
+  --glass-layers: none;
+}
+:root[data-vfx='weak'] .glass,
+:root[data-vfx='weak'] .page-head::before,
+:root[data-vfx='weak'] .chip-btn,
+:root[data-vfx='weak'] .overlay,
+:root[data-vfx='weak'] .titlebar {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+:root[data-vfx='weak'] .glass {
+  background-image: none;
+  box-shadow: var(--shadow-card);
+}
+:root[data-vfx='weak'] .glass-ambient-gl {
+  display: none;
+}
+
+/* 适中视效：五条都在，但都收着 —— 背景是静的，高光只跟指针 */
+:root[data-vfx='mid'] {
+  --glass-blur: 13px;
+  --glass-hi: 0.12;
+  --glass-rim: 0.09;
+  --glass-disp-a: 0.11;
+}
+
+/* 灵动视效：折射更厚、色散更明显、高光会自己流 */
+:root[data-vfx='aura'] {
+  --glass-blur: 18px;
+  --glass-hi: 0.17;
+  --glass-rim: 0.14;
+  --glass-disp: 2px;
+  --glass-disp-a: 0.16;
+}
+
