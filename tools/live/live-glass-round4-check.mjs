@@ -295,6 +295,20 @@ check('  高光的 CSS 令牌也删了', glowGone.cssGlowVar === '', `--glow-rx=
 
 await ev(`(() => { const c = document.querySelector('.content'); if (c) c.scrollTop = 300; return true; })()`);
 await sleep(900);
+await ev(`(() => {
+  const box = document.querySelector('.content') || document.scrollingElement;
+  const fits = (x) => {
+    const r = x.getBoundingClientRect();
+    return r.width > 240 && r.height < (window.innerHeight || 800) - 200;
+  };
+  const target = [...document.querySelectorAll('.glass-refract')].find(fits);
+  if (!target) return null;
+  // ★ 先把目标滚进视口（新增的主题九宫格把卡片撑高了，不能假设它已经在视野里）
+  const before = target.getBoundingClientRect();
+  box.scrollTop += Math.round(before.top) - 170;
+  return true;
+})()`);
+await sleep(900);
 const hiClip = await ev(`(() => {
   const c = [...document.querySelectorAll('.glass-refract')].find((x) => {
     const r = x.getBoundingClientRect();

@@ -34,6 +34,7 @@ import {
 } from '../ui/motion';
 import type { MotionLevel } from '../ui/motion';
 import { VFX_HINT, VFX_LABEL, VFX_LEVELS } from '../ui/vfx';
+import { THEMES, themeInfo } from '../ui/theme';
 import type { VfxLevel } from '../ui/vfx';
 import {
   deleteIntent,
@@ -59,7 +60,7 @@ function stageLabelOf(version: string): string {
 }
 
 export function SettingsPage() {
-  const { state, rescanJava, toast, backend, refreshJava, prefsSaveFailed, update, vfx } = useApp();
+  const { state, rescanJava, toast, backend, refreshJava, prefsSaveFailed, update, vfx, setTheme } = useApp();
   const { api } = useRealApi();
   /**
    * 启动器自身的更新（不是 Mod 更新，见 `useLauncherUpdate` 顶部说明）。
@@ -180,8 +181,51 @@ export function SettingsPage() {
         <Card>
           <CardTitle icon={<IconGear />}>外观</CardTitle>
 
-          {/* ★★ 2026-09-16 用户要求"删除白色模式"：主题选择整行删掉。
-              只有深色，没有可选项 —— 摆一个只有一个选项的选择器是假控件。 */}
+          {/*
+            ★★ 主题九宫格（2026-09-22）。
+
+            2026-09-16 这一行被删过，理由写在原来的注释里：
+            **「只有深色，没有可选项 —— 摆一个只有一个选项的选择器是假控件」**。
+            那是对的。这一轮用户要了 8 套新配色（+ 原来的深色 = 9 套），
+            可选项真的有了，选择器才有意义。
+
+            做法：每套一个**色板按钮**（斜切两半：左上是它的底色、右下是它的主色），
+            名字 + **用户自己那句话**一起显示 —— 他写的是用途与感觉
+            （"长时间看最舒服" / "像旧书桌"），那才是选主题时真正要看的。
+          */}
+          <div className="field-row">
+            <span className="field-label">
+              主题
+              <span className="field-hint">{themeInfo(state.theme).hint}</span>
+            </span>
+            <div className="field-control">
+              <div className="theme-grid" role="radiogroup" aria-label="主题">
+                {THEMES.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={state.theme === t.id}
+                    aria-label={t.label}
+                    title={`${t.label} —— ${t.hint}`}
+                    className={'theme-swatch' + (state.theme === t.id ? ' on' : '')}
+                    onClick={() => {
+                      setTheme(t.id);
+                      toast('ok', `主题已换成「${t.label}」`);
+                    }}
+                  >
+                    <span
+                      className="theme-swatch-chip"
+                      style={{ background: `linear-gradient(135deg, ${t.bg} 0 58%, ${t.accent} 58% 100%)` }}
+                      aria-hidden="true"
+                    />
+                    <span className="theme-swatch-name">{t.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <span />
+          </div>
 
           {/*
             ★★ 低性能损耗模式（用户 2026-09-16："在外观选项里加一个低性能损耗模式"）。

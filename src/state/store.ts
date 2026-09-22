@@ -26,6 +26,7 @@ import type {
   ReleaseType,
 } from '../domain';
 import type { RunningGameInfo } from '../bridge/tauri';
+import { DEFAULT_THEME, type ThemeId } from '../ui/theme';
 import type { ModFilter } from '../domain/mods.ts';
 
 /* ====================== 领域侧的数据形状 ====================== */
@@ -138,7 +139,7 @@ export interface AppState {
   downloadTargetId: string | null;
 
   /* --- 全局 --- */
-  theme: 'dark' | 'light';
+  theme: ThemeId;
   ready: boolean;
   bootError: string | null;
 
@@ -224,7 +225,7 @@ export const initialState: AppState = {
   downloadTab: 'game',
   downloadTargetId: null,
 
-  theme: 'dark',
+  theme: DEFAULT_THEME,
   ready: false,
   bootError: null,
 
@@ -282,7 +283,7 @@ export type Action =
        */
       prefs?: Partial<AppState['prefs']>;
       /** 主题是顶层字段（不在 prefs 里），但同样要持久化 */
-      theme?: 'dark' | 'light';
+      theme?: ThemeId;
     }
   | { type: 'boot/fail'; error: string }
   /* 导航 */
@@ -295,7 +296,7 @@ export type Action =
   | { type: 'nav/download-tab'; tab: DownloadTab }
   /** 指定下载页要装进哪个实例；`id: null` = 交回给"最近玩过的那个" */
   | { type: 'nav/download-target'; id: string | null }
-  | { type: 'theme'; theme: 'dark' | 'light' }
+  | { type: 'theme'; theme: ThemeId }
   /* 实例 */
   | { type: 'instances/set'; instances: Instance[] }
   | { type: 'instances/add'; instance: Instance }

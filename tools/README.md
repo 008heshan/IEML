@@ -38,6 +38,8 @@ tools/
 │   │                                    验"默认适中 + 不开放灵动 + 材质仍在"
 │   ├─ live-glass-resize-check.mjs     ★ 改窗口尺寸：折射要重烘、法线图要回收、GL 不泄漏
 │   ├─ live-glass-lowperf-check.mjs    ★ 低性能损耗模式 × 视效档位：压得住、也回得来
+│   ├─ live-theme-check.mjs            ★ 九套主题：逐套换、逐套算对比度、逐套截图（39 条）
+│   ├─ live-glass-memory-check.mjs     按部件拆内存（GPU 进程 / 渲染进程 / 专有显存）
 │   ├─ probe-webview-glass.mjs         ★ 先证明"能不能真折射"：backdrop-filter 里的 SVG 滤镜
 │   │                                    + 截图像素对照（含"坏引用"正对照）—— 换机器先跑它
 │   └─ shot.mjs                        按 plan.json 驱动浏览器截图

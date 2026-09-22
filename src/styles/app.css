@@ -2784,6 +2784,56 @@ tbody tr.clickable:focus-visible {
 }
 
 /* ============================================================================
+   ★★ 主题九宫格（2026-09-22，9 套主题）
+   每套一个色板：斜切两半 —— 左上是它的底色、右下是它的主色。
+   ★ 色值由 JS 从 `ui/theme.ts` 的注册表给（那里有测试盯着它和 tokens.css 一致）。
+   ============================================================================ */
+.theme-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(78px, 1fr));
+  gap: var(--space-2);
+  width: 100%;
+}
+.theme-swatch {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 4px 5px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+  transition:
+    border-color var(--dur-fast),
+    color var(--dur-fast),
+    transform var(--dur-fast);
+}
+.theme-swatch:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+  transform: translateY(-1px);
+}
+.theme-swatch.on {
+  border-color: var(--accent);
+  color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px var(--accent-border);
+}
+.theme-swatch-chip {
+  width: 100%;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  /* 细白边让"最深的底色"在深色界面里也能看出形状 */
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+.theme-swatch-name {
+  line-height: 1;
+}
+
+/* ============================================================================
    ★★ 后台时不渲染高级效果（2026-09-22，用户：「在后台时不渲染高级效果」）
 
    ★ 做法抄自用户网站的 perf/tab-visibility.js，它连原因都写了：

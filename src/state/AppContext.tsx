@@ -27,6 +27,7 @@ import { instanceNameRules, validate } from '../domain/validate.ts';
 import { getBackend } from '../bridge';
 import type { Backend } from '../bridge';
 import { MOTION_KEY, setMotion } from '../ui/motion';
+import { applyTheme, isThemeId, type ThemeId } from '../ui/theme';
 import {
   applyVfx,
   currentVfx,
@@ -179,7 +180,7 @@ interface AppContextValue {  state: AppState;
    * 否则"跳过来之后又手动改选"会出现两个值互相打架。
    */
   setDownloadTarget: (instanceId: string | null) => void;
-  setTheme: (t: 'dark' | 'light') => void;
+  setTheme: (t: ThemeId) => void;
 
   /* --- 实例 --- */
   /** "启动"页的目标实例 */
@@ -514,7 +515,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         java,
         lastInstanceId: inst.activeId ?? null,
         prefs: restored,
-        ...(savedTheme === 'light' || savedTheme === 'dark' ? { theme: savedTheme } : {}),
+        ...(isThemeId(savedTheme) ? { theme: savedTheme } : {}),
       });
 
       /*
@@ -589,7 +590,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   /* ====================== 主题 ====================== */
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', state.theme);
+    applyTheme(state.theme);
   }, [state.theme]);
 
   /*
@@ -941,7 +942,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     dispatch({ type: 'nav/download-target', id: instanceId });
   }, []);
 
-  const setTheme = useCallback((theme: 'dark' | 'light') => dispatch({ type: 'theme', theme }), []);
+  const setTheme = useCallback((theme: ThemeId) => dispatch({ type: 'theme', theme }), []);
 
   const setLaunchTarget = useCallback((id: string | null) => {
     dispatch({ type: 'instances/last', id });
