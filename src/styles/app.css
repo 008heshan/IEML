@@ -3242,20 +3242,32 @@ tbody tr.clickable:focus-visible {
    * 颜色**全部走令牌** —— 9 套主题的强调色不同，按钮必须跟着变。
    * 不写死 #5b8def 这类值（那就是"不随主题变"的根源）。
    */
-  /* ★ 兜底在前：这条是纯令牌，任何运行时都认。
-       ★★ 2026-09-23 实测教训：这里原来用 color-mix() 现算，真机上量到
-         **换主题后渐变冻在原来的颜色**（元素上 --accent 变了、渐变没重算）。
-         所以现在全部改用 tokens.css 里**按主题声明好**的派生令牌
-         （--accent-soft / --accent-glow / --accent-edge），消费端一个 color-mix 都不留。 */
+  /*
+   * ★★ 2026-09-23 用户（截图）：「**我的玻璃呢**？」
+   *   上一版为了让按钮"自发光"，把它写成了**实心渐变** —— 发光有了，
+   *   但**不透光、没有磨砂**，看着就是一块实心板，和界面里其它玻璃不是一路。
+   *
+   *   真玻璃三样缺一不可（这里三样都有）：
+   *     ① 半透明底色（--accent-veil，按主题声明）
+   *     ② 磨砂 backdrop-filter（见下面那段）
+   *     ③ 顶部高光边（::before 那道亮线）
+   *   发光仍然保留 —— 玻璃与光晕是**叠加**关系，不是二选一。
+   */
   background: var(--accent);
   background: linear-gradient(
     180deg,
-    var(--accent-soft) 0%,
-    var(--accent) 55%,
-    var(--accent-hover) 100%
-  );
-  border: 1px solid var(--accent); /* 兜底，同上 */
+    rgba(255, 255, 255, 0.16) 0%,
+    rgba(255, 255, 255, 0.04) 45%,
+    rgba(0, 0, 0, 0.06) 100%
+  ), var(--accent-veil);
+  border: 1px solid var(--accent);
   border: 1px solid var(--accent-edge);
+  /*
+   * ★ 磨砂：把按钮**后面**的内容糊掉再上色 —— 这一条才是"玻璃"与"半透明色块"的分界。
+   *   saturate 稍微提一点，避免糊完之后发灰。
+   */
+  backdrop-filter: blur(14px) saturate(150%);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
   color: #fff;
   /*
    * 「自发光」：两层光 —— 近处一圈紧贴按钮的光晕，远处一团散开的辉光。
@@ -3282,7 +3294,8 @@ tbody tr.clickable:focus-visible {
   height: 50%;
   background: linear-gradient(
     180deg,
-    rgba(255, 255, 255, 0.18),
+    rgba(255, 255, 255, 0.42),
+    rgba(255, 255, 255, 0.06) 70%,
     transparent
   );
   pointer-events: none;
@@ -3315,6 +3328,13 @@ tbody tr.clickable:focus-visible {
 .launch-btn:not(:disabled):hover {
   transform: translateY(-1px);
   filter: brightness(1.06);
+  /* ★ 悬停时玻璃更"实"一点（--accent-veil-strong 按主题声明） */
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.2) 0%,
+    rgba(255, 255, 255, 0.05) 45%,
+    rgba(0, 0, 0, 0.06) 100%
+  ), var(--accent-veil-strong);
   box-shadow:
     0 0 0 1px var(--accent-glow-strong),
     0 8px 22px var(--accent-glow-strong),
