@@ -87,7 +87,7 @@ pub fn run() {    /*
 
     let paths = platform::AppPaths::resolve();
 
-    request_high_performance_gpu(&paths.root);
+    request_high_performance_gpu();
 
     /*
      * ★★ **本根目录自己的布局迁移必须排在最前**（0.1.0-beta.3 实测踩到的一个真 bug）。
@@ -366,11 +366,10 @@ pub fn run() {    /*
         .expect("IEML 启动失败");
 }
 
-/// 灵动档 → 请 WebView2 用**高性能 GPU**（也就是用户那块 4G 显存的独显）。
+/// 请 WebView2 用**高性能 GPU**（也就是用户那块 4G 显存的独显）。
 ///
 /// ★ 为什么必须在**创建 WebView2 之前**做：GPU 适配器在 WebView2 起来的那一刻
-///   就选定了，跑起来之后改不了。所以这里读的是**上一次存下的档位**
-///   （`prefs.json` 里的 `vfx`）—— 用户切到灵动档之后**下次启动**生效。
+///   就选定了，跑起来之后改不了（所以只能启动时定，界面上切档改不了它）。
 ///
 /// ★ 为什么不用 Windows 的「图形性能首选项」注册表那条路：
 ///   它得按**带版本号的**运行时路径写
@@ -380,19 +379,12 @@ pub fn run() {    /*
 ///   （GPU 工作在 msedgewebview2.exe 那个进程里），而 `--force_high_performance_gpu`
 ///   是应用自带的开关 —— 升级不受影响，也不动别人的设置。
 ///
-/// ★ 为什么按档位而不是一直开：独显常开对笔记本是实打实的耗电。
-///   用户的原话是「**选择灵动视效**并且启动器在前台时强制用 GPU 渲染」。
-///   没装独显的机器上这个开关是无害的（Chromium 自己会忽略）。
-fn request_high_performance_gpu(data_root: &std::path::Path) {
-    // 极简解析：这一层越早越稳，不为一行配置引入 JSON 依赖
-    let prefs = std::fs::read_to_string(data_root.join("prefs.json")).unwrap_or_default();
-    let aura = match prefs.find("\"vfx\"") {
-        Some(i) => prefs[i..].contains("aura"),
-        None => false,
-    };
-    if !aura {
-        return;
-    }
+/// ★★ 2026-09-22（第五轮）：**三个档位都开**。用户原话是
+///   「**3 个视效模式都应用 GPU 强制渲染吧**」——
+///   上一版只在灵动档开（当时想的是省笔记本的电），既然用户要一致，就一律开。
+///   没装独显的机器上这个开关是无害的（Chromium 自己会忽略；
+///   核显/软渲染本来也跑不动灵动档，那条路由能力探测挡着）。
+fn request_high_performance_gpu() {
     const KEY: &str = "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS";
     let cur = std::env::var(KEY).unwrap_or_default();
     if cur.contains("force_high_performance_gpu") {
@@ -404,5 +396,5 @@ fn request_high_performance_gpu(data_root: &std::path::Path) {
         format!("{cur} --force_high_performance_gpu")
     };
     std::env::set_var(KEY, next);
-    say!("[IEML/glass] 灵动视效：已请求高性能 GPU（独显）渲染");
+    say!("[IEML/glass] 已请求高性能 GPU（独显）渲染（三个视效档一致）");
 }

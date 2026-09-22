@@ -440,9 +440,6 @@ export function createGlassController(initial: VfxLevel): GlassController {
   const register = (el: HTMLElement) => {
     if (registered.has(el)) return;
     registered.add(el);
-    // ② 高光的载体（固定尺寸光斑 + 边缘环）——只在需要时创建，创建后一直复用
-    if (!el.hasAttribute('data-no-glow')) ensureGlow(el);
-    rects.set(el, el.getBoundingClientRect());
     if (lensWanted() && el.matches(REFRACT_SELECTOR)) applyLens(el);
     const ro = new ResizeObserver(() => {
       if (lensWanted() && el.matches(REFRACT_SELECTOR)) applyLens(el);
@@ -479,157 +476,17 @@ export function createGlassController(initial: VfxLevel): GlassController {
     });
   };
 
-  /* ====================== ② 动态高光：固定光斑元素 + transform ======================
+  /* ====================== ② 动态高光：已按用户要求**整体移除** ======================
    *
-   * ★★ 写法抄自用户自己的网站（`Infinity/source/custom/nav/nav-core.js`），
-   *   它把"为什么"写得很清楚，我照搬结论：
+   * ★ 2026-09-22（第五轮）：用户看完实机说「**还有去除指针高光**」。
+   *   上一轮我照他网站的写法（固定尺寸光斑元素 + transform 平移）刚做完，
+   *   这一轮就按他的要求撤掉了 —— 记一笔教训：
+   *   **"更花哨"与"更好看"不是一回事**，用户要的是干净、无色、只做透明与折射的玻璃。
    *
-   *   「光斑做成独立合成层(.nav-glow-spot) + 边缘环(.nav-edge>.nav-edge-light)，
-   *     位置全部由 JS【直写 style.transform】控制（不再用 CSS 变量，避免每帧
-   *     变量传播/样式重算/背景重绘造成的拖影与跳动）。
-   *     原方案是在 ::after 上移动 radial-gradient 中心(改 --gx/--gy)，
-   *     但那属于每帧重绘(paint)；改用固定尺寸光斑元素 + transform:translate3d，
-   *     transform 只走合成器(compositor)不触发重绘，帧数更高、更跟手。」
-   *
-   *   我上一版正是它点名的"原方案"（指针每动一次就改 `--glass-gx/--glass-gy`）。
-   *
-   * ★ 另外三个细节也照搬：
-   *   · 光心 = 指针到元素矩形的**最近投影点**（clamp）——
-   *     指针在元素外但靠近时，光斑压在最靠边的那一点，边缘被照亮；
-   *   · 亮度按**椭圆归一化距离**衰减（越近越亮，"接近即泛光"）；
-   *   · **rect 缓存**：不是每次 pointermove 都 getBoundingClientRect()
-   *     （那会强制同步布局）；滚动/尺寸变化时按 rAF 重测。
+   * 删掉的东西：每块玻璃里的光斑层与边缘环、指针位置/距离衰减/淡出、pointermove 监听、
+   * 以及 rect 缓存与 rAF 调度（那些只为高光服务）。
+   * 保留的：透镜（折射）、取色（内容适应）、尺寸重烘与回收、可见性策略。
    * ==================================================================== */
-
-  interface Glow {
-    spot: HTMLElement;
-    edge: HTMLElement;
-    edgeLight: HTMLElement;
-    alpha: string;
-    /** 最近一次写入的位置（用来各自去重：位置变了就写位置，亮度变了才写亮度） */
-    transform: string;
-  }
-  const glows = new WeakMap<HTMLElement, Glow>();
-  const rects = new WeakMap<HTMLElement, DOMRect>();
-
-  const ensureGlow = (el: HTMLElement): Glow => {
-    const hit = glows.get(el);
-    if (hit) return hit;
-    const clip = document.createElement('div');
-    clip.className = 'glass-glow';
-    clip.setAttribute('aria-hidden', 'true');
-    const spot = document.createElement('div');
-    spot.className = 'glass-glow-spot';
-    const edge = document.createElement('div');
-    edge.className = 'glass-edge';
-    const edgeLight = document.createElement('div');
-    edgeLight.className = 'glass-edge-light';
-    edge.appendChild(edgeLight);
-    clip.appendChild(spot);
-    clip.appendChild(edge);
-    el.insertBefore(clip, el.firstChild);
-    const g: Glow = { spot, edge, edgeLight, alpha: '', transform: '' };
-    glows.set(el, g);
-    return g;
-  };
-
-  /** 光斑椭圆半径（来自 CSS 令牌，改档/改尺寸时重读） */
-  let RX = 170;
-  let RY = 130;
-  let GLOW_W = 340;
-  let GLOW_H = 260;
-  const readGlowVars = () => {
-    const cs = getComputedStyle(document.documentElement);
-    const num = (k: string, fb: number) => {
-      const v = parseFloat(cs.getPropertyValue(k));
-      return Number.isFinite(v) && v > 0 ? v : fb;
-    };
-    RX = num('--glow-rx', 170);
-    RY = num('--glow-ry', 130);
-    GLOW_W = num('--glow-w', 340);
-    GLOW_H = num('--glow-h', 260);
-  };
-  readGlowVars();
-
-  const measureRects = () => {
-    for (const el of registered) if (el.isConnected) rects.set(el, el.getBoundingClientRect());
-  };
-  const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
-  /** 越近越亮：椭圆归一化距离的补数 */
-  const targetAlphaAt = (r: DOMRect, x: number, y: number) => {
-    let dx = 0;
-    let dy = 0;
-    if (x < r.left) dx = r.left - x;
-    else if (x > r.right) dx = x - r.right;
-    if (y < r.top) dy = r.top - y;
-    else if (y > r.bottom) dy = y - r.bottom;
-    const t = Math.hypot(dx / RX, dy / RY);
-    return Math.max(0, Math.min(1, 1 - t));
-  };
-
-  const pointer = { x: -1e5, y: -1e5 };
-  let glowQueued = false;
-
-  const writeGlows = () => {
-    glowQueued = false;
-    if (disposed) return;
-    for (const el of registered) {
-      const g = glows.get(el);
-      if (!g) continue;
-      const r = rects.get(el);
-      if (!r || !r.width || !r.height) continue;
-      // 弱化档不发光（那一档承诺"平"）；灵动/适中都发光
-      const want = level === 'weak' ? 0 : targetAlphaAt(r, pointer.x, pointer.y);
-      const a = want.toFixed(3);
-      const cx = clamp(pointer.x, r.left, r.right) - r.left;
-      const cy = clamp(pointer.y, r.top, r.bottom) - r.top;
-      const t = 'translate3d(' + (cx - GLOW_W / 2).toFixed(1) + 'px,' + (cy - GLOW_H / 2).toFixed(1) + 'px,0)';
-      /*
-       * ★★ 位置与亮度要**各自**去重，不能"亮度没变就整次跳过" —— 这是踩出来的：
-       *   指针在元素**内部**移动时亮度一直是 1（不变），于是
-       *   "亮度相同 → continue" 把**位置更新也一起跳过**了，
-       *   症状是"在卡片上滑动时光斑不动"（真机检查一眼抓到）。
-       */
-      if (t !== g.transform) {
-        g.transform = t;
-        g.spot.style.transform = t;
-        /*
-         * 边缘环的光心：那层现在是 `calc(100% + 520px) × calc(100% + 280px)`
-         * （见 app.css），即四周各留 260 / 140 的余量。
-         * 要把渐变中心落在元素内的 (cx, cy)，位移就是 (cx - w/2, cy - h/2) ——
-         * 层中心正好比元素中心多出 (260, 140)，两边抵消。
-         * ★ 别再写回固定的 1200/600：那是"层永远是 2400×1200"时代的常数，
-         *   层一旦跟着元素缩，它就把光斑推到元素外面去。
-         */
-        g.edgeLight.style.transform =
-          'translate3d(' + (cx - r.width / 2).toFixed(1) + 'px,' + (cy - r.height / 2).toFixed(1) + 'px,0)';
-      }
-      if (a !== g.alpha) {
-        g.alpha = a;
-        g.spot.style.opacity = a;
-        g.edge.style.opacity = a;
-        if (Number(a) > 0.5) el.setAttribute('data-hover', '1');
-        else el.removeAttribute('data-hover');
-      }
-    }
-  };
-  const scheduleGlow = () => {
-    if (glowQueued || disposed) return;
-    glowQueued = true;
-    requestAnimationFrame(writeGlows);
-  };
-
-  const onPointerMove = (e: PointerEvent) => {
-    pointer.x = e.clientX;
-    pointer.y = e.clientY;
-    scheduleGlow();
-  };
-  /** 指针离开窗口：全部熄灭（否则光斑会停在最后一处） */
-  const onPointerLeave = () => {
-    pointer.x = -1e5;
-    pointer.y = -1e5;
-    scheduleGlow();
-  };
 
   /* ---------- 组装 ---------- */
   const applyLevel = (next: VfxLevel) => {
@@ -651,31 +508,19 @@ export function createGlassController(initial: VfxLevel): GlassController {
     scheduleTint();
   };
 
-  document.addEventListener('pointermove', onPointerMove, { passive: true });
-  document.addEventListener('pointerleave', onPointerLeave);
-  document.addEventListener('mouseleave', onPointerLeave);
   const mo = new MutationObserver(() => {
     unregisterGone();
     scan();
     scheduleTint();
   });
   mo.observe(document.body, { childList: true, subtree: true });
-  /**
-   * 滚动时要做两件事：重新取色 + **重测矩形**。
-   * ★ 为什么必须重测：卡片在滚动容器里，位置一直在变；而光斑用的是
-   *   `getBoundingClientRect`（视口坐标）——不重测的话，滚过之后
-   *   光斑就会"跟错地方"（这是用户网站注释里点名的第二个坑：
-   *   "导航栏缩小后光效位置不对"）。
+  /*
+   * ★ 2026-09-22（第五轮）：原来这里还要**重测矩形**（那是给指针高光用的：
+   *   光斑按 `getBoundingClientRect` 定位，滚动后不重测就会"跟错地方"）。
+   *   高光已按用户要求删掉，所以这里只剩"滚动时重新取色"这一件事。
    */
-  let measureQueued = false;
   const onScroll = () => {
     scheduleTint();
-    if (measureQueued) return;
-    measureQueued = true;
-    requestAnimationFrame(() => {
-      measureQueued = false;
-      if (!disposed) measureRects();
-    });
   };
   document.addEventListener('scroll', onScroll, { passive: true, capture: true });
   window.addEventListener('resize', () => {
@@ -747,9 +592,6 @@ export function createGlassController(initial: VfxLevel): GlassController {
     dispose() {
       disposed = true;
       if (tintTimer) clearInterval(tintTimer);
-      document.removeEventListener('pointermove', onPointerMove);
-      document.removeEventListener('pointerleave', onPointerLeave);
-      document.removeEventListener('mouseleave', onPointerLeave);
       document.removeEventListener('visibilitychange', applyVisibility);
       document.documentElement.classList.remove('tab-hidden');
       document.removeEventListener('scroll', onScroll, true);
