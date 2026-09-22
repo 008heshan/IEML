@@ -14,7 +14,7 @@
   display: flex;
   align-items: center;
   gap: var(--space-4);
-  height: 48px;
+  height: var(--titlebar-h);
   padding: 0 var(--space-2) 0 var(--space-4);
   background: transparent;
   border-bottom: 1px solid var(--border-subtle);
@@ -1144,35 +1144,35 @@
   stroke-linecap: round;
 }
 
-/* ---------- 卡片内的两栏（外观） ----------
-   用户："这个外观 UI 有点浪费地方，从中间劈开，然后在右边塞个别的东西"。
-   两栏各自排自己的 `.field-row`，中间一条分隔线；窄窗口退化成单栏。 */
+/* ---------- 设置页的卡片列（外观 / 存储） ----------
+ *
+ * 历史：
+ *   · 2026-09-16 用户："这个外观 UI 有点浪费地方，从中间劈开，然后在右边塞个别的东西"
+ *     → 做成两栏（`.set-cols` 两列 + 中间一条分隔线），右边放「存储」。
+ *   · 2026-09-22 用户："**把外观和储存的栏单独横着吧，不要两个并排了**"
+ *     → 改回**一列到底**（每张卡片各占一行）。
+ *     ★ 这次是**真删掉两栏**，不是加媒体查询绕过去：
+ *       留着 `grid-template-columns: 1fr 1fr` 再靠 `@media` 压成一列，
+ *       会把"当年为什么劈开"的复杂度留在文件里，下次谁看都是一头雾水。
+ */
 .set-cols {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0 var(--space-6);
+  grid-template-columns: 1fr;
+  /* ★ 行间距要和 `.stack` 一致（--space-3）——
+     两栏时代行间距是 0（并排不需要），改成一列之后不给就会**两张卡片贴在一起**。 */
+  gap: var(--space-3) 0;
 }
 .set-col {
   min-width: 0;
 }
+/* 单列之后不再需要"两栏之间的竖线" */
 .set-col + .set-col {
-  border-left: 1px solid var(--border-subtle);
-  padding-left: var(--space-6);
+  border-left: none;
+  padding-left: 0;
 }
-/* 每栏自己的最后一行不该再画一条横线（两栏高度不同时看着最明显） */
+/* 每栏自己的最后一行不该再画一条横线 */
 .set-col .field-row:last-child {
   border-bottom: none;
-}
-@media (max-width: 1100px) {
-  .set-cols {
-    grid-template-columns: 1fr;
-    gap: 0;
-  }
-  .set-col + .set-col {
-    border-left: none;
-    padding-left: 0;
-    border-top: 1px solid var(--border-subtle);
-  }
 }
 
 /* ============================ 卡片 ============================ */
@@ -2750,10 +2750,22 @@ tbody tr.clickable:focus-visible {
    ============================================================================ */
 .top-glass {
   position: fixed;
-  top: 0;
+  /*
+   * ★★ 2026-09-22 修：**从标题栏下面开始铺**（原来是 `top: 0`）。
+   *
+   *   原来那一层从屏幕最顶端开始，压在标题栏**上面** ——
+   *   `backdrop-filter` 会把"它背后画的一切"都糊掉，而标题栏的
+   *   最小化 / 最大化 / **关闭**按钮、账号胶囊就画在它背后。
+   *   于是滚动之后那一行整个糊了。用户的原话：
+   *   「**主要是会让关闭键那一行都模糊，这是不可的**」。
+   *
+   *   ★ 窗口按钮是"不可模糊"的东西：它们是系统级操作入口，
+   *     糊了会让人怀疑点不准。玻璃只该盖**页头那一条**（标题文字所在处）。
+   */
+  top: var(--titlebar-h);
   left: var(--sidebar-w);
   right: 0;
-  height: var(--top-glass-h);
+  height: calc(var(--top-glass-h) - var(--titlebar-h));
   /* z-index 15：在滚动内容之上、在 .page-head（20，标题文字）之下 */
   z-index: 15;
   pointer-events: none;
