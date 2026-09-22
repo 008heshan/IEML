@@ -11,11 +11,10 @@
  */
 import { useEffect, useState, useRef } from 'react';
 import { useApp } from '../state/AppContext';
-import { Button, Card, CardTitle, Chip, Field, Note, Segmented, Switch } from '../ui';
+import { Button, Card, CardTitle, Chip, Field, Note, Segmented, Switch, CustomSelect } from '../ui';
 import {
   IconAlert,
   IconGear,
-  IconInfo,
   IconJava,
   IconRefresh,
   IconShield,
@@ -42,34 +41,20 @@ import {
   trashUnavailablePrompt,
 } from '../domain/delete.ts';
 import type { DownloadSourcesPayload } from '../bridge/tauri';
-import { APP_VERSION, STAGE_LABEL, versionStage } from '../domain/version-info.ts';
 // ★ 账号面板**只在顶栏**（用户："设置这里的账号一栏可以删除了"）。
 //   一份实现仍然只有那一处（`components/AccountPanel.tsx`），这里不再重复摆一遍。
 
 
-/**
- * 版本号里的阶段 → 中文名。
- *
- * ★ 直接用 `domain/version-info.ts` 的 `STAGE_LABEL` / `versionStage`，
- *   不在页面里再写一份映射 —— 那种"文案表各写一份"的分叉，这个仓库
- *   已经踩过好几次（服务器地址规则表、加载器能力表都是）。
- */
-function stageLabelOf(version: string): string {
-  if (!version) return '版本未知';
-  return STAGE_LABEL[versionStage(version)];
-}
-
 export function SettingsPage() {
-  const { state, rescanJava, toast, backend, refreshJava, prefsSaveFailed, update, vfx, setTheme } = useApp();
+  const { state, rescanJava, toast, backend, refreshJava, prefsSaveFailed, vfx, setTheme } = useApp();
   const { api } = useRealApi();
-  /**
-   * 启动器自身的更新（不是 Mod 更新，见 `useLauncherUpdate` 顶部说明）。
-   *
-   * ★ 2026-09-21：改成从**全局**取（`useApp().update`）—— 顶栏的「新版本」角标
-   *   和这一行必须是同一份状态，否则会出现"顶栏说下载中 40%、这里说发现新版本"，
-   *   而且会各查一次、各下一次（`AppContext` 里挂着唯一那份）。
+  /*
+   * ★★ 2026-09-23 用户：「**设置里的关于就不要了吧**」——
+   *   那一整张卡片（版本号 / 启动器更新 / 第三方组件）已经删掉，
+   *   内容在独立的「关于」页里（侧栏底部进）。
+   *   所以这里也不再需要 `update`（启动器更新状态）了：
+   *   顶栏的「新版本」角标仍然用它，那是它的主场。
    */
-  const upd = update;
 
   const [downloaded, setDownloaded] = useState<Array<{ major: number; path: string; bytes: number; usable: boolean }>>([]);
   const [busy, setBusy] = useState(false);
@@ -878,14 +863,30 @@ export function SettingsPage() {
               ★ 行为不变：值仍然走同一条 `ieml:prefs` 事件，只是换了控件。
           */}
           {/*
-            ★★ 2026-09-22 用户：「**选择镜像还是官方这个，去掉**，默认就先使用官方源，
-              官方源加载缓慢时再选择镜像」—— 那个选择器整行删掉，只留一句说明。
-            ★ 为什么不再让用户选：**他没有判断依据**（他不知道哪条路现在快），
-              而底层本来就会多源回退（见 Rust `parse_source` 的说明）——
-              把"猜哪条路快"这件事交给我们，比交给他靠谱。
+            ★★ 2026-09-23 用户（纠正我上一版的理解）：
+              「**下载源这里，是新增一个自动项，而不是把按钮直接删了**」
+              —— 上一版我把整行删成一句说明，方向反了。现在：
+                · 选择器**留着**，并**新增「自动」**作为第一项（也是默认）；
+                · 选它 = 官方优先，慢或失败自动换镜像（见 Rust `parse_source`）；
+                · 想手动钉死某一条路的人也仍然能钉。
+              ★ 默认给「自动」的理由：用户没有判断依据（他不知道哪条路现在快），
+                而底层本来就会多源回退。
           */}
-          <Field label="下载源" hint="自动：先走官方源，慢或失败会自动换镜像">
-            <span className="dim">自动</span>
+          <Field label="下载源" hint="自动：先走官方源，慢或失败换镜像">
+            <CustomSelect
+              value={state.prefs.downloadSource}
+              onChange={(v) =>
+                window.dispatchEvent(
+                  new CustomEvent('ieml:prefs', { detail: { downloadSource: v } }),
+                )
+              }
+              ariaLabel="下载源"
+              options={[
+                { value: 'auto', label: '自动（官方优先）' },
+                { value: 'mojang', label: '只用 Mojang 官方源' },
+                { value: 'bmclapi', label: '只用 BMCLAPI 镜像' },
+              ]}
+            />
           </Field>
 
           <div className="field-row">
@@ -972,166 +973,6 @@ export function SettingsPage() {
         </Card>
 
 
-        {/*
-          ==================== 关于 ====================
-
-          ★ 为什么值得单独一块：
-            版本号一直由 `tools/set-version.mjs` 认真维护在**四个**文件里
-            （`package.json` / `Cargo.toml` / `tauri.conf.json` /
-            `domain/version-info.ts`），`pnpm verify` 里还有一条
-            "四处必须一致" 的检查 —— 但**界面上一个地方都不显示它**。
-            版本号规则（docs/VERSIONING.md）明说这个值是给"关于"用的。
-
-            用户在报 bug 时第一个会问的就是"我这是哪个版本"。
-            显示出来，也让"改了版本号没重新构建"这件事一眼可见：
-            桌面版显示的是**后端**（编译期 `env!("CARGO_PKG_VERSION")`），
-            浏览器演示模式显示的是前端常量。
-        */}
-        <Card>
-          <CardTitle icon={<IconInfo />} hint="报 bug 时请带上这个版本号">
-            关于
-          </CardTitle>
-          <div className="field-row">
-            <span className="field-label">
-              IEML 启动器
-              <span className="field-hint">极简 Minecraft 启动器 · {stageLabelOf(state.backendVersion)}</span>
-            </span>
-            <div className="field-control">
-              <span className="mono" style={{ fontSize: 'var(--text-base)' }}>
-                {state.backendVersion || '（未知）'}
-              </span>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={async () => {
-                  const v = state.backendVersion;
-                  try {
-                    await navigator.clipboard.writeText(v);
-                    toast('ok', '已复制版本号', v);
-                  } catch {
-                    toast('info', '版本号', v);
-                  }
-                }}
-              >
-                复制
-              </Button>
-            </div>
-            {/*
-              ★ 这一格以前重复写着"数据目录：…"（存储卡里已经有，还带「打开」按钮），
-                而它是 `.field-row` 的**第三列**，宽度只剩几十像素，
-                于是被折成"数据目 / 录：…"两行 —— 比不写还难读。删掉。
-            */}
-            <span />
-          </div>
-          <div className="field-row">
-            <span className="field-label">
-              前端版本
-              <span className="field-hint">不一致 = 改了版本号没重新构建</span>
-            </span>
-            <div className="field-control">
-              <span className="mono" style={{ fontSize: 'var(--text-base)' }}>
-                {APP_VERSION}
-              </span>
-              {state.backendVersion && state.backendVersion !== APP_VERSION ? (
-                <span className="field-hint" style={{ color: 'var(--warn, #d9a441)' }}>
-                  ⚠ 与后端不一致
-                </span>
-              ) : null}
-            </div>
-            <span />
-          </div>
-          {/*
-            ★ 2026-09-17：更新检查放在"关于"卡里、紧挨版本号。
-              用户看到版本号，下一个问题必然是"那有没有新的" —— 两者分开就是让人找。
-              按钮文案特意写成「检查启动器更新」（而不是 ModsPanel 那种「检查更新」），
-              因为这个程序里同时存在两种更新，同名会点错。
-
-            ★ 2026-09-21（用户："我想要热更新和静默安装"）：状态改由**全局那一份**提供
-              （`useApp().update`）—— 顶栏的「新版本」角标和这一行看的是同一件事。
-              并且多了 `ready`：包已经下好了，按钮变成「重启并更新」。
-          */}
-          <div className="field-row">
-            <span className="field-label">
-              启动器更新
-              <span className="field-hint">
-                {upd.state.phase === 'unsupported'
-                  ? '浏览器演示模式下没有更新能力'
-                  : '开机自动检查、后台下载；安装是静默的，装完自己重开'}
-              </span>
-            </span>
-            <div className="field-control">
-              {upd.state.phase === 'available' ? (
-                <span
-                  className="field-hint"
-                  style={{ color: 'var(--ok, #6cc06c)' }}
-                  title={upd.state.notes || undefined}
-                >
-                  发现新版本 {upd.state.version}
-                </span>
-              ) : upd.state.phase === 'ready' ? (
-                <span
-                  className="field-hint"
-                  style={{ color: 'var(--ok, #6cc06c)' }}
-                  title={upd.state.notes || undefined}
-                >
-                  新版本 {upd.state.version} 已经下好了，点右边就能换
-                </span>
-              ) : upd.state.phase === 'downloading' ? (
-                <span className="field-hint">
-                  正在下载 {humanBytes(upd.state.downloaded ?? 0)}
-                  {upd.state.total ? ` / ${humanBytes(upd.state.total)}` : ''}
-                </span>
-              ) : upd.state.phase === 'installing' ? (
-                <span className="field-hint" style={{ color: 'var(--ok, #6cc06c)' }}>
-                  已开始静默安装，启动器马上退出；装完会自动打开（没打开就手动开一次）
-                </span>
-              ) : upd.state.phase === 'uptodate' ? (
-                <span className="field-hint">已是最新版本</span>
-              ) : upd.state.phase === 'checking' ? (
-                <span className="field-hint">正在检查…</span>
-              ) : upd.state.phase === 'error' ? (
-                <span className="field-hint" style={{ color: 'var(--warn, #d9a441)' }}>
-                  {upd.state.error}
-                </span>
-              ) : null}
-              <Button
-                size="sm"
-                variant={upd.state.phase === 'available' || upd.state.phase === 'ready' ? 'primary' : 'ghost'}
-                loading={upd.state.phase === 'checking' || upd.state.phase === 'downloading'}
-                disabled={upd.state.phase === 'unsupported' || upd.state.phase === 'installing'}
-                onClick={() =>
-                  void (upd.state.phase === 'ready'
-                    ? upd.install()
-                    : upd.state.phase === 'available'
-                      ? upd.download()
-                      : upd.checkNow())
-                }
-              >
-                {upd.state.phase !== 'checking' && upd.state.phase !== 'downloading' ? <IconRefresh /> : null}
-                {upd.state.phase === 'ready'
-                  ? '重启并更新'
-                  : upd.state.phase === 'available'
-                    ? '重新下载'
-                    : '检查启动器更新'}
-              </Button>
-            </div>
-            <span />
-          </div>
-          <div className="field-row">
-            <span className="field-label">
-              第三方组件
-              <span className="field-hint">都随程序附带（或由系统提供）</span>
-            </span>
-            <div className="field-control">
-              <span className="field-hint">
-                Tauri 2 · React 18 · Vite 5
-              </span>
-              {/* ★ 2026-09-16 用户（截图）：后面那半句
-                  "· 字体由系统提供 —— 启动器本体不含任何 Minecraft 游戏资源文件" 删掉 */}
-            </div>
-            <span />
-          </div>
-        </Card>
       </div>
 
       {/* 换游戏根目录的弹窗（候选盘由后端列，见组件头部的说明） */}

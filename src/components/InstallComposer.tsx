@@ -21,6 +21,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Chip, CustomSelect, Note, SearchBox, Segmented, Skeleton, Spinner } from '../ui';
+import { defaultInstanceName } from '../state/instance-name';
 import { useApp } from '../state/AppContext';
 import { IconAlert, IconCheck, IconChevronDown, IconInfo, IconPlus, IconRefresh } from '../ui/Icons';
 import {
@@ -172,10 +173,13 @@ export function InstallComposer({
   const [latest, setLatest] = useState<string | null>(null);
   const [manifestLoading, setManifestLoading] = useState(false);
   const [manifestError, setManifestError] = useState<string | null>(null);
-  const [source, setSource] = useState<'auto' | 'bmclapi' | 'mojang'>(
-    // ★ 一律「自动」（官方优先、慢则镜像）；用户已经没有这个选择了
-    'auto',
-  );
+  /*
+   * ★★ 2026-09-23：下载源**不再是用户的选择**（用户："下载页的这个才是要删的"）——
+   *   固定「自动」：官方优先、慢或失败自动换镜像（见 Rust `parse_source`）。
+   *   这里保留常量而不是删掉变量：下面几处调用（取清单 / 取加载器版本）都要显式传它，
+   *   传一个具名常量比到处写字符串更不容易写错。
+   */
+  const source = 'auto' as const;
   const [channel, setChannel] = useState<Channel>('release');
   /**
    * 世代分组的折叠状态（用户建议："做一个版本折叠功能"）。
@@ -674,13 +678,20 @@ export function InstallComposer({
   }, [base, mcVersion, baseVersion, availableBaseVersions]);
 
   const suggestedName = useMemo(() => {
-    const stem = versionLabel;
+    /*
+     * ★★ 2026-09-23 用户（截图）：「版本名称」那个输入框里默认写着 `26.3 (2)` ——
+     *   那是**内部版本标签**（`26.3-fabric-0.19.5` 之类）去重后的产物：
+     *   既看不出是原版还是加载器，也和列表里别处的命名对不上。
+     *   现在默认名直接用统一格式：`Minecraft 26.3` / `Minecraft 26.3 + Fabric 0.19.5`。
+     *   ★ 重名才加 `(2)` —— 那个后缀在显示时**保留**（否则两个实例会同名）。
+     */
+    const stem = defaultInstanceName(mcVersion, base ? { kind: base, version: baseVersion || null } : null);
     const taken = new Set(state.instances.map((i) => i.config.name));
     if (!taken.has(stem)) return stem;
     let i = 2;
     while (taken.has(`${stem} (${i})`)) i++;
     return `${stem} (${i})`;
-  }, [versionLabel, state.instances]);
+  }, [mcVersion, base, baseVersion, state.instances]);
 
   useEffect(() => {
     if (!nameTouched) setName(suggestedName);
@@ -1036,38 +1047,20 @@ export function InstallComposer({
                 ]}
               />
             </div>
-            <Segmented
-              label="下载源"
-              size="sm"
-              value={source}
-              onChange={setSource}
-              options={[
-                { value: 'bmclapi', label: 'BMCLAPI' },
-                { value: 'mojang', label: 'Mojang' },
-              ]}
-            />
+            {/*
+              ★★ 2026-09-23 用户：「**下载页的这个（图五），才是把这个选择源的按钮删了**」
+                —— 上一轮我理解反了：把设置页那个选择器删了、把这个留下了。
+                这里不再给选择：源由后端自动决定（官方优先、慢或失败换镜像，见 Rust parse_source）。
+            */}
           </div>
 
-          {rows.length > 0 ? (
-            <div className="cw-quick" role="group" aria-label="常用版本">
-              {POPULAR_VERSIONS.filter((v) => rows.some((r) => r.id === v) || true).map((v) => (
-                <button
-                  key={v}
-                  type="button"
-                  className={`chip chip-btn${v === mcVersion ? ' chip-accent' : ''}`}
-                  aria-pressed={v === mcVersion}
-                  onClick={() => {
-                    setMcVersion(v);
-                    setBase(null);
-                    setBaseVersion('');
-                    setAddons([]);
-                  }}
-                >
-                  {v}
-                </button>
-              ))}
-            </div>
-          ) : null}
+          {/*
+            ★★ 2026-09-23 用户（图五）：「**推荐版本也删掉**」——
+              这里原来有一排"常用版本" chips（1.21.1 / 1.20.1 / …），
+              它其实就是在替用户推荐版本。删掉。
+              版本照样能选：左边那份**完整清单**（900+ 个，带搜索与正式/快照分档）才是入口。
+            ★ 注意 `POPULAR_VERSIONS` 这个常量在下面 `rows` 的排序里还用到，所以别删常量。
+          */}
 
           {/*
             ★★ `key={channel|query}`：**换筛选时整列表重建**（2026-09-15，用户复现出来的）。

@@ -53,6 +53,13 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       aria-busy={loading || undefined}
       {...rest}
     >
+      {/*
+        ★★ 2026-09-23 用户（截图）：「**启动游戏时，用右边的转圈把左边的三角替换掉，
+          不要同时显示**」——原来是"加"一个转圈，于是图标和转圈并排出现。
+        ★ 这是**组件层**的毛病（任何按钮 loading 时都会这样），所以在 Button 上统一修：
+          loading 时给根节点加 `btn-loading`，由 CSS 把**最前面的图标**藏掉，
+          转圈占据它的位置 —— 所有按钮一起受益，不用每个调用点各写一遍。
+      */}
       {loading ? <span className="spinner" aria-hidden="true" /> : null}
       {children}
     </button>

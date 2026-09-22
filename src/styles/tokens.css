@@ -159,6 +159,12 @@
   --text-disabled: #4a505c;
 
   --accent: #5b8def;
+  /* ★ 由 --accent 派生，**必须按主题声明**（见文件顶部那条教训）：
+     在消费端现算的话，color-mix 不会随主题重算 —— 真机上量到过按钮冻在蓝色。 */
+  --accent-soft: #6f9bf1;
+  --accent-glow: rgba(91, 141, 239, 0.42);
+  --accent-glow-strong: rgba(91, 141, 239, 0.55);
+  --accent-edge: rgba(140, 175, 244, 0.9);
   --accent-hover: #6e9bf5;
   --accent-active: #4a7be0;
   --accent-subtle: rgba(91, 141, 239, 0.14);
@@ -233,6 +239,12 @@
   --text-disabled: #4b5a51;
 
   --accent: #4fb08a;
+  /* ★ 由 --accent 派生，**必须按主题声明**（见文件顶部那条教训）：
+     在消费端现算的话，color-mix 不会随主题重算 —— 真机上量到过按钮冻在蓝色。 */
+  --accent-soft: #64b998;
+  --accent-glow: rgba(79, 176, 138, 0.42);
+  --accent-glow-strong: rgba(79, 176, 138, 0.55);
+  --accent-edge: rgba(132, 200, 173, 0.9);
   --accent-hover: #63c39c;
   --accent-active: #3f9a77;
   --accent-subtle: rgba(79, 176, 138, 0.14);
@@ -276,6 +288,12 @@
   --text-disabled: #475162;
 
   --accent: #4f83e8;
+  /* ★ 由 --accent 派生，**必须按主题声明**（见文件顶部那条教训）：
+     在消费端现算的话，color-mix 不会随主题重算 —— 真机上量到过按钮冻在蓝色。 */
+  --accent-soft: #6492eb;
+  --accent-glow: rgba(79, 131, 232, 0.42);
+  --accent-glow-strong: rgba(79, 131, 232, 0.55);
+  --accent-edge: rgba(132, 168, 239, 0.9);
   --accent-hover: #6493f2;
   --accent-active: #3f70d4;
   --accent-subtle: rgba(79, 131, 232, 0.14);
@@ -319,6 +337,12 @@
   --text-disabled: #554a62;
 
   --accent: #a06be0;
+  /* ★ 由 --accent 派生，**必须按主题声明**（见文件顶部那条教训）：
+     在消费端现算的话，color-mix 不会随主题重算 —— 真机上量到过按钮冻在蓝色。 */
+  --accent-soft: #ab7de4;
+  --accent-glow: rgba(160, 107, 224, 0.42);
+  --accent-glow-strong: rgba(160, 107, 224, 0.55);
+  --accent-edge: rgba(189, 151, 233, 0.9);
   --accent-hover: #b07fea;
   --accent-active: #8b57cc;
   --accent-subtle: rgba(160, 107, 224, 0.15);
@@ -362,6 +386,12 @@
   --text-disabled: #5c4c4e;
 
   --accent: #c9685f;
+  /* ★ 由 --accent 派生，**必须按主题声明**（见文件顶部那条教训）：
+     在消费端现算的话，color-mix 不会随主题重算 —— 真机上量到过按钮冻在蓝色。 */
+  --accent-soft: #cf7a72;
+  --accent-glow: rgba(201, 104, 95, 0.42);
+  --accent-glow-strong: rgba(201, 104, 95, 0.55);
+  --accent-edge: rgba(217, 149, 143, 0.9);
   --accent-hover: #d87a70;
   --accent-active: #b2574e;
   --accent-subtle: rgba(201, 104, 95, 0.15);
@@ -405,6 +435,12 @@
   --text-disabled: #605644;
 
   --accent: #d09040;
+  /* ★ 由 --accent 派生，**必须按主题声明**（见文件顶部那条教训）：
+     在消费端现算的话，color-mix 不会随主题重算 —— 真机上量到过按钮冻在蓝色。 */
+  --accent-soft: #d69d57;
+  --accent-glow: rgba(208, 144, 64, 0.42);
+  --accent-glow-strong: rgba(208, 144, 64, 0.55);
+  --accent-edge: rgba(222, 177, 121, 0.9);
   --accent-hover: #dfa154;
   --accent-active: #b97d33;
   --accent-subtle: rgba(208, 144, 64, 0.15);
@@ -448,6 +484,12 @@
   --text-disabled: #455a5e;
 
   --accent: #3fa8b0;
+  /* ★ 由 --accent 派生，**必须按主题声明**（见文件顶部那条教训）：
+     在消费端现算的话，color-mix 不会随主题重算 —— 真机上量到过按钮冻在蓝色。 */
+  --accent-soft: #56b2b9;
+  --accent-glow: rgba(63, 168, 176, 0.42);
+  --accent-glow-strong: rgba(63, 168, 176, 0.55);
+  --accent-edge: rgba(121, 194, 200, 0.9);
   --accent-hover: #52bbc3;
   --accent-active: #32929a;
   --accent-subtle: rgba(63, 168, 176, 0.14);
@@ -491,6 +533,12 @@
   --text-disabled: #594f5c;
 
   --accent: #b98aa8;
+  /* ★ 由 --accent 派生，**必须按主题声明**（见文件顶部那条教训）：
+     在消费端现算的话，color-mix 不会随主题重算 —— 真机上量到过按钮冻在蓝色。 */
+  --accent-soft: #c198b2;
+  --accent-glow: rgba(185, 138, 168, 0.42);
+  --accent-glow-strong: rgba(185, 138, 168, 0.55);
+  --accent-edge: rgba(206, 173, 194, 0.9);
   --accent-hover: #c99cb8;
   --accent-active: #a57794;
   --accent-subtle: rgba(185, 138, 168, 0.15);
@@ -534,6 +582,12 @@
   --text-disabled: #5b5045;
 
   --accent: #b08050;
+  /* ★ 由 --accent 派生，**必须按主题声明**（见文件顶部那条教训）：
+     在消费端现算的话，color-mix 不会随主题重算 —— 真机上量到过按钮冻在蓝色。 */
+  --accent-soft: #b98f65;
+  --accent-glow: rgba(176, 128, 80, 0.42);
+  --accent-glow-strong: rgba(176, 128, 80, 0.55);
+  --accent-edge: rgba(200, 166, 133, 0.9);
   --accent-hover: #c1915f;
   --accent-active: #9a6d41;
   --accent-subtle: rgba(176, 128, 80, 0.15);

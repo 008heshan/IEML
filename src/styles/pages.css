@@ -2766,31 +2766,16 @@
 }
 
 /* ============================================================================
-   ★★ 2026-09-16 用户："启动游戏这个 UI 美化一下，纯色不好看"。
-   主按钮原来是**平涂**一个色 —— 在玻璃界面里显得很平。
-   改成：竖向渐变（上浅下深，模拟受光）+ 1px 内高光 + 一圈同色系外发光。
-   全部用现有色值推导，不引入新变量；hover / disabled 各自有明确表现。
+   ★★ 2026-09-23：这一段**原来写死了蓝色**（`#6f9df5 → #4a7be0`），
+   而 `pages.css` 在 `app.css` **之后**加载 —— 于是 app.css 里那份
+   走令牌的 `.launch-btn` 样式**一直被它压住**。
+   用户报的「**启动按钮也要随着主题颜色变**」就是这个原因：
+   换 9 套主题，按钮一直是那一个蓝。
+
+   现在这里只留一句指针，真正的样式在 `app.css` 的「启动按钮：自发光液态玻璃」一节
+   （那一份全部用 `--accent*` 令牌，并且 hover / active / loading 三种状态都覆盖了）。
+   ★ 教训：同一个类名散在两个文件里、后加载的那个赢 —— 改样式前先搜一遍类名。
    ============================================================================ */
-.launch-btn {
-  background: linear-gradient(180deg, #6f9df5 0%, #4a7be0 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.24),
-    0 6px 18px rgba(74, 123, 224, 0.32);
-  transition: background var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease),
-    transform var(--dur-fast) var(--ease);
-}
-.launch-btn:hover:not(:disabled) {
-  background: linear-gradient(180deg, #82adf8 0%, #5588e8 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.28),
-    0 8px 22px rgba(74, 123, 224, 0.42);
-  transform: translateY(-1px);
-}
-.launch-btn:active:not(:disabled) {
-  background: linear-gradient(180deg, #4a7be0 0%, #3f6dd0 100%);
-  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.22);
-  transform: translateY(0);
-}
 
 /* ============================================================================
    ★★ 低性能损耗模式（用户 2026-09-16："在外观选项里加一个低性能损耗模式"）。

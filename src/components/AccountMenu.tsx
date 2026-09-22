@@ -18,7 +18,6 @@ import {
   IconRefresh,
   IconDownload,
   IconBox,
-  IconStar,
   IconInfo,
   IconShield,
 } from '../ui/Icons';
@@ -312,24 +311,6 @@ export function AccountMenu({ onOpenAccount }: AccountMenuProps) {
           ) : null}
 
           <div className="acct-sep" />
-
-          {/* ---------- 兑换 ---------- */}
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              void (async () => {
-                try {
-                  const { openUrl } = await import('@tauri-apps/plugin-opener');
-                  await openUrl('https://www.minecraft.net/redeem');
-                } catch {
-                  toast('info', '兑换地址', 'https://www.minecraft.net/redeem');
-                }
-              })();
-            }}
-          >
-            <IconStar /> 使用 CDKEY 兑换奖励
-          </button>
 
           <div className="acct-sep" />
 

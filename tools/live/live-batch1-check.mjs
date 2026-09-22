@@ -218,14 +218,24 @@ await ev(`[...document.querySelectorAll('.nav-item')].find((b) => (b.textContent
 await sleep(1600);
 const names = await ev(`[...document.querySelectorAll('.ver-title-name')].map((x) => (x.textContent || '').trim()).slice(0, 6)`);
 console.log('  ' + JSON.stringify(names));
+/*
+ * ★★ 2026-09-23 用户改了口径：「**版本列表的版本名称，后面的"：原版"和"：模组加载器"不要**」
+ *   —— 所以这里断言的是**新格式**：`Minecraft 1.12.2` / `Minecraft 26.2 + Fabric 0.19.5`。
+ *   ★ 判据要跟着需求走：需求变了而判据不变，红的就是判据自己（这一条刚红过一次）。
+ */
 check(
-  '★ 原版显示成「Minecraft x ：原版」',
-  Array.isArray(names) && names.some((n) => /^Minecraft [\d.]+ ：原版$/.test(n)),
+  '★ 原版显示成「Minecraft x」',
+  Array.isArray(names) && names.some((n) => /^Minecraft [\d.]+$/.test(n)),
   JSON.stringify(names),
 );
 check(
-  '★ 带加载器显示成「Minecraft x + Loader y：模组加载器」',
-  Array.isArray(names) && names.some((n) => /^Minecraft [\d.]+ \+ [A-Za-z]+ [\d.]+：模组加载器$/.test(n)),
+  '★ 带加载器显示成「Minecraft x + Loader y」',
+  Array.isArray(names) && names.some((n) => /^Minecraft [\d.]+ \+ [A-Za-z]+ [\d.]+$/.test(n)),
+  JSON.stringify(names),
+);
+check(
+  '★ 版本名里不再出现「：原版 / ：模组加载器」（2026-09-23 新要求）',
+  Array.isArray(names) && !names.some((n) => /：原版|：模组加载器/.test(n)),
   JSON.stringify(names),
 );
 
