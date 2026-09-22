@@ -56,8 +56,14 @@ export function AccountMenu({ onOpenAccount }: AccountMenuProps) {
   }, [open]);
 
   /* 打开菜单时按需拉一次皮肤（不轮询 —— 换皮肤本来就要重开游戏才看得到） */
+  /*
+   * ★★ 2026-09-23 用户：「左下角头像需要我点一下那个按钮之后才会出来（存疑）」——
+   *   **不存疑，就是这个原因**：这个 effect 原来写着 `if (!open …) return`，
+   *   于是菜单不打开就永远不去拉皮肤 —— 头像是"点开之后才出现"的。
+   *   现在**挂载就拉**（以及 uuid 变化时重拉），与菜单开不开无关。
+   */
   useEffect(() => {
-    if (!open || !uuid || skin) return;
+    if (!uuid || skin) return;
     void (async () => {
       const api = await getRealApi();
       if (!api) return;
