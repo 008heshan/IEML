@@ -21,6 +21,13 @@
   flex: 0 0 auto;
   user-select: none;
   /*
+   * ★★ 2026-09-23：标题栏自己**提一层**，这样它和它的子元素（品牌 / 更新角标 /
+   *   任务中心 / 窗口按钮）永远压在 .top-glass 之上 —— 玻璃只负责给这一条打底，
+   *   绝不糊任何一个可点的东西。
+   */
+  position: relative;
+  z-index: 30;
+  /*
    * ★ 顶栏现在**就是**窗口标题栏（tauri.conf.json 里 decorations:false）。
    *   拖动走 `data-tauri-drag-region`（见 AppShell 的注释）；
    *   这里给它一个"可以拖"的鼠标手势，否则用户不知道这条能拖窗口。
@@ -2806,12 +2813,27 @@ tbody tr.clickable:focus-visible {
    *   ★ 窗口按钮是"不可模糊"的东西：它们是系统级操作入口，
    *     糊了会让人怀疑点不准。玻璃只该盖**页头那一条**（标题文字所在处）。
    */
-  top: var(--titlebar-h);
+  /*
+   * ★★ 2026-09-23 用户（截图）：「下拉时顶部栏模糊，**模糊的图层不对**，怎么能把
+   *   『下载』这个文字挡住；而且看目前的位置，是到达不了小字下面的，**会镂空**」。
+   *
+   *   现场量出来的：这一层原来在 48→104（高 56），而**页面标题正好在 64→88** ——
+   *   也就是说它整个压在页头文字上；滚动时那条带子的**下边缘**又切在内容中间，
+   *   于是看着"糊了一半、另一半是镂空的"。
+   *
+   *   根因是我上一轮为了"别糊到关闭键"，把它**整体往下挪了 56px** ——
+   *   躲开了标题栏，却去糊内容了。**正确的做法是往上收，不是往下挪**：
+   *     · 只盖**标题栏那一条**（0 → --titlebar-h），
+   *     · 并且层级放在标题栏控件**之下**（标题栏自己 position+z-index 提上来）——
+   *       窗口按钮仍然清清楚楚，内容一个字都不会被糊。
+   *   ★ 一句话：玻璃的边界必须落在"谁都不属于"的地方，不能切在内容中间。
+   */
+  top: 0;
   left: var(--sidebar-w);
   right: 0;
-  height: calc(var(--top-glass-h) - var(--titlebar-h));
-  /* z-index 15：在滚动内容之上、在 .page-head（20，标题文字）之下 */
-  z-index: 15;
+  height: var(--titlebar-h);
+  /* z-index 5：在内容之下（内容不需要它糊），也在标题栏控件之下 */
+  z-index: 5;
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.38s var(--ease);
@@ -3305,9 +3327,15 @@ tbody tr.clickable:focus-visible {
   content: '';
   position: absolute;
   inset: -40% -10%;
+  /*
+   * ★★ 2026-09-23 用户（截图）：「**启动游戏的泛光没有跟随按钮的颜色**」——
+   *   问题出在这一层：它是**白色**径向渐变，压在按钮上就是一团白雾，
+   *   换什么主题都是白的。改成**按主题声明的强调色**（--accent-glow 系列），
+   *   于是泛光与按钮同色。
+   */
   background: radial-gradient(
     45% 60% at 50% 50%,
-    rgba(255, 255, 255, 0.14),
+    var(--accent-glow-strong),
     transparent 70%
   );
   opacity: 0;
@@ -3375,4 +3403,53 @@ tbody tr.clickable:focus-visible {
   .launch-btn.btn-loading {
     animation: none;
   }
+}
+
+/* ============================================================================
+   ★★ 侧栏底部那两项的**选中提示**（2026-09-23，用户截图："左侧更新日志和关于，
+   也要做图三这样的选中提示"）
+
+   ★ 上一轮我给它们加了 `on` class 与 `aria-current="page"`，**却忘了写样式** ——
+     于是点击之后看上去毫无变化。用户截图就是在说这件事：**加了状态不等于做出样子。**
+   ★ 观感与左侧主导航（`.nav-item[aria-current='page']`）保持一致：
+     淡强调色底 + 强调色文字 + 左侧一道小竖条。
+   ============================================================================ */
+.side-link[aria-current='page'] {
+  background: var(--accent-subtle);
+  color: var(--accent);
+  font-weight: 600;
+  position: relative;
+}
+.side-link[aria-current='page']::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 16px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+}
+
+/* ============================================================================
+   ★★ 文本与图标的**抗锯齿**（2026-09-23，用户：「文本和图标的抗锯齿再做的好一些」）
+
+   文本那一半全局已经开了（tokens.css：`-webkit-font-smoothing: antialiased` +
+   `text-rendering: optimizeLegibility`）。这里补**图标**那一半：
+     · `shape-rendering: geometricPrecision` —— 描边图标默认按"优化速度"渲染，
+       斜线与圆角会出现阶梯；改成几何精度后边缘平滑。
+     · `vector-effect: non-scaling-stroke` 在缩放时保持描边宽度一致（不糊）。
+     · 图标本身是 currentColor 描边，颜色跟着文字走（不额外上色，避免"补出来的色差"）。
+   ============================================================================ */
+svg {
+  shape-rendering: geometricPrecision;
+}
+.icon,
+.nav-item svg,
+.side-link svg,
+.btn svg,
+.chip svg {
+  /* 缩放时不放大描边宽度 —— 否则 17px 的图标缩到 14px 时线条会糊成一团 */
+  vector-effect: non-scaling-stroke;
 }
