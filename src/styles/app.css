@@ -2018,7 +2018,17 @@ tbody tr.clickable:focus-visible {
    *   `animationName` 变成 `none` → **退场动画压根不跑**，但类名、DOM 都对，
    *   看代码完全看不出问题。是真机断言（读 computed animationName）抓出来的。
    */
-  animation: toastOut 200ms var(--ease-in-out) forwards;
+  /*
+   * ★★ 2026-09-23 用户：「**我的滑走在哪里？？？**」
+   *   原来这条动画只位移 `translate3d(12px, 6px, 0)` —— **12 像素**，
+   *   200ms 内挪那么一点，肉眼基本看不出来；而且 AppContext 也在 200ms
+   *   把元素删掉，动画跑到一半人就没了。所以"滑走"等于不存在。
+   *   现在：**向右滑出视野**（toast 本来就在右下角，往右滑最自然），
+   *   260ms + ease-in（越滑越快，像被"抽走"）。
+   *   ★ 时长必须与 AppContext 的移除延时一致（那边已同步成 260ms），
+   *     否则动画会被截断 —— 这正是原来"看不见"的原因之一。
+   */
+  animation: toastOut 260ms var(--ease-in) forwards;
   pointer-events: none;
 }
 @keyframes toastOut {
@@ -2027,8 +2037,9 @@ tbody tr.clickable:focus-visible {
     transform: none;
   }
   to {
+    /* 滑出视野：110% 保证整块（含阴影）都离开屏幕 */
     opacity: 0;
-    transform: translate3d(12px, 6px, 0) scale(0.98);
+    transform: translate3d(110%, 0, 0) scale(0.98);
   }
 }
 /* 尊重系统的"减少动态效果"：只淡出，不做位移 */
