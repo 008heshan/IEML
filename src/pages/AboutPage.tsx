@@ -18,6 +18,7 @@
  */
 import { useState } from 'react';
 import { Button, Card, CardTitle, Chip, Note } from '../ui';
+import { RichText } from '../ui/RichText';
 import { IconInfo, IconShield, IconDrive, IconRefresh, IconBox } from '../ui/Icons';
 import { useApp } from '../state/AppContext';
 import { APP_VERSION } from '../domain/version-info';
@@ -85,21 +86,24 @@ export function AboutPage() {
         {/* ---------- 声明与法律信息 ---------- */}
         <Card>
           <CardTitle icon={<IconShield />}>声明</CardTitle>
+          {/*
+            ★★ 2026-09-23 用户（截图）：「**markdown 没生效哦**」——
+              这一页的文字原来写的是 `**第三方**` 这种记号，而 **JSX 文本节点是纯文本**，
+              于是界面上原样挂着星号（这个仓库栽过第二次了，第一次在根目录弹窗那里）。
+              现在统一走 `<RichText>`：文案里继续写 `**…**`，由它渲染成真正的加粗。
+          */}
           <ul className="about-list">
             <li>
-              本程序是**第三方**启动器，与 Mojang Studios、Microsoft **没有任何关系**，
-              也未获得它们的授权或背书。
+              <RichText text="本程序是**第三方**启动器，与 Mojang Studios、Microsoft **没有任何关系**，也未获得它们的授权或背书。" />
             </li>
             <li>
-              程序本身**不含**任何 Minecraft 游戏文件、素材或音效。
-              游戏文件在你安装版本时，从官方源（Mojang）或社区镜像（BMCLAPI）下载到你自己选择的目录。
+              <RichText text="程序本身**不含**任何 Minecraft 游戏文件、素材或音效。游戏文件在你安装版本时，从官方源（Mojang）或社区镜像（BMCLAPI）下载到你自己选择的目录。" />
             </li>
             <li>
               「Minecraft」是 Mojang Studios 的商标。这里提到它只是为了说明这个程序能做什么。
             </li>
             <li>
-              Mod、整合包、资源包、光影来自 Modrinth 与 CurseForge 的公开接口，
-              **著作权归各自的作者**。本程序只负责下载与放进对应目录，不修改、不再分发它们。
+              <RichText text="Mod、整合包、资源包、光影来自 Modrinth 与 CurseForge 的公开接口，**著作权归各自的作者**。本程序只负责下载与放进对应目录，不修改、不再分发它们。" />
             </li>
             <li>
               部分资源在 CurseForge 上被作者关掉了「允许第三方分发」，那种资源任何启动器都下不到 ——
@@ -119,8 +123,7 @@ export function AboutPage() {
           <ul className="about-list">
             <li>不收集、不上传任何使用信息。没有埋点，没有遥测。</li>
             <li>
-              正版账号的登录令牌只保存在**你自己的数据目录**里，只在向 Mojang 请求游戏文件时使用；
-              退出登录会把它删掉。
+              <RichText text="正版账号的登录令牌只保存在**你自己的数据目录**里，只在向 Mojang 请求游戏文件时使用；退出登录会把它删掉。" />
             </li>
             <li>
               联网只发生在这些时候：检查更新、查版本清单、下载游戏与资源、登录正版账号。

@@ -5,6 +5,7 @@
  * 为什么另写一份，那份文件开头写清楚了。
  */
 import { Card, CardTitle, Chip, Note } from '../ui';
+import { RichText } from '../ui/RichText';
 import { IconLayers } from '../ui/Icons';
 import { CHANGELOG_NOTE, RELEASE_NOTES } from '../data/release-notes';
 
@@ -40,7 +41,15 @@ export function ChangelogPage() {
                 <div className="rel-group-t">{g.title}</div>
                 <ul className="rel-list">
                   {g.items.map((it) => (
-                    <li key={it}>{it}</li>
+                    /*
+                     * ★ 2026-09-23：条目也走 `<RichText>` ——
+                     *   这样文案里写 `**…**` 会**真的加粗**，而不是把星号显示给用户
+                     *   （关于页就是因为这个被用户截图指出来的）。
+                     *   现在没有记号时它是个空操作，但以后加条目不会再踩。
+                     */
+                    <li key={it}>
+                      <RichText text={it} />
+                    </li>
                   ))}
                 </ul>
               </div>
