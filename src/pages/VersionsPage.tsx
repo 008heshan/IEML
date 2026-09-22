@@ -10,6 +10,7 @@
  *   * 不做"当前实例"概念 —— 打开哪个就编辑哪个，没有隐藏状态
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useApp } from '../state/AppContext';
 import { isInstanceRunning } from '../state/store';
 import { EmptyState, Button, Chip, Note, SearchBox, Segmented } from '../ui';
@@ -549,27 +550,45 @@ export function VersionsPage() {
                   >
                     <IconMore />
                   </Button>
-                  {openMenu ? (
-                    <div
-                      className="row-menu"
-                      role="menu"
-                      ref={menuRef}
-                      /*
-                       * ★ `top` / `bottom` 只会有一个（见 `MenuPos`）：朝下时给 `top`、
-                       *   翻上去时给 `bottom`；`maxHeight` 是兜底，让它在
-                       *   "上下都不够"时自己滚，而不是被窗口切掉。
-                       */
-                      style={
-                        menuPos
-                          ? {
-                              top: menuPos.top,
-                              bottom: menuPos.bottom,
-                              right: menuPos.right,
-                              maxHeight: menuPos.maxHeight,
-                            }
-                          : undefined
-                      }
-                    >
+                  {openMenu
+                    ? createPortal(
+                        /*
+                         * ★★ 2026-09-23 用户（截图）：「**这地方又出bug了，而且是频繁出bug**」——
+                         *   菜单只露出两项、还压在列表行上。
+                         *
+                         *   根因：它原来虽然写着 `position: fixed`，但**仍挂在行的 DOM 里**。
+                         *   `fixed` 只在没有"包含块祖先"时才相对窗口定位 ——
+                         *   而这条链路上有两类祖先会把它按回原地并裁掉：
+                         *     · `.ver-list` 有 `overflow: hidden`（圆角需要）；
+                         *     · 玻璃层带 `backdrop-filter`（会让 fixed 变成相对该元素）。
+                         *   于是行为**取决于当前主题/视效有没有开玻璃** ——
+                         *   这正是"频繁出bug"的来源：有时好、有时坏。
+                         *
+                         *   改法：**用 portal 渲染到 `document.body`**。
+                         *   菜单不再是任何容器后代，祖先的 overflow / filter / transform
+                         *   一概影响不到它 —— 这才是从根上不再复发。
+                         */
+                        <div
+                          className="row-menu"
+                          role="menu"
+                          ref={menuRef}
+                          /*
+                           * ★ `top` / `bottom` 只会有一个（见 `MenuPos`）：朝下时给 `top`、
+                           *   翻上去时给 `bottom`；`maxHeight` 是兜底，让它在
+                           *   "上下都不够"时自己滚，而不是被窗口切掉。
+                           */
+                          style={
+                            menuPos
+                              ? {
+                                  top: menuPos.top,
+                                  bottom: menuPos.bottom,
+                                  right: menuPos.right,
+                                  maxHeight: menuPos.maxHeight,
+                                }
+                              : // 还没量出坐标时先藏起来，别闪一下再跳位
+                                { visibility: 'hidden', top: 0, right: 0 }
+                          }
+                        >
                       <button
                         type="button"
                         role="menuitem"
@@ -755,8 +774,10 @@ export function VersionsPage() {
                       >
                         <IconTrash /> 删除
                       </button>
-                    </div>
-                  ) : null}
+                        </div>,
+                        document.body,
+                      )
+                    : null}
                 </div>
               </div>
             </div>
