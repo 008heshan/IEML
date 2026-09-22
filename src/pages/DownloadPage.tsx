@@ -23,7 +23,7 @@ import { useRealApi } from '../hooks/useRealApi';
 import type { DownloadTab } from '../state/store';
 import { InstallComposer } from '../components/InstallComposer';
 import { ResourceCenterBody } from '../components/ResourceBrowser';
-import { autoMemory } from '../domain';
+import { autoMemory, compareVersion, isSnapshotVersion, knownVersions } from '../domain';
 import type { Instance } from '../domain';
 import type { ResourceKindName } from '../bridge/tauri';
 import { registerTaskReplay } from '../flows/install';
@@ -38,6 +38,19 @@ const RESOURCE_TABS: Array<{ tab: DownloadTab; kind: ResourceKindName; label: st
 
 /** 整合包每页几个（写死的 20 个 = "没有翻页"，见 `load`） */
 const PAGE_SIZE = 20;
+
+/**
+ * 整合包筛选用的加载器列表。
+ *
+ * ★ 只列**整合包真的会用**的那几个：整合包本质是"一整套 Mod + 配置"，
+ *   光影/资源包那类加载器（OptiFine / LiteLoader）不是它的载体。
+ */
+const PACK_LOADERS: Array<{ value: string; label: string }> = [
+  { value: 'fabric', label: 'Fabric' },
+  { value: 'forge', label: 'Forge' },
+  { value: 'neoforge', label: 'NeoForge' },
+  { value: 'quilt', label: 'Quilt' },
+];
 
 /**
  * 每种资源装进哪个目录 —— 与 Rust 侧 `ResourceKind::install_dir` **逐条对齐**。
@@ -338,9 +351,26 @@ function ModpackTab({
 }) {
   const { api } = useRealApi();
   // ★ 整合包安装完要真的建实例 —— 以前这里没有 createInstance，装上也没人登记
-  const { createInstance } = useApp();
+  // ★ C3：版本下拉要用「玩家装着的版本」，所以这里也需要 state
+  const { createInstance, state } = useApp();
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<'hot' | 'new' | 'downloads'>('hot');
+  /*
+   * ★★ 2026-09-23（C3）：整合包也要图三那排筛选。
+   *   空串 = **不限**（后端只有收到 null 才真的不筛，见 ResourceBrowser 里那段说明）。
+   */
+  const [mcFilter, setMcFilter] = useState('');
+  const [loaderFilter, setLoaderFilter] = useState('');
+  /*
+   * 版本选项：**玩家自己装着的版本 + 内置正式版表**（新到旧）。
+   * ★ 为什么不去拉线上清单：那个下拉只是"筛整合包"，为它等一次网络往返不值；
+   *   而整合包绝大多数集中在正式版上。玩家装了什么，就一定在选项里。
+   */
+  const packVersionOptions = useMemo(() => {
+    const mine = state.instances.map((i) => i.mcVersion).filter(Boolean);
+    const all = [...new Set([...mine, ...knownVersions().filter((v) => !isSnapshotVersion(v))])];
+    return all.sort((a, b) => compareVersion(b, a)).slice(0, 40);
+  }, [state.instances]);
   const [packs, setPacks] = useState<PackCard[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -391,7 +421,7 @@ function ModpackTab({
     } finally {
       setLoading(false);
     }
-  }, [api, query, page]);
+  }, [api, query, page, mcFilter, loaderFilter]);
 
   useEffect(() => {
     void load();
@@ -596,6 +626,31 @@ function ModpackTab({
             onChange={setQuery}
           />
         </div>
+        {/*
+          ★★ 2026-09-23（C3，用户：「整合包也要图三这个」）：
+            图三那排是 `不限版本` + `不限加载器` + 源选择。
+            前两个在这里落地（后端 search 已经支持 mcVersion / loader 两个 facet）。
+            ★ 源那一项**先不摆**：整合包现在只有 Modrinth 一家能搜，
+              摆一个点不动的 CurseForge 违背"不给不可用的控件"这条规矩。
+        */}
+        <CustomSelect
+          value={mcFilter}
+          onChange={setMcFilter}
+          ariaLabel="整合包 MC 版本"
+          options={[
+            { value: '', label: '不限版本' },
+            ...packVersionOptions.map((v) => ({ value: v, label: v })),
+          ]}
+        />
+        <CustomSelect
+          value={loaderFilter}
+          onChange={setLoaderFilter}
+          ariaLabel="整合包加载器"
+          options={[
+            { value: '', label: '不限加载器' },
+            ...PACK_LOADERS.map((l) => ({ value: l.value, label: l.label })),
+          ]}
+        />
         <Segmented
           label="排序"
           size="sm"

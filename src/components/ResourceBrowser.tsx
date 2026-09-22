@@ -136,7 +136,7 @@ function Cover({ hit, size = 44 }: { hit: ModrinthHit; size?: number }) {
 }
 
 /** 一个项目的版本列表（玩家在这里挑，不由我们替他挑） */
-function VersionPicker({
+export function VersionPicker({
   hit,
   versions,
   loading,
