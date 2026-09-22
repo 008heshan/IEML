@@ -17,15 +17,15 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../state/AppContext';
-import { Button, Chip, CustomSelect, EmptyState, Note, SearchBox, Segmented } from '../ui';
-import { IconAlert, IconBox, IconDownload, IconLayers, IconPuzzle, IconRefresh, IconImage, IconGrid, IconPackage } from '../ui/Icons';
+import { Button, Chip, CustomSelect, EmptyState, Note, SearchBox, Segmented, Spinner } from '../ui';
+import { IconAlert, IconBox, IconChevronRight, IconDownload, IconLayers, IconPuzzle, IconRefresh, IconImage, IconGrid, IconPackage } from '../ui/Icons';
 import { useRealApi } from '../hooks/useRealApi';
 import type { DownloadTab } from '../state/store';
 import { InstallComposer } from '../components/InstallComposer';
 import { ResourceCenterBody } from '../components/ResourceBrowser';
 import { autoMemory, compareVersion, isSnapshotVersion, knownVersions } from '../domain';
 import type { Instance } from '../domain';
-import type { ResourceKindName } from '../bridge/tauri';
+import type { ModrinthVersion, ResourceKindName } from '../bridge/tauri';
 import { registerTaskReplay } from '../flows/install';
 
 /** 后四格页签 ↔ 资源种类（**一一对应**，界面不自己编种类） */
@@ -461,6 +461,32 @@ function ModpackTab({
     return list;
   }, [packs, sort]);
 
+  /*
+   * ★★ 2026-09-23 用户：「**整合包安装为什么没做单开一页的设计**」——
+   *   确实是我漏了：C5 只把资源浏览器那四个页签改成了独立安装页，整合包还在内联展开。
+   *
+   *   ★ 实现方式说明（为什么不是"另一个路由页"）：
+   *     整合包的安装流程有 120 行，且依赖本组件里的 `registerTaskReplay` /
+   *     `autoMemory` / `createInstance` / 任务中心事件。把它抽到别处是**大改**，
+   *     而"抽一半"正是这一轮我已经踩过的坑（脚本改写把文件弄坏过一次）。
+   *     所以这里用**整页切换视图**：选中一个整合包之后，下载页的内容区**整个换成**
+   *     安装页（列表消失、占满整屏、带返回），与其它资源那四条是同一个观感；
+   *     安装实现**一行都不用动**，仍然只有一份。
+   */
+  const [installTarget, setInstallTarget] = useState<PackCard | null>(null);
+  const [targetVersions, setTargetVersions] = useState<ModrinthVersion[] | null>(null);
+  /** 页面里点了「安装这个版本」时选中的那一个（null = 用最新那个） */
+  const [pickedVersion, setPickedVersion] = useState<ModrinthVersion | null>(null);
+
+  useEffect(() => {
+    if (!installTarget || !api) return;
+    setTargetVersions(null);
+    void api.modrinth
+      .versions(installTarget.id)
+      .then(setTargetVersions)
+      .catch(() => setTargetVersions([]));
+  }, [installTarget, api]);
+
   async function install() {
     if (!selected) return;
     if (!api) {
@@ -469,8 +495,12 @@ function ModpackTab({
     }
     setInstalling(true);
     try {
-      const versions = await api.modrinth.versions(selected.id);
-      const first = versions[0];
+      /*
+       * ★★ 2026-09-23：**页面里挑了版本就用它**；没挑才退回"最新那个"。
+       *   内联面板时代只能装最新那个版本 —— 用户在安装页里选了半天，
+       *   装的却还是最新，那就成了假控件。
+       */
+      const first = pickedVersion ?? (await api.modrinth.versions(selected.id))[0];
       const file = first?.files.find((f) => f.primary) ?? first?.files[0];
       if (!file) throw new Error('这个整合包没有可下载的文件');
 
@@ -615,6 +645,128 @@ function ModpackTab({
     }
   }
 
+  /*
+   * ★★ 2026-09-23（用户：「整合包安装为什么没做单开一页的设计」）：
+   *   选中一个整合包之后，**整页切成安装页**（列表与筛选都让位），带返回。
+   *   与资源那四条同一个观感；安装实现仍是下面这一份，没有第二套。
+   */
+  if (installTarget) {
+    return (
+      <div style={{ marginTop: 'var(--space-4)' }}>
+        <div className="row" style={{ gap: 'var(--space-2)', alignItems: 'center', marginBottom: 'var(--space-3)' }}>
+          <Button size="sm" variant="ghost" onClick={() => setInstallTarget(null)}>
+            <IconChevronRight style={{ transform: 'rotate(180deg)' }} /> 返回整合包列表
+          </Button>
+          <h2 className="section-title">安装整合包</h2>
+        </div>
+
+        <div className="res-detail">
+          <div className="res-detail-head">
+            {installTarget.icon ? (
+              <img className="res-detail-icon" src={installTarget.icon} alt="" />
+            ) : (
+              <span className="res-detail-icon res-detail-icon-ph" aria-hidden="true" />
+            )}
+            <div className="res-detail-main">
+              <div className="res-detail-title">
+                <span className="res-detail-name">{installTarget.name}</span>
+              </div>
+              <div className="res-detail-desc">{installTarget.summary}</div>
+              <div className="res-detail-meta">
+                <span className="dim">{installTarget.author}</span>
+                <span className="dim">{installTarget.downloads} 次下载</span>
+                <span className="dim">来自 Modrinth</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="res-detail-actions">
+            <label className="res-detail-name-field">
+              <span className="dim">实例名称</span>
+              <input
+                ref={installNameRef}
+                className="input"
+                value={name}
+                aria-label="实例名称"
+                onChange={(e) => setName(e.target.value)}
+              />
+            </label>
+            <Button
+              variant="primary"
+              loading={installing}
+              disabled={!isDesktop || !targetVersions?.length}
+              onClick={() => void install()}
+            >
+              确认并开始安装
+            </Button>
+          </div>
+        </div>
+
+        <div className="dim" style={{ margin: 'var(--space-3) 0' }}>
+          版本、加载器、Mod 清单都由包里的 <span className="mono">modrinth.index.json</span> 定死 ——
+          下面列出这个整合包发布的版本，**从最新往下**。
+        </div>
+
+        {targetVersions === null ? <Spinner label="正在取版本列表…" /> : null}
+        {targetVersions && targetVersions.length === 0 ? (
+          <Note tone="warning" title="这个整合包没有可下载的版本">
+            上游没有给它发布任何文件 —— 去 Modrinth 项目页看看作者的说明。
+          </Note>
+        ) : null}
+        {targetVersions && targetVersions.length > 0 ? (
+          <div className="res-versions">
+            <div className="res-versions-head">
+              <span>
+                <b>{installTarget.name}</b> 的全部版本（{targetVersions.length} 个）
+              </span>
+            </div>
+            <div className="res-version-list">
+              {targetVersions.map((v) => {
+                const f = v.files.find((x) => x.primary) ?? v.files[0];
+                return (
+                  <div key={v.id} className="res-version">
+                    <div className="res-version-main">
+                      <div className="res-version-name">
+                        <span className="mono">{v.version_number || v.name}</span>
+                        {v.version_type !== 'release' ? <Chip tone="info">{v.version_type}</Chip> : null}
+                      </div>
+                      <div className="res-version-meta">
+                        {v.game_versions.length > 0 ? (
+                          <span className="dim">MC {v.game_versions.slice(0, 6).join(' / ')}</span>
+                        ) : null}
+                        {v.loaders.length > 0 ? <span className="dim">{v.loaders.join(' / ')}</span> : null}
+                      </div>
+                    </div>
+                    {/*
+                      ★ 选一个版本 = 装它（装的是**这个**版本，不是"最新那个"）。
+                        这一条是用户点名要的："点安装时单独建页面" —— 挑版本这件事
+                        原来根本没有余地（内联面板只装最新的那个）。
+                    */}
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      loading={installing}
+                      disabled={!isDesktop || !f?.url}
+                      onClick={() => {
+                        setSelected(installTarget);
+                        setName(name || installTarget.name);
+                        // 让 install() 用这个版本：先落进 state，再触发
+                        setPickedVersion(v);
+                        window.setTimeout(() => void install(), 0);
+                      }}
+                    >
+                      <IconDownload /> 安装这个版本
+                    </Button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
   return (
     <div style={{ marginTop: 'var(--space-4)' }}>
       <div className="row row-wrap" style={{ marginBottom: 'var(--space-3)' }}>
@@ -716,6 +868,12 @@ function ModpackTab({
             type="button"
             className="pack-card"
             onClick={() => {
+              /*
+               * ★★ 2026-09-23：点卡片 → 进**独立安装页**（内容区整页切换），
+               *   不再把安装面板内联展开在 20 张卡片下面。
+               *   `selected` 仍然一起设上：安装那一步用的还是同一份实现。
+               */
+              setInstallTarget(p);
               setSelected(p);
               setName(p.name);
             }}
