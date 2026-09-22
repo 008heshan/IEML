@@ -556,6 +556,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const t = setTimeout(() => {
       // 主题和偏好一起存（主题是顶层字段，但用户当然希望它记住）
       const payload = { ...state.prefs, theme: state.theme } as unknown as Record<string, unknown>;
+      /*
+       * ★★ 视效档位也要落到 `prefs.json`（2026-09-22）。
+       *
+       *   为什么不能只留 localStorage：**Rust 侧要在创建 WebView2 之前读它** ——
+       *   "灵动档用独显渲染"这件事（`--force_high_performance_gpu`）是启动期的
+       *   一次性决定（GPU 适配器在 WebView2 起来时就选定了，跑起来改不了）。
+       *   而 localStorage 在 WebView2 的 profile 里，Rust 启动时读不到。
+       *   所以这里多写一份到 prefs.json，给 `lib.rs::request_high_performance_gpu` 看。
+       */
+      payload.vfx = vfxWant;
       void backend.savePrefs(payload).then(
         () => {
           if (first) {
@@ -575,7 +585,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       );
     }, 400);
     return () => clearTimeout(t);
-  }, [state.prefs, state.theme, state.ready, backend]);
+  }, [state.prefs, state.theme, state.ready, backend, vfxWant]);
 
   /* ====================== 主题 ====================== */
   useEffect(() => {
