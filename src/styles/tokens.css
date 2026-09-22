@@ -159,6 +159,8 @@
   --text-disabled: #4a505c;
 
   --accent: #5b8def;
+  --accent-veil: rgba(91, 141, 239, 0.55);
+  --accent-veil-strong: rgba(91, 141, 239, 0.72);
   /* ★ 由 --accent 派生，**必须按主题声明**（见文件顶部那条教训）：
      在消费端现算的话，color-mix 不会随主题重算 —— 真机上量到过按钮冻在蓝色。 */
   --accent-soft: #6f9bf1;
@@ -239,6 +241,8 @@
   --text-disabled: #4b5a51;
 
   --accent: #4fb08a;
+  --accent-veil: rgba(79, 176, 138, 0.55);
+  --accent-veil-strong: rgba(79, 176, 138, 0.72);
   /* ★ 由 --accent 派生，**必须按主题声明**（见文件顶部那条教训）：
      在消费端现算的话，color-mix 不会随主题重算 —— 真机上量到过按钮冻在蓝色。 */
   --accent-soft: #64b998;
@@ -288,6 +292,8 @@
   --text-disabled: #475162;
 
   --accent: #4f83e8;
+  --accent-veil: rgba(79, 131, 232, 0.55);
+  --accent-veil-strong: rgba(79, 131, 232, 0.72);
   /* ★ 由 --accent 派生，**必须按主题声明**（见文件顶部那条教训）：
      在消费端现算的话，color-mix 不会随主题重算 —— 真机上量到过按钮冻在蓝色。 */
   --accent-soft: #6492eb;
@@ -337,6 +343,8 @@
   --text-disabled: #554a62;
 
   --accent: #a06be0;
+  --accent-veil: rgba(160, 107, 224, 0.55);
+  --accent-veil-strong: rgba(160, 107, 224, 0.72);
   /* ★ 由 --accent 派生，**必须按主题声明**（见文件顶部那条教训）：
      在消费端现算的话，color-mix 不会随主题重算 —— 真机上量到过按钮冻在蓝色。 */
   --accent-soft: #ab7de4;
@@ -386,6 +394,8 @@
   --text-disabled: #5c4c4e;
 
   --accent: #c9685f;
+  --accent-veil: rgba(201, 104, 95, 0.55);
+  --accent-veil-strong: rgba(201, 104, 95, 0.72);
   /* ★ 由 --accent 派生，**必须按主题声明**（见文件顶部那条教训）：
      在消费端现算的话，color-mix 不会随主题重算 —— 真机上量到过按钮冻在蓝色。 */
   --accent-soft: #cf7a72;
@@ -435,6 +445,8 @@
   --text-disabled: #605644;
 
   --accent: #d09040;
+  --accent-veil: rgba(208, 144, 64, 0.55);
+  --accent-veil-strong: rgba(208, 144, 64, 0.72);
   /* ★ 由 --accent 派生，**必须按主题声明**（见文件顶部那条教训）：
      在消费端现算的话，color-mix 不会随主题重算 —— 真机上量到过按钮冻在蓝色。 */
   --accent-soft: #d69d57;
@@ -484,6 +496,8 @@
   --text-disabled: #455a5e;
 
   --accent: #3fa8b0;
+  --accent-veil: rgba(63, 168, 176, 0.55);
+  --accent-veil-strong: rgba(63, 168, 176, 0.72);
   /* ★ 由 --accent 派生，**必须按主题声明**（见文件顶部那条教训）：
      在消费端现算的话，color-mix 不会随主题重算 —— 真机上量到过按钮冻在蓝色。 */
   --accent-soft: #56b2b9;
@@ -533,6 +547,8 @@
   --text-disabled: #594f5c;
 
   --accent: #b98aa8;
+  --accent-veil: rgba(185, 138, 168, 0.55);
+  --accent-veil-strong: rgba(185, 138, 168, 0.72);
   /* ★ 由 --accent 派生，**必须按主题声明**（见文件顶部那条教训）：
      在消费端现算的话，color-mix 不会随主题重算 —— 真机上量到过按钮冻在蓝色。 */
   --accent-soft: #c198b2;
@@ -582,6 +598,8 @@
   --text-disabled: #5b5045;
 
   --accent: #b08050;
+  --accent-veil: rgba(176, 128, 80, 0.55);
+  --accent-veil-strong: rgba(176, 128, 80, 0.72);
   /* ★ 由 --accent 派生，**必须按主题声明**（见文件顶部那条教训）：
      在消费端现算的话，color-mix 不会随主题重算 —— 真机上量到过按钮冻在蓝色。 */
   --accent-soft: #b98f65;
