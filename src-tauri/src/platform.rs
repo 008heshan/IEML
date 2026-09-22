@@ -9,8 +9,19 @@ use std::path::{Path, PathBuf};
 /// 应用数据目录
 #[derive(Debug, Clone)]
 pub struct AppPaths {
-    /// 数据根目录
+    /// **游戏**根目录（用户选的那个）—— 里面只该有游戏的东西（`.minecraft`）。
     pub root: PathBuf,
+    /// 启动器**自己**的数据目录（实例清单 / 自动下载的 Java / 缓存 / 日志）。
+    ///
+    /// ★★ 2026-09-23（用户：「这个根目录只创建装游戏的根目录，**不要附带启动器文件**」
+    ///   以及确认「启动器自己的目录要搬出游戏根目录：**是的**」）：
+    ///   这几样东西与"游戏在哪"无关，放在用户挑的游戏盘里只会让那个目录变脏，
+    ///   还会在换盘时被一起留下。统一放到系统的应用数据目录
+    ///   （Windows：`%APPDATA%\IEML`）。
+    ///
+    ///   ★ 与 `root` 的关系：`root` 是**游戏的家**，`own_root` 是**启动器的家**。
+    ///     用户换游戏目录时，只有前者变。
+    pub own_root: PathBuf,
     /// 共享游戏文件（原版库、assets、已装版本）—— 多实例复用。
     ///
     /// ★★ 2026-09-15：它的**名字**从 `shared` 改成了 `.minecraft`
@@ -20,13 +31,13 @@ pub struct AppPaths {
     ///   字段名仍叫 `shared`（"共享"是它的**职责**，`.minecraft` 是它的**位置**）——
     ///   全仓库 45 处引用都走这个字段，所以换位置只需要改这一行。
     pub shared: PathBuf,
-    /// 实例目录
+    /// 实例目录（在 `own_root` 下，**不在**游戏根目录里）
     pub instances: PathBuf,
-    /// 自动下载的 Java
+    /// 自动下载的 Java（在 `own_root` 下）
     pub java: PathBuf,
-    /// 缓存
+    /// 缓存（在 `own_root` 下）
     pub cache: PathBuf,
-    /// 日志
+    /// 日志（在 `own_root` 下）
     pub logs: PathBuf,
 }
 
@@ -42,14 +53,19 @@ impl AppPaths {
     }
 
     /// 从一个已知根目录拼出全部子路径（测试与"数据目录迁移"复用）
+    ///
+    /// ★★ 2026-09-23：启动器自己的目录现在挂在 **`own_root`**（`%APPDATA%\IEML`）
+    ///   而不是游戏根目录下 —— 见 `AppPaths::own_root` 的说明。
     pub fn from_root(root: PathBuf) -> Self {
+        let own_root = default_own_root();
         Self {
             shared: root.join(GAME_DIR_NAME),
-            instances: root.join("instances"),
-            java: root.join("java"),
-            cache: root.join("cache"),
-            logs: root.join("logs"),
+            instances: own_root.join("instances"),
+            java: own_root.join("java"),
+            cache: own_root.join("cache"),
+            logs: own_root.join("logs"),
             root,
+            own_root,
         }
     }
 
@@ -157,6 +173,28 @@ fn dirs_data_dir() -> PathBuf {
 /// ★ 顺序有意义：**第一个**就是记录文件的宿主目录，也是迁移的源目录。
 pub fn legacy_data_roots() -> Vec<PathBuf> {
     vec![dirs_data_dir().join("IEML")]
+}
+
+/// 启动器**自己**的数据目录（实例清单 / Java / 缓存 / 日志）。
+///
+/// ★★ 2026-09-23：与"游戏在哪"**解耦** —— 见 `AppPaths::own_root`。
+///   这里就用系统的应用数据目录（Windows `%APPDATA%`），
+///   与游戏根目录在不在同一个盘无关。
+///
+/// ★ 为什么不做成"跟着便携模式走"：便携模式的语义是"整个程序连同数据一起带走"，
+///   那需要把游戏数据也带上 —— 那是另一个决定（用户没要求），
+///   现在只做"启动器自己的东西别弄脏游戏目录"这一件事。
+fn default_own_root() -> PathBuf {
+    /*
+     * ★ 测试与自动化要能改：环境变量 `IEML_OWN_DIR` 覆盖。
+     *   没有它的话，单测一跑就会去动**开发机真实的** %APPDATA%\IEML。
+     */
+    if let Ok(custom) = std::env::var("IEML_OWN_DIR") {
+        if !custom.trim().is_empty() {
+            return PathBuf::from(custom);
+        }
+    }
+    dirs_data_dir().join("IEML")
 }
 
 /// 一个候选磁盘上，我们打算用的子目录名
@@ -1634,13 +1672,18 @@ mod tests {
 
         // 用 AppPaths 的字段直接拼一份（不 resolve，避免读到开发机的真实配置）
         // ★ 注意 `shared` 的**位置**就是 `.minecraft`（字段名是历史遗留，见它的文档注释）
+        // ★ 2026-09-23：启动器自己的目录挂在 `own_root`（另一个临时目录）——
+        //   这条测试仍然要断言"**游戏根目录里不出现它们**"。
+        let own = std::env::temp_dir().join(format!("ieml-own-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&own);
         let paths = AppPaths {
             root: tmp.clone(),
+            own_root: own.clone(),
             shared: tmp.join(".minecraft"),
-            instances: tmp.join("instances"),
-            java: tmp.join("java"),
-            cache: tmp.join("cache"),
-            logs: tmp.join("logs"),
+            instances: own.join("instances"),
+            java: own.join("java"),
+            cache: own.join("cache"),
+            logs: own.join("logs"),
         };
 
         paths.ensure().expect("ensure 应当成功");
@@ -1663,12 +1706,18 @@ mod tests {
 
         // `ensure_own()` 才是建启动器目录的那一个
         // ★ 列表里**没有 `shared`** —— 它的位置就是 `.minecraft`（上面已经建过了）
+        // ★ 2026-09-23：它们建在 **own_root** 下，不再在游戏根目录里
         paths.ensure_own().expect("ensure_own 应当成功");
         for want in ["instances", "java", "cache", "logs"] {
-            assert!(tmp.join(want).is_dir(), "ensure_own 之后应当有 {want}");
+            assert!(own.join(want).is_dir(), "ensure_own 之后应当在 own_root 下有 {want}");
+            assert!(
+                !tmp.join(want).exists(),
+                "**游戏根目录里不该出现**启动器目录 {want}"
+            );
         }
 
         let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&own);
     }
 
     /*
@@ -1917,10 +1966,26 @@ mod tests {
             "数据根目录必须是绝对路径：{}",
             p.root.display()
         );
+        /*
+         * ★★ 2026-09-23（用户确认「启动器自己的目录要搬出游戏根目录：是的」）：
+         *   实例目录**不再**挂在游戏根目录下 —— 它在 `own_root`（%APPDATA%\IEML）。
+         *   这里断言的是新的关系：`own_root` 绝对、实例挂在它下面、而且**不在游戏根目录里**。
+         */
         assert!(
-            p.instances.starts_with(&p.root),
-            "实例目录必须在数据根目录下：{:?}",
+            p.own_root.is_absolute(),
+            "启动器数据目录必须是绝对路径：{}",
+            p.own_root.display()
+        );
+        assert!(
+            p.instances.starts_with(&p.own_root),
+            "实例目录必须在**启动器数据目录**下：{:?}",
             p.instances
+        );
+        assert!(
+            !p.instances.starts_with(&p.root),
+            "实例目录**不该**再出现在游戏根目录里：{:?}（root={:?}）",
+            p.instances,
+            p.root
         );
         assert!(p.instances.ends_with("instances"));
         // ★ 游戏数据在数据根目录内的 `.minecraft`（PCL 同款布局）
