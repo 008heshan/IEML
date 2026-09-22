@@ -2926,3 +2926,72 @@
   margin-top: var(--space-2);
   padding-left: var(--space-2);
 }
+
+/* ============================================================================
+   ★★ 资源**安装页**顶部的信息卡（2026-09-23，C5）
+
+   用户：「给这些资源点击安装时单独建页面，具体看 PCL（图二）做法」——
+   图二顶部就是一张这样的卡：图标 + 名称 + 英文名 + 简介 + 一行元信息 + 三个动作。
+   ============================================================================ */
+.res-detail {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--card-bg);
+  box-shadow: var(--shadow-card);
+  padding: var(--space-4);
+}
+.res-detail-head {
+  display: flex;
+  gap: var(--space-4);
+  align-items: flex-start;
+}
+.res-detail-icon {
+  width: 64px;
+  height: 64px;
+  flex: 0 0 auto;
+  border-radius: var(--radius-md);
+  object-fit: cover;
+  background: var(--bg-raised);
+}
+.res-detail-icon-ph {
+  display: block;
+  background: var(--bg-raised);
+}
+.res-detail-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.res-detail-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.res-detail-name {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.res-detail-desc {
+  color: var(--text-secondary);
+  font-size: var(--text-base);
+  line-height: 1.6;
+}
+.res-detail-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  font-size: var(--text-sm);
+}
+/* 动作条：与上面的信息之间留一道分隔，别和信息挤在一起 */
+.res-detail-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-subtle);
+}

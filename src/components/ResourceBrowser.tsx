@@ -341,7 +341,7 @@ export function ResourceCenterBody({
   gameFilters = false,
 }: ResourceCenterBodyProps) {
   const { api } = useRealApi();
-  const { state } = useApp();
+  const { state, openResource } = useApp();
 
   /** 后端给的五种资源描述（**唯一一份**） */
   const [kinds, setKinds] = useState<ResourceKindInfo[]>([]);
@@ -656,22 +656,12 @@ export function ResourceCenterBody({
     [api, kind, searchVersion, loaderForQuery, source],
   );
 
-  async function toggleVersions(hit: ModrinthHit) {
-    if (openProject === hit.project_id) {
-      setOpenProject(null);
-      return;
-    }
-    setOpenProject(hit.project_id);
-    /*
-     * ★★ 2026-09-22（用户："资源包详情页打不开"）：展开出来的版本列表挂在**卡片下面** ——
-     *   如果点的是视口底部那张卡，展开的内容直接在屏幕外，用户看到的就是"点了没反应"。
-     *   展开后把这张卡滚进视野（居中），保证"详情"真的出现在眼前。
-     */
-    window.setTimeout(() => {
-      document.querySelector('.res-card.open')?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    }, 60);
-    await loadVersions(hit);
-  }
+  /*
+   * ★★ 2026-09-23（C5）：`toggleVersions` 已删 —— 它的**唯一**入口就是卡片上那个按钮，
+   *   而那个按钮现在改成"进独立安装页"（`openResource`）。
+   *   版本列表连同分组折叠一起搬到了 `pages/ResourceInstallPage.tsx`，
+   *   用的还是本文件导出的 `VersionPicker`（同一份实现）。
+   */
 
   /* ---------- 装玩家选中的那一个版本 ---------- */
   async function installVersion(hit: ModrinthHit, ver: ModrinthVersion) {
@@ -938,10 +928,16 @@ export function ResourceCenterBody({
             <div className="res-card-foot">
               <Button
                 size="sm"
-                variant={openProject === hit.project_id ? 'secondary' : 'primary'}
-                onClick={() => void toggleVersions(hit)}
+                variant="primary"
+                /*
+                 * ★★ 2026-09-23（C5，用户：「给这些资源点击安装时单独建页面，具体看 PCL 做法」，
+                 *   并确认「内容区整页切换，不是弹窗也不是卡片内展开」）：
+                 *   这里原来是**内联展开**版本列表。现在改成**进独立安装页** ——
+                 *   资源信息与几十个版本各占一块，挑版本时能专心（PCL 就是这么分的）。
+                 */
+                onClick={() => openResource(hit, kind)}
                 disabled={!instance}
-                title={instance ? '展开这个项目的全部版本，自己挑' : '先选一个版本'}
+                title={instance ? '打开安装页，自己挑版本' : '先选一个版本'}
               >
                 {openProject === hit.project_id ? '收起版本' : '选择版本并安装'}
               </Button>

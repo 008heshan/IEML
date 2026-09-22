@@ -92,7 +92,15 @@ export interface ModsState {
 /* ====================== 导航 ====================== */
 
 /** 一级页面（侧边栏） */
-export type PageId = 'launch' | 'versions' | 'download' | 'settings' | 'changelog' | 'about';
+export type PageId =
+  | 'launch'
+  | 'versions'
+  | 'download'
+  | 'settings'
+  | 'changelog'
+  | 'about'
+  /** ★★ 2026-09-23（C5）：资源的**独立安装页** —— 点「安装」从这里进，不再内联展开 */
+  | 'resource';
 
 /** 二级页面（进入某个版本之后） */
 export type SubPageId = 'overview' | 'setup' | 'mods' | 'logs';
@@ -139,6 +147,17 @@ export interface AppState {
    * null = 没指定 → 下载页沿用原来的"最近玩过的那个"。
    */
   downloadTargetId: string | null;
+
+  /**
+   * ★★ 2026-09-23（C5）：独立安装页要装的那个资源。
+   *
+   *   为什么放在 state 而不是组件里：切到安装页之后，**列表组件会卸载**，
+   *   目标必须活在页面之外（与 `downloadTargetId` 上面那条教训同一个道理 ——
+   *   "事件在目标页挂载前被丢掉"）。
+   *
+   *   `hit` 保持 unknown：store 这一层不解析 Modrinth 的字段（那是界面的活）。
+   */
+  resourceTarget: { hit: unknown; kind: string } | null;
 
   /* --- 全局 --- */
   theme: ThemeId;
@@ -223,6 +242,14 @@ const EMPTY_MODS = {
 
 export const initialState: AppState = {
   page: 'launch',
+  /**
+   * 独立安装页要装的那个资源。
+   *
+   * ★ 为什么放在 state 里：切页之后列表组件会**卸载**，目标必须活在页面之外
+   *   （与 `openVersion` 那套同一个道理）。
+   * ★ 类型用 unknown 收窄：store 不想依赖 bridge 的类型（那一层是"壳"，不是领域）。
+   */
+  resourceTarget: null as { hit: unknown; kind: string } | null,
   openInstanceId: null,
   subPage: 'overview',
   downloadTab: 'game',
@@ -268,6 +295,12 @@ export const initialState: AppState = {
 /* ====================== 动作 ====================== */
 
 export type Action =
+  /**
+   * ★★ C5：打开 / 关闭独立安装页的目标。
+   *   `hit` 是 Modrinth 的项目信息（界面原样用，store 不解析它）。
+   */
+  | { type: 'resource/open'; hit: unknown; kind: string }
+  | { type: 'resource/close' }
   | {
       type: 'boot/ok';
       machine: MachineInfo;
@@ -372,6 +405,10 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, ready: true, bootError: action.error };
 
     /* ---------- 导航 ---------- */
+    case 'resource/open':
+      return { ...state, resourceTarget: { hit: action.hit, kind: action.kind } };
+    case 'resource/close':
+      return { ...state, resourceTarget: null };
     case 'nav':
       // 切换一级页面时退出二级页面（避免"看起来还在那个版本里"）
       return { ...state, page: action.page, openInstanceId: null, mods: { ...EMPTY_MODS } };
