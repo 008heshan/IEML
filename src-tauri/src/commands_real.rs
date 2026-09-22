@@ -2903,7 +2903,14 @@ pub async fn preview_launch(
     req: LaunchRequest,
     state: State<'_, AppState>,
 ) -> Result<LaunchPreview, LaunchError> {
-    let spec = prepare_spec(&req, &state).await?;
+    /*
+     * ★★ 预览**不做补齐**（2026-09-22，用户："图八预览命令这个打开的太慢了"）。
+     *
+     *   真机实测：预览带上补齐时 **14.5 秒**（它在下缺失的库），
+     *   而预览只需要拼一条命令行 —— 不带补齐是**毫秒级**。
+     *   缺什么会在 `notice` 里如实说（见 prepare_spec），不影响命令本身。
+     */
+    let spec = prepare_spec(&req, &state, false).await?;
     let cmd = launch_args::build_command(&spec);
     Ok(LaunchPreview {
         command: cmd.debug_line,
@@ -2959,7 +2966,8 @@ pub async fn launch_minecraft(
         }
     }
 
-    let spec = prepare_spec(&req, &state).await?;
+    // ★ 真的要启动：允许启动前自愈（缺什么补什么，补不齐才拦下）
+    let spec = prepare_spec(&req, &state, true).await?;
     let cmd = launch_args::build_command(&spec);
 
     let game_dir = spec.game_dir.clone();
@@ -3368,7 +3376,22 @@ pub fn merge_with_parents(
     version
 }
 
-async fn prepare_spec(req: &LaunchRequest, state: &AppState) -> Result<LaunchSpec, LaunchError> {    let shared = &state.paths.shared;
+async fn prepare_spec(
+    req: &LaunchRequest,
+    state: &AppState,
+    /*
+     * ★★ 要不要在拼装时**顺便补齐缺失文件**（2026-09-22 加）。
+     *
+     *   补齐全流程是**安装级**的活（会真的发请求下载），
+     *   所以只有"真的要启动"时才做：
+     *     · `launch_minecraft` → true（原行为：缺什么补什么，补不齐才拦下）；
+     *     · `preview_launch`   → false（只是拼命令行，**一个字节都不该下**）。
+     *
+     *   实测：预览带上补齐时，真机上要 **14.5 秒**（它在下东西）；
+     *   不带时是毫秒级 —— 这才是"预览"该有的成本。
+     */
+    repair: bool,
+) -> Result<LaunchSpec, LaunchError> {    let shared = &state.paths.shared;
     let instance_dir = state.paths.instance_dir(&req.instance_slug);
     // 游戏工作目录：saves / mods / config 都在这里（与 scan_mods / install_mod 同一来源）
     let game_dir = state.paths.instance_game_dir(&req.instance_slug);
@@ -3552,7 +3575,14 @@ async fn prepare_spec(req: &LaunchRequest, state: &AppState) -> Result<LaunchSpe
      *   ★ 幂等：文件齐了 `repair_missing` 提前返回，一个请求都不发。
      */
     let mut missing = missing;
-    if !missing.is_empty() {
+    /*
+     * ★★ 2026-09-22：这一段只在**真的要启动**时跑（`repair`）。
+     *
+     *   它是**安装级**的活（会发请求下载缺失的库），而 `preview_launch` 只是拼一条
+     *   命令行 —— 之前预览把它一并跑了，真机上量出 **14.5 秒**（它在下载）。
+     *   预览要的是"命令长什么样"，不是"顺手把东西装好"。
+     */
+    if repair && !missing.is_empty() {
         let repair_input = crate::net::installer::PlanInput {
             version: version.clone(),
             shared_root: shared.clone(),
@@ -3616,7 +3646,7 @@ async fn prepare_spec(req: &LaunchRequest, state: &AppState) -> Result<LaunchSpe
      *   实测：`26.1.2-forge-64.1.3` 的 processor 没跑成（缺这个 jar），
      *   而 `26.2-65.1.3` 有（75.52 MB）—— 两个版本一比就知道是安装的问题。
      */
-    if !missing_generated.is_empty() {
+    if !missing_generated.is_empty() && repair {
         return Err(format!(
             "这个 Forge 版本少了 {} 个**由安装器本地生成**的文件，启动必然失败：\n  {}\n\n\
              它们不是下载来的 —— Forge 的安装器要拿原版 jar 打补丁生成，\n\
@@ -3628,7 +3658,12 @@ async fn prepare_spec(req: &LaunchRequest, state: &AppState) -> Result<LaunchSpe
         ).into());
     }
 
-    if !missing.is_empty() {
+    /*
+     * ★ 预览（`repair == false`）时**不把"缺文件"当错误拦下**：
+     *   命令行照样拼得出来，缺什么会写进 `notice` 如实告诉用户；
+     *   用户点「就这样启动」时才会真的去补齐。
+     */
+    if !missing.is_empty() && repair {
         let sample: Vec<String> = missing.iter().take(5).cloned().collect();
         return Err(format!(
             "这个版本有 {} 个库文件缺失，启动必然失败：\n  {}{}\n\n\

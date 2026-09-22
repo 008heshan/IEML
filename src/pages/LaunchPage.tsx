@@ -19,7 +19,7 @@
  *     * 不做游戏封面大图 —— Mojang 的美术资源不能随启动器分发（README 许可）
  *     * 不做"我的实例"大网格 —— 版本列表页已经在做这件事，这里只放一屏够用的
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import { useApp } from '../state/AppContext';
 import { isInstanceRunning, runningInfo, runningCount } from '../state/store';
 import { Button, Chip, CustomSelect, EmptyState, Modal, Note } from '../ui';
@@ -50,6 +50,13 @@ export function LaunchPage() {
   const [launching, setLaunching] = useState(false);
   const [preview, setPreview] = useState<LaunchPreview | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
+  /** 命令还在拼（窗口已经开了，先显示"正在拼装…"） */
+  const [previewLoading, setPreviewLoading] = useState(false);
+  /**
+   * 按请求缓存拼装结果 —— 同一个版本 / 内存 / Java 再点一次应当**瞬开**。
+   * 键就是请求本身的 JSON（纯数据，没有函数或循环引用）。
+   */
+  const previewCache = useRef(new Map<string, LaunchPreview>());
   /**
    * ★★ 缺 Java 的引导（P0-7）：**由后端给的结构化字段驱动**。
    *
@@ -136,6 +143,9 @@ export function LaunchPage() {
        */
     };
   }, [target, state.prefs]);
+
+  /** 预览缓存的键：请求本身的 JSON（见 `previewCache`） */
+  const previewKey = useMemo(() => (req ? JSON.stringify(req) : ''), [req]);
 
   async function launch() {
     if (!target || !req) return;
@@ -345,11 +355,38 @@ export function LaunchPage() {
                 toast('info', '演示模式', '桌面版才能预览真实命令行');
                 return;
               }
+              /*
+               * ★★ 2026-09-22 修（用户："**图八预览命令这个打开的太慢了**"）。
+               *
+               *   原来的写法是：
+               *     `setPreview(await api.launcher.preview(req)); setPreviewOpen(true);`
+               *   —— **先等命令拼完，才打开窗口**。而拼装要解析 Java、读版本 JSON、
+               *   组装 classpath，在真机上是**秒级**的，于是"点了一下，半天没反应"。
+               *
+               *   现在改成**先开窗、再填内容**：窗口立刻出现并显示"正在拼装…"，
+               *   命令到了再填进去。慢的还是那一步，但用户**立刻**得到了反馈 ——
+               *   这是这一页所有"慢操作"的统一做法。
+               *
+               *   ★ 顺带**按请求缓存**：同一个版本 / 内存 / Java 再点一次是瞬开
+               *     （拼装结果是纯函数性的，没有理由每次重算）。
+               */
+              setPreviewOpen(true);
+              const hit = previewCache.current.get(previewKey);
+              if (hit) {
+                setPreview(hit);
+                setPreviewLoading(false);
+                return;
+              }
+              setPreviewLoading(true);
               try {
-                setPreview(await api.launcher.preview(req));
-                setPreviewOpen(true);
+                const p = await api.launcher.preview(req);
+                previewCache.current.set(previewKey, p);
+                setPreview(p);
               } catch (e) {
+                setPreviewOpen(false);
                 toast('err', '无法拼装启动命令', e instanceof Error ? e.message : String(e));
+              } finally {
+                setPreviewLoading(false);
               }
             }}
           >
@@ -719,6 +756,12 @@ export function LaunchPage() {
           </>
         }
       >
+        {/* 拼装中：立刻给反馈，别让窗口空着（见按钮里那段说明） */}
+        {previewLoading && !preview ? (
+          <div className="dim" style={{ padding: '18px 0' }}>
+            正在拼装启动命令（解析 Java、读版本 JSON、组装 classpath）…
+          </div>
+        ) : null}
         {preview ? (
           <>
             <div className="pack-locks">

@@ -347,6 +347,9 @@ function ModpackTab({
   const [selected, setSelected] = useState<PackCard | null>(null);
   const [name, setName] = useState('');
   const [installing, setInstalling] = useState(false);
+  /** 安装面板（在 20 张卡片之后 —— 不滚过去用户会以为"点了没反应"） */
+  const installPanelRef = useRef<HTMLDivElement | null>(null);
+  const installNameRef = useRef<HTMLInputElement | null>(null);
   /** 页码与总数（0 基）—— 翻页靠它俩，不再写死前 20 个 */
   const [page, setPage] = useState(0);
   const [total, setTotal] = useState(0);
@@ -393,6 +396,24 @@ function ModpackTab({
   useEffect(() => {
     void load();
   }, [load]);
+
+  /*
+   * ★★ 2026-09-22 修（用户："**资源包详情页打不开，根本安装不了整合包**"）。
+   *
+   *   真机实测：点一张整合包卡片之后，安装面板出现在 `top: 1939`，
+   *   而视口只有 760 高 —— **在屏幕外约 1200 像素**。
+   *   面板本身一直在 DOM 里（点也确实生效了），只是用户看不见，
+   *   于是体验就是"点了没反应、根本装不了"。
+   *
+   *   现在选中就把它**滚进视野**并聚焦输入框：点完立刻看到"可以装"。
+   */
+  useEffect(() => {
+    if (!selected) return;
+    installPanelRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    // 聚焦要等滚动起步之后再给，否则浏览器会把页面拉回去
+    const t = window.setTimeout(() => installNameRef.current?.focus({ preventScroll: true }), 320);
+    return () => window.clearTimeout(t);
+  }, [selected]);
 
   /* ★ 搜索词变了要回到第 1 页（不然会停在一个"搜出来只有 3 个"的第 7 页上） */
   useEffect(() => {
@@ -711,7 +732,7 @@ function ModpackTab({
 
       {/* 配置面板（内联展开，不用弹窗 —— 弹窗会遮住刚选的包） */}
       {selected ? (
-        <div className="setup-panel">
+        <div className="setup-panel" ref={installPanelRef}>
           <div className="setup-head">
             <span className="si">
               <IconBox />
@@ -730,6 +751,7 @@ function ModpackTab({
               <div className="setup-label">实例名称</div>
               <div className="setup-field">
                 <input
+                  ref={installNameRef}
                   className="input"
                   value={name}
                   aria-label="实例名称"
