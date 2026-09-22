@@ -27,6 +27,7 @@ import { DownloadPage } from '../pages/DownloadPage';
 import { SettingsPage } from '../pages/SettingsPage';
 import { ChangelogPage } from '../pages/ChangelogPage';
 import { AboutPage } from '../pages/AboutPage';
+import { ResourceInstallPage } from '../pages/ResourceInstallPage';
 import { InstanceOverview } from '../pages/InstanceOverview';
 import { InstanceSetup } from '../pages/InstanceSetup';
 import { ModsPanel } from '../pages/ModsPanel';
@@ -612,6 +613,8 @@ export function App() {
           {state.page === 'settings' && <SettingsPage />}
           {state.page === 'changelog' && <ChangelogPage />}
           {state.page === 'about' && <AboutPage />}
+          {/* C5：资源的独立安装页 */}
+          {state.page === 'resource' && <ResourceInstallPage />}
         </main>
       </div>
 

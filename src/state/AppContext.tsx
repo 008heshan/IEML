@@ -195,6 +195,10 @@ interface AppContextValue {  state: AppState;
   /** 二级页面正在编辑的实例 */
   open: Instance | null;
   setLaunchTarget: (id: string | null) => void;
+  /** ★★ C5：进资源的**独立安装页**（`kind` 决定装到哪个目录） */
+  openResource: (hit: unknown, kind: string) => void;
+  /** ★★ C5：从安装页返回下载页 */
+  closeResource: () => void;
   createInstance: (inst: Instance) => Promise<void>;
   updateConfig: (id: string, patch: Partial<InstanceConfig>) => void;
   /**
@@ -968,6 +972,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
     dispatch({ type: 'instances/last', id });
   }, []);
 
+  /**
+   * ★★ 2026-09-23（C5）：打开资源的独立安装页。
+   *
+   *   `hit` 与 `kind` 一起放进 state —— 切页之后列表组件会卸载，
+   *   目标必须活在页面之外（与 `setLaunchTarget` 上面那条教训同一个道理）。
+   */
+  const openResource = useCallback((hit: unknown, kind: string) => {
+    dispatch({ type: 'resource/open', hit, kind });
+    dispatch({ type: 'nav', page: 'resource' });
+  }, []);
+
+  /** ★ C5：从安装页返回下载页（顺手把目标清掉，免得下次进来还是旧的那个） */
+  const closeResource = useCallback(() => {
+    dispatch({ type: 'resource/close' });
+    dispatch({ type: 'nav', page: 'download' });
+  }, []);
+
   const toast = useCallback((kind: ToastItem['kind'], title: string, desc?: string) => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const sticky = toastSticky(kind);
@@ -1184,6 +1205,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     target,
     open,
     setLaunchTarget,
+    // ★★ C5：资源独立安装页的两个开关
+    openResource,
+    closeResource,
     createInstance,
     updateConfig,
     removeInstance,
