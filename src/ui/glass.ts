@@ -593,8 +593,16 @@ export function createGlassController(initial: VfxLevel): GlassController {
       if (t !== g.transform) {
         g.transform = t;
         g.spot.style.transform = t;
+        /*
+         * 边缘环的光心：那层现在是 `calc(100% + 520px) × calc(100% + 280px)`
+         * （见 app.css），即四周各留 260 / 140 的余量。
+         * 要把渐变中心落在元素内的 (cx, cy)，位移就是 (cx - w/2, cy - h/2) ——
+         * 层中心正好比元素中心多出 (260, 140)，两边抵消。
+         * ★ 别再写回固定的 1200/600：那是"层永远是 2400×1200"时代的常数，
+         *   层一旦跟着元素缩，它就把光斑推到元素外面去。
+         */
         g.edgeLight.style.transform =
-          'translate3d(' + (cx - 1200).toFixed(1) + 'px,' + (cy - 600).toFixed(1) + 'px,0)';
+          'translate3d(' + (cx - r.width / 2).toFixed(1) + 'px,' + (cy - r.height / 2).toFixed(1) + 'px,0)';
       }
       if (a !== g.alpha) {
         g.alpha = a;

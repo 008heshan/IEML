@@ -385,6 +385,32 @@ await sleep(900);
 const bg1 = await shoot('背景-1');
 await sleep(1200);
 const bg2 = await shoot('背景-2');
+/*
+ * ★★ 先验"画布铺满视口" —— 2026-09-22 的真 regression 就出在这里：
+ *   为了省显存把 backing store 降到 0.6 倍，结果 canvas 作为**替换元素**
+ *   布局尺寸退回了 width 属性值，只在窗口左上角铺了一块（右下角没有背景）。
+ *   "画布变小"和"画的东西变小"是两件事，必须分开断言。
+ */
+const canvasBox = await ev(`(() => {
+  const c = document.querySelector('canvas.glass-ambient-gl');
+  if (!c) return null;
+  const r = c.getBoundingClientRect();
+  return { box: [Math.round(r.width), Math.round(r.height)], backing: [c.width, c.height], view: [window.innerWidth, window.innerHeight] };
+})()`);
+console.log('  背景画布：盒子 ' + JSON.stringify(canvasBox?.box) + ' · backing ' + JSON.stringify(canvasBox?.backing) + ' · 视口 ' + JSON.stringify(canvasBox?.view));
+check(
+  '★ 背景画布**铺满视口**（backing 可以小，盒子不能小）',
+  canvasBox !== null &&
+    canvasBox.box[0] >= canvasBox.view[0] - 2 &&
+    canvasBox.box[1] >= canvasBox.view[1] - 2,
+  JSON.stringify(canvasBox),
+);
+check(
+  '  backing store 确实比视口小（省显存的初衷）',
+  canvasBox !== null && canvasBox.backing[0] < canvasBox.view[0],
+  JSON.stringify(canvasBox?.backing),
+);
+
 const bgAlive = diff(bg1, bg2);
 console.log(`  1.2 秒后两张背景的差：平均 ${bgAlive.mean.toFixed(3)}`);
 check('  背景在动（烟雾+光斑是活的）', bgAlive.mean > 0.05, `平均差 ${bgAlive.mean.toFixed(3)}`);

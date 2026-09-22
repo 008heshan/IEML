@@ -2660,6 +2660,23 @@ tbody tr.clickable:focus-visible {
 .glass-ambient-gl {
   position: fixed;
   inset: 0;
+  /*
+   * ★★ 必须写死宽高（2026-09-22 踩出来的真 regression）：
+   *
+   *   `<canvas>` 是**替换元素**。只写 `inset: 0` 而不给宽高时，
+   *   `width: auto` 对它来说**不是"撑满"**，而是回退到 **`width` 属性值**
+   *   （也就是我们按 0.6 倍分辨率设的 backing store 尺寸）。
+   *   于是当我把画布分辨率降到 885×570（为了省显存）之后，
+   *   它在 1180×760 的窗口里**只铺了左上角一块** —— 右下角全是 body 底色。
+   *
+   *   症状很隐蔽：全窗截图看着"背景没了/变暗"，而两条像素断言直接量出 0.00
+   *   （因为它们取样在右下区域，那里压根没有画布）。
+   *   ★ 教训：**改 backing store 的分辨率时，必须同时确认元素盒子还是满屏**——
+   *     "画布变小"与"画的东西变小"是两件完全不同的事。
+   *   回归判据：`tools/live/live-glass-round4-check.mjs` 里"画布铺满视口"那一条。
+   */
+  width: 100%;
+  height: 100%;
   z-index: 0;
   display: none;
   pointer-events: none;
@@ -2841,17 +2858,27 @@ tbody tr.clickable:focus-visible {
   position: absolute;
   left: 0;
   top: 0;
-  /* 比元素大得多：保证无论光心落在哪条边上，渐变都盖得住那一圈 */
-  width: 2400px;
-  height: 1200px;
+  /*
+   * ★★ 2026-09-22（性能）：尺寸从**写死的 2400×1200** 改成**跟着元素算**。
+   *
+   *   2400×1200 = 288 万像素 × 4 字节 ≈ **11.5 MB 显存**，而它带着
+   *   `will-change: transform` → 每个元素一块常驻纹理。用户网站里只有一个导航栏，
+   *   11.5MB 无所谓；我这里铺给了**每一个玻璃元素**（设置页 7 个 = 80MB）。
+   *
+   *   改成 "元素尺寸 + 光晕的两倍半径"：光晕本身是 260×140 的椭圆，
+   *   padding 各留 260/140 就够它铺满任意一边。JS 那边的位移也按同一式子算
+   *   （见 `ui/glass.ts` 的 `writeGlows`）。
+   */
+  width: calc(100% + 520px);
+  height: calc(100% + 280px);
   background: radial-gradient(
-    420px 200px at 50% 50%,
+    260px 140px at 50% 50%,
     rgba(180, 214, 255, calc(var(--glass-hi) * 3.4)),
     rgba(170, 206, 255, calc(var(--glass-hi) * 1.4)) 42%,
     rgba(160, 200, 255, calc(var(--glass-hi) * 0.4)) 70%,
     transparent 92%
   );
-  transform: translate3d(-1200px, -600px, 0);
+  transform: translate3d(-999px, -999px, 0);
   will-change: transform;
 }
 

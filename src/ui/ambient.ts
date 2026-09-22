@@ -527,8 +527,22 @@ export function createAmbientGL(canvas: HTMLCanvasElement): AmbientGL | null {
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     },
     resize(width, height, dpr) {
-      const w = Math.max(1, Math.round(width * dpr));
-      const h = Math.max(1, Math.round(height * dpr));
+      /*
+       * ★★ 2026-09-22（内存）：**这块画布按 0.6 倍分辨率渲染**。
+       *
+       *   用户看到任务管理器里的占用说"好恐怖"，我按档位量了一遍（同一二进制，
+       *   干净启动）：弱化 472MB / 适中 549MB / **灵动 600MB** —— 灵动比适中多出来的
+       *   ~50MB 主要就是这块全屏画布的：1475×950×4B ≈ 5.6MB 一块，
+       *   双缓冲 + 合成器再拷一份 + WebGL2 上下文自身的开销，加起来就是这个量级。
+       *
+       *   ★ 为什么敢降到 0.6：这一层画的是**三团糊光斑 + 烟雾**，没有任何锐利细节，
+       *     拉伸回去人眼看不出来（它不是 UI，不承载文字与边缘）。
+       *     CSS 尺寸仍是整屏，浏览器负责放大 —— 视觉上只是"更柔"。
+       *   ★ 顺带也让 GPU 每帧要填的像素少 64%，对核显更友好。
+       */
+      const GL_SCALE = 0.6;
+      const w = Math.max(1, Math.round(width * dpr * GL_SCALE));
+      const h = Math.max(1, Math.round(height * dpr * GL_SCALE));
       if (canvas.width !== w || canvas.height !== h) {
         canvas.width = w;
         canvas.height = h;
