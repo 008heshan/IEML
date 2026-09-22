@@ -31,7 +31,7 @@ regex = "1"
 sysinfo = "0.33"
 
 # 网络与下载
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "gzip", "http2"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "gzip", "http2", "multipart"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "time", "process"] }
 futures-util = "0.3"
 bytes = "1"

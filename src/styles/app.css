@@ -3003,3 +3003,174 @@ tbody tr.clickable:focus-visible {
 :root.tab-hidden .glass-ambient-gl {
   visibility: hidden;
 }
+
+/* ============================================================================
+   ★★ 账号菜单（2026-09-22，用户：「把账号按钮放到最底部，点击可以向上展开…
+   附属文字描述不能太多，排版要好看且实用」）
+
+   位置：侧栏最底部，**向上展开**（`bottom: calc(100% + 8px)`）。
+   排版：每行只有名字 +（必要时）一个短状态，不写解释性小字。
+   ============================================================================ */
+.acct-wrap {
+  position: relative;
+  padding: 0 var(--space-3) var(--space-2);
+  flex: 0 0 auto;
+  /*
+   * ★ 贴到侧栏最底部（用户："把账号按钮放到最底部"）。
+   *   侧栏是 flex 列，导航那一段不占满高度 —— 不加 `margin-top: auto`
+   *   按钮会浮在半空（实测距底 401px）。
+   */
+  margin-top: auto;
+}
+.acct-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 7px var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--text-base);
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.acct-btn:hover,
+.acct-btn.on {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+}
+/* 头像：皮肤图是 64×64，头部在左上 8×8 → 用 800% 缩放只露那一块 */
+.acct-head {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  background-color: var(--bg-active);
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
+}
+.acct-name {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+}
+.acct-menu {
+  position: absolute;
+  left: var(--space-3);
+  right: var(--space-3);
+  /* ★ 向上展开：贴着按钮的上沿 */
+  bottom: calc(100% + 6px);
+  z-index: var(--z-menu, 60);
+  display: flex;
+  flex-direction: column;
+  padding: 5px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-overlay);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  max-height: 60vh;
+  overflow-y: auto;
+  animation: acctIn 140ms var(--ease-out);
+}
+@keyframes acctIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.acct-menu > button {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 7px var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--text-base);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-instant) var(--ease);
+}
+.acct-menu > button:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+.acct-menu > button:disabled {
+  color: var(--text-disabled);
+  cursor: default;
+}
+.acct-menu > button.on {
+  background: var(--accent-subtle);
+}
+.acct-menu > button svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  opacity: 0.85;
+}
+.acct-menu > button .acct-state {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+}
+.acct-sep {
+  height: 1px;
+  margin: 5px 4px;
+  background: var(--border-subtle);
+}
+/* 披风列表：缩进一点，视觉上从属于「修改披风」 */
+.acct-capes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 0 2px var(--space-4);
+}
+.acct-capes button {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 5px var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.acct-capes button:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.acct-capes button.on {
+  color: var(--accent);
+}
+.acct-cape {
+  width: 16px;
+  height: 20px;
+  border-radius: 3px;
+  background-color: var(--bg-active);
+  background-size: contain;
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
+}
+.acct-empty {
+  padding: 6px var(--space-2);
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+}

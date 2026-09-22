@@ -1250,6 +1250,29 @@ export interface DataRoot {
 export const account = {
   offline: (username: string) => call<McAccount>('account_offline', { username }),
 
+  /*
+   * ★★ 2026-09-22（用户那张账号菜单）：改皮肤 / 披风 / 存皮肤文件。
+   *   全是**写**操作，必须带已登录的 MC 令牌；令牌过期由 Rust 侧静默续期
+   *   （见 auth::fresh_account），所以这里不需要先查登录状态。
+   */
+  uploadSkin: (uuid: string, path: string, variant: 'classic' | 'slim' = 'classic') =>
+    call<{ id: string; state: string; url: string; variant: string }>('account_upload_skin', {
+      uuid,
+      path,
+      variant,
+    }),
+  /** 拥有的披风（正版且确实拥有时才有内容） */
+  capes: (uuid: string) =>
+    call<Array<{ id: string; name: string; url: string | null; active: boolean }>>('account_capes', {
+      uuid,
+    }),
+  /** 换披风；传 null = 不显示披风 */
+  setCape: (uuid: string, capeId: string | null) =>
+    call<void>('account_set_cape', { uuid, capeId }),
+  /** 把当前皮肤存成文件，返回写入的字节数 */
+  saveSkin: (skinUrl: string, dest: string) =>
+    call<number>('account_save_skin', { skinUrl, dest }),
+
   /**
    * ★★ 正版登录现在能不能用（缺不缺 client_id）。
    *   设置页据此决定是显示「正版登录已就绪」还是「缺一个应用 ID + 输入框」。

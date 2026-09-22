@@ -335,6 +335,10 @@ pub fn run() {    /*
             commands_real::account_current,
             /* ★ 正版皮肤：照 PCL 走 Mojang 官方（不经过第三方头像站） */
             commands_real::account_skin,
+        commands_real::account_upload_skin,
+        commands_real::account_capes,
+        commands_real::account_set_cape,
+        commands_real::account_save_skin,
             commands_real::account_remove,
             commands_real::account_refresh,
             /* -------- 整合包 -------- */

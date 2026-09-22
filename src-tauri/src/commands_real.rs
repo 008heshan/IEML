@@ -4823,6 +4823,59 @@ pub async fn account_skin(uuid: String) -> Result<auth::SkinInfo, String> {
     auth::fetch_skin(&uuid).await.map_err(err_auth)
 }
 
+/* ====================== 改皮肤 / 改披风 / 存皮肤（2026-09-22） ======================
+ *
+ * 全是用户那张账号菜单要的：修改皮肤 / 修改披风 / 保存皮肤文件 / 刷新披风列表。
+ * 实现在 `auth` 里（见那边关于"令牌过期就静默续期"的说明），
+ * 这里只做**参数校验 + 错误翻译**。
+ */
+
+/// 上传皮肤。`variant`：classic / slim；`path` 是本地 PNG 的绝对路径。
+#[tauri::command]
+pub async fn account_upload_skin(
+    uuid: String,
+    path: String,
+    variant: Option<String>,
+) -> Result<auth::SkinEntry, String> {
+    let bytes = std::fs::read(&path).map_err(|e| format!("读不到这个文件：{e}"))?;
+    /*
+     * 只挡"明显不是 PNG"的：真正的尺寸校验交给 Mojang（见 auth::upload_skin 的注释）。
+     * ★ 用**文件头签名**而不是扩展名 —— 用户可能把 jpg 改名成 png。
+     */
+    const PNG_SIG: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    if bytes.len() < 8 || bytes[..8] != PNG_SIG {
+        return Err("这个文件不是 PNG。皮肤必须是 PNG 图片（64×64，或旧版 64×32）。".into());
+    }
+    auth::upload_skin(&uuid, bytes, variant.as_deref().unwrap_or("classic"))
+        .await
+        .map_err(err_auth)
+}
+
+/// 拥有的披风列表
+#[tauri::command]
+pub async fn account_capes(uuid: String) -> Result<Vec<auth::CapeEntry>, String> {
+    auth::list_capes(&uuid).await.map_err(err_auth)
+}
+
+/// 换披风（`cape_id` 传空 = 不显示披风）
+#[tauri::command]
+pub async fn account_set_cape(uuid: String, cape_id: Option<String>) -> Result<(), String> {
+    let id = cape_id.as_deref().filter(|s| !s.trim().is_empty());
+    auth::set_active_cape(&uuid, id).await.map_err(err_auth)
+}
+
+/// 把当前皮肤存成文件。`dest` 是完整目标路径（前端负责选目录）。
+#[tauri::command]
+pub async fn account_save_skin(skin_url: String, dest: String) -> Result<u64, String> {
+    if skin_url.trim().is_empty() {
+        return Err("这个账号现在没有皮肤可保存（用的是默认皮肤）".into());
+    }
+    auth::save_skin_png(&skin_url, std::path::Path::new(&dest))
+        .await
+        .map_err(err_auth)
+}
+
+
 #[tauri::command]
 pub async fn account_refresh(refresh_token: String) -> Result<McAccount, String> {
     auth::refresh_msa(&refresh_token).await.map_err(err_auth)
