@@ -7,6 +7,8 @@
 tools/
 ├─ verify.mjs                          一键门禁总入口（其余检查都由它串起来）
 ├─ set-version.mjs                     版本号：六处一起改 + --check / --docs
+├─ clean-artifacts.mjs                 清构建/测试废弃产物（历史安装包 + %TEMP% 残留）
+├─ make-installer-assets.mjs           生成安装程序的头部图/侧边图（手写 BMP 编码，无依赖）
 ├─ make-icons.mjs                      从 design/mockup.html 生成 Tauri 图标
 ├─ gen-curseforge-fingerprint-cases.mjs  CurseForge 指纹判据表（生成/离线复算）
 │

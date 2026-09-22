@@ -5121,3 +5121,59 @@ density = mix(0.55, 1.55, smoothstep(0.24, 0.86, fbm(wuv*3.4 + t)))
 
 仍然留下一条**有意义的**加固：`vite.config.ts` 里显式写死 `emptyOutDir: true` ——
 不依赖默认值（默认行为受 outDir 位置影响，而这个产物同时被 Tauri 读取）。
+
+### 二十六、第七批（P/O 收尾）：美化安装程序 + 清掉真正在堆积的东西（2026-09-23）
+
+#### 26.1　P：安装程序的美化
+
+用户：「美化一下安装程序」。
+
+做法（**不引第三方依赖**，与 `make-icons.mjs` 同一套路子）：
+* 新增 `tools/make-installer-assets.mjs` —— **手写 24 位 BMP 编码器**（几十行）。
+  为什么是 BMP：NSIS 的 `MUI_HEADERIMAGE_BITMAP` / `MUI_WELCOMEFINISHPAGE_BITMAP`
+  **只认位图**；为什么自己写：仓库规矩是不引依赖。
+* 生成两张图（尺寸由 NSIS 规定，不能改）：
+  * 头部图 **150 × 57**
+  * 侧边图 **164 × 314**
+  配色取自应用自己的令牌（深色底 `#161a21→#0f1217`、强调蓝 `#5b8def`、氛围紫 `#8b5cf6`），
+  画法就是"渐变底 + 两团柔光 + 一道强调条" —— 与应用背景同一个观感。
+  ★ **图里不放文字**：文字由 NSIS 按语言自己画（我们有中文和英文两套），
+    画进图里等于把中文钉死。
+* `tauri.conf.json` 的 `nsis` 段补上：`installerIcon` / `headerImage` / `sidebarImage` /
+  `uninstallerIcon` / `uninstallerHeaderImage` / `displayLanguageSelector` /
+  `compression: lzma` / `startMenuFolder`。
+
+★ 键名是**查 schema 得到**的（`node_modules/@tauri-apps/cli/config.schema.json`），
+不是猜的 —— 这一类配置猜错只会静默不生效。
+
+**取证**（不是"应该生效了"）：构建后 Tauri 生成的
+`src-tauri/target/release/nsis/x64/installer.nsi` 里确实写着
+
+```
+!define SIDEBARIMAGE "…\installer-sidebar.bmp"
+!define HEADERIMAGE  "…\installer-header.bmp"
+!define MUI_WELCOMEFINISHPAGE_BITMAP "${SIDEBARIMAGE}"
+!define MUI_HEADERIMAGE
+!define DISPLAYLANGUAGESELECTOR "true"
+```
+
+而且 `makensis` 能编译通过 —— 位图格式不对的话它当场就会失败。
+安装包 3.27 MB → **3.39 MB**（两张图 +0.12 MB）。
+
+#### 26.2　O：真正在堆积的不是 dist，是 **bundle 目录**
+
+★ 我第一版查错了地方（去看 `dist/assets`，还误报 5 个"孤儿"，见 25.2）。
+**打安装程序时才看到真相**：`src-tauri/target/release/bundle/nsis/` 里堆了
+**31 个历史安装包、113 MB**（从 beta.28 一路到 rc.1，每次构建留一个）。
+
+新增 `tools/clean-artifacts.mjs`：
+* 删 `bundle/**` 里**非当前版本**的安装包与签名（当前版本从 `package.json` 读，不写死）；
+* 删 `%TEMP%` 里本项目测试留下的目录（`ieml-*` / `IEML-*-updater-*`）；
+* **不碰** `dist/`、`target/release/ieml.exe`、`target/debug` —— 那些是当前产物，
+  清掉会让下次构建变慢，还会让门禁的"exe 内嵌前端一致性"读不到东西。
+* 支持 `--dry` 先看要删什么。
+
+实测：**187 项 / 246.8 MB**；清完复查——当前安装包、exe、dist 都在。
+
+★ 教训（与 25.2 那条是一对）：**"清理废弃产物"要先看清楚谁在长**。
+   `dist/` 是每次构建都会清空的（Vite），而 `bundle/` 是**只进不出**的。
