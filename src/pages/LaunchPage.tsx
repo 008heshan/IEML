@@ -23,6 +23,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../state/AppContext';
 import { isInstanceRunning, runningInfo, runningCount } from '../state/store';
 import { Button, Chip, CustomSelect, EmptyState, Modal, Note } from '../ui';
+import { instanceTitle } from '../state/instance-name';
 import {
   IconAlert,
   IconBox,
@@ -503,7 +504,8 @@ export function LaunchPage() {
             ariaLabel="要启动的版本"
             options={state.instances.map((i) => ({
               value: i.id,
-              label: `${i.config.name} — ${i.mcVersion}${i.loader ? ` + ${loaderName(i.loader.kind)}` : ' 原版'}`,
+              /* ★ 2026-09-22：统一格式（"Minecraft 26.2 + Fabric 26.2：模组加载器"） */
+              label: instanceTitle(i.config.name, i.mcVersion, i.loader),
             }))}
           />
         </div>

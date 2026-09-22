@@ -34,7 +34,7 @@ import {
 } from '../ui/motion';
 import type { MotionLevel } from '../ui/motion';
 import { VFX_HINT, VFX_LABEL, VFX_LEVELS } from '../ui/vfx';
-import { THEMES, themeInfo } from '../ui/theme';
+import { THEMES } from '../ui/theme';
 import type { VfxLevel } from '../ui/vfx';
 import {
   deleteIntent,
@@ -189,15 +189,12 @@ export function SettingsPage() {
             那是对的。这一轮用户要了 8 套新配色（+ 原来的深色 = 9 套），
             可选项真的有了，选择器才有意义。
 
-            做法：每套一个**色板按钮**（斜切两半：左上是它的底色、右下是它的主色），
-            名字 + **用户自己那句话**一起显示 —— 他写的是用途与感觉
-            （"长时间看最舒服" / "像旧书桌"），那才是选主题时真正要看的。
+            做法：每套一个**色板按钮**（斜切两半：左上是它的底色、右下是它的主色）。
+            ★★ 2026-09-22 用户：「**主题下面的这些文字描述，都不要，指针悬浮显示的字也不要**」——
+              所以现在**只有名字与色板**：没有 hint、没有 title。
           */}
           <div className="field-row">
-            <span className="field-label">
-              主题
-              <span className="field-hint">{themeInfo(state.theme).hint}</span>
-            </span>
+            <span className="field-label">主题</span>
             <div className="field-control">
               <div className="theme-grid" role="radiogroup" aria-label="主题">
                 {THEMES.map((t) => (
@@ -207,7 +204,6 @@ export function SettingsPage() {
                     role="radio"
                     aria-checked={state.theme === t.id}
                     aria-label={t.label}
-                    title={`${t.label} —— ${t.hint}`}
                     className={'theme-swatch' + (state.theme === t.id ? ' on' : '')}
                     onClick={() => {
                       setTheme(t.id);

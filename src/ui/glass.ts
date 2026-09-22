@@ -514,6 +514,24 @@ export function createGlassController(initial: VfxLevel): GlassController {
     scheduleTint();
   });
   mo.observe(document.body, { childList: true, subtree: true });
+
+  /*
+   * ★★ 2026-09-22（用户报的 bug）：**换主题时背景不会变色**。
+   *
+   *   现场：用户在「灵动视效」下换主题，卡片、按钮都变了，**背景那层 GL 光斑不变**；
+   *   但只要切到别的视效档再切回灵动，颜色就对了。
+   *   原因：`ambient.ts` 的 `refreshTheme()` 早就写好了，**却从来没有人调用过** ——
+   *   着色器里的颜色是**创建画布那一刻**读的令牌，之后一直用旧值；
+   *   "切走再切回来"之所以有效，是因为那会**重建画布**（于是重读一次）。
+   *
+   *   修法：盯着 `<html data-theme>`，一变就 refreshTheme() + 取色器 re-read。
+   */
+  const themeObserver = new MutationObserver(() => {
+    gl?.refreshTheme();
+    sampler.refresh();
+    scheduleTint();
+  });
+  themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   /*
    * ★ 2026-09-22（第五轮）：原来这里还要**重测矩形**（那是给指针高光用的：
    *   光斑按 `getBoundingClientRect` 定位，滚动后不重测就会"跟错地方"）。
@@ -593,6 +611,7 @@ export function createGlassController(initial: VfxLevel): GlassController {
       disposed = true;
       if (tintTimer) clearInterval(tintTimer);
       document.removeEventListener('visibilitychange', applyVisibility);
+      themeObserver.disconnect();
       document.documentElement.classList.remove('tab-hidden');
       document.removeEventListener('scroll', onScroll, true);
       mo.disconnect();

@@ -113,6 +113,16 @@ results.push([
  *   ★ 它已经抓到过两个真 bug：主题块被插进深色块内部（CSS 嵌套，永不生效）、
  *     酒红主色对比度只有 4.02。
  */
+/*
+ * ★★ CSS 令牌引用必须存在（2026-09-22）。
+ *   由来：`var(--ease)` 被用了 13 处却从未定义 —— 缺失的自定义属性会让**整条声明**
+ *   在计算值阶段失效（transition 变 unset），那些过渡**一直是瞬变**，
+ *   而代码读起来完全正常。这条门禁把这类"看不见的坏"挡在交付前。
+ */
+results.push([
+  'CSS 令牌引用完整',
+  run('CSS 令牌引用完整', 'node', ['tools/gates/check-css-tokens.mjs']),
+]);
 results.push([
   '主题令牌与对比度',
   run('主题令牌与对比度', 'node', ['--test', 'tests/theme-tokens.test.mjs']),
