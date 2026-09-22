@@ -587,7 +587,7 @@ export interface InstallProgressEvent {
   skippedFiles: number;
   failedFiles: number;
   /** 当前实际在用的下载源（多源回退时会变） */
-  source?: 'mojang' | 'bmclapi' | '';
+  source?: 'auto' | 'mojang' | 'bmclapi' | '';
   /** 失败补下轮次：0 = 第一轮，>0 = 正在重试第 N 轮 */
   retryRound?: number;
   totalBytes?: number;
@@ -595,7 +595,7 @@ export interface InstallProgressEvent {
 
 /** 单个下载源的健康状态（对应后端 `download_sources`） */
 export interface DownloadSourceReport {
-  source: 'mojang' | 'bmclapi';
+  source: 'auto' | 'mojang' | 'bmclapi';
   attempts: number;
   successes: number;
   failures: number;
@@ -618,7 +618,8 @@ export interface DownloadSourceReport {
 
 export interface DownloadSourcesPayload {
   sources: DownloadSourceReport[];
-  preferred: 'mojang' | 'bmclapi';
+  /** ★ 2026-09-22：现在是「自动」（官方优先）—— 见 Rust `parse_source` */
+  preferred: 'auto' | 'mojang' | 'bmclapi';
   concurrencyHint: number;
   uptimeSeconds: number;
 }
@@ -675,13 +676,13 @@ export const rust = {
 /* ====================== 真实元数据 ====================== */
 
 export const metadata = {
-  manifest: (source: 'mojang' | 'bmclapi' = 'bmclapi') =>
+  manifest: (source: 'auto' | 'mojang' | 'bmclapi' = 'bmclapi') =>
     call<ManifestSummary>('fetch_version_manifest', { source }),
 
-  version: (mcVersion: string, source: 'mojang' | 'bmclapi' = 'bmclapi') =>
+  version: (mcVersion: string, source: 'auto' | 'mojang' | 'bmclapi' = 'bmclapi') =>
     call<VersionDetail>('fetch_version_json', { mcVersion, source }),
 
-  loaders: (mcVersion: string, kind: string, source: 'mojang' | 'bmclapi' = 'bmclapi') =>
+  loaders: (mcVersion: string, kind: string, source: 'auto' | 'mojang' | 'bmclapi' = 'bmclapi') =>
     call<LoaderList>('fetch_loaders', { mcVersion, kind, source }),
 
   /**
@@ -691,7 +692,7 @@ export const metadata = {
    *   ① 并行（本机实测串行合计约 18 秒 → 并行由最慢的一个决定）；
    *   ② **包含 OptiFine**（高清修复），它以前根本没有自动来源。
    */
-  availableLoaders: (mcVersion: string, source: 'mojang' | 'bmclapi' = 'bmclapi') =>
+  availableLoaders: (mcVersion: string, source: 'auto' | 'mojang' | 'bmclapi' = 'bmclapi') =>
     call<AvailableLoaders>('fetch_available_loaders', { mcVersion, source }),
 
   /** ★ 实时读盘：这个 MC 版本上到底装了哪些加载器与附加组件 */
@@ -956,7 +957,7 @@ export const installer = {
     mcVersion: string;
     loaderKind?: string | null;
     loaderVersion?: string | null;
-    source?: 'mojang' | 'bmclapi';
+    source?: 'auto' | 'mojang' | 'bmclapi';
   }) =>
     call<PlanPreview>('plan_install', {
       mcVersion: opts.mcVersion,
@@ -971,7 +972,7 @@ export const installer = {
       mcVersion: string;
       loaderKind?: string | null;
       loaderVersion?: string | null;
-      source?: 'mojang' | 'bmclapi';
+      source?: 'auto' | 'mojang' | 'bmclapi';
       taskId: string;
       downloadAssets?: boolean;
       concurrency?: number;
@@ -1333,7 +1334,7 @@ export const modpack = {
       slug: string;
       taskId: string;
       instanceName: string;
-      source?: 'mojang' | 'bmclapi';
+      source?: 'auto' | 'mojang' | 'bmclapi';
       concurrency?: number;
     },
     onProgress?: (e: ModpackProgressEvent) => void,
@@ -1529,7 +1530,7 @@ export function createTauriBackend(): Backend {
         mcVersion?: string;
         loaderKind?: string | null;
         loaderVersion?: string | null;
-        source?: 'mojang' | 'bmclapi';
+        source?: 'auto' | 'mojang' | 'bmclapi';
       };
       try {
         await installer.install(

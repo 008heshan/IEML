@@ -186,7 +186,8 @@ export interface AppState {
   prefs: {
     globalIsolation: 'isolated' | 'shared';
     globalMemoryMb: number;
-    downloadSource: 'bmclapi' | 'mojang';
+    /** ★ 2026-09-22：只剩「自动」（官方优先、慢则镜像）—— 那个选择器已经删掉 */
+  downloadSource: 'auto' | 'bmclapi' | 'mojang';
     concurrentDownloads: number;
     modSource: 'modrinth' | 'both';
     particleEffects: boolean;
@@ -250,7 +251,7 @@ export const initialState: AppState = {
   prefs: {
     globalIsolation: 'isolated',
     globalMemoryMb: 4096,
-    downloadSource: 'bmclapi',
+    downloadSource: 'auto',
     concurrentDownloads: 64,
     modSource: 'modrinth',
     particleEffects: true,

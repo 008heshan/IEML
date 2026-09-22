@@ -69,7 +69,7 @@ type InstallJob =
   | {
       kind: 'vanilla';
       mcVersion: string;
-      source: 'bmclapi' | 'mojang';
+      source: 'auto' | 'bmclapi' | 'mojang';
       concurrency: number;
     }
   | {
@@ -77,7 +77,7 @@ type InstallJob =
       mcVersion: string;
       loaderKind: string;
       loaderVersion: string | null;
-      source: 'bmclapi' | 'mojang';
+      source: 'auto' | 'bmclapi' | 'mojang';
       concurrency: number;
     }
   | {
@@ -86,7 +86,7 @@ type InstallJob =
       mcVersion: string;
       loaderKind: string | null;
       loaderVersion: string | null;
-      source: 'bmclapi' | 'mojang';
+      source: 'auto' | 'bmclapi' | 'mojang';
       concurrency: number;
       /** 用于失败重试时还原标题 */
       title: string;
@@ -294,7 +294,7 @@ export function forgetTask(id: string): void {
  */
 export async function installVersionFromManifest(
   mcVersion: string,
-  source: 'bmclapi' | 'mojang' = 'bmclapi',
+  source: 'auto' | 'bmclapi' | 'mojang' = 'auto',
   concurrency = 64,
   reuseTaskId?: string,
 ): Promise<InstallOutcome> {
@@ -390,7 +390,7 @@ export async function installGame(opts: {
   mcVersion: string;
   loaderKind: string | null;
   loaderVersion: string | null;
-  source?: 'bmclapi' | 'mojang';
+  source?: 'auto' | 'bmclapi' | 'mojang';
   concurrency?: number;
   /** 触发时给用户看的加载器名（用于标题） */
   loaderName?: string;
@@ -509,7 +509,7 @@ export async function installLoader(
   mcVersion: string,
   loaderKind: string,
   loaderVersion: string | null,
-  source: 'bmclapi' | 'mojang' = 'bmclapi',
+  source: 'auto' | 'bmclapi' | 'mojang' = 'auto',
   concurrency = 64,
   reuseTaskId?: string,
 ): Promise<InstallOutcome> {

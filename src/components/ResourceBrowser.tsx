@@ -368,7 +368,7 @@ export function ResourceCenterBody({
     }
     let alive = true;
     void api.metadata
-      .manifest(downloadSource === 'mojang' ? 'mojang' : 'bmclapi')
+      .manifest('auto')
       .then((m) => {
         if (!alive) return;
         setAllVersions(

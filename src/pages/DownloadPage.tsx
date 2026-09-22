@@ -602,7 +602,7 @@ function ModpackTab({
           value={sort}
           onChange={setSort}
           options={[
-            { value: 'hot', label: '推荐' },
+            { value: 'hot', label: '热门' },
             { value: 'new', label: '最新' },
             { value: 'downloads', label: '最多下载' },
           ]}
