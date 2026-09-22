@@ -36,7 +36,8 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Chip, CustomSelect, Modal, Note, Segmented, Spinner } from '../ui';
-import { IconDownload, IconRefresh, IconSearch } from '../ui/Icons';
+import { IconChevronRight, IconDownload, IconRefresh, IconSearch } from '../ui/Icons';
+import { useVersionGroups } from './resource-groups';
 import { useRealApi } from '../hooks/useRealApi';
 import { useApp } from '../state/AppContext';
 import { BASE_LOADER_NAME, compareVersion, isSnapshotVersion, knownVersions } from '../domain';
@@ -183,6 +184,12 @@ function VersionPicker({
       </div>
     );
   }
+  /*
+   * ★★ 2026-09-23（C4）：按 MC 版本分组 + 折叠 + 顶部 chips 筛选。
+   *   分组逻辑在 `resource-groups.ts`（纯函数，好测）。
+   */
+  const { groups, shown, only, setOnly, isOpen, toggle } = useVersionGroups(versions, compareVersion);
+
   return (
     <div className="res-versions">
       <div className="res-versions-head">
@@ -194,46 +201,95 @@ function VersionPicker({
           <b>{hit.title}</b> 的全部版本（{versions.length} 个）
         </span>
       </div>
-      <div className="res-version-list">
-        {versions.map((v) => {
-          const file = v.files.find((f) => f.primary) ?? v.files[0];
-          const blocked = !!file && !file.url;
-          return (
-            <div key={v.id} className="res-version">
-              <div className="res-version-main">
-                <div className="res-version-name">
-                  <span className="mono">{v.version_number || v.name}</span>
-                  {v.version_type !== 'release' ? (
-                    <Chip tone={v.version_type === 'beta' ? 'info' : 'warning'}>
-                      {v.version_type === 'beta' ? '测试版' : '抢先版'}
-                    </Chip>
-                  ) : null}
-                </div>
-                <div className="res-version-meta">
-                  <span className="dim mono">{humanDate(v.date_published)}</span>
-                  {v.game_versions.length > 0 ? (
-                    <span className="dim">MC {v.game_versions.slice(0, 6).join(' / ')}</span>
-                  ) : null}
-                  {v.loaders.length > 0 ? <span className="dim">{v.loaders.join(' / ')}</span> : null}
-                  {file ? <span className="dim mono">{humanBytes(file.size)}</span> : null}
-                </div>
-              </div>
-              {blocked ? (
-                <Chip tone="warning">作者不允许第三方下载</Chip>
-              ) : (
-                <Button
-                  size="sm"
-                  variant="primary"
-                  loading={installing === v.id}
-                  onClick={() => onPick(v)}
-                >
-                  <IconDownload /> 安装这个版本
-                </Button>
-              )}
+
+      {/*
+        ★★ 2026-09-23（用户：「整合包，mod，资源包，数据包，光影，**给版本分类**，
+          就像游戏版本安装那样」，粒度确认为**按大版本分组**）：
+          原来是**一条条平铺**（几十条挤在一起，看不出版本谱系）。
+          现在按 **MC 版本**分组，组可折叠，并在上面给一排版本 chips 直接跳到某一组
+          —— 与图二（PCL 的 Sodium 详情页）同一个结构。
+      */}
+      {groups.length > 1 ? (
+        <div className="res-vchips" role="group" aria-label="按 MC 版本筛选">
+          <button
+            type="button"
+            className={'chip chip-btn' + (only === null ? ' chip-accent' : '')}
+            aria-pressed={only === null}
+            onClick={() => setOnly(null)}
+          >
+            全部 {versions.length}
+          </button>
+          {groups.map((g) => (
+            <button
+              key={g.key}
+              type="button"
+              className={'chip chip-btn' + (only === g.key ? ' chip-accent' : '')}
+              aria-pressed={only === g.key}
+              onClick={() => setOnly(g.key)}
+            >
+              {g.key} {g.items.length}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {shown.map((g) => (
+        <div className="res-vgroup" key={g.key}>
+          <button
+            type="button"
+            className={'res-vgroup-head' + (isOpen(g.key) ? ' open' : '')}
+            aria-expanded={isOpen(g.key)}
+            onClick={() => toggle(g.key)}
+          >
+            <IconChevronRight />
+            <span className="res-vgroup-name">{g.key}</span>
+            <span className="dim">{g.items.length} 个版本</span>
+          </button>
+
+          {isOpen(g.key) ? (
+            <div className="res-version-list">
+              {g.items.map((v) => {
+                const file = v.files.find((f) => f.primary) ?? v.files[0];
+                const blocked = !!file && !file.url;
+                return (
+                  <div key={v.id} className="res-version">
+                    <div className="res-version-main">
+                      <div className="res-version-name">
+                        <span className="mono">{v.version_number || v.name}</span>
+                        {v.version_type !== 'release' ? (
+                          <Chip tone={v.version_type === 'beta' ? 'info' : 'warning'}>
+                            {v.version_type === 'beta' ? '测试版' : '抢先版'}
+                          </Chip>
+                        ) : null}
+                      </div>
+                      <div className="res-version-meta">
+                        <span className="dim mono">{humanDate(v.date_published)}</span>
+                        {v.game_versions.length > 0 ? (
+                          <span className="dim">MC {v.game_versions.slice(0, 6).join(' / ')}</span>
+                        ) : null}
+                        {v.loaders.length > 0 ? <span className="dim">{v.loaders.join(' / ')}</span> : null}
+                        {file ? <span className="dim mono">{humanBytes(file.size)}</span> : null}
+                      </div>
+                    </div>
+                    {blocked ? (
+                      <Chip tone="warning">作者不允许第三方下载</Chip>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        loading={installing === v.id}
+                        onClick={() => onPick(v)}
+                      >
+                        <IconDownload /> 安装这个版本
+                      </Button>
+                    )}
+                  </div>
+                );
+              })}
             </div>
-          );
-        })}
-      </div>
+          ) : null}
+        </div>
+      ))}
     </div>
   );
 }

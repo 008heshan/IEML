@@ -2863,3 +2863,66 @@
 :root[data-motion='aura'] :is(.res-grid, .grid-cards) > *:nth-child(n + 8) {
   animation-delay: 245ms;
 }
+
+/* ============================================================================
+   ★★ 资源版本列表：按 MC 版本分组 + 折叠（2026-09-23，用户：
+   「整合包，mod，资源包，数据包，光影，给版本分类，就像游戏版本安装那样」，
+   粒度确认「按大版本分组」）。
+
+   顶部一排版本 chips 是**筛选**（点一下只看那个版本），
+   下面一列分组可折叠 —— 与 PCL 的详情页同一个骨架。
+   ============================================================================ */
+.res-vchips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-1) 0 var(--space-3);
+}
+.res-vgroup + .res-vgroup {
+  margin-top: var(--space-2);
+}
+.res-vgroup-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 7px var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: var(--text-base);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.res-vgroup-head:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+}
+.res-vgroup-name {
+  font-weight: 600;
+  font-family: var(--font-mono, monospace);
+}
+.res-vgroup-head .dim {
+  margin-left: auto;
+}
+/* 箭头：折叠时朝右、展开时朝下（只转这一个元素，省得画两个图标） */
+.res-vgroup-head svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  transition: transform var(--dur-fast) var(--ease);
+}
+.res-vgroup-head.open svg {
+  transform: rotate(90deg);
+}
+/* 组内的列表：与分组标题拉开一点，视觉上从属 */
+.res-vgroup .res-version-list {
+  margin-top: var(--space-2);
+  padding-left: var(--space-2);
+}
