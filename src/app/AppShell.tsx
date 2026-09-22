@@ -514,10 +514,26 @@ export function App() {
                   · 「关于与设置」原先是跳到设置页 → 现在有自己的页面。
               */}
               <div className="side-links">
-                <button type="button" className="side-link" onClick={() => go('changelog')}>
+                {/*
+                  ★★ 2026-09-23 用户：「**更新日志、关于没有选中提示**」——
+                    这两个入口原来完全没有 active 状态：点进去之后侧栏上看不出自己在哪一页
+                    （左边那一列主导航一直有高亮，这两项却没有，对比之下更像"没生效"）。
+                  ★ 用 aria-current 而不是只加一个 class：读屏也要能听出"这是当前页"。
+                */}
+                <button
+                  type="button"
+                  className={'side-link' + (state.page === 'changelog' ? ' on' : '')}
+                  aria-current={state.page === 'changelog' ? 'page' : undefined}
+                  onClick={() => go('changelog')}
+                >
                   <IconLayers /> 更新日志
                 </button>
-                <button type="button" className="side-link" onClick={() => go('about')}>
+                <button
+                  type="button"
+                  className={'side-link' + (state.page === 'about' ? ' on' : '')}
+                  aria-current={state.page === 'about' ? 'page' : undefined}
+                  onClick={() => go('about')}
+                >
                   <IconInfo /> 关于
                 </button>
               </div>

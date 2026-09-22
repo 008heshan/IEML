@@ -686,7 +686,16 @@ export function LaunchPage() {
               >
                 <VersionIcon version={i.mcVersion} size={38} />
                 <span className="lo-main">
-                  <span className="lo-name">{i.config.name}</span>
+                  {/*
+                    ★★ 2026-09-23 用户（截图）：「**怎么没统一主页版本的命名**」——
+                      这一排原来直接显示 `config.name`，而实例名是历代不同规则生成的，
+                      于是同一屏里同时出现 `1.8.9`、`Minecraft 1.12.2`、`Fabric 26.2`、
+                      `26.3 (2)` 四种写法。
+                      现在走 `instanceTitle()`（与版本列表同一个函数）：
+                      自动生成的名字统一成 `Minecraft <MC> [+ <加载器> <版本>]`，
+                      **用户自己改过名的仍然显示他改的**。
+                  */}
+                  <span className="lo-name">{instanceTitle(i.config.name, i.mcVersion, i.loader)}</span>
                   <span className="lo-sub">
                     {i.mcVersion}
                     {i.loader ? ` · ${loaderName(i.loader.kind)}` : ' · 原版'}

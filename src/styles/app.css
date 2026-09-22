@@ -3223,3 +3223,136 @@ tbody tr.clickable:focus-visible {
   flex: 0 0 auto;
   padding: 1px 6px;
 }
+
+/* ============================================================================
+   ★★ 启动按钮：自发光液态玻璃（2026-09-23，用户：「启动器按钮做个自发光液态玻璃效果…
+   启动游戏时用转圈把三角替换掉…启动按钮也要随着主题颜色变」）
+
+   F2：loading 时把**最前面的图标**藏掉 —— 转圈"替换"它，而不是并排显示。
+       写在 Button 层：所有按钮一起受益（原来是"加"一个转圈）。
+   ============================================================================ */
+.btn-loading > svg:first-child {
+  display: none;
+}
+
+.launch-btn {
+  position: relative;
+  overflow: hidden;
+  /*
+   * 颜色**全部走令牌** —— 9 套主题的强调色不同，按钮必须跟着变。
+   * 不写死 #5b8def 这类值（那就是"不随主题变"的根源）。
+   */
+  /* ★ 兜底在前：这条是纯令牌，任何运行时都认。
+       ★★ 2026-09-23 实测教训：这里原来用 color-mix() 现算，真机上量到
+         **换主题后渐变冻在原来的颜色**（元素上 --accent 变了、渐变没重算）。
+         所以现在全部改用 tokens.css 里**按主题声明好**的派生令牌
+         （--accent-soft / --accent-glow / --accent-edge），消费端一个 color-mix 都不留。 */
+  background: var(--accent);
+  background: linear-gradient(
+    180deg,
+    var(--accent-soft) 0%,
+    var(--accent) 55%,
+    var(--accent-hover) 100%
+  );
+  border: 1px solid var(--accent); /* 兜底，同上 */
+  border: 1px solid var(--accent-edge);
+  color: #fff;
+  /*
+   * 「自发光」：两层光 —— 近处一圈紧贴按钮的光晕，远处一团散开的辉光。
+   * 都用**按主题声明好的**派生令牌（tokens.css 里由 --accent 派生）——
+   ★ 不在这里现算：color-mix 参与 background-image / box-shadow 时
+     不会随主题重算（真机量到按钮冻在蓝色），这条仓库里早有教训。
+   */
+  box-shadow: 0 6px 18px var(--accent); /* 兜底，同上 */
+  box-shadow:
+    0 0 0 1px var(--accent-glow),
+    0 6px 18px var(--accent-glow),
+    0 14px 46px rgba(0, 0, 0, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  transition:
+    box-shadow var(--dur-base) var(--ease),
+    transform var(--dur-fast) var(--ease),
+    filter var(--dur-fast) var(--ease);
+}
+/* 液态玻璃的那道高光：一条斜向的亮带，只是**贴着上沿**，不抢文字 */
+.launch-btn::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 50%;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.18),
+    transparent
+  );
+  pointer-events: none;
+}
+/* 呼吸：非常慢、幅度很小 —— 目的是"活着"，不是闪 */
+.launch-btn:not(:disabled):not(.btn-loading)::after {
+  content: '';
+  position: absolute;
+  inset: -40% -10%;
+  background: radial-gradient(
+    45% 60% at 50% 50%,
+    rgba(255, 255, 255, 0.14),
+    transparent 70%
+  );
+  opacity: 0;
+  animation: launchBreath 4.2s var(--ease-in-out) infinite;
+  pointer-events: none;
+}
+@keyframes launchBreath {
+  0%,
+  100% {
+    opacity: 0;
+    transform: translateX(-18%);
+  }
+  50% {
+    opacity: 0.55;
+    transform: translateX(18%);
+  }
+}
+.launch-btn:not(:disabled):hover {
+  transform: translateY(-1px);
+  filter: brightness(1.06);
+  box-shadow:
+    0 0 0 1px var(--accent-glow-strong),
+    0 8px 22px var(--accent-glow-strong),
+    0 18px 60px var(--accent-glow),
+    inset 0 1px 0 rgba(255, 255, 255, 0.34);
+}
+.launch-btn:not(:disabled):active {
+  transform: translateY(0);
+  filter: brightness(0.98);
+}
+/* 启动中：光收一点，但**保留**发光（要让用户看出"它正在使劲"） */
+.launch-btn.btn-loading {
+  animation: launchPulse 1.4s var(--ease-in-out) infinite;
+}
+@keyframes launchPulse {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 1px rgba(0, 0, 0, 0.12),
+      0 6px 18px rgba(0, 0, 0, 0.12),
+      inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px var(--accent-glow),
+      0 8px 26px var(--accent-glow-strong),
+      0 16px 54px var(--accent-glow),
+      inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  }
+}
+/* 停止按钮不该发光（它是主色，但语义是"打断"，视觉上要沉下来） */
+.launch-btn.btn-danger,
+.launch-btn.btn-warning {
+  animation: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .launch-btn::after,
+  .launch-btn.btn-loading {
+    animation: none;
+  }
+}
