@@ -29,6 +29,32 @@ use std::time::Duration;
 static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 /// 全局 HTTP 客户端。首次调用时初始化。
+/// 给**接口/元数据**请求用的客户端：**带整体超时**。
+///
+/// ★★ 2026-09-22 真机踩到：Modrinth 那次"连得上但不回数据"，
+///   而 `client()` **只有连接超时、没有整体超时**（下载故意不设 —— 大文件要很久）——
+///   于是资源列表**永远停在骨架屏**：没有报错、没有重试按钮，
+///   用户只会以为是我们坏了。**卡住比报错更难查**，所以接口类请求必须有整体超时。
+///
+/// ★ 25 秒的取法：正常接口响应在 1 秒内，25 秒足够容忍上游抖动，
+///   又不至于让用户对着转圈等到放弃。
+pub fn api_client() -> &'static reqwest::Client {
+    API_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .user_agent("IEML-Launcher/0.1 (+https://github.com/ieml)")
+            .connect_timeout(Duration::from_secs(20))
+            .timeout(Duration::from_secs(25))
+            .pool_max_idle_per_host(8)
+            .pool_idle_timeout(Duration::from_secs(90))
+            .tcp_keepalive(Duration::from_secs(30))
+            .gzip(true)
+            .build()
+            .expect("无法创建 HTTP 客户端")
+    })
+}
+
+static API_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+
 pub fn client() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()

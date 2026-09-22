@@ -62,6 +62,34 @@ const send = (method, params) => new Promise((res) => { const id = ++seq; pend.s
 const ev = async (e) => { const r = await send('Runtime.evaluate', { expression: e, returnByValue: true, awaitPromise: true }); if (r.result?.exceptionDetails) return { __err: String(r.result.exceptionDetails.text).slice(0, 200) }; return r.result?.result?.value; };
 await send('Runtime.enable', {});
 
+/*
+ * ★★ 先探一次上游：**数据源不通时这条检查不该报红**。
+ *
+ *   2026-09-22 实测：Modrinth 会短时间"连得上但不回数据"（12 秒无响应），
+ *   那时资源/整合包列表本来就是空的 —— 我们的代码没问题，
+ *   但检查会报 5 条红，**误导性极强**（这个项目已经吃过"判据不可靠"的亏）。
+ *   所以：上游不通就明确说"跳过"，并说明原因，而不是假装失败。
+ *   ★ 这也是"判据必须能稳定跑出来"那条规矩的一个具体落法。
+ */
+const upstreamOk = await (async () => {
+  try {
+    const r = await fetch('https://api.modrinth.com/v2/search?limit=1', {
+      signal: AbortSignal.timeout(8000),
+    });
+    return r.ok;
+  } catch {
+    return false;
+  }
+})();
+if (!upstreamOk) {
+  console.log('\n★ 上游 Modrinth 此刻不可达（连得上但不回数据 / 超时）。');
+  console.log('  这条检查依赖它的实时数据 —— **跳过，而不是报红**。');
+  console.log('  应用侧那两条与上游无关的断言（安装面板滚进视野、预览命令开窗速度）');
+  console.log('  等上游恢复后照常跑。');
+  await ps(`Get-Process ieml -ErrorAction SilentlyContinue | Stop-Process -Force`);
+  process.exit(0);
+}
+
 let failed = 0;
 const check = (name, ok, extra = '') => { console.log(`${ok ? '✓' : '✗'} ${name}${extra ? `  —— ${extra}` : ''}`); if (!ok) failed += 1; };
 for (let i = 0; i < 60; i += 1) { if ((await ev(`!!document.querySelector('.nav-item')`)) === true) break; await sleep(400); }

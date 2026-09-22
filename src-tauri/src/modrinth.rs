@@ -259,7 +259,7 @@ pub async fn projects_by_ids(ids: &[String]) -> Result<HashMap<String, Project>>
     // Modrinth 的批量接口是 GET /projects?ids=["a","b"]（JSON 数组放在查询串里）
     let ids_json = serde_json::to_string(ids)
         .map_err(|e| NetError::Other(format!("序列化项目 id 失败：{e}")))?;
-    let resp = crate::net::client()
+    let resp = crate::net::api_client()
         .get(format!("{API}/projects"))
         .query(&[("ids", ids_json.as_str())])
         .send()
@@ -383,7 +383,7 @@ pub async fn versions_from_hashes(hashes: &[String]) -> Result<HashMap<String, P
         "hashes": hashes,
         "algorithm": "sha1"
     });
-    let resp = crate::net::client()
+    let resp = crate::net::api_client()
         .post(format!("{API}/version_files"))
         .json(&body)
         .send()
@@ -517,7 +517,7 @@ impl MrpackIndex {
 
 /// 下载并解析一个 .mrpack（本质是个 zip，里面有 `modrinth.index.json`）
 pub async fn fetch_mrpack_index(url: &str) -> Result<MrpackIndex> {
-    let bytes = crate::net::client()
+    let bytes = crate::net::api_client()
         .get(url)
         .send()
         .await?
