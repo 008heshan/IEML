@@ -35,6 +35,7 @@ import { CreateInstanceModal } from '../pages/CreateInstanceModal';
 import { CrashModal } from '../pages/CrashModal';
 import { TaskCenter } from '../components/TaskCenter';
 import { AccountPanel } from '../components/AccountPanel';
+import { AccountMenu } from '../components/AccountMenu';
 import { WindowControls } from '../components/WindowControls';
 import { isInstanceRunning, runningInstances } from '../state/store';
 import { getRealApi } from '../bridge';
@@ -339,25 +340,13 @@ export function App() {
         */}
         <UpdateChip />
 
-        <button
-          type="button"
-          className={`acct-chip${state.prefs.accountUuid ? ' on' : ''}`}
-          aria-haspopup="dialog"
-          title={
-            state.prefs.accountUuid
-              ? `已登录正版：${state.prefs.offlineUsername} —— 点开看账号信息`
-              : '还没登录正版账号（当前是离线模式）—— 点这里登录'
-          }
-          onClick={() => setAccountOpen(true)}
-        >
-          <span className="acct-chip-dot" aria-hidden="true" />
-          <span className="acct-chip-text truncate">
-            {state.prefs.accountUuid ? state.prefs.offlineUsername : '离线模式'}
-          </span>
-          <span className="acct-chip-tag">
-            {state.prefs.accountUuid ? '正版' : '登录'}
-          </span>
-        </button>
+        {/*
+          ★★ 2026-09-22 用户：「把账号按钮放到最底部，点击可以向上展开」。
+          那个胶囊**已经撤掉** —— 账号入口现在只有一处（侧栏底部 `AccountMenu`）。
+          ★ 为什么不是两处都留：同一个动作有两个入口，用户会以为它们是两件事
+            （这个仓库在"正版登录有两个关闭键"那件事上已经吃过一次亏）。
+          顶栏这一行现在只有：更新角标 → 任务中心 → 窗口按钮。
+        */}
 
         <TaskCenter />
 
@@ -580,6 +569,13 @@ export function App() {
               </div>
             </nav>
           )}
+            {/*
+              ★★ 2026-09-22 用户：「把账号按钮放到最底部，点击可以向上展开」。
+              ★ 位置放在**侧栏最外层**（</nav> 之后、</aside> 之前）——
+                因为侧栏里有两套底栏（实例页一套、普通页一套），
+                账号入口只该有一处，而且两种状态下都要在。
+            */}
+            <AccountMenu onOpenAccount={() => setAccountOpen(true)} />
         </aside>
 
         {/* ==================== 内容区 ==================== */}

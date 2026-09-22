@@ -1290,3 +1290,226 @@ mod tests {
         );
     }
 }
+
+/* ====================== 改皮肤 / 改披风（2026-09-22，用户那张账号菜单要的） ======================
+ *
+ * ## 为什么要"保证可用"的令牌
+ *
+ *   查皮肤（fetch_skin）走 sessionserver，**不需要登录**；
+ *   但**改**皮肤/披风必须带**已登录的 MC access token**。
+ *   令牌存在系统凭据管理器里（见上面 keyring 那段），**会过期** ——
+ *   所以这里统一先走一遍"过期就静默续期"，与启动游戏时**同一套规则**
+ *   （用户要求"正版账号不能自动退登"，靠的就是续期而不是重新登录）。
+ *
+ * ## 接口（都是官方 api.minecraftservices.com）
+ *
+ *   · 上传皮肤  POST   /minecraft/profile/skins        （multipart：variant + file）
+ *   · 披风列表  GET    /minecraft/profile/capes
+ *   · 激活披风  PUT    /minecraft/profile/capes/active （body：{"capeId": "..."}）
+ *   · 取消披风  DELETE /minecraft/profile/capes/active
+ */
+
+/// 拿一个**保证可用**的正版令牌（过期就静默续期）。
+///
+/// ★ 与启动游戏那条路用的是同一套判断（`is_expired` + `refresh_msa`），
+///   不另写第二套 —— 两套规则迟早会不一致。
+pub async fn fresh_account(uuid: &str) -> Result<McAccount> {
+    let mut acc = load_account(uuid)?;
+    if acc.kind != "msa" {
+        return Err(AuthError::Other(
+            "这是离线账号，没有可以改皮肤的正版凭据。先登录正版账号。".into(),
+        ));
+    }
+    if acc.is_expired() {
+        match acc.refresh_token.clone().filter(|r| !r.trim().is_empty()) {
+            Some(rt) => acc = refresh_msa(&rt).await?,
+            None => {
+                return Err(AuthError::Other(
+                    "正版登录已过期，而且没有可用的续期凭据。重新登录一次即可。".into(),
+                ))
+            }
+        }
+    }
+    Ok(acc)
+}
+
+/// 皮肤条目（上传成功后返回当前那张，界面据此刷新预览）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkinEntry {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub variant: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SkinsReply {
+    #[serde(default)]
+    skins: Vec<SkinEntry>,
+}
+
+/// 上传一张皮肤。`variant`：`classic`（4px 手臂）或 `slim`（3px 手臂）。
+///
+/// ★ 尺寸（64×64 / 旧版 64×32）由 Mojang 校验，我们**不自己判** ——
+///   自己判就得内置一个 PNG 解码器，而且上游规则改了我们还不知道。
+///   上游返回的报错里会写清哪一项不合格，这里原样带给用户。
+pub async fn upload_skin(uuid: &str, png: Vec<u8>, variant: &str) -> Result<SkinEntry> {
+    let acc = fresh_account(uuid).await?;
+    let variant = if variant == "slim" { "slim" } else { "classic" };
+
+    let part = reqwest::multipart::Part::bytes(png)
+        .file_name("skin.png")
+        .mime_str("image/png")
+        .map_err(|e| AuthError::Other(format!("构造上传内容失败：{e}")))?;
+    let form = reqwest::multipart::Form::new()
+        .text("variant", variant.to_string())
+        .part("file", part);
+
+    let resp = crate::net::client()
+        .post("https://api.minecraftservices.com/minecraft/profile/skins")
+        .bearer_auth(&acc.access_token)
+        .multipart(form)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let code = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let brief: String = body.chars().take(300).collect();
+        /*
+         * ★ 401/403 单独翻译：那几乎总是"令牌没权限 / 过期"，而不是"图不对"。
+         *   不翻译的话，用户会拿着一个 401 反复换图片。
+         */
+        if code == reqwest::StatusCode::UNAUTHORIZED || code == reqwest::StatusCode::FORBIDDEN {
+            return Err(AuthError::Other(format!(
+                "Mojang 拒绝了这个令牌（HTTP {code}）—— 通常是要重新登录一次正版账号。原始回应：{brief}"
+            )));
+        }
+        return Err(AuthError::Other(format!("上传皮肤失败（HTTP {code}）：{brief}")));
+    }
+
+    let reply: SkinsReply = resp.json().await.unwrap_or(SkinsReply { skins: Vec::new() });
+    Ok(reply
+        .skins
+        .into_iter()
+        .find(|s| s.state == "ACTIVE")
+        .unwrap_or(SkinEntry {
+            id: String::new(),
+            state: "ACTIVE".into(),
+            url: String::new(),
+            variant: variant.to_string(),
+        }))
+}
+
+/// 拥有的披风（**只有正版、而且确实拥有披风**的账号才有内容）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CapeEntry {
+    pub id: String,
+    pub name: String,
+    /// 官方给的预览图（可能没有）
+    pub url: Option<String>,
+    /// 现在正穿着它吗
+    pub active: bool,
+}
+
+pub async fn list_capes(uuid: &str) -> Result<Vec<CapeEntry>> {
+    let acc = fresh_account(uuid).await?;
+    #[derive(Deserialize)]
+    struct Raw {
+        id: String,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        url: Option<String>,
+        #[serde(default)]
+        alias: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct CapesReply {
+        #[serde(default)]
+        capes: Vec<Raw>,
+        #[serde(default)]
+        active_cape: Option<RawId>,
+    }
+    #[derive(Deserialize)]
+    struct RawId {
+        #[serde(default)]
+        id: Option<String>,
+    }
+
+    let resp = crate::net::client()
+        .get("https://api.minecraftservices.com/minecraft/profile/capes")
+        .bearer_auth(&acc.access_token)
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        let code = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let brief: String = body.chars().take(200).collect();
+        return Err(AuthError::Other(format!("取披风列表失败（HTTP {code}）：{brief}")));
+    }
+    let reply: CapesReply = resp.json().await?;
+    let active_id = reply.active_cape.and_then(|a| a.id);
+    Ok(reply
+        .capes
+        .into_iter()
+        .map(|c| CapeEntry {
+            active: active_id.as_deref() == Some(c.id.as_str()),
+            name: c.name.or(c.alias).unwrap_or_else(|| c.id.clone()),
+            id: c.id,
+            url: c.url,
+        })
+        .collect())
+}
+
+/// 换披风；`cape_id == None` 表示**不显示披风**。
+pub async fn set_active_cape(uuid: &str, cape_id: Option<&str>) -> Result<()> {
+    let acc = fresh_account(uuid).await?;
+    let client = crate::net::client();
+    let resp = match cape_id {
+        Some(id) => {
+            client
+                .put("https://api.minecraftservices.com/minecraft/profile/capes/active")
+                .bearer_auth(&acc.access_token)
+                .json(&serde_json::json!({ "capeId": id }))
+                .send()
+                .await?
+        }
+        None => {
+            client
+                .delete("https://api.minecraftservices.com/minecraft/profile/capes/active")
+                .bearer_auth(&acc.access_token)
+                .send()
+                .await?
+        }
+    };
+    if !resp.status().is_success() {
+        let code = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        let brief: String = body.chars().take(200).collect();
+        return Err(AuthError::Other(format!("换披风失败（HTTP {code}）：{brief}")));
+    }
+    Ok(())
+}
+
+/// 把当前皮肤**存成文件**（用户菜单里的"保存皮肤文件"）。
+///
+/// ★ 为什么在后端下：皮肤图在 textures.minecraft.net，
+///   前端用 img 拉是**跨域读不到字节**的（canvas 会被污染），
+///   而在后端就是一次普通的 GET + 写文件。
+pub async fn save_skin_png(skin_url: &str, dest: &std::path::Path) -> Result<u64> {
+    let resp = crate::net::client().get(skin_url).send().await?;
+    if !resp.status().is_success() {
+        return Err(AuthError::Other(format!("下载皮肤失败（HTTP {}）", resp.status())));
+    }
+    let bytes = resp.bytes().await?;
+    if bytes.is_empty() {
+        return Err(AuthError::Other("下载到的皮肤是空的".into()));
+    }
+    std::fs::write(dest, &bytes).map_err(|e| AuthError::Other(format!("写文件失败：{e}")))?;
+    Ok(bytes.len() as u64)
+}
