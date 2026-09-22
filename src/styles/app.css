@@ -3464,3 +3464,25 @@ svg {
   /* 缩放时不放大描边宽度 —— 否则 17px 的图标缩到 14px 时线条会糊成一团 */
   vector-effect: non-scaling-stroke;
 }
+
+/* ★★ 头像占位（皮肤还没拉到时）—— 2026-09-23，用户为"头像不显示"截了两次图：
+   什么都没有的方框看着就像坏了。给一个人形占位，拉到就换掉，同尺寸不跳版。 */
+.acct-avatar {
+  position: relative;
+}
+.acct-avatar-ph {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  background: var(--bg-active);
+  color: var(--text-tertiary);
+}
+.acct-avatar-ph svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+}

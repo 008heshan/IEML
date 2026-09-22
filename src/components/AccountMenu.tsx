@@ -55,25 +55,48 @@ export function AccountMenu({ onOpenAccount }: AccountMenuProps) {
     return () => document.removeEventListener('mousedown', onDoc);
   }, [open]);
 
-  /* 打开菜单时按需拉一次皮肤（不轮询 —— 换皮肤本来就要重开游戏才看得到） */
   /*
-   * ★★ 2026-09-23 用户：「左下角头像需要我点一下那个按钮之后才会出来（存疑）」——
-   *   **不存疑，就是这个原因**：这个 effect 原来写着 `if (!open …) return`，
-   *   于是菜单不打开就永远不去拉皮肤 —— 头像是"点开之后才出现"的。
-   *   现在**挂载就拉**（以及 uuid 变化时重拉），与菜单开不开无关。
+   * ★★ 2026-09-23 用户第一遍：「头像需要点一下按钮才出来（存疑）」
+   *   第二遍：「**左下角头像还是我不点就不加载**」—— 说明第一遍我只修了一半。
+   *
+   *   真相：这里原来是 `try { setSkin(await …) } catch { /* 忽略 *\/ }` ——
+   *   **失败被吞掉、而且不重试**。而拉皮肤走的是 `sessionserver.mojang.com`，
+   *   这台机器上它**时通时不通**（`2026-09-16-network-diag.md` 里记着）。
+   *   于是：首拉失败 → 头像空着 → 用户点一下按钮（`open` 变了）→ effect 重跑 →
+   *   这一次网络通了 → 头像出现。**"不点就不出来"就是这么来的。**
+   *
+   *   现在：**失败就退避重试**（2s / 5s / 10s，共 4 次），不依赖用户去点。
+   *   ★ 为什么退避而不是轮询：换皮肤本来就要重开游戏才看得到，
+   *     高频轮询只会白白撞速率限制（Mojang 那边约每分钟一次）。
    */
   useEffect(() => {
     if (!uuid || skin) return;
-    void (async () => {
+    let alive = true;
+    let timer: number | undefined;
+    const DELAYS = [2000, 5000, 10000];
+    const attempt = async (n: number) => {
       const api = await getRealApi();
-      if (!api) return;
+      if (!api || !alive) return;
+      const retry = () => {
+        if (!alive || n >= DELAYS.length) return;
+        timer = window.setTimeout(() => void attempt(n + 1), DELAYS[n]);
+      };
       try {
-        setSkin(await api.account.skin(uuid));
+        const s = await api.account.skin(uuid);
+        // ★ 拉到了但里面没有皮肤（用的是默认皮肤）也算"成功"，不必重试
+        if (alive) setSkin(s);
+        else retry();
       } catch {
-        /* 拉不到就用默认头像，不打扰用户 */
+        retry();
       }
-    })();
-  }, [open, uuid, skin]);
+    };
+    void attempt(0);
+    return () => {
+      alive = false;
+      if (timer) window.clearTimeout(timer);
+    };
+    // ★ 不再依赖 `open` —— 头像是"状态"，不该等用户点开菜单才开始加载
+  }, [uuid, skin]);
 
   const refreshSkin = async () => {
     const api = await getRealApi();
@@ -251,8 +274,17 @@ export function AccountMenu({ onOpenAccount }: AccountMenuProps) {
               **`0 0` 取到的是皮肤左上角那 8×8，而现代皮肤那一块是空的**
               （头在 (8,8)，帽子在 (40,8)）。改成复用 `SkinHead`：
               那套坐标只有一份实现，不会再被手抄错。
+
+            ★★ 2026-09-23（第二次）：皮肤还没拉到时给一个**占位人形** ——
+              原来什么都没有，看着就像"坏了"（用户为此截了两次图）。
+              占位与真实头像同一个方框，拉到了就换掉，不会跳版。
           */}
           <SkinHead url={head} size={22} />
+          {!head ? (
+            <span className="acct-avatar-ph">
+              <IconInfo />
+            </span>
+          ) : null}
         </span>
         {/* ★ 名字要**放得下**（用户："名字显示不全"）——见 app.css 里那一行的说明 */}
         <span className="acct-name truncate">{label}</span>
