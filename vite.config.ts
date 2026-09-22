@@ -25,5 +25,17 @@ export default defineConfig({
     minify: 'esbuild',
     sourcemap: false,
     chunkSizeWarningLimit: 600,
+    /*
+     * ★★ 2026-09-23（用户：「**清理一下构建的废弃产物**」）：
+     *
+     *   查下来 `dist/assets/` 里积了 **5 个没人引用的旧文件**
+     *   （历次构建换过内容哈希名的 bundle）—— 它们会跟着打包进 exe，
+     *   白占体积，也让人分不清哪个才是当前的。
+     *
+     *   ★ 显式写死 `emptyOutDir: true`，**不依赖默认值**：
+     *     默认行为受"outDir 在不在项目根目录下"影响，而这里的产物同时被
+     *     Tauri 读取（`frontendDist: ../dist`）—— 构建顺序一变就可能留下上上次的东西。
+     */
+    emptyOutDir: true,
   },
 });

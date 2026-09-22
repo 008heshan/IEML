@@ -152,7 +152,7 @@ export function DataRootPicker({ open, onClose, current, toast, onChanged }: Dat
       open={open}
       onClose={onClose}
       title="换一个游戏根目录"
-      subtitle="只换地方，不搬东西 —— 旧目录里的版本、存档、Mod 一个都不动"
+      subtitle="只换地方，不搬东西"
       size="lg"
       footer={
         <Button variant="ghost" onClick={onClose}>
@@ -191,7 +191,7 @@ export function DataRootPicker({ open, onClose, current, toast, onChanged }: Dat
           一行 = **一个你用过的游戏文件夹**（名字 + 路径），而不是"机器上有哪些盘"。
           盘符列表每次都要你重新想"放哪"；这张表是"回到你去过的那个地方"。
       */}
-      <div className="droot-sec">切换 · 点一下就用它（不会打开资源管理器）</div>
+      <div className="droot-sec">切换（点一下就用它）</div>
 
       <div className="droot-list">
         {loading && roots.length === 0
@@ -252,17 +252,22 @@ export function DataRootPicker({ open, onClose, current, toast, onChanged }: Dat
         <Button size="sm" variant="secondary" disabled={busy !== null} onClick={() => void browse()}>
           新建文件夹…
         </Button>
-        <span className="dim">
-          要<b>新建</b>一个目录（比如 <span className="mono">D:\Games\IEML</span>）走这里：
-          会打开系统对话框，在里面新建文件夹再选中它 —— 选完也会进上面这张表。
-        </span>
+        {/*
+          ★★ 2026-09-22 用户：「**图九这个栏字太多了，眼花缭乱的**」——
+            那一整句说明（"要新建一个目录（比如 D:\Games\IEML）走这里：会打开系统对话框，
+            在里面新建文件夹再选中它 —— 选完也会进上面这张表"）删掉，只留最短的一句。
+            按钮上的字已经说清了它是干什么的。
+        */}
+        <span className="dim">新建一个目录（会打开系统对话框）</span>
       </div>
 
       <div className="dim droot-note">
         {/* ★ 这里不许写 markdown 记号：JSX 文本按纯文本渲染，
-            `**重启**` 会原样显示成带星号的怪东西（这个仓库栽过一次）。 */}
-        ★ 换完要 <b>重启启动器</b> 才生效 —— 数据目录是启动时定下来的，
-        这个弹窗只负责把选择记下来。旧目录不会被搬走也不会被删，想换回来重新选它就行。
+            `**重启**` 会原样显示成带星号的怪东西（这个仓库栽过一次）。
+            ★★ 2026-09-22：同样按"字太多"精简 —— 原来那一长句
+              （"换完要重启启动器才生效 —— 数据目录是启动时定下来的，这个弹窗只负责把选择记下来。
+                旧目录不会被搬走也不会被删，想换回来重新选它就行。"）压成两行。 */}
+        ★ 换完<b>重启</b>才生效。旧目录不搬不删，随时能换回来。
       </div>
     </Modal>
   );

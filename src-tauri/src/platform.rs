@@ -65,15 +65,27 @@ impl AppPaths {
         legacy_data_roots()[0].join("datadir.txt")
     }
 
+    /// 启动时确保**游戏根目录**存在。
+    ///
+    /// ★★ 2026-09-22（用户：「这个根目录只创建装游戏的根目录，**不要附带启动器文件**」）：
+    ///   这里**只建游戏那一边**（根目录 + 它的 `.minecraft`）；
+    ///   启动器自己的目录（instances / java / cache / logs / shared）改成
+    ///   **用到时才建**（见 `ensure_own`）——
+    ///   于是"刚选好的空目录"里不会再凭空冒出一堆启动器文件。
     pub fn ensure(&self) -> std::io::Result<()> {
-        for p in [
-            &self.root,
-            &self.shared,
-            &self.instances,
-            &self.java,
-            &self.cache,
-            &self.logs,
-        ] {
+        std::fs::create_dir_all(&self.root)?;
+        std::fs::create_dir_all(self.game_dir())?;
+        Ok(())
+    }
+
+    /// 游戏目录（`.minecraft`）—— 版本、存档、Mod 都在这一层里
+    pub fn game_dir(&self) -> PathBuf {
+        self.root.join(".minecraft")
+    }
+
+    /// 启动器**自己的**目录。用到时才调（懒建，见 `ensure` 的说明）。
+    pub fn ensure_own(&self) -> std::io::Result<()> {
+        for p in [&self.shared, &self.instances, &self.java, &self.cache, &self.logs] {
             std::fs::create_dir_all(p)?;
         }
         Ok(())
@@ -290,7 +302,18 @@ fn ensure_writable(dir: &Path) -> bool {
 /// 但玩家可能有自己的理由（只有一块盘）。所以这是**提示**不是错误 ——
 /// 判断权在他，我们只负责别让他不知情。
 pub fn set_data_root(target: &Path, current: &Path) -> Result<(), String> {
-    validate_data_root(target, current)?;    write_location(&AppPaths::location_file(), target);
+    validate_data_root(target, current)?;
+    /*
+     * ★★ 2026-09-22：**只把游戏根目录建出来**（`<root>/.minecraft`）。
+     *
+     *   用户的抱怨："这个根目录只创建装游戏的根目录，**不要附带启动器文件**"。
+     *   建这一层是必要的（否则重启后第一次进游戏会因为目录不存在而失败），
+     *   但**启动器自己的目录一个都不在这里建** —— 它们由 `ensure_own()` 懒建。
+     */
+    if let Err(e) = std::fs::create_dir_all(target.join(".minecraft")) {
+        say!("[IEML/paths] 建游戏目录失败（不影响记录选择）：{e}");
+    }
+    write_location(&AppPaths::location_file(), target);
     say!(
         "[IEML/paths] 数据目录已改为 {}（旧目录 {} 保持原样，未搬未删）",
         target.display(),
@@ -1592,6 +1615,61 @@ fn dir_size(dir: &Path) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /*
+     * ★★ 2026-09-22（用户：「这个根目录只创建装游戏的根目录，**不要附带启动器文件**」）：
+     *   选定新根目录时**只建 `.minecraft`**（游戏那一边），
+     *   启动器自己的目录由 `ensure_own()` 懒建。
+     *
+     *   ★ 这里直接测 `AppPaths::ensure()` 的形状（不碰 `set_data_root` ——
+     *     它会写真实的 datadir.txt，跑一次单测就改掉开发机的记录）。
+     *     临时目录里的断言：根目录下**只有 `.minecraft`**，
+     *     不该冒出 instances / java / cache / logs / shared。
+     */
+    #[test]
+    fn ensure_只建游戏目录_不建启动器目录() {
+        let tmp = std::env::temp_dir().join(format!("ieml-ensure-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("建临时目录");
+
+        // 用 AppPaths 的字段直接拼一份（不 resolve，避免读到开发机的真实配置）
+        // ★ 注意 `shared` 的**位置**就是 `.minecraft`（字段名是历史遗留，见它的文档注释）
+        let paths = AppPaths {
+            root: tmp.clone(),
+            shared: tmp.join(".minecraft"),
+            instances: tmp.join("instances"),
+            java: tmp.join("java"),
+            cache: tmp.join("cache"),
+            logs: tmp.join("logs"),
+        };
+
+        paths.ensure().expect("ensure 应当成功");
+
+        let names: Vec<String> = std::fs::read_dir(&tmp)
+            .expect("读临时目录")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert!(
+            names.iter().any(|n| n == ".minecraft"),
+            "应当建出游戏目录 .minecraft，实际：{names:?}"
+        );
+        for bad in ["shared", "instances", "java", "cache", "logs"] {
+            assert!(
+                !names.iter().any(|n| n == bad),
+                "不该在根目录建启动器目录 {bad}，实际：{names:?}"
+            );
+        }
+
+        // `ensure_own()` 才是建启动器目录的那一个
+        // ★ 列表里**没有 `shared`** —— 它的位置就是 `.minecraft`（上面已经建过了）
+        paths.ensure_own().expect("ensure_own 应当成功");
+        for want in ["instances", "java", "cache", "logs"] {
+            assert!(tmp.join(want).is_dir(), "ensure_own 之后应当有 {want}");
+        }
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 
     /*
      * ★★ 换数据根目录的判据（2026-09-17 用户要求"单独建一个根目录，源目录不删"）。
