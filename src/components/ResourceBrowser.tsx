@@ -606,6 +606,14 @@ export function ResourceCenterBody({
       return;
     }
     setOpenProject(hit.project_id);
+    /*
+     * ★★ 2026-09-22（用户："资源包详情页打不开"）：展开出来的版本列表挂在**卡片下面** ——
+     *   如果点的是视口底部那张卡，展开的内容直接在屏幕外，用户看到的就是"点了没反应"。
+     *   展开后把这张卡滚进视野（居中），保证"详情"真的出现在眼前。
+     */
+    window.setTimeout(() => {
+      document.querySelector('.res-card.open')?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }, 60);
     await loadVersions(hit);
   }
 
