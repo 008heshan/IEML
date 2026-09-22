@@ -18,25 +18,15 @@ import { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../state/AppContext';
 import type { PageId, SubPageId } from '../state/store';
 import { Button, Chip, Modal, ToastRegion } from '../ui';
-import {
-  IconChevronRight,
-  IconDownload,
-  IconDrive,
-  IconGear,
-  IconGrid,
-  IconHome,
-  IconLayers,
-  IconPlay,
-  IconPuzzle,
-  IconStop,
-  IconTerminal,
-} from '../ui/Icons';
+import { IconChevronRight, IconDownload, IconGear, IconGrid, IconHome, IconLayers, IconPlay, IconPuzzle, IconStop, IconTerminal, IconInfo } from '../ui/Icons';
 import { VersionIcon } from '../components/VersionIcon';
 import { UpdateChip } from '../components/UpdateChip';
 import { LaunchPage } from '../pages/LaunchPage';
 import { VersionsPage } from '../pages/VersionsPage';
 import { DownloadPage } from '../pages/DownloadPage';
 import { SettingsPage } from '../pages/SettingsPage';
+import { ChangelogPage } from '../pages/ChangelogPage';
+import { AboutPage } from '../pages/AboutPage';
 import { InstanceOverview } from '../pages/InstanceOverview';
 import { InstanceSetup } from '../pages/InstanceSetup';
 import { ModsPanel } from '../pages/ModsPanel';
@@ -105,34 +95,11 @@ export function App() {
     [state.instances],
   );
 
-  /** 打开数据目录（走 Rust 命令，不经 opener 插件的 scope，见设置页那段注释） */
-  async function openDataDir() {
-    const api = await getRealApi();
-    if (!api) {
-      window.dispatchEvent(
-        new CustomEvent('ieml:toast', {
-          detail: { kind: 'info', title: '数据目录', desc: state.machine?.dataDir ?? '未知' },
-        }),
-      );
-      return;
-    }
-    try {
-      const dir = await api.launcher.openDir('data');
-      window.dispatchEvent(
-        new CustomEvent('ieml:toast', { detail: { kind: 'ok', title: '已打开数据目录', desc: dir } }),
-      );
-    } catch (e) {
-      window.dispatchEvent(
-        new CustomEvent('ieml:toast', {
-          detail: {
-            kind: 'err',
-            title: '打不开数据目录',
-            desc: e instanceof Error ? e.message : String(e),
-          },
-        }),
-      );
-    }
-  }
+  /*
+   * ★★ 2026-09-22：这里原来有个 `openDataDir()`（侧栏「数据目录」按钮用它打开资源管理器）。
+   *   用户要求那一项改成「更新日志」页，于是它没有调用方了。
+   *   **能力没丢**：设置页「存储 → 数据目录」那行的「打开」按钮走的是同一条 Rust 命令。
+   */
   /** 哪条提示被展开了（长文本默认折叠，点开看全） */
   const [expanded, setExpanded] = useState<string | null>(null);
 
@@ -550,12 +517,19 @@ export function App() {
                 </div>
               ) : null}
 
+              {/*
+                ★★ 2026-09-22 用户：「左侧栏的数据目录改成更新日志…关于与设置，改成关于，
+                  给关于单独做一页面」。
+                  · 「数据目录」原来是**打开资源管理器**（不是页面）—— 现在换成「更新日志」页；
+                    打开目录的能力没丢：设置页那一行的「打开」按钮还在。
+                  · 「关于与设置」原先是跳到设置页 → 现在有自己的页面。
+              */}
               <div className="side-links">
-                <button type="button" className="side-link" onClick={() => void openDataDir()}>
-                  <IconDrive /> 数据目录
+                <button type="button" className="side-link" onClick={() => go('changelog')}>
+                  <IconLayers /> 更新日志
                 </button>
-                <button type="button" className="side-link" onClick={() => go('settings')}>
-                  <IconGear /> 关于与设置
+                <button type="button" className="side-link" onClick={() => go('about')}>
+                  <IconInfo /> 关于
                 </button>
               </div>
 
@@ -624,6 +598,8 @@ export function App() {
             ))}
           {state.page === 'download' && <DownloadPage />}
           {state.page === 'settings' && <SettingsPage />}
+          {state.page === 'changelog' && <ChangelogPage />}
+          {state.page === 'about' && <AboutPage />}
         </main>
       </div>
 

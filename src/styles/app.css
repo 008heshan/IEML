@@ -2840,6 +2840,99 @@ tbody tr.clickable:focus-visible {
 }
 
 /* ============================================================================
+   ★★ 关于页 / 更新日志页（2026-09-22）
+
+   用户对这两页的要求：
+     · 「更新日志要去 AI 味，说人话」
+     · 「关于页也要去 AI 味，说人话，并且要写各种声明和法律信息」
+     · 「图十这些附属描述是非必要的，所以去掉，然后把主文字**居中**」（N 那条）
+
+   所以这一节里所有"主文字"都是居中的，且**不出现一行小字解释**。
+   ============================================================================ */
+.about-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-5) 0 var(--space-3);
+  text-align: center;
+}
+.about-name {
+  font-size: var(--text-2xl);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+}
+.about-ver {
+  font-size: var(--text-md);
+  color: var(--text-secondary);
+}
+.about-tags {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: var(--space-1);
+}
+/* 居中块：一行主文字 + 一个操作 */
+.about-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) 0;
+  text-align: center;
+}
+.about-line {
+  font-size: var(--text-md);
+  color: var(--text-primary);
+  word-break: break-all;
+}
+/* 声明 / 隐私 / 第三方：条目式，左对齐更好读（居中的长段落反而难扫） */
+.about-list {
+  margin: var(--space-2) 0 0;
+  padding-left: 1.15em;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--text-base);
+  line-height: 1.7;
+}
+.about-list li::marker {
+  color: var(--accent);
+}
+
+/* ---------- 更新日志页 ---------- */
+.rel-headline {
+  margin: var(--space-2) 0 var(--space-3);
+  color: var(--text-primary);
+  font-size: var(--text-md);
+}
+.rel-group + .rel-group {
+  margin-top: var(--space-3);
+}
+.rel-group-t {
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+  letter-spacing: 0.02em;
+  margin-bottom: var(--space-1);
+}
+.rel-list {
+  margin: 0;
+  padding-left: 1.15em;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--text-secondary);
+  font-size: var(--text-base);
+  line-height: 1.65;
+}
+.rel-list li::marker {
+  color: var(--accent);
+}
+
+/* ============================================================================
    ★★ 主题九宫格（2026-09-22，9 套主题）
    每套一个色板：斜切两半 —— 左上是它的底色、右下是它的主色。
    ★ 色值由 JS 从 `ui/theme.ts` 的注册表给（那里有测试盯着它和 tokens.css 一致）。

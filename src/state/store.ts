@@ -92,7 +92,7 @@ export interface ModsState {
 /* ====================== 导航 ====================== */
 
 /** 一级页面（侧边栏） */
-export type PageId = 'launch' | 'versions' | 'download' | 'settings';
+export type PageId = 'launch' | 'versions' | 'download' | 'settings' | 'changelog' | 'about';
 
 /** 二级页面（进入某个版本之后） */
 export type SubPageId = 'overview' | 'setup' | 'mods' | 'logs';
