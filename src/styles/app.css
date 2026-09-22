@@ -2532,10 +2532,14 @@ tbody tr.clickable:focus-visible {
 
      ① 边缘折射  → `aura`/`mid` 档由 JS 装 `backdrop-filter: … url(#ieml-lens-*)`
                     （按元素真实尺寸烘的镜片法线图，见 `ui/glass.ts`）；
-     ② 动态高光  → 高光层用 `--glass-gx/--glass-gy`，由指针位置驱动；
-                    灵动档还会**自己缓慢流动**（`ieml-glass-sheen`）
-     ③ 色散边缘  → 两条 1–2px 的红/蓝错位渐变（真实玻璃的色差）
-     ④ 厚度感    → 边缘增亮的那圈径向渐变 + 内阴影（"边缘比中间厚"）
+     ② 动态高光  → **2026-09-22 已按用户要求整体删除**（DOM 里不再有光斑元素，
+                    移指针画面完全不动 —— 反向守卫在 live-glass-check 与
+                    live-glass-round4-check 里）；
+     ③ 色散边缘  → **2026-09-22 已按用户要求删除**（"卡片自身为什么带左红右蓝的颜色，
+                    请无颜色"）—— 玻璃只负责透明与折射，不给内容染色；
+     ④ 厚度感    → **一条清晰的内边**（`inset 0 0 0 1px`）。
+                    ★ 2026-09-22 从"一圈柔光内辉"改过来的 —— 用户说
+                    「**我不希望卡片会自发光**」：厚度靠**边界清晰**表达，不靠光晕。
      ⑤ 内容适应  → `--glass-tint` / `--glass-lum`：JS 按元素位置采样**下方背景光斑**
                     的实际颜色写进来（暖色背景 → 玻璃偏暖）
 
@@ -2553,45 +2557,31 @@ tbody tr.clickable:focus-visible {
    ============================================================================ */
 
 /*
- * ★★ 2026-09-22：`@property --glass-gx/--glass-gy` 与那套"用 CSS 变量移动渐变中心"
- *   的做法**已经删掉** —— 用户网站的注释把这件事说得很透（我照搬了它的结论）：
+ * ★★ 高光的三种写法，前后一共换过三次 —— 现在是**没有高光**，这段留作记录：
  *
- *     「原方案是在 ::after 上移动 radial-gradient 中心（改 --gx/--gy），
- *       但那属于**每帧重绘(paint)**；改用固定尺寸光斑元素 + transform:translate3d，
- *       transform 只走**合成器**，不触发重绘，帧数更高、更跟手。
- *       绝不能再用 CSS 变量移动渐变中心（每帧变量传播+重绘=拖影/跳动）。」
+ *   ① 第一版：`@property --glass-gx/--glass-gy` + 渐变层，指针每动一帧就改变量
+ *      → 用户网站点名的"每帧重绘"写法（`nav-core.js` 的注释里写着"绝不能再用
+ *        CSS 变量移动渐变中心（每帧变量传播+重绘=拖影/跳动）"）。已废。
+ *   ② 第二版：照用户网站改成"固定尺寸光斑元素 + `translate3d`"（只走合成器）。已废。
+ *   ③ 第三版（现在）：用户看完实机说「**还有去除指针高光**」→ **整块删掉**。
  *
- *   现在高光由 JS 创建的 `.glass-glow-spot` 元素承担（见下面那一节），
- *   位置与亮度都是**直写 style.transform / style.opacity**。
+ *   ★ 教训：「**更花哨**」与「**更好看**」不是一回事。用户要的是
+ *     干净、无色、只做透明与折射的玻璃；每加一层装饰，都要默认它会变成噪音。
  */
 :root {
   /* 材质的**档位参数**（三档各自覆盖下面这几条） */
   --glass-blur: 14px;
   --glass-tint: 91 141 239; /* 由 JS 按位置覆盖；这是 accent 蓝的兜底 */
-  --glass-lum: 0.25; /* 下方亮度 0..1，由 JS 覆盖：越亮高光越淡 */
+  --glass-lum: 0.25; /* 下方亮度 0..1，由 JS 覆盖（越亮越收敛） */
   --glass-alpha: 0.12; /* 调色层不透明度 */
-  --glass-hi: 0.13; /* 高光强度 */
   --glass-rim: 0.1; /* ④ 边缘厚度亮 */
-  --glass-disp: 1.5px; /* ③ 色散错位量（用户要求 1–2px） */
-  --glass-disp-a: 0.12; /* ③ 色散强度 */
-
-  /* ② 高光光斑的椭圆半径（px）—— 同时是"指针多近才算靠近"的范围 */
-  --glow-rx: 170px;
-  --glow-ry: 130px;
-  /* 光斑元素尺寸 = 2 × 半径：**固定值**，靠 transform 平移（只走合成器） */
-  --glow-w: 340px;
-  --glow-h: 260px;
 }
 
 /*
  * ★★ 层序：现在只剩**一层**（内容调色）。
  *
- * ★ 高光那一层**已删**，改成"固定尺寸光斑元素 + transform 平移"（见下面
- *   `.glass-glow` 一节）。用渐变层做高光意味着**指针每移动一帧就重绘一次元素背景**；
- *   换成合成器上的 transform 之后，移动不再触发重绘。
- *
- * ★ 层数越少越便宜（真机实测）：5 层 24.7ms/帧 → 2 层 15.6ms/帧。
- *   现在只剩 1 层，**这是这一轮顺带的性能收益**。
+ * ★ 高光那一层已删（见上）。层数越少越便宜（真机实测）：
+ *   5 层 24.7ms/帧 → 2 层 15.6ms/帧 → 现在只剩 1 层。
  *
  * ★★ 这一坨**必须声明在元素上，不能放 `:root`** —— 这是踩出来的：
  *   CSS 自定义属性里的 `var()` 是在**声明它的那个元素**上求值的，
@@ -2620,40 +2610,44 @@ tbody tr.clickable:focus-visible {
   backdrop-filter: blur(var(--glass-blur)) saturate(145%);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(145%);
   /*
-   * ★★ ③ 色散与 ④ 厚度都走**内阴影**，不走渐变层（理由见上面 `--glass-layers` 的实测）。
-   *   顺序（从下往上画）：投影 → 底影 → 顶光 → 厚度内辉光 → 色散四边。
+   * ★★ ④ 厚度走**内阴影**，不走渐变层（理由见上面 `--glass-layers` 的实测）。
+   *   顺序（从下往上画）：投影 → 底影 → 顶光 → 厚度内辉光。
+   *
+   * ★★ 2026-09-22（第五轮）：**③ 色散边缘整条删掉**。
+   *   用户看了实机说：「**卡片自身为什么带左红右蓝的颜色啊，请无颜色**」——
+   *   那两条 `inset ±1.5px` 的红/蓝内阴影就是色散，也就是我在第一轮按
+   *   "色散边缘 1–2px"那条要求做的东西。既然看着像"卡片自己带了颜色"，
+   *   那就去掉 —— **玻璃只负责透明与折射，不负责给内容染色**。
+   *   （连带 `--glass-disp` / `--glass-disp-a` 两个令牌也删了。）
+   *
+   * ★★ 同一轮稍后：**柔光内辉也删掉** —— 用户说「**我不希望卡片会自发光**」。
+   *   原来那两条（`inset 0 0 26px -14px` 的一圈白辉 + `inset 0 1px 0` 的顶光）
+   *   合起来就是"卡片自己在发光"的观感。
+   *   现在改成**一条清晰的内边**（`inset 0 0 0 1px`，白 4.5%）：
+   *   "厚度感"靠**边界的清晰**表达，而不是靠**光晕**。
+   *   ★ 这三次删减连起来是一句话：**玻璃的"高级"来自透明与折射，
+   *     不来自往卡片上叠装饰**（色散 → 指针高光 → 自发光，一路删下来）。
    */
   box-shadow:
     var(--shadow-card),
     inset 0 -1px 1px rgba(0, 0, 0, 0.2),
-    inset 0 1px 0 rgba(255, 255, 255, calc(0.1 + var(--glass-lum) * 0.05)),
-    /* ④ 厚度感：贴着内边缘的一圈辉光 —— "边缘比中间厚" */
-    inset 0 0 26px -14px rgba(255, 255, 255, calc(var(--glass-rim) * 2.6)),
-    /* ③ 色散边缘：红蓝各错开 1–2px —— 这就是用户要的"红蓝通道偏移"。
-       ★ 只做**横向**那一对：上下那对（青/琥珀）在实测里每帧多花约 2ms，
-         而 1px 的上下色边人眼几乎看不出 —— 按需求原文（红/蓝）与实测成本取横向。 */
-    inset var(--glass-disp) 0 0 rgba(255, 64, 64, var(--glass-disp-a)),
-    inset calc(-1 * var(--glass-disp)) 0 0 rgba(64, 150, 255, var(--glass-disp-a));
+    /* ④ 厚度感 = 一条清晰的内边（不是辉光）*/
+    inset 0 0 0 1px rgba(255, 255, 255, 0.045);
   transition:
     box-shadow var(--dur-base) var(--ease),
     background-color var(--dur-base) var(--ease);
 }
 
-/* 指针在玻璃上时高光抬一档（JS 挂 `data-hover`） */
-.glass[data-hover] {
-  --glass-hi: 0.19;
-}
-
 /* ---------- ① 边缘折射：中/灵动档用 JS 装真滤镜；这两条只是"便宜的兜底" ---------- */
 
-/* ---------- ② 动态高光：灵动档自己流动（悬停时让位给指针） ---------- */
-/* ---------- ② 动态高光：改由「固定尺寸光斑元素 + transform」承担 ---------- */
 /*
- * ★★ 原来这里是两条 CSS 动画：`@keyframes ieml-glass-sheen` 用关键帧改
- *   `--glass-gx/--glass-gy`，让高光自己在玻璃上流动。**已删** ——
- *   那正是"每帧改变量 → 每帧重绘元素背景"的写法。
- *   现在灵动档的"自流动"由 JS 驱动光斑元素的 transform 完成
- *   （见 `ui/glass.ts` 的 `driftGlow`），走合成器、不重绘。
+ * ★★ ② 动态高光（指针光斑 + 边缘环）：2026-09-22 **整块删掉**。
+ *   用户看完实机说「**还有去除指针高光**」—— 上一轮我刚按他网站的写法
+ *   （固定光斑元素 + transform）实现的那套，这一轮按他的要求撤掉。
+ *   连带删掉的：`ui/glass.ts` 里的 glow 层创建/位移/衰减与 pointermove 监听、
+ *   `.glass-glow` / `.glass-glow-spot` / `.glass-edge` / `.glass-edge-light` 样式。
+ *   ★ 教训（记一笔）：**"更花哨"与"更好看"不是一回事** —— 用户要的是
+ *     "干净、无色、只做透明与折射"的玻璃。每加一层装饰都要默认它会成为噪音。
  */
 
 /* ---------- WebGL 流体背景（只有灵动档显示它） ---------- */
@@ -2787,99 +2781,6 @@ tbody tr.clickable:focus-visible {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
   background-image: none !important;
-}
-
-/* ============================================================================
-   ★★ ② 动态高光：**固定尺寸光斑元素 + transform 平移**
-   （2026-09-22 改；写法抄自用户网站 `nav-core.js` / `nav-core.css`）
-
-   它为什么比我原来那版好（原版 = 指针每动一次就改 `--glass-gx/--glass-gy`）：
-     用户网站的注释把结论写得很清楚 ——
-     「原方案是在 ::after 上移动 radial-gradient 中心（改 --gx/--gy），
-       但那属于**每帧重绘(paint)**；改用固定尺寸光斑元素 + transform:translate3d，
-       transform 只走**合成器**，不触发重绘，帧数更高、更跟手。」
-     换句话说：原版每移一格鼠标就要重画一次整块玻璃的背景。
-
-   三个细节也照搬了：
-     · 光心取"指针到元素矩形的**最近投影点**"（clamp）——
-       指针在元素外但靠近时，光斑压在最靠边的那一点上，边缘被照亮；
-     · 亮度按**椭圆归一化距离**衰减（越近越亮，苹果官网式"接近即泛光"）；
-     · 位置与亮度**直写 style.transform / style.opacity**，不走 CSS 变量。
-   ============================================================================ */
-.glass-glow {
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  overflow: hidden; /* 只裁光斑到圆角内 */
-  pointer-events: none;
-  z-index: 0;
-}
-.glass-glow-spot {
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: var(--glow-w);
-  height: var(--glow-h);
-  border-radius: 50%;
-  background: radial-gradient(
-    var(--glow-rx) var(--glow-ry) at 50% 50%,
-    rgba(255, 255, 255, calc(var(--glass-hi) * 2.1)),
-    rgba(214, 232, 255, calc(var(--glass-hi) * 1.35)) 26%,
-    rgba(198, 222, 255, calc(var(--glass-hi) * 0.6)) 54%,
-    rgba(190, 216, 255, calc(var(--glass-hi) * 0.18)) 76%,
-    transparent 100%
-  );
-  /* JS 未注入时的兜底：挪到看不见的地方。无 transition —— JS 每帧写的连续值
-     已天然平滑，加 transition 反而引入滞后（拖尾）。 */
-  transform: translate3d(-999px, -999px, 0);
-  will-change: transform;
-  opacity: 0;
-}
-
-/* 边缘高亮环：指针靠近哪条边，哪条边就亮（固定 mask 抠 1.5px 环，不随指针重绘） */
-.glass-edge {
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  pointer-events: none;
-  -webkit-mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  mask-composite: exclude;
-  padding: 1.5px;
-  opacity: 0;
-  overflow: hidden;
-}
-.glass-edge-light {
-  position: absolute;
-  left: 0;
-  top: 0;
-  /*
-   * ★★ 2026-09-22（性能）：尺寸从**写死的 2400×1200** 改成**跟着元素算**。
-   *
-   *   2400×1200 = 288 万像素 × 4 字节 ≈ **11.5 MB 显存**，而它带着
-   *   `will-change: transform` → 每个元素一块常驻纹理。用户网站里只有一个导航栏，
-   *   11.5MB 无所谓；我这里铺给了**每一个玻璃元素**（设置页 7 个 = 80MB）。
-   *
-   *   改成 "元素尺寸 + 光晕的两倍半径"：光晕本身是 260×140 的椭圆，
-   *   padding 各留 260/140 就够它铺满任意一边。JS 那边的位移也按同一式子算
-   *   （见 `ui/glass.ts` 的 `writeGlows`）。
-   */
-  width: calc(100% + 520px);
-  height: calc(100% + 280px);
-  background: radial-gradient(
-    260px 140px at 50% 50%,
-    rgba(180, 214, 255, calc(var(--glass-hi) * 3.4)),
-    rgba(170, 206, 255, calc(var(--glass-hi) * 1.4)) 42%,
-    rgba(160, 200, 255, calc(var(--glass-hi) * 0.4)) 70%,
-    transparent 92%
-  );
-  transform: translate3d(-999px, -999px, 0);
-  will-change: transform;
 }
 
 /* ============================================================================

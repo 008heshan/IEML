@@ -140,6 +140,7 @@ const state = () =>
     return {
       lowPerfClass: document.documentElement.classList.contains('low-perf'),
       attr: document.documentElement.dataset.vfx,
+      motion: document.documentElement.dataset.motion,
       stored: localStorage.getItem('ieml.vfx'),
       glCanvas: document.querySelectorAll('canvas.glass-ambient-gl').length,
       lensed: cards.filter((c) => c.dataset.lens).length,
@@ -172,12 +173,18 @@ const during = await state();
 console.log(`· 打开后：low-perf=${during.lowPerfClass} · 档位=${during.attr} · 存的=${during.stored} · GL ${during.glCanvas} · 折射 ${during.lensed}/${during.cards} · 卡片 backdrop=${String(during.backdrop).slice(0, 34)}`);
 check('  开关点得到', on === 'clicked', String(on));
 check('★ low-perf 类真的挂上了（它是这个开关的唯一真源）', during.lowPerfClass === true);
-check('★ 灵动档被压到**适中**', during.attr === 'mid', String(during.attr));
+/*
+ * ★★ 2026-09-22（第五轮）：用户要求「低性能损耗模式应是**一键开启减少动效和弱化视效**」。
+ *   于是它不再只是"把灵动压成适中"，而是**直接改这两个档位**（并记住原值）。
+ */
+check('★ 一键：视效→弱化', during.attr === 'weak', String(during.attr));
+check('★ 一键：动效→减少', during.motion === 'lite', String(during.motion));
 check('★ GL 背景收掉了', during.glCanvas === 0, `${during.glCanvas} 个`);
 check('★ 折射也收掉了（low-perf 的规则用 !important 关掉全部 backdrop-filter）', during.lensed === 0 && String(during.backdrop) === 'none', `折射 ${during.lensed} · backdrop=${String(during.backdrop).slice(0, 24)}`);
-check('★ **不覆盖用户的选择**（存的还是 aura）', during.stored === 'aura', String(during.stored));
-check('★ 那一行**写明了被谁压住**', /低性能损耗模式开着|它会压住灵动视效/.test(during.segHint), during.segHint.slice(0, 90));
-check('  三档控件仍然显示用户选的是「灵动」', during.auraSelected === true, String(during.auraSelected));
+// 现在它**故意**把用户的选择改成弱化（关掉时会还回原档 —— 见下面"关掉之后"那一段）
+check('  落盘了：存的也是 weak（重启后仍然生效）', during.stored === 'weak', String(during.stored));
+check('  那一行说明里提到了弱化视效', /弱化视效/.test(during.segHint), during.segHint.slice(0, 90));
+check('  三档控件现在显示的是「弱化」（它确实被改了）', during.auraSelected === false, String(during.auraSelected));
 
 const perfLow = (await ev(`(async () => {
   const box = document.querySelector('.content') || document.scrollingElement;
@@ -203,7 +210,16 @@ const off = await toggleLowPerf();
 const after = await state();
 console.log(`· 关掉后：low-perf=${after.lowPerfClass} · 档位=${after.attr} · GL ${after.glCanvas} · 折射 ${after.lensed}/${after.cards} · 卡片 backdrop=${String(after.backdrop).slice(0, 34)}`);
 check('  开关点得到', off === 'clicked', String(off));
-check('★ 档位回到用户选的**灵动**（不是停在适中）', after.attr === 'aura', String(after.attr));
+/*
+ * ★ 关掉时要**还回原档**（只降不还的开关，用户下次就不敢开了）——
+ *   这一段前面把档位设成了灵动，所以关掉后必须回到 aura。
+ */
+check('★ 关掉后**还回原档**（回到灵动，不是停在弱化）', after.attr === 'aura', String(after.attr));
+/*
+ * ★ 判据要问对问题：这里断言的是"**还回原来的值**"，不是"回到某个固定档"——
+ *   第一版写成 === 'aura'，可这个脚本里动效本来就是 mid（想当然了，于是假红）。
+ */
+check('  动效也还回原来的值', after.motion === before.motion, `${after.motion} vs 原 ${before.motion}`);
 check('★ GL 背景回来了', after.glCanvas === 1, `${after.glCanvas} 个`);
 check('★ 折射回来了', after.lensed === after.cards && String(after.backdrop).includes('url("#ieml-lens-'), `${after.lensed}/${after.cards}`);
 check('  全程没有异常', errors.length === 0, errors.slice(0, 2).join(' | '));

@@ -272,78 +272,56 @@ console.log(`  摘掉模糊后：平均差 ${topFrost.mean.toFixed(3)} · 最大
 check('  注入生效（回读到 none）', String(offState) === 'none', String(offState));
 check('★ 顶部玻璃的模糊**真的在糊滚动内容**（摘掉后像素明显不同）', topFrost.mean > 1, `平均差 ${topFrost.mean.toFixed(2)}`);
 
-/* ============ ② 高光：固定光斑元素 + transform ============ */
-console.log('\n=== ② 指针高光 ===');
-// ★ 先把滚动位置调好：上一段把内容滚到了 420，卡片会跑到视口上方去 ——
-//   那样算出来的指针坐标是负数，鼠标事件根本落不到卡片上（测出来"不跟手"是假的）。
-await ev(`(() => {
-  const c = document.querySelector('.content');
-  const card = [...document.querySelectorAll('.glass-refract')].find((x) => x.getBoundingClientRect().width > 240);
-  if (c && card) {
-    const r = card.getBoundingClientRect();
-    c.scrollTop += Math.round(r.top) - 220;   // 把这块卡片挪到视口里偏上的位置
-  }
-  return c ? c.scrollTop : -1;
-})()`);
+/* ============ ② 指针高光：2026-09-22（第五轮）已按用户要求整体删除 ============
+ *
+ * 这一节原来验的是"光斑元素跟手 / 钳投影 / 远离熄灭"。
+ * 用户看完实机说「还有去除指针高光」——实现删了，判据也跟着换成**反向守卫**：
+ *   · DOM 里不许再有任何光斑/边缘环元素（连令牌都不许剩）；
+ *   · 鼠标从角落移到卡片上，**画面必须基本不动**（行为层的证据：
+ *     万一以后谁又用别的方式把它加回来，这条会红）。
+ */
+console.log('\n=== ② 指针高光应当整体消失 ===');
+const glowGone = await ev(`(() => ({
+  glow: document.querySelectorAll('.glass-glow').length,
+  spot: document.querySelectorAll('.glass-glow-spot').length,
+  edge: document.querySelectorAll('.glass-edge').length,
+  hover: document.querySelectorAll('[data-hover]').length,
+  cssGlowVar: getComputedStyle(document.documentElement).getPropertyValue('--glow-rx').trim(),
+}))()`);
+console.log('  ' + JSON.stringify(glowGone));
+check('★ 没有光斑元素（DOM 里一个都不剩）', glowGone.glow === 0 && glowGone.spot === 0 && glowGone.edge === 0);
+check('  没有 data-hover 残留', glowGone.hover === 0, String(glowGone.hover));
+check('  高光的 CSS 令牌也删了', glowGone.cssGlowVar === '', `--glow-rx="${glowGone.cssGlowVar}"`);
+
+await ev(`(() => { const c = document.querySelector('.content'); if (c) c.scrollTop = 300; return true; })()`);
 await sleep(900);
-
-const glowState = () =>
-  ev(`(() => {
-    const card = [...document.querySelectorAll('.glass-refract')].find((c) => {
-      const r = c.getBoundingClientRect();
-      // 必须**整块都在视口里**，否则算出来的指针坐标会落到窗口外
-      return r.width > 240 && r.top > 120 && r.bottom < (window.innerHeight || 800) - 20;
-    });
-    if (!card) return { err: '没有卡片' };
-    const g = card.querySelector('.glass-glow');
-    const spot = card.querySelector('.glass-glow-spot');
-    const edge = card.querySelector('.glass-edge');
-    const r = card.getBoundingClientRect();
-    return {
-      hasGlow: !!g,
-      hasSpot: !!spot,
-      hasEdge: !!edge,
-      spotTransform: spot ? spot.style.transform : null,
-      spotOpacity: spot ? spot.style.opacity : null,
-      edgeOpacity: edge ? edge.style.opacity : null,
-      hasDataHover: card.hasAttribute('data-hover'),
-      box: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)],
-      cssVarGone: getComputedStyle(card).getPropertyValue('--glass-gx').trim() === '',
-    };
-  })()`);
-
-const g0 = await glowState();
-console.log('  初始：' + JSON.stringify(g0));
-check('★ 卡片里真的有光斑元素（不是靠 CSS 变量了）', g0.hasGlow === true && g0.hasSpot === true && g0.hasEdge === true);
-check('★ 旧的 `--glass-gx` 变量已经不在了（换写法了）', g0.cssVarGone === true);
-check('  没指针时是灭的', g0.spotOpacity === '0' || g0.spotOpacity === '', `opacity=${g0.spotOpacity}`);
-
-const [bx, by, bw, bh] = g0.box;
-const movePointer = async (x, y) => {
-  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(x), y: Math.round(y), button: 'none' });
-  await sleep(350);
-};
-
-await movePointer(bx + bw * 0.3, by + bh * 0.4);
-const g1 = await glowState();
-await movePointer(bx + bw * 0.75, by + bh * 0.7);
-const g2 = await glowState();
-console.log('  指针左上：' + JSON.stringify({ t: g1.spotTransform, o: g1.spotOpacity }));
-console.log('  指针右下：' + JSON.stringify({ t: g2.spotTransform, o: g2.spotOpacity }));
-check('★ 光斑跟手（两次 transform 不同且都亮着）', g1.spotTransform !== g2.spotTransform && Number(g2.spotOpacity) > 0, `${g1.spotTransform} → ${g2.spotTransform}`);
-check('  边缘环与光斑同步点亮', Number(g2.edgeOpacity) > 0, String(g2.edgeOpacity));
-
-// 指针移到卡片外但靠近：应当**仍然亮**，且光心压在最近的那条边上
-await movePointer(bx + bw * 0.5, by - 30);
-const g3 = await glowState();
-console.log('  指针在卡片外 30px：' + JSON.stringify({ t: g3.spotTransform, o: g3.spotOpacity }));
-check('★ 指针在元素外但靠近时仍然泛光（钳投影那一条）', Number(g3.spotOpacity) > 0, `opacity=${g3.spotOpacity}`);
-
-// 移到很远：应当熄灭
-await movePointer(bx - 600, by + 400);
-await sleep(300);
-const g4 = await glowState();
-check('★ 指针远离后熄灭', Number(g4.spotOpacity) === 0, `opacity=${g4.spotOpacity}`);
+const hiClip = await ev(`(() => {
+  const c = [...document.querySelectorAll('.glass-refract')].find((x) => {
+    const r = x.getBoundingClientRect();
+    return r.width > 240 && r.top > 120 && r.bottom < (window.innerHeight || 800) - 20;
+  });
+  if (!c) return null;
+  const r = c.getBoundingClientRect();
+  return { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height), scale: 1 };
+})()`);
+if (hiClip) {
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 4, y: 4, button: 'none' });
+  await sleep(600);
+  const hiA = await shoot('高光-指针在角落', hiClip);
+  await send('Input.dispatchMouseEvent', {
+    type: 'mouseMoved',
+    x: hiClip.x + Math.round(hiClip.width / 2),
+    y: hiClip.y + Math.round(hiClip.height / 2),
+    button: 'none',
+  });
+  await sleep(600);
+  const hiB = await shoot('高光-指针在卡片上', hiClip);
+  const hiMoved = diff(hiA, hiB);
+  console.log(`  指针从角落移到卡片上：画面平均差 ${hiMoved.mean.toFixed(3)}`);
+  check('★ 移动指针不再改变画面（高光确实没了）', hiMoved.mean < 1.5, `平均差 ${hiMoved.mean.toFixed(3)}`);
+} else {
+  check('找得到一块可测的卡片', false, '没有合适目标');
+}
 
 /* ============ ④ 后台不渲染高级效果 ============ */
 console.log('\n=== ④ 前台 GPU / 后台停渲染 ===');

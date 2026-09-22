@@ -212,7 +212,9 @@ const snapshot = () =>
        * ★ 另外：这个函数体是**模板字符串**，注释里**不许出现反引号**（会提前结束字符串，
        *   报错还指向别处 —— 这个坑我在这一个文件里踩了两次）。
        */
-      hasRim: bg ? String(bg.boxShadow).includes('0px 0px 26px -14px') : false,
+      // ★ 2026-09-22：柔光内辉（0 0 26px）已按用户要求换成**一条清晰内边**（0 0 0 1px）
+    hasRim: bg ? String(bg.boxShadow).includes('0px 0px 0px 1px') : false,
+    isGlow: bg ? String(bg.boxShadow).includes('0px 0px 26px') : false,
       hasDisp: bg ? String(bg.boxShadow).includes('rgba(255, 64, 64') : false,
       tintInPaint,
       /*
@@ -540,11 +542,26 @@ check('档位属性 = aura', aura.level === 'aura', String(aura.level));
 check('折射能力标记 = on', aura.lensAttr === 'on', String(aura.lensAttr));
 check('★ 卡片真的挂着折射滤镜 url(#…)', String(aura.backdrop).includes('url("#ieml-lens-'), String(aura.lensId ?? '无'));
 check('折射滤镜注册了不止一块玻璃', aura.withLens >= 2, `${aura.withLens} 块`);
-check('④ 厚度层（内缘辉光）在', aura.hasRim === true, String(aura.boxShadow).slice(0, 60));
-check('③ 色散边缘（红/蓝错位内阴影）在', aura.hasDisp === true);
+/*
+ * ★ 2026-09-22：用户说「**我不希望卡片会自发光**」——
+ *   ④ 厚度从"一圈柔光内辉"改成"**一条清晰的内边**"。
+ *   这条同时守住"内边在"和"不再是辉光"（防止谁把 26px 那圈加回来）。
+ */
+check(
+  '★ ④ 厚度是一条清晰内边、且不是辉光（用户："不希望卡片会自发光"）',
+  aura.hasRim === true && aura.isGlow === false,
+  String(aura.boxShadow).slice(-60),
+);
+/*
+ * ★★ 2026-09-22（第五轮）：③ 色散边缘**已按用户要求删掉**
+ *   （"卡片自身为什么带左红右蓝的颜色啊，请无颜色"）——
+ *   所以这条从"在"翻成"不在"：一条**反向守卫**，防止它被无意中加回来。
+ */
+check('★ ③ 色散边缘已移除（卡片自身不带颜色）', aura.hasDisp === false, String(aura.hasDisp));
 check('⑤ 内容调色层在（用的就是这块玻璃那一份色）', aura.tintInPaint === true, String(aura.tints[0]?.tint ?? ''));
 check('★ 不同位置的玻璃取到**不同**颜色（内容适应性真的在动）', aura.distinctTints >= 2, `${aura.distinctTints} 种`);
-check('② 高光载体在（固定光斑元素而不是 CSS 变量）', aura.glow !== null && typeof aura.glow.t === 'string', JSON.stringify(aura.glow));
+// ★ ② 指针高光已整体移除（见下面那段反向守卫的说明）
+check('★ ② 指针高光的载体已不存在', aura.glow === null, JSON.stringify(aura.glow));
 check(
   '★ 顶部玻璃在灵动档挂着真模糊（fixed 层才采得到背后的滚动内容）',
   String(aura.topGlass?.backdrop).includes('blur'),
@@ -685,46 +702,45 @@ const cardBox = await ev(`(() => {
 if (!cardBox) {
   check('找得到一块可测的玻璃卡片', false, '页面布局里没有合适的目标');
 } else {
-  const readHi = () =>
-    ev(`(() => {
-      const c = document.getElementById('probe-card');
-      if (!c) return { err: '卡片没了' };
-      const spot = c.querySelector('.glass-glow-spot');
-      const edge = c.querySelector('.glass-edge');
-      return {
-        /* ★ 2026-09-22（第四轮）：高光换成"固定光斑元素 + transform"了
-           （不再用 CSS 变量移动渐变中心 —— 那种写法每帧重绘）。
-           所以判据也跟着换成读**光斑元素自己的 transform / opacity**。 */
-        t: spot ? spot.style.transform : null,
-        o: spot ? Number(spot.style.opacity) : 0,
-        edgeO: edge ? Number(edge.style.opacity) : 0,
-        hover: c.hasAttribute('data-hover'),
-      };
-    })()`);
-  const moveTo = async (x, y) => {
-    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(x), y: Math.round(y), button: 'none' });
-    await sleep(320);
-  };
-  /** 从 translate3d(a,b,0) 里取 [a,b] */
-  const xy = (t) => {
-    const m = /translate3d\(([-\d.]+)px,\s*([-\d.]+)px/.exec(String(t || ''));
-    return m ? [parseFloat(m[1]), parseFloat(m[2])] : [NaN, NaN];
-  };
-
-  await moveTo(cardBox.left + cardBox.width * 0.15, cardBox.top + cardBox.height * 0.2);
-  const hiA = await readHi();
-  await moveTo(cardBox.left + cardBox.width * 0.85, cardBox.top + cardBox.height * 0.75);
-  const hiB = await readHi();
-
-  const [ax, ay] = xy(hiA.t);
-  const [bx2, by2] = xy(hiB.t);
+  /*
+   * ★★ ② 动态高光：2026-09-22（第五轮）**已按用户要求整体删除**。
+   *
+   *   用户看完实机说「**还有去除指针高光**」—— 于是"存在"类断言全部作废，
+   *   换成**反向守卫**：DOM 里不许再有光斑元素、移指针不许再改变画面。
+   *   留着旧断言就是一条永远红的假判据（这个项目记过这个教训）。
+   */
+  const glowGone = await ev(`(() => ({
+    glow: document.querySelectorAll('.glass-glow').length,
+    spot: document.querySelectorAll('.glass-glow-spot').length,
+    edge: document.querySelectorAll('.glass-edge').length,
+    hover: document.querySelectorAll('[data-hover]').length,
+  }))()`);
   check(
-    '★ ② 高光跟着指针走（光斑元素真的被移到了两处不同位置）',
-    Number.isFinite(ax) && Number.isFinite(bx2) && bx2 - ax > 40 && by2 - ay > 30 && hiB.o > 0,
-    `左上 (${ax}, ${ay}) → 右下 (${bx2}, ${by2}) · opacity ${hiB.o}`,
+    '★ ② 指针高光已移除（没有光斑元素 / 没有 data-hover）',
+    glowGone.glow === 0 && glowGone.spot === 0 && glowGone.edge === 0 && glowGone.hover === 0,
+    JSON.stringify(glowGone),
   );
-  check('  边缘环与光斑同步点亮', hiB.edgeO > 0, String(hiB.edgeO));
-  check('指针在玻璃上时会挂 data-hover（高光抬一档）', hiB.hover === true);
+
+  // 行为证据：鼠标从角落移到卡片上，画面应当**基本不动**
+  const hiClip = { x: Math.round(cardBox.left), y: Math.round(cardBox.top), width: Math.round(cardBox.width), height: Math.round(cardBox.height), scale: 1 };
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 4, y: 4, button: 'none' });
+  await sleep(600);
+  const hiBefore = await shoot('高光-指针在角落', hiClip);
+  await send('Input.dispatchMouseEvent', {
+    type: 'mouseMoved',
+    x: Math.round(cardBox.left + cardBox.width / 2),
+    y: Math.round(cardBox.top + cardBox.height / 2),
+    button: 'none',
+  });
+  await sleep(600);
+  const hiAfter = await shoot('高光-指针在卡片上', hiClip);
+  const hiDiff = pixelDiff(hiBefore, hiAfter);
+  /*
+   * ★ 阈值放宽到 1.5 的理由：这块卡片**背后是自己在动的烟雾**，
+   *   相隔 600ms 的两次截图本来就不一样（实测背景噪声 0.3 上下）。
+   *   原来的高光会带来几倍的差异，所以 1.5 足以区分"有高光/没高光"。
+   */
+  check('★ ② 移动指针不再改变画面（高光确实没了）', hiDiff.mean < 1.5, `平均差 ${hiDiff.mean.toFixed(3)}`);
 }
 
 /*
@@ -798,7 +814,8 @@ const modalInfo = await ev(`(() => {
     classes: m.className,
     lens: m.dataset.lens ?? null,
     backdrop: cs.backdropFilter || 'none',
-    sheen: m.classList.contains('glass-sheen'),
+    // ★ 2026-09-22：glass-sheen 随指针高光一起删了（那个类当年只为"高光自己流动"存在）
+    refract: m.classList.contains('glass-refract'),
     box: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)],
     hasTint: m.style.getPropertyValue('--glass-tint').trim(),
   };
@@ -808,7 +825,7 @@ if (modalInfo?.err) {
   check('打得开一个模态（数据目录选择器）', false, `${opened} · ${modalInfo.err}`);
 } else {
   check('★ 模态也是玻璃表面（带折射滤镜）', String(modalInfo.backdrop).includes('url("#ieml-lens-'), String(modalInfo.lens ?? '无'));
-  check('模态挂了 .glass-sheen（灵动档高光会在它上面自己流动）', modalInfo.sheen === true);
+  check('模态是玻璃材质并且参与折射（`glass-sheen` 已随高光一起删）', modalInfo.refract === true);
   check('模态也按位置取色', modalInfo.hasTint.length > 0, modalInfo.hasTint);
   if (modalInfo.box) {
     await shoot('modal-全窗');

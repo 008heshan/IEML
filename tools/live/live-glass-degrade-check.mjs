@@ -176,9 +176,14 @@ check(
 check('  不起 GL 背景', state.glCanvas === false && state.glAttr === null);
 check('  一块玻璃都不挂折射（没有 WebGL2 就不走那条路）', state.lensed === 0, `${state.lensed}/${state.cards}`);
 check('  但**材质还在**：模糊没丢', String(state.backdrop).includes('blur'), String(state.backdrop));
+/*
+ * ★ 2026-09-22（第五轮）：色散（红/蓝错位内阴影）与**柔光内辉**都已按用户要求删除
+ *   （"卡片自身为什么带左红右蓝的颜色" + "我不希望卡片会自发光"）——
+ *   厚度改成**一条清晰的内边**（`inset 0 0 0 1px`），所以这条验它。
+ */
 check(
-  '  但**材质还在**：色散与厚度还在（内阴影）',
-  String(state.boxShadow).includes('rgba(255, 64, 64') && String(state.boxShadow).includes('0px 0px 26px'),
+  '  但**材质还在**：厚度内边还在（1px 内阴影）',
+  /0px 0px 0px 1px/.test(String(state.boxShadow)),
   String(state.boxShadow).slice(-70),
 );
 check('  但**材质还在**：调色层还在', state.bgHasTint === true);

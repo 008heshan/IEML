@@ -9,7 +9,7 @@
  *   * Java 环境改成**可看到路径与占用、可删除**（ADR-013 的硬要求）
  *   * 账号区压实：一个头像行 + 两个按钮
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useApp } from '../state/AppContext';
 import { Button, Card, CardTitle, Chip, CustomSelect, Field, Note, Segmented, Switch } from '../ui';
 import {
@@ -81,6 +81,11 @@ export function SettingsPage() {
   const [javaListError, setJavaListError] = useState<string | null>(null);
   /** 低性能损耗模式（本机偏好，存 localStorage；见 main.tsx 的说明） */
   const [lowPerf, setLowPerf] = useState(() => localStorage.getItem('ieml.lowPerf') === '1');
+  /**
+   * 低性能损耗模式**开启前**的动效与视效档位 —— 关掉时还回去。
+   * ★ 只降不还的开关，用户下次就不敢开了（这也是"一键"该有的样子）。
+   */
+  const lowPerfPrev = useRef<{ motion: MotionLevel; vfx: VfxLevel } | null>(null);
   /**
    * 动效档位（本机偏好，存 localStorage；判据在 `ui/motion.ts`）。
    *
@@ -197,7 +202,41 @@ export function SettingsPage() {
                   setLowPerf(v);
                   localStorage.setItem('ieml.lowPerf', v ? '1' : '0');
                   document.documentElement.classList.toggle('low-perf', v);
-                  toast('ok', v ? '已开启低性能损耗模式' : '已关闭低性能损耗模式');
+                  /*
+                   * ★★ 2026-09-22（第五轮）：用户要求「**低性能损耗模式应是一键开启
+                   *   减少动效和弱化视效**」。
+                   *
+                   *   原来这个开关只关"装饰"（模糊与氛围光晕），动效与视效两档还得
+                   *   自己再点两次 —— 对一个"我这台机器不行，别搞花样"的开关来说，
+                   *   那两步本来就该由它代劳。
+                   *
+                   *   ★ 关掉时**还回用户原来的选择**，而不是停在"减少/弱化"：
+                   *     只降不还的开关，用户下次会不敢开它。原值存在 ref 里。
+                   */
+                  if (v) {
+                    lowPerfPrev.current = { motion, vfx: vfx.want };
+                    setMotion('lite');
+                    setMotionLevel('lite');
+                    vfx.choose('weak');
+                    toast(
+                      'ok',
+                      `已开启低性能损耗模式：动效→${MOTION_LABEL.lite}、视效→${VFX_LABEL.weak}`,
+                    );
+                  } else {
+                    const prev = lowPerfPrev.current;
+                    if (prev) {
+                      setMotion(prev.motion);
+                      setMotionLevel(prev.motion);
+                      vfx.choose(prev.vfx);
+                      lowPerfPrev.current = null;
+                      toast(
+                        'ok',
+                        `已关闭低性能损耗模式：动效→${MOTION_LABEL[prev.motion]}、视效→${VFX_LABEL[prev.vfx]}`,
+                      );
+                    } else {
+                      toast('ok', '已关闭低性能损耗模式');
+                    }
+                  }
                 }}
               />
             </div>

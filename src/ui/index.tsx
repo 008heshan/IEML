@@ -733,7 +733,7 @@ export function Modal({
     <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div
         ref={dialogRef}
-        className={`modal glass glass-refract glass-sheen${size === 'lg' ? ' modal-lg' : ''}${size === 'xl' ? ' modal-xl' : ''}`}
+        className={`modal glass glass-refract${size === 'lg' ? ' modal-lg' : ''}${size === 'xl' ? ' modal-xl' : ''}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
