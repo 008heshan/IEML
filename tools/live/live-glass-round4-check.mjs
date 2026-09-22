@@ -245,6 +245,68 @@ console.log('滚动后：' + JSON.stringify(scrolled));
 check('★ 滚动之后玻璃**淡入**（opacity 1 + is-scrolled）', scrolled.opacity === '1' && scrolled.isScrolled === true, `opacity=${scrolled.opacity}`);
 check('  它挂着真实的 backdrop-filter', String(scrolled.backdrop).includes('blur'), String(scrolled.backdrop));
 
+/* ★★ 2026-09-22 修的真 bug：这块玻璃原来从 y=0 开始铺，压在**标题栏上面**，
+   把最小化 / 最大化 / **关闭**按钮与账号胶囊一起糊了。
+   用户：「主要是会让关闭键那一行都模糊，这是不可的」。以下三条是它的反向守卫。 */
+const titlebarH = await ev(`(() => {
+  const tb = document.querySelector('.titlebar');
+  return tb ? Math.round(tb.getBoundingClientRect().height) : 48;
+})()`);
+check(
+  '★ 顶部玻璃**不碰标题栏**（几何：它的上边界在标题栏之下）',
+  scrolled.box[1] >= titlebarH - 1,
+  `玻璃 top=${scrolled.box[1]} · 标题栏高 ${titlebarH}`,
+);
+
+/*
+ * 像素证据：标题栏那一行，玻璃开 / 关两张必须**几乎一样**。
+ * 这是最硬的一条 —— 几何对了但层序错了（玻璃压在上面）时，
+ * 只有它会红。
+ */
+const titleClip = { x: Math.round(scrolled.box[0]), y: 0, width: 900, height: titlebarH, scale: 1 };
+await shoot('标题栏-玻璃开', titleClip);
+await sleep(600);
+await shoot('标题栏-玻璃开-复测', titleClip); // 用来量"背景自己在动"造成的噪声
+/*
+ * ★ 这里**自带一张独立样式表**做探针，而不是复用后面的 setProbe ——
+ *   那个函数在这段代码之后才定义（第一版就是因此报
+ *   "Cannot access 'setProbe' before initialization"）。
+ */
+await ev(`(() => {
+  const sheet = new CSSStyleSheet();
+  document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+  window.__titleProbe = sheet;
+  return true;
+})()`);
+const setTitleProbe = async (css) => {
+  await ev(
+    '(() => { const s = window.__titleProbe; while (s.cssRules.length) s.deleteRule(0); ' +
+      (css ? 's.insertRule(' + JSON.stringify(css) + ', 0); ' : '') +
+      'return s.cssRules.length; })()',
+  );
+  await sleep(520);
+};
+await setTitleProbe('.top-glass{backdrop-filter:none !important;-webkit-backdrop-filter:none !important;background-image:none !important}');
+await shoot('标题栏-玻璃关', titleClip);
+await setTitleProbe('');
+const titleNoise = diff(path.join(OUT, '标题栏-玻璃开.png'), path.join(OUT, '标题栏-玻璃开-复测.png'));
+const titleSignal = diff(path.join(OUT, '标题栏-玻璃开.png'), path.join(OUT, '标题栏-玻璃关.png'));
+console.log(
+  `  标题栏那一行：噪声(同状态相隔 600ms) ${titleNoise.mean.toFixed(3)} · 信号(玻璃开/关) ${titleSignal.mean.toFixed(3)}`,
+);
+/*
+ * ★ 判据用**信号 vs 噪声**，不是写死一个绝对值 ——
+ *   这块区域背后是**自己在动的烟雾**（灵动档），相隔几百毫秒的两次截图本来就不一样。
+ *   第一版写 `< 0.5` 于是被噪声顶红（实测 0.516 全是噪声）。
+ *   真正要证的是："关掉玻璃"带来的变化**不比噪声更大** ——
+ *   也就是说这块区域**没有**被玻璃糊过。
+ */
+check(
+  '★ 标题栏那一行**不受顶部玻璃影响**（信号不超过噪声 3 倍）',
+  titleSignal.mean <= Math.max(0.6, titleNoise.mean * 3),
+  `信号 ${titleSignal.mean.toFixed(3)} vs 噪声 ${titleNoise.mean.toFixed(3)}`,
+);
+
 const topShotScrolled = await shoot('顶部-滚动后', { x: scrolled.box[0], y: 0, width: Math.min(900, scrolled.box[2]), height: 104, scale: 1 });
 
 /* 关键：证明这块 fixed 层**真的在糊内容**（这是 sticky 版本做不到的） */
