@@ -20,8 +20,8 @@
  *   1.21.4 会被判成「只有 Fabric」——那是**错误的禁用**，用户会以为启动器不支持。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Button, Chip, CustomSelect, Note, SearchBox, Segmented, Skeleton, Spinner } from '../ui';
 import { useApp } from '../state/AppContext';
-import { Button, Chip, Note, SearchBox, Segmented, Skeleton, Spinner } from '../ui';
 import { IconAlert, IconCheck, IconChevronDown, IconInfo, IconPlus, IconRefresh } from '../ui/Icons';
 import {
   BASE_LOADER_NAME,
@@ -172,8 +172,9 @@ export function InstallComposer({
   const [latest, setLatest] = useState<string | null>(null);
   const [manifestLoading, setManifestLoading] = useState(false);
   const [manifestError, setManifestError] = useState<string | null>(null);
-  const [source, setSource] = useState<'bmclapi' | 'mojang'>(
-    state.prefs.downloadSource === 'mojang' ? 'mojang' : 'bmclapi',
+  const [source, setSource] = useState<'auto' | 'bmclapi' | 'mojang'>(
+    // ★ 一律「自动」（官方优先、慢则镜像）；用户已经没有这个选择了
+    'auto',
   );
   const [channel, setChannel] = useState<Channel>('release');
   /**
@@ -1369,19 +1370,18 @@ export function InstallComposer({
                       {selected && opt && availableBaseVersions.length > 0 ? (
                         <div className="loader-detail">
                           <label htmlFor={`bv-${o.value}`}>{o.label} 版本</label>
-                          <select
-                            id={`bv-${o.value}`}
-                            className="input"
+                          {/*
+                            ★★ 2026-09-22（用户：「模组加载器选择版本时，这个展开栏**没统一风格**」）：
+                              原生 `<select>` 的下拉列表由**操作系统**画（图五那张白底黑字的
+                              方框就是它）—— 在深色玻璃界面里出戏，也不跟主题走。
+                              换成应用自己的 `CustomSelect`（与「要启动的版本」同款）。
+                          */}
+                          <CustomSelect
                             value={baseVersion}
-                            onChange={(e) => setBaseVersion(e.target.value)}
-                          >
-                            {availableBaseVersions.map((ver, i) => (
-                              <option key={ver} value={ver}>
-                                {ver}
-                                {i === 0 ? ' —— 推荐' : ''}
-                              </option>
-                            ))}
-                          </select>
+                            onChange={setBaseVersion}
+                            ariaLabel={`${o.label} 版本`}
+                            options={availableBaseVersions.map((ver) => ({ value: ver, label: ver }))}
+                          />
                           <Chip tone="success">在线清单 · {availableBaseVersions.length} 个版本</Chip>
                         </div>
                       ) : null}
@@ -1630,22 +1630,16 @@ export function InstallComposer({
               {addons.includes('optifine') && optifineReal && optifineReal.length > 0 ? (
                 <div className="loader-detail">
                   <label htmlFor="of-ver">OptiFine 版本</label>
-                  <select
-                    id="of-ver"
-                    className="input"
+                  {/* ★ 同上一处：原生 select → CustomSelect（用户："这个展开栏没统一风格"） */}
+                  <CustomSelect
                     value={addonVersions.optifine ?? optifineReal[0]?.version ?? ''}
-                    onChange={(e) =>
-                      setAddonVersions((p) => ({ ...p, optifine: e.target.value }))
-                    }
-                  >
-                    {optifineReal.map((v, i) => (
-                      <option key={v.version} value={v.version}>
-                        {v.version}
-                        {v.preview ? '（预览版）' : ''}
-                        {i === 0 ? ' —— 推荐' : ''}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={(v) => setAddonVersions((p) => ({ ...p, optifine: v }))}
+                    ariaLabel="OptiFine 版本"
+                    options={optifineReal.map((v) => ({
+                      value: v.version,
+                      label: `${v.version}${v.preview ? '（预览版）' : ''}`,
+                    }))}
+                  />
                   <Chip tone="success">在线清单 · {optifineReal.length} 个版本</Chip>
                 </div>
               ) : null}

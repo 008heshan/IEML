@@ -11,7 +11,7 @@
  */
 import { useEffect, useState, useRef } from 'react';
 import { useApp } from '../state/AppContext';
-import { Button, Card, CardTitle, Chip, CustomSelect, Field, Note, Segmented, Switch } from '../ui';
+import { Button, Card, CardTitle, Chip, Field, Note, Segmented, Switch } from '../ui';
 import {
   IconAlert,
   IconGear,
@@ -877,20 +877,15 @@ export function SettingsPage() {
               换成启动页「要启动的版本」同款的 `CustomSelect`（`.cs-*`）。
               ★ 行为不变：值仍然走同一条 `ieml:prefs` 事件，只是换了控件。
           */}
-          <Field label="下载源" hint="国内建议用 BMCLAPI">
-            <CustomSelect
-              value={state.prefs.downloadSource}
-              onChange={(v) =>
-                window.dispatchEvent(
-                  new CustomEvent('ieml:prefs', { detail: { downloadSource: v } }),
-                )
-              }
-              ariaLabel="下载源"
-              options={[
-                { value: 'bmclapi', label: 'BMCLAPI 镜像（推荐）' },
-                { value: 'mojang', label: 'Mojang 官方源' },
-              ]}
-            />
+          {/*
+            ★★ 2026-09-22 用户：「**选择镜像还是官方这个，去掉**，默认就先使用官方源，
+              官方源加载缓慢时再选择镜像」—— 那个选择器整行删掉，只留一句说明。
+            ★ 为什么不再让用户选：**他没有判断依据**（他不知道哪条路现在快），
+              而底层本来就会多源回退（见 Rust `parse_source` 的说明）——
+              把"猜哪条路快"这件事交给我们，比交给他靠谱。
+          */}
+          <Field label="下载源" hint="自动：先走官方源，慢或失败会自动换镜像">
+            <span className="dim">自动</span>
           </Field>
 
           <div className="field-row">

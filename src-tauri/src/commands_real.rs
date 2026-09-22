@@ -102,9 +102,21 @@ pub fn resume_install(task_id: String) -> Result<bool, String> {
 /* ====================== 版本与清单 ====================== */
 
 fn parse_source(s: &str) -> Source {
+    /*
+     * ★★ 2026-09-22（用户：「去掉镜像还是官方这个，默认就先使用官方源，
+     *   官方源加载缓慢时再选择镜像」）。
+     *
+     *   「自动」= **期望官方源**。这不是"只走官方"：下载时
+     *   `net::source::candidates_with` 会把镜像与官方都列成候选，并按
+     *   「期望源 + 健康度」排序 —— 官方慢 / 失败 / 被限速时会自动降到镜像。
+     *   期望源只决定**谁先试**。
+     *
+     *   `"bmclapi"` 仍然认（老配置、内部调用会传），但界面上已经没有这个选择了。
+     */
     match s {
-        "mojang" => Source::Mojang,
-        _ => Source::Bmclapi,
+        "bmclapi" => Source::Bmclapi,
+        // "mojang" / "auto" / 其它：一律按**官方优先**
+        _ => Source::Mojang,
     }
 }
 
