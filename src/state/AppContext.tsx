@@ -78,6 +78,13 @@ import { syncWindowTitle } from '../bridge/web';
  * 由调用方显式声明（`toast(..., {sticky:true})`）—— 默认一律自动消失。
  * 详见 `armToastDismiss` 里的时长。
  */
+/**
+ * 退场动画时长（毫秒）。
+ * ★ 必须与 CSS 里 `.toast.leaving` 的 `animation-duration` 一致 ——
+ *   短了会截断动画，长了会留一条"已经该没了"的空壳。
+ */
+const TOAST_EXIT_MS = 200;
+
 function toastSticky(_kind: ToastItem['kind']): boolean {
   return false;
 }
@@ -665,12 +672,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   /* ====================== 跨组件事件桥 ====================== */
 
+  /**
+   * 让一条提示**先退场再移除**。
+   *
+   * ★ 直接 `toast/remove` 是"当场卸载"，没有退场动画 —— 用户报的
+   *   「这个提示，消失时没动画」就是它。这里先打 `leaving` 标记（组件据此挂 class），
+   *   等动画时长（TOAST_EXIT_MS）走完再真删。
+   */
+  const exitToast = useCallback((id: string) => {
+    dispatch({ type: 'toast/leaving', id });
+    window.setTimeout(() => dispatch({ type: 'toast/remove', id }), TOAST_EXIT_MS);
+  }, []);
+
   /** 给一条提示装自动消失的定时器（sticky 的不装）。dispatch 是稳定的，所以空依赖安全。 */
   const armToastDismiss = useCallback(
     (id: string, kind: ToastItem['kind'], sticky: boolean) => {
       if (sticky) return;
-      window.setTimeout(() => dispatch({ type: 'toast/remove', id }), toastLifetime(kind));
+      window.setTimeout(() => exitToast(id), toastLifetime(kind));
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
 
@@ -955,7 +975,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     armToastDismiss(id, kind, sticky);
   }, []);
 
-  const dismissToast = useCallback((id: string) => dispatch({ type: 'toast/remove', id }), []);
+  /*
+   * 点 × 关闭也走**退场**（2026-09-22）。
+   * ★ 这里原来是 `dispatch({type:'toast/remove'})` —— 当场卸载，
+   *   于是"点 × 关闭"这条路上**永远看不到退场动画**（用户报的正是它）。
+   */
+  const dismissToast = useCallback((id: string) => exitToast(id), [exitToast]);
 
   const createInstance = useCallback(
     async (inst: Instance) => {

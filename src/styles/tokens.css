@@ -72,6 +72,19 @@
   --dur-slow: 260ms;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  /*
+   * ★★ 2026-09-22：补一个 `--ease`。
+   *
+   *   它**被用了 13 处**（`transition: … var(--ease)`），但**从来没定义过** ——
+   *   而 CSS 自定义属性缺失时，整条声明在"计算值阶段"失效 →
+   *   `transition` 变成 `unset` → **那些过渡一直是瞬变**（hover、配色、位移全没有动画）。
+   *   看代码完全看不出来（写的人以为有）。
+   *
+   *   发现路径值得记：我在修 toast 退场动画时，`animation: toastOut … var(--ease)`
+   *   死活不跑，真机断言读到 `animationName: none` 才顺藤摸到这儿。
+   *   → 与 `--ease-in-out` 同值（绝大多数调用处想要的就是这个"标准缓动"）。
+   */
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
 
   --font-sans: system-ui, -apple-system, "Segoe UI Variable Text", "Segoe UI",
     "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB",

@@ -58,6 +58,8 @@ export interface TaskItem {
 
 export interface ToastItem {
   id: string;
+  /** 正在退场（CSS 用这个类走淡出动画，动画完再真删） */
+  leaving?: boolean;
   kind: 'ok' | 'err' | 'info' | 'warning';
   title: string;
   desc?: string;
@@ -331,6 +333,7 @@ export type Action =
   | { type: 'game/sync'; list: RunningGameInfo[] }
   /* Toast */
   | { type: 'toast/add'; toast: ToastItem }
+  | { type: 'toast/leaving'; id: string }
   | { type: 'toast/remove'; id: string }
   /* 弹窗 */
   | { type: 'create/open' }
@@ -578,6 +581,16 @@ export function reducer(state: AppState, action: Action): AppState {
         return state;
       }
       return { ...state, toasts: [...state.toasts, action.toast].slice(-4) };
+
+    /*
+     * ★ 两段式移除的第一步：只打标记，**不删**。
+     *   组件据此挂上 .leaving → 跑退场动画；动画完再 dispatch toast/remove。
+     */
+    case 'toast/leaving':
+      return {
+        ...state,
+        toasts: state.toasts.map((t) => (t.id === action.id ? { ...t, leaving: true } : t)),
+      };
 
     case 'toast/remove':
       return { ...state, toasts: state.toasts.filter((t) => t.id !== action.id) };

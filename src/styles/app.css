@@ -1952,22 +1952,26 @@ tbody tr.clickable:focus-visible {
 }
 
 /* ============================ Toast ============================
-   ★ 0.1.0-beta.1：从**右下角**挪到**顶部居中**。
+   ★★ 2026-09-22 用户：「这个提示，消失时没动画，哦对，改到右下角」。
 
-   为什么：下载页的主按钮（「安装 xxx」）就在右下角，而安装过程会连发好几条
-   提示 —— 用户报的"下载栏会被奇怪的一些 UI 遮住"就是它。
-   顶部居中只在页头下方一条很窄的带子里，永远不会压住任何主操作，
-   也不会和左下角的「启动这个版本」打架。
+   位置历史：
+     · 最早在**右下角**；
+     · 0.1.0-beta.1 挪到**顶部居中** —— 当时下载页的主按钮（「安装 xxx」）就在
+       右下角，安装过程连发好几条提示把它遮住了（用户报"下载栏会被奇怪的一些 UI 遮住"）。
+     · 现在按用户要求**改回右下角**。容器一直是 `pointer-events: none`，
+       所以它**挡不住点击**，只是视觉上压一会儿，几秒后自动消失。
+
+   退场动画：`.toast.leaving` —— 由 AppContext 的**两段式移除**驱动
+   （先打 leaving 标记，200ms 后真删；直接删是没有任何动画可看的）。
    ============================================================== */
 .toasts {
   position: fixed;
-  top: calc(var(--topbar-h, 48px) + var(--space-3));
-  left: 50%;
-  transform: translateX(-50%);
+  right: var(--space-5);
+  bottom: var(--space-5);
   z-index: var(--z-toast, 100);
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-end;
   gap: var(--space-2);
   max-width: min(520px, 92vw);
   pointer-events: none;
@@ -1992,6 +1996,46 @@ tbody tr.clickable:focus-visible {
   to {
     opacity: 1;
     transform: none;
+  }
+}
+/*
+ * ★★ 退场（2026-09-22）。时长必须与 `AppContext` 的 `TOAST_EXIT_MS`（200ms）一致：
+ *    短了会截断动画，长了会留一条"已经该没了"的空壳在那杵着。
+ *    方向与入场相反（往右下走），读起来像"滑走"而不是"凭空消失"。
+ */
+.toast.leaving {
+  /*
+   * ★ 用 `--ease-in-out`，**不要写 `--ease`** —— 这个项目里根本没有 `--ease`
+   *   这个令牌（只有 `--ease-out` / `--ease-in-out`）。
+   *   后果很隐蔽：`var(--ease)` 未定义 → 整条 `animation` 简写在计算值阶段失效 →
+   *   `animationName` 变成 `none` → **退场动画压根不跑**，但类名、DOM 都对，
+   *   看代码完全看不出问题。是真机断言（读 computed animationName）抓出来的。
+   */
+  animation: toastOut 200ms var(--ease-in-out) forwards;
+  pointer-events: none;
+}
+@keyframes toastOut {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translate3d(12px, 6px, 0) scale(0.98);
+  }
+}
+/* 尊重系统的"减少动态效果"：只淡出，不做位移 */
+@media (prefers-reduced-motion: reduce) {
+  .toast.leaving {
+    animation: toastOutFade 200ms linear forwards;
+  }
+  @keyframes toastOutFade {
+    from {
+      opacity: 1;
+    }
+    to {
+      opacity: 0;
+    }
   }
 }
 .toast-ic {

@@ -653,7 +653,13 @@ export function App() {
 
       <ToastRegion>
         {state.toasts.map((t) => (
-          <div key={t.id} className={`toast toast-${t.kind}`}>
+          /*
+           * ★ 2026-09-22（用户：「这个提示，消失时没动画」）：
+           *   退场靠 **两段式移除** —— `t.leaving` 为真时挂上 `.leaving`，
+           *   CSS 跑淡出动画；动画走完（200ms）AppContext 才真的把这条从数组里删掉。
+           *   直接删 = 元素当场卸载 = 没有任何退场动画可看。
+           */
+          <div key={t.id} className={`toast toast-${t.kind}${t.leaving ? ' leaving' : ''}`}>
             <span className="toast-ic" aria-hidden="true">
               {t.kind === 'ok' ? (
                 <svg viewBox="0 0 24 24">

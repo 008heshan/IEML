@@ -44,6 +44,7 @@ import {
   trashUnavailablePrompt,
 } from '../domain/delete.ts';
 import type { InstalledLoader } from '../bridge/tauri';
+import { instanceTitle } from '../state/instance-name';
 
 type Filter = 'all' | 'modded' | 'vanilla';
 
@@ -444,7 +445,8 @@ export function VersionsPage() {
               {/* 中间：名称与元信息（一行主 + 一行次；冲突只给徽标） */}
               <div className="ver-info">
                 <div className="ver-title">
-                  <span className="ver-title-name truncate">{inst.config.name}</span>
+                  {/* ★ 2026-09-22：标题统一走 instanceTitle()（"Minecraft 1.12.2 ：原版" 那种格式） */}
+                  <span className="ver-title-name truncate">{instanceTitle(inst.config.name, inst.mcVersion, inst.loader)}</span>
                   {isRunning ? <Chip tone="success">运行中</Chip> : null}
                   {inst.addons.map((a) => (
                     <Chip key={a.kind} tone="neutral">
