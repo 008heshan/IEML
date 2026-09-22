@@ -22,6 +22,7 @@ import {
   IconInfo,
   IconShield,
 } from '../ui/Icons';
+import { SkinHead } from './SkinHead';
 import { useApp } from '../state/AppContext';
 import { getRealApi } from '../bridge';
 
@@ -226,7 +227,7 @@ export function AccountMenu({ onOpenAccount }: AccountMenuProps) {
     if (uuid) savedUuidRef.current = uuid;
   }, [uuid]);
 
-  const head = skin?.skinUrl;
+  const head = skin?.skinUrl ?? null;
   const label = isOnline ? (state.prefs.offlineUsername || '正版账号') : offlineName;
 
   return (
@@ -238,19 +239,17 @@ export function AccountMenu({ onOpenAccount }: AccountMenuProps) {
         aria-haspopup="menu"
         onClick={() => setOpen((v) => !v)}
       >
-        <span
-          className="acct-head"
-          style={
-            head
-              ? {
-                  backgroundImage: `url(${head})`,
-                  backgroundSize: '800% 800%',
-                  backgroundPosition: '0 0',
-                }
-              : undefined
-          }
-          aria-hidden="true"
-        />
+        <span className="acct-avatar" aria-hidden="true">
+          {/*
+            ★★ 2026-09-23 用户（截图）：「**头像不显示**，名字显示不全」。
+              原因是我这里手写了 `backgroundSize: 800%` + `backgroundPosition: 0 0` ——
+              **`0 0` 取到的是皮肤左上角那 8×8，而现代皮肤那一块是空的**
+              （头在 (8,8)，帽子在 (40,8)）。改成复用 `SkinHead`：
+              那套坐标只有一份实现，不会再被手抄错。
+          */}
+          <SkinHead url={head} size={22} />
+        </span>
+        {/* ★ 名字要**放得下**（用户："名字显示不全"）——见 app.css 里那一行的说明 */}
         <span className="acct-name truncate">{label}</span>
         <Chip tone={isOnline ? 'success' : 'neutral'}>{isOnline ? '正版' : '离线'}</Chip>
       </button>

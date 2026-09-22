@@ -3174,3 +3174,52 @@ tbody tr.clickable:focus-visible {
   color: var(--text-tertiary);
   font-size: var(--text-sm);
 }
+
+
+/* ============================================================================
+   ★★ 皮肤头像（2026-09-23，用户：「头像不显示」）
+
+   坐标由 components/SkinHead.tsx 按 size 算好内联给出 ——
+   这里只负责"别裁、别模糊、按像素画"。
+   ============================================================================ */
+.skin-head {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  border-radius: 4px;
+  background-color: var(--bg-active);
+}
+.skin-head-layer {
+  position: absolute;
+  inset: 0;
+  background-repeat: no-repeat;
+  /* 皮肤是像素画：缩放后必须最近邻，否则头像糊成一团 */
+  image-rendering: pixelated;
+}
+.skin-head-hat {
+  /* 帽子层比头大一圈：左上角往回补（数值由组件内联给），所以不要 inset:0 */
+  right: auto;
+  bottom: auto;
+}
+.acct-avatar {
+  flex: 0 0 auto;
+  display: block;
+  width: 22px;
+  height: 22px;
+  line-height: 0;
+}
+/*
+ * ★ 账号按钮那一行：名字要**放得下**（用户："名字显示不全"）。
+ *   挤掉名字的是外边距和内边距，不是字号 —— 所以收的是空隙，不是字。
+ */
+.acct-btn {
+  gap: 7px;
+  padding: 6px 8px;
+}
+.acct-btn .acct-name {
+  font-size: var(--text-sm);
+}
+.acct-btn .chip {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+}
