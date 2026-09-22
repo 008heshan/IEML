@@ -112,47 +112,49 @@ const panel = await ev(`(() => {
   return { 在: true, top: Math.round(r.top), 视口高: window.innerHeight, 在视口内: r.top < window.innerHeight - 40 && r.bottom > 40 };
 })()`);
 console.log('  ' + JSON.stringify(panel));
-check('★ 点卡片后**安装面板出现在视口里**（用户"根本装不了"的真因）', panel.在 === true && panel.在视口内 === true, JSON.stringify(panel));
-
-const installBtn = await ev(`(() => {
-  const b = [...document.querySelectorAll('.setup-panel button')].find((x) => /确认并开始安装/.test(x.textContent || ''));
-  if (!b) return { 找到: false };
-  const r = b.getBoundingClientRect();
-  return { 找到: true, 在视口内: r.top > 0 && r.bottom < window.innerHeight, disabled: b.disabled };
-})()`);
-check('★ 「确认并开始安装」按钮也在视口里且可点', installBtn.找到 === true && installBtn.在视口内 === true && installBtn.disabled === false, JSON.stringify(installBtn));
-const shot = await send('Page.captureScreenshot', { format: 'png' });
-if (shot.result?.data) writeFileSync(path.join(OUT, '整合包-安装面板.png'), Buffer.from(shot.result.data, 'base64'));
-
+/*
+ * ★★ 2026-09-23：期望值**改了** —— 原来是「点卡片后内联安装面板要滚进视野」，
+ *   现在整合包也做成**独立安装页**（用户点名「整合包安装为什么没做单开一页的设计」）。
+ *   判据跟着需求走：这里验的是**进页**，不是内联面板。
+ */
+await ev(`document.querySelector('.pack-card:not(.pack-card-sk)')?.click()`);
+await sleep(3500);
+const mp = await ev(`(() => ({
+  '信息卡': !!document.querySelector('.res-detail'),
+  '版本条数': document.querySelectorAll('.res-version').length,
+  '有返回': [...document.querySelectorAll('button')].some((b) => /返回整合包列表/.test(b.textContent || '')),
+  '列表还在': document.querySelectorAll('.pack-card').length,
+}))()`);
+console.log('  ' + JSON.stringify(mp));
+check('★ 点整合包卡片 → 进**独立安装页**（用户点名的设计）', mp?.信息卡 === true && mp?.列表还在 === 0, JSON.stringify(mp));
+check('★ 页里有这个整合包的**版本列表**', (mp?.版本条数 ?? 0) > 1, `${mp?.版本条数} 条`);
+check('  有「返回整合包列表」', mp?.有返回 === true);
+await ev(`[...document.querySelectorAll('button')].find((b) => /返回整合包列表/.test(b.textContent || ''))?.click()`);
+await sleep(1500);
 /* ============ G② 资源中心：展开后卡片要在视口里 ============ */
 console.log('\n=== G② 资源包详情 ===');
 const tabOk = await ev(`(() => { const t = [...document.querySelectorAll('.tabs [role=tab], .tabs button')].find((x) => (x.textContent || '').trim().includes('资源包')); t?.click(); return !!t; })()`);
 await sleep(4200);
 const resCount = await ev(`document.querySelectorAll('.res-card:not(.res-card-sk)').length`);
 check('  资源包列表有卡片', resCount > 0, `${resCount} 张`);
-// 专门点**最后一张**卡片（它最可能在视口底部 —— 那才是"详情看不到"的现场）
-const opened = await ev(`(() => {
+/*
+ * ★★ 2026-09-23：资源包也从「卡片内展开」改成了**独立安装页**（C5），
+ *   所以这里验「进页」，不再验 `.res-card.open`。
+ */
+await ev(`(() => {
   const cards = [...document.querySelectorAll('.res-card:not(.res-card-sk)')];
-  const c = cards[cards.length - 1];
-  if (!c) return false;
-  c.scrollIntoView({ block: 'end' });
-  /* ★ 点**卡片里面的按钮**：.res-card 是 div，onClick 挂在它内部的按钮上
-     （第一版直接点 div，于是"没展开"是我的测试错了，不是应用坏了）。 */
-  const btn = c.querySelector('button');
-  (btn || c).click();
+  cards[cards.length - 1]?.querySelector('button')?.click();
   return true;
 })()`);
-await sleep(3000);
-const detail = await ev(`(() => {
-  const c = document.querySelector('.res-card.open');
-  if (!c) return { 展开: false };
-  const r = c.getBoundingClientRect();
-  const text = (c.innerText || '').length;
-  return { 展开: true, top: Math.round(r.top), bottom: Math.round(r.bottom), 视口高: window.innerHeight, 可见: r.top < window.innerHeight && r.bottom > 0, 内容字数: text };
-})()`);
+await sleep(4000);
+const detail = await ev(`(() => ({
+  '信息卡': !!document.querySelector('.res-detail'),
+  '标题': document.querySelector('.page-title')?.textContent?.trim() ?? null,
+  '版本分组': document.querySelectorAll('.res-vgroup-head').length,
+}))()`);
 console.log('  ' + JSON.stringify(detail));
-check('★ 点最后一张卡片，展开的详情**在视口里**', detail.展开 === true && detail.可见 === true, JSON.stringify(detail));
-
+check('★ 点资源卡片的按钮 → 进**独立安装页**', detail?.信息卡 === true && detail?.标题 === '安装资源', JSON.stringify(detail));
+check('  版本列表带着分组（复用同一份实现）', (detail?.版本分组 ?? 0) >= 1, `${detail?.版本分组} 组`);
 /* ============ L 预览命令 ============ */
 console.log('\n=== L 预览命令 ===');
 await ev(`[...document.querySelectorAll('.nav-item')].find((b) => (b.textContent || '').includes('启动'))?.click()`);
