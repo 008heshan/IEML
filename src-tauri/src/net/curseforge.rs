@@ -27,7 +27,7 @@
 //!   不要在别处再写一份"有没有 key"的逻辑（那种两份判据迟早打架）。
 
 use super::mirror;
-use super::{client, NetError, Result};
+use super::{api_client, NetError, Result};
 use crate::domain::resources::ResourceKind;
 use crate::modrinth;
 use serde::{Deserialize, Serialize};
@@ -272,7 +272,7 @@ async fn api_json<T: serde::de::DeserializeOwned>(path_and_query: &str) -> Resul
 /// POST 一次（官方或镜像）。抽成独立函数而不是闭包：
 /// 闭包会把 `key` 借进返回的 future，调用两次时借用检查过不去。
 async fn post_once(target: &str, payload: &str, key: &str) -> Result<String> {
-    let resp = client()
+    let resp = api_client()
         .post(target)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .header("x-api-key", key)
