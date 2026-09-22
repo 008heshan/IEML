@@ -215,11 +215,25 @@ const snapshot = () =>
       hasRim: bg ? String(bg.boxShadow).includes('0px 0px 26px -14px') : false,
       hasDisp: bg ? String(bg.boxShadow).includes('rgba(255, 64, 64') : false,
       tintInPaint,
-      phBackdrop: ph ? (getComputedStyle(ph, '::before').backdropFilter || 'none') : null,
+      /*
+       * ★ 2026-09-22（第四轮）：页头那层伪元素**已经删了**（用户嫌它是一条大黑底）。
+       *   现在顶部由 「.top-glass」 承担 —— 它是 **fixed 层**，所以模糊是真的
+       *   （sticky 版本采不到滚动内容的 backdrop，这是第三轮量出来的）。
+       */
+      topGlass: (() => {
+        const tg = document.querySelector('.top-glass');
+        if (!tg) return null;
+        const cs = getComputedStyle(tg);
+        return { opacity: cs.opacity, backdrop: cs.backdropFilter || 'none' };
+      })(),
       glCanvas: gl ? [gl.width, gl.height] : null,
       tints,
       distinctTints: new Set(tints.map((t) => t.tint)).size,
-      gx: card ? getComputedStyle(card).getPropertyValue('--glass-gx').trim() : null,
+      // ② 高光：现在是"光斑元素"，看它的 transform/opacity（不再是 CSS 变量）
+      glow: (() => {
+        const spot = card ? card.querySelector('.glass-glow-spot') : null;
+        return spot ? { t: spot.style.transform, o: spot.style.opacity } : null;
+      })(),
     };
   })()`);
 
@@ -530,8 +544,12 @@ check('④ 厚度层（内缘辉光）在', aura.hasRim === true, String(aura.bo
 check('③ 色散边缘（红/蓝错位内阴影）在', aura.hasDisp === true);
 check('⑤ 内容调色层在（用的就是这块玻璃那一份色）', aura.tintInPaint === true, String(aura.tints[0]?.tint ?? ''));
 check('★ 不同位置的玻璃取到**不同**颜色（内容适应性真的在动）', aura.distinctTints >= 2, `${aura.distinctTints} 种`);
-check('② 高光位置有值', /%/.test(String(aura.gx)), String(aura.gx));
-check('★ 标题条的磨砂**永远不许消失**（它不依赖任何变量）', String(aura.phBackdrop).includes('blur'), String(aura.phBackdrop));
+check('② 高光载体在（固定光斑元素而不是 CSS 变量）', aura.glow !== null && typeof aura.glow.t === 'string', JSON.stringify(aura.glow));
+check(
+  '★ 顶部玻璃在灵动档挂着真模糊（fixed 层才采得到背后的滚动内容）',
+  String(aura.topGlass?.backdrop).includes('blur'),
+  JSON.stringify(aura.topGlass),
+);
 check('GL 流体背景起了', aura.glCanvas !== null && aura.glCanvas[0] > 100, aura.glCanvas ? `${aura.glCanvas[0]}×${aura.glCanvas[1]}` : '无');
 const bgAlive = pixelDiff(auraBg, auraBg2);
 check(
@@ -612,7 +630,7 @@ check(
   String(mid.lensId ?? '无'),
 );
 check('⑤ 适中档也调色', mid.tintInPaint === true, String(mid.tints[0]?.tint ?? ''));
-check('  适中档标题条的磨砂也还在', String(mid.phBackdrop).includes('blur'), String(mid.phBackdrop));
+check('  适中档顶部玻璃的模糊也还在', String(mid.topGlass?.backdrop).includes('blur'), JSON.stringify(mid.topGlass));
 const midBgFile = midBg;
 const bgDiff = pixelDiff(auraBg, midBgFile);
 check(
@@ -632,7 +650,11 @@ await shoot('weak-全窗');
 
 check('档位属性 = weak', weak.level === 'weak', String(weak.level));
 check('★ 平玻璃：卡片 backdrop-filter 是 none', String(weak.backdrop) === 'none', String(weak.backdrop));
-check('★ 弱化档连**标题条**的磨砂也关掉（不然会留一条糊的带子）', String(weak.phBackdrop) === 'none', String(weak.phBackdrop));
+check(
+  '★ 弱化档连**顶部玻璃**的模糊也关掉（不然会留一条糊的带子）',
+  String(weak.topGlass?.backdrop) === 'none',
+  JSON.stringify(weak.topGlass),
+);
 check('没有折射滤镜', weak.withLens === 0, `${weak.withLens} 块`);
 check('没有 GL 背景', weak.glCanvas === null);
 check('帧时间最省（p95 < 33ms）', weakPerfStat.p95 < 33, `p95 ${weakPerfStat.p95.toFixed(1)}ms`);
@@ -666,10 +688,16 @@ if (!cardBox) {
   const readHi = () =>
     ev(`(() => {
       const c = document.getElementById('probe-card');
-      const cs = getComputedStyle(c);
+      if (!c) return { err: '卡片没了' };
+      const spot = c.querySelector('.glass-glow-spot');
+      const edge = c.querySelector('.glass-edge');
       return {
-        gx: cs.getPropertyValue('--glass-gx').trim(),
-        gy: cs.getPropertyValue('--glass-gy').trim(),
+        /* ★ 2026-09-22（第四轮）：高光换成"固定光斑元素 + transform"了
+           （不再用 CSS 变量移动渐变中心 —— 那种写法每帧重绘）。
+           所以判据也跟着换成读**光斑元素自己的 transform / opacity**。 */
+        t: spot ? spot.style.transform : null,
+        o: spot ? Number(spot.style.opacity) : 0,
+        edgeO: edge ? Number(edge.style.opacity) : 0,
         hover: c.hasAttribute('data-hover'),
       };
     })()`);
@@ -677,18 +705,25 @@ if (!cardBox) {
     await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: Math.round(x), y: Math.round(y), button: 'none' });
     await sleep(320);
   };
+  /** 从 translate3d(a,b,0) 里取 [a,b] */
+  const xy = (t) => {
+    const m = /translate3d\(([-\d.]+)px,\s*([-\d.]+)px/.exec(String(t || ''));
+    return m ? [parseFloat(m[1]), parseFloat(m[2])] : [NaN, NaN];
+  };
 
   await moveTo(cardBox.left + cardBox.width * 0.15, cardBox.top + cardBox.height * 0.2);
   const hiA = await readHi();
   await moveTo(cardBox.left + cardBox.width * 0.85, cardBox.top + cardBox.height * 0.75);
   const hiB = await readHi();
 
-  const num = (s) => parseFloat(String(s)) || 0;
+  const [ax, ay] = xy(hiA.t);
+  const [bx2, by2] = xy(hiB.t);
   check(
-    '★ ② 高光跟着指针走（左右两次位置明显不同）',
-    num(hiB.gx) - num(hiA.gx) > 25 && num(hiB.gy) - num(hiA.gy) > 20,
-    `左上 (${hiA.gx}, ${hiA.gy}) → 右下 (${hiB.gx}, ${hiB.gy})`,
+    '★ ② 高光跟着指针走（光斑元素真的被移到了两处不同位置）',
+    Number.isFinite(ax) && Number.isFinite(bx2) && bx2 - ax > 40 && by2 - ay > 30 && hiB.o > 0,
+    `左上 (${ax}, ${ay}) → 右下 (${bx2}, ${by2}) · opacity ${hiB.o}`,
   );
+  check('  边缘环与光斑同步点亮', hiB.edgeO > 0, String(hiB.edgeO));
   check('指针在玻璃上时会挂 data-hover（高光抬一档）', hiB.hover === true);
 }
 
@@ -867,75 +902,34 @@ check(
   modalRefr.modalBackdrop.includes('url("#ieml-lens-') && modalRefr.lensMaps > 0,
   `模态 ${modalRefr.modalLens} · 已烘法线图 ${modalRefr.lensMaps} 张 · 参与折射 ${modalRefr.withLens} 块`,
 );
-/* ====================== 标题条：磨砂与折射（第三轮才测得出） ====================== */
-/*
- * ★★ 这两条判据**前两轮测不出来**，原因不是它们没发生，而是：
- *   ① 「.page-head」 上有 「isolation: isolate」 → 它成了 backdrop root →
- *      伪元素的磨砂**背后是空的**（磨空气）。那时"磨砂开/关"的像素差是 **0.000**；
- *   ② 折射也一样，没东西可弯。
- *   删掉 「isolation」 之后（见 app.css 的说明），这两条才成立：
- *      磨砂开关差 7.18 / 折射开关差也进入可测范围，而噪声只有约 0.01。
- * ★ 取景框**要排除右边缘**：滚动条会淡出，属于"会自己动的东西"。
+/* ====================== 顶部玻璃（第四轮换实现） ======================
+ *
+ * 这一段原来验的是 `.page-head::before` 那层"磨砂底"。用户 2026-09-22 看着它说
+ * 「顶栏的大黑底好丑，顶部也要液态玻璃」—— 于是那层**整个删掉**，
+ * 换成 `.top-glass`（fixed 层 + 滚动后淡入，照搬用户网站 nav-glass.js 的做法）。
+ *
+ * 它的**完整**验证（淡入、真模糊的像素证据、前后台）在
+ * `tools/live/live-glass-round4-check.mjs`（20 条）。这里只留一条"它在不在"。
  */
-await ev(`(() => { const b = document.querySelector('.content') || document.scrollingElement; b.scrollTop = 470; return b.scrollTop; })()`);
-await sleep(1200);
-const headClip = await ev(`(() => {
-  const r = document.querySelector('.page-head').getBoundingClientRect();
-  return { x: Math.round(r.left), y: Math.round(r.top), width: Math.max(160, Math.round(r.width) - 60), height: Math.round(r.height), scale: 1 };
-})()`);
-
-const headLensNow = await ev(`(() => {
-  const ph = document.querySelector('.page-head');
+const topGlassNow = await ev(`(() => {
+  const tg = document.querySelector('.top-glass');
+  if (!tg) return null;
+  const cs = getComputedStyle(tg);
+  const r = tg.getBoundingClientRect();
   return {
-    lensVar: ph.style.getPropertyValue('--glass-lens-url').trim(),
-    backdrop: getComputedStyle(ph, '::before').backdropFilter || 'none',
+    backdrop: cs.backdropFilter || 'none',
+    opacity: cs.opacity,
+    isScrolled: document.documentElement.classList.contains('is-scrolled'),
+    box: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)],
+    sentinel: !!document.querySelector('.top-glass-sentinel'),
   };
 })()`);
-/*
- * ★★ 这里断言的是**不许挂 url() 滤镜** —— 一个真机量出来的硬约束：
- *   给 `.page-head::before` 的 backdrop-filter 加上 url(...) 之后，
- *   **整条 backdrop-filter 失效**（连 blur 一起）。实测「真滤镜 / 同结构但位移 1px
- *   的克隆滤镜 / 完全关掉」三者像素**完全一样**。
- *   所以标题条上"遮挡"与"折射"是二选一，我们选了遮挡（用户当年点名要的）。
- *   遮挡本身由 `tools/live/live-pagehead-frost-check.mjs` 逐像素验
- *   （开关差 16+ / 噪声 0.000）。
- */
 check(
-  '★ 标题条的 backdrop-filter 里没有 url() 滤镜（挂了会让遮挡整条失效）',
-  !String(headLensNow.backdrop).includes('url('),
-  String(headLensNow.backdrop).slice(0, 52),
+  '★ 顶部玻璃层在位（fixed + 真模糊 + 滚动哨兵）',
+  topGlassNow !== null && String(topGlassNow.backdrop).includes('blur') && topGlassNow.sentinel === true,
+  JSON.stringify(topGlassNow),
 );
-
-/*
- * ★★ 注入一律走**独立样式表**（adoptedStyleSheets），不再用 insertRule + 猜索引：
- *   这一晚我在"删不掉自己注入的规则"上栽了三次，每次都产出**假数据** ——
- *   最典型的一次：后面每一张图其实都还是"磨砂关着"的状态，于是"折射开关差"
- *   与"磨砂开关差"一模一样（8.126），我差点把它当结论写进 ADR。
- *   整表清空是原子的：没有索引、没有标记匹配、也没有"CSSRule.cssText 丢注释"。
- */
-await ev(`(() => {
-  const sheet = new CSSStyleSheet();
-  document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
-  window.__probeSheet = sheet;
-  return document.adoptedStyleSheets.length;
-})()`);
-const setProbe = (css) =>
-  ev(
-    '(() => { const s = window.__probeSheet; while (s.cssRules.length) s.deleteRule(0); ' +
-      (css ? 's.insertRule(' + JSON.stringify(css) + ', 0); ' : '') +
-      'return getComputedStyle(document.querySelector(".page-head"), "::before").backdropFilter; })()',
-  );
-
-/*
- * ★★ 标题条的**像素对照挪到了专门的脚本**：`tools/live/live-pagehead-frost-check.mjs`。
- *
- *   为什么不在这个大检查里做：这里前后跑了几十个操作（切档、开模态、滚动、截图），
- *   注入一条规则之后**我无法确认它什么时候真的生效** —— 实测同一段代码在大流程里
- *   量出 8.046（与"关掉磨砂"一模一样），在干净会话里量出 0.548（噪声 0.082）。
- *   大流程里那个 8.046 是**假数**（注入没生效/状态没恢复都会造成它）。
- *   教训：**像素对照必须在一个你能完全控制、并且每一步都能回读状态的会话里做。**
- *   这里只留"状态"类断言（磨砂在不在、滤镜挂没挂、弱化档关没关）。
- */
+check('  它不挡点击', String(await ev(`getComputedStyle(document.querySelector('.top-glass')).pointerEvents`)) === 'none');
 
 /* ====================== 收尾 ====================== */
 console.log(`\n截图：${OUT}`);

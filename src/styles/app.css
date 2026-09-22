@@ -189,8 +189,8 @@
    而不是并排成"两栏导航"。理由见 AppShell.tsx 顶部注释。
    ============================================================== */
 .sidebar {
-  width: 196px;
-  flex: 0 0 196px;
+  width: var(--sidebar-w);
+  flex: 0 0 var(--sidebar-w);
   display: flex;
   flex-direction: column;
   background: transparent;
@@ -474,23 +474,27 @@
    *     于是误判成"isolation 不是原因"，白绕了一圈。
    */
 }
+/*
+ * ★★ 2026-09-22（第四轮）：`.page-head::before` 这层**整块删掉**了。
+ *
+ *   用户看了截图说：「**顶栏的大黑底好丑，顶部也要液态玻璃**」——
+ *   那块"大黑底"正是上一轮为了"作遮挡"加的软渐变（底色 0.94 → 透明）。
+ *   遮挡做到了，但看起来就是一条黑带。
+ *
+ *   这一轮换成**真正的液态玻璃**：一个 **`position: fixed`** 的独立层
+ *   `.top-glass`（见下面「顶部液态玻璃」一节），并且**滚动之后才淡入**
+ *   —— 照搬用户网站 `nav-glass.js` 的做法：页面顶部时完全透明，
+ *   滚过阈值才加 `.is-scrolled`，**只过渡那一层的 opacity**
+ *   （它的注释写着"直接过渡渐变背景是动画不起来的"）。
+ *
+ *   ★ 为什么必须是 `fixed` 而不是继续用 sticky 伪元素：
+ *     第三轮实测过 —— **粘性定位的元素采样不到滚动内容的 backdrop**
+ *     （同一个带 backdrop-filter 的 div，放 `.content` 里能把背后卡片糊掉，
+ *      放进 `position: sticky` 的页头里什么都不做）。fixed 层在视口坐标系里，
+ *   采样正常，于是这一层的 blur 是**真的**在糊内容。
+ */
 .page-head::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  backdrop-filter: blur(16px) saturate(140%);
-  -webkit-backdrop-filter: blur(16px) saturate(140%);
-  -webkit-mask-image:
-    linear-gradient(to right, transparent 0, #000 28px, #000 calc(100% - 28px), transparent 100%),
-    linear-gradient(to bottom, #000 0, #000 78%, transparent 100%);
-  mask-image:
-    linear-gradient(to right, transparent 0, #000 28px, #000 calc(100% - 28px), transparent 100%),
-    linear-gradient(to bottom, #000 0, #000 78%, transparent 100%);
-  /* 两张 mask 相乘：只有同时在"左右内侧"和"上部"的区域才磨砂 */
-  -webkit-mask-composite: source-in;
-  mask-composite: intersect;
+  content: none;
 }
 .page-head > div:first-child {
   flex: 1;
@@ -2548,18 +2552,18 @@ tbody tr.clickable:focus-visible {
      `.page-head::before` 都吃它。否则"标题条"和"卡片"迟早会长得不一样。
    ============================================================================ */
 
-/* 高光位置要能被 CSS 动画平滑插值 → 必须注册（未注册的自定义属性不能插值） */
-@property --glass-gx {
-  syntax: '<percentage>';
-  inherits: true;
-  initial-value: 26%;
-}
-@property --glass-gy {
-  syntax: '<percentage>';
-  inherits: true;
-  initial-value: 4%;
-}
-
+/*
+ * ★★ 2026-09-22：`@property --glass-gx/--glass-gy` 与那套"用 CSS 变量移动渐变中心"
+ *   的做法**已经删掉** —— 用户网站的注释把这件事说得很透（我照搬了它的结论）：
+ *
+ *     「原方案是在 ::after 上移动 radial-gradient 中心（改 --gx/--gy），
+ *       但那属于**每帧重绘(paint)**；改用固定尺寸光斑元素 + transform:translate3d，
+ *       transform 只走**合成器**，不触发重绘，帧数更高、更跟手。
+ *       绝不能再用 CSS 变量移动渐变中心（每帧变量传播+重绘=拖影/跳动）。」
+ *
+ *   现在高光由 JS 创建的 `.glass-glow-spot` 元素承担（见下面那一节），
+ *   位置与亮度都是**直写 style.transform / style.opacity**。
+ */
 :root {
   /* 材质的**档位参数**（三档各自覆盖下面这几条） */
   --glass-blur: 14px;
@@ -2570,23 +2574,24 @@ tbody tr.clickable:focus-visible {
   --glass-rim: 0.1; /* ④ 边缘厚度亮 */
   --glass-disp: 1.5px; /* ③ 色散错位量（用户要求 1–2px） */
   --glass-disp-a: 0.12; /* ③ 色散强度 */
-  --glass-gx: 26%;
-  --glass-gy: 4%;
+
+  /* ② 高光光斑的椭圆半径（px）—— 同时是"指针多近才算靠近"的范围 */
+  --glow-rx: 170px;
+  --glow-ry: 130px;
+  /* 光斑元素尺寸 = 2 × 半径：**固定值**，靠 transform 平移（只走合成器） */
+  --glow-w: 340px;
+  --glow-h: 260px;
 }
 
 /*
- * ★★ 层序（从上到下）：动态高光 → 内容调色
+ * ★★ 层序：现在只剩**一层**（内容调色）。
  *
- * ★★ 只有**两层**，这是量出来的，不是省出来的（真机实测，同一屏滚动帧时间）：
- *     · 5 层（缘光 + 色散横 + 色散纵 + 高光 + 调色）= **24.7ms/帧**
- *     · 2 层（高光 + 调色，其余改走 box-shadow）  = **15.6ms/帧**
- *     · 完全没有玻璃（低性能损耗模式）            = 11.8ms/帧
- *   也就是说：三个"装饰"渐变层一个人吃掉 **9ms** —— 因为它们要跟着
- *   `backdrop-filter` 每帧重新栅格化（滚动时背后内容一直在变）。
- *   缘光与色散都是 **1–2px 的贴边效果**，用内阴影（`box-shadow` inset）表达
- *   一模一样，但那是合成器最擅长的一类绘制。所以：**能让 box-shadow 干的，
- *   不要用渐变层**。
- *   （反面案例也测过：把装饰挪到 `.glass::after` 独立合成层反而**更慢**，26.6ms。）
+ * ★ 高光那一层**已删**，改成"固定尺寸光斑元素 + transform 平移"（见下面
+ *   `.glass-glow` 一节）。用渐变层做高光意味着**指针每移动一帧就重绘一次元素背景**；
+ *   换成合成器上的 transform 之后，移动不再触发重绘。
+ *
+ * ★ 层数越少越便宜（真机实测）：5 层 24.7ms/帧 → 2 层 15.6ms/帧。
+ *   现在只剩 1 层，**这是这一轮顺带的性能收益**。
  *
  * ★★ 这一坨**必须声明在元素上，不能放 `:root`** —— 这是踩出来的：
  *   CSS 自定义属性里的 `var()` 是在**声明它的那个元素**上求值的，
@@ -2594,20 +2599,15 @@ tbody tr.clickable:focus-visible {
  *   第一版我把它放在 `:root`，于是 `var(--glass-tint)` 在 `:root` 就被替换成了
  *   兜底的那个蓝色（91 141 239），元素自己（JS 按位置算出来的 `25 16 43`）
  *   **根本进不来** —— 症状是"取色算对了、画面却全都一个颜色"。
- *   （实测证据：卡片 bg 里最后一层是 rgba(91,141,239,.12)，而元素的
- *     `--glass-tint` 是 `25 16 43`。）
  *
  * ★ 只写**一份**（两个选择器共用一块），否则标题条与卡片迟早长得不一样。
  */
 .glass,
 .page-head::before {
-  --glass-layers:
-    radial-gradient(
-      58% 46% at var(--glass-gx) var(--glass-gy),
-      rgba(255, 255, 255, calc(var(--glass-hi) - var(--glass-lum) * 0.05)),
-      transparent 68%
-    ),
-    linear-gradient(rgb(var(--glass-tint) / var(--glass-alpha)), rgb(var(--glass-tint) / var(--glass-alpha)));
+  --glass-layers: linear-gradient(
+    rgb(var(--glass-tint) / var(--glass-alpha)),
+    rgb(var(--glass-tint) / var(--glass-alpha))
+  );
 }
 
 .glass {
@@ -2644,71 +2644,17 @@ tbody tr.clickable:focus-visible {
   --glass-hi: 0.19;
 }
 
-/* 标题条的磨砂层吃同一套层（它原来是"只磨砂、不填色"，现在多一层调色） */
-.page-head::before {
-  /*
-   * ★★ 2026-09-21（第三轮）：**遮挡不再依赖 `backdrop-filter`**。
-   *
-   *   真机把它查死了：`.page-head::before` 上的 `backdrop-filter` 在本机
-   *   （WebView2 / Chromium 153）**完全没有视觉作用** —— 开 / 关两张图的
-   *   逐像素平均差是 **0.000**（噪声本身就是 0.000，也就是画面一模一样）。
-   *   逐个排除过：`isolation: isolate`（已删）、`z-index: -1`、mask、
-   *   兄弟卡片的滤镜层、伪元素 vs 真实元素 —— 都不是。最后一个变量是
-   *   **"它住在 `position: sticky` 的页头里"**：同样一个带 backdrop-filter 的
-   *   div，放进 `.content` 能把背后的卡片糊掉，放进 `.page-head` 就什么都不做。
-   *   （这是平台行为，不是我们写错了。）
-   *
-   *   ★ 用户当初要的是"页面标题区去掉黑底…做一个磨砂玻璃的底，
-   *     这样没有割裂感**还能作遮挡**"——遮挡是硬需求，所以这里改用
-   *     **"底色 → 透明"的软渐变**：不挑机器、不吃 GPU、结果可预测。
-   *     横向与下方的羽化仍然交给 mask（那两层本来就是干这个的）。
-   *
-   *   ★ 颜色这里写的是 rgba(18,21,26) = `--bg-base` 的字面值：
-   *     要跟它保持一致（改主题底色时记得同步这一处）。
-   */
-  background-image:
-    linear-gradient(
-      180deg,
-      rgba(18, 21, 26, 0.94) 0%,
-      rgba(18, 21, 26, 0.86) 55%,
-      rgba(18, 21, 26, 0.45) 84%,
-      rgba(18, 21, 26, 0) 100%
-    ),
-    var(--glass-layers);
-  background-color: transparent;
-  /*
-   * ★ 保留模糊：它在**别的**机器 / 别的 WebView2 版本上有效（而且成本很低）。
-   *   但**绝不能加 `url(#滤镜)`** —— 实测一旦带上 url()，整条 backdrop-filter
-   *   连模糊一起失效。回归判据：`tools/live/live-pagehead-frost-check.mjs`。
-   */
-  backdrop-filter: blur(16px) saturate(140%);
-  -webkit-backdrop-filter: blur(16px) saturate(140%);
-}
-
 /* ---------- ① 边缘折射：中/灵动档用 JS 装真滤镜；这两条只是"便宜的兜底" ---------- */
 
 /* ---------- ② 动态高光：灵动档自己流动（悬停时让位给指针） ---------- */
-@keyframes ieml-glass-sheen {
-  0% {
-    --glass-gx: 12%;
-    --glass-gy: 2%;
-  }
-  35% {
-    --glass-gx: 74%;
-    --glass-gy: 16%;
-  }
-  70% {
-    --glass-gx: 38%;
-    --glass-gy: 8%;
-  }
-  100% {
-    --glass-gx: 88%;
-    --glass-gy: 3%;
-  }
-}
-:root[data-vfx='aura'] .glass-sheen:not([data-hover]) {
-  animation: ieml-glass-sheen 21s var(--ease-in-out) infinite alternate;
-}
+/* ---------- ② 动态高光：改由「固定尺寸光斑元素 + transform」承担 ---------- */
+/*
+ * ★★ 原来这里是两条 CSS 动画：`@keyframes ieml-glass-sheen` 用关键帧改
+ *   `--glass-gx/--glass-gy`，让高光自己在玻璃上流动。**已删** ——
+ *   那正是"每帧改变量 → 每帧重绘元素背景"的写法。
+ *   现在灵动档的"自流动"由 JS 驱动光斑元素的 transform 完成
+ *   （见 `ui/glass.ts` 的 `driftGlow`），走合成器、不重绘。
+ */
 
 /* ---------- WebGL 流体背景（只有灵动档显示它） ---------- */
 .glass-ambient-gl {
@@ -2772,3 +2718,161 @@ tbody tr.clickable:focus-visible {
   --glass-disp-a: 0.16;
 }
 
+
+
+/* ============================================================================
+   ★★ 顶部液态玻璃（2026-09-22，用户：「顶栏的大黑底好丑，顶部也要液态玻璃」）
+
+   为什么它是**独立的一个 fixed 层**，而不是页头自己那层伪元素：
+     第三轮实测过 —— **粘性定位的元素采样不到滚动内容的 backdrop**
+     （同一个带 backdrop-filter 的 div，放 `.content` 里能把背后卡片糊掉，
+      放进 `position: sticky` 的页头里什么都不做）。
+     fixed 层在视口坐标系里，采样正常 —— 所以这一层的 blur 是**真的**。
+
+   ★ 顶部时完全透明、滚过阈值才淡入：抄用户网站 `nav-glass.js` 的做法
+     （它注释里写着"页面顶部时导航完全透明，只有 logo / 菜单浮在内容之上"，
+      以及"只过渡它的 opacity —— 直接过渡渐变背景是动画不起来的"）。
+     `.is-scrolled` 由 AppShell 用 IntersectionObserver 哨兵加上。
+
+   ★ 不覆盖左侧栏（`left: var(--sidebar-w)`）：那一列有自己的导航项，
+     盖上去会把它糊掉。
+   ============================================================================ */
+.top-glass {
+  position: fixed;
+  top: 0;
+  left: var(--sidebar-w);
+  right: 0;
+  height: var(--top-glass-h);
+  /* z-index 15：在滚动内容之上、在 .page-head（20，标题文字）之下 */
+  z-index: 15;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.38s var(--ease);
+  background-color: var(--bg-raised);
+  background-image: var(--glass-layers);
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  /* 下边缘羽化：否则又是一条硬线（用户当年就是嫌"割裂"） */
+  -webkit-mask-image: linear-gradient(180deg, #000 0, #000 74%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 0, #000 74%, transparent 100%);
+  /* ★ GPU：backdrop-filter 必须待在它自己的合成层上 */
+  will-change: transform;
+}
+:root.is-scrolled .top-glass {
+  opacity: 1;
+}
+/* 弱化视效 / 低性能损耗模式：连模糊一起关（那两档本来就承诺"平"） */
+:root[data-vfx='weak'] .top-glass {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+:root.low-perf .top-glass {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background-image: none !important;
+}
+
+/* ============================================================================
+   ★★ ② 动态高光：**固定尺寸光斑元素 + transform 平移**
+   （2026-09-22 改；写法抄自用户网站 `nav-core.js` / `nav-core.css`）
+
+   它为什么比我原来那版好（原版 = 指针每动一次就改 `--glass-gx/--glass-gy`）：
+     用户网站的注释把结论写得很清楚 ——
+     「原方案是在 ::after 上移动 radial-gradient 中心（改 --gx/--gy），
+       但那属于**每帧重绘(paint)**；改用固定尺寸光斑元素 + transform:translate3d，
+       transform 只走**合成器**，不触发重绘，帧数更高、更跟手。」
+     换句话说：原版每移一格鼠标就要重画一次整块玻璃的背景。
+
+   三个细节也照搬了：
+     · 光心取"指针到元素矩形的**最近投影点**"（clamp）——
+       指针在元素外但靠近时，光斑压在最靠边的那一点上，边缘被照亮；
+     · 亮度按**椭圆归一化距离**衰减（越近越亮，苹果官网式"接近即泛光"）；
+     · 位置与亮度**直写 style.transform / style.opacity**，不走 CSS 变量。
+   ============================================================================ */
+.glass-glow {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  overflow: hidden; /* 只裁光斑到圆角内 */
+  pointer-events: none;
+  z-index: 0;
+}
+.glass-glow-spot {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: var(--glow-w);
+  height: var(--glow-h);
+  border-radius: 50%;
+  background: radial-gradient(
+    var(--glow-rx) var(--glow-ry) at 50% 50%,
+    rgba(255, 255, 255, calc(var(--glass-hi) * 2.1)),
+    rgba(214, 232, 255, calc(var(--glass-hi) * 1.35)) 26%,
+    rgba(198, 222, 255, calc(var(--glass-hi) * 0.6)) 54%,
+    rgba(190, 216, 255, calc(var(--glass-hi) * 0.18)) 76%,
+    transparent 100%
+  );
+  /* JS 未注入时的兜底：挪到看不见的地方。无 transition —— JS 每帧写的连续值
+     已天然平滑，加 transition 反而引入滞后（拖尾）。 */
+  transform: translate3d(-999px, -999px, 0);
+  will-change: transform;
+  opacity: 0;
+}
+
+/* 边缘高亮环：指针靠近哪条边，哪条边就亮（固定 mask 抠 1.5px 环，不随指针重绘） */
+.glass-edge {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  padding: 1.5px;
+  opacity: 0;
+  overflow: hidden;
+}
+.glass-edge-light {
+  position: absolute;
+  left: 0;
+  top: 0;
+  /* 比元素大得多：保证无论光心落在哪条边上，渐变都盖得住那一圈 */
+  width: 2400px;
+  height: 1200px;
+  background: radial-gradient(
+    420px 200px at 50% 50%,
+    rgba(180, 214, 255, calc(var(--glass-hi) * 3.4)),
+    rgba(170, 206, 255, calc(var(--glass-hi) * 1.4)) 42%,
+    rgba(160, 200, 255, calc(var(--glass-hi) * 0.4)) 70%,
+    transparent 92%
+  );
+  transform: translate3d(-1200px, -600px, 0);
+  will-change: transform;
+}
+
+/* ============================================================================
+   ★★ 后台时不渲染高级效果（2026-09-22，用户：「在后台时不渲染高级效果」）
+
+   ★ 做法抄自用户网站的 perf/tab-visibility.js，它连原因都写了：
+     「浏览器在标签页失焦时会对动画节流(throttling)，重新聚焦一瞬间会一次性
+       重算该全屏动画 + 全部 backdrop-filter 模糊层 → 卡一下。
+       方案: 页面隐藏时给 html 加 .tab-hidden，CSS 据此暂停所有动画
+       (animation-play-state: paused)；切回时移除。」
+
+   .tab-hidden 由 ui/glass.ts 的 applyVisibility 挂上（同一个地方也把
+   GL 背景的 rAF 循环停掉、取色定时器挡住）—— 三样"高级效果"一起停。
+   ============================================================================ */
+:root.tab-hidden *,
+:root.tab-hidden *::before,
+:root.tab-hidden *::after {
+  animation-play-state: paused !important;
+}
+/* 后台时连背景画布也藏掉：省掉一次全屏合成 */
+:root.tab-hidden .glass-ambient-gl {
+  visibility: hidden;
+}
