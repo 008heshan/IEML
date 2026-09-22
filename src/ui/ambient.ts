@@ -256,13 +256,15 @@ export function createSampler(dpr = 1): AmbientSampler {
 /**
  * 光斑强度倍率。
  *
- * ★ 为什么要"倍率"而不是直接用令牌里的 alpha：令牌那套值（0.18 / 0.13 / 0.08）
- *   是给 **CSS 多层 alpha 叠加**调的；这里换成了**加色混合**，同一个数值看起来会
- *   淡得多（加法不会互相盖住，但也不会有 alpha 叠出来的实感）。
- *   第一版没加这个倍率，结果是"灵动档的背景比适中档还看不见"。
- *   2.4 是实机看出来的：再高就开始发灰、影响卡片上的文字对比度。
+ * ★ 2026-09-22（第四轮）从 2.4 **降回 1.0**：用户看了效果说
+ *   「**灵动视效的光斑好丑，我要原来的那个光斑**，但背景要有那种烟雾缭绕的感觉」。
+ *   2.4 是我上一轮为了"加色混合看起来淡"而调的，结果把三团克制的彩光推成了
+ *   一大片发灰的亮斑 —— 原来的观感反而没了。
+ *   现在回到 1.0（等于直接用令牌里的 alpha）：**"高级感"改由烟雾质感承担**
+ *   —— 用域扭曲（domain warping）把光斑边界揉成流动的烟絮，
+ *   而不是靠提高亮度。
  */
-const AURA_GAIN = 2.4;
+const AURA_GAIN = 1.0;
 
 const VERT = `#version 300 es
 precision highp float;
@@ -335,30 +337,42 @@ void main() {
   vec2 par = uPointer * vec2(0.012, 0.012);
   vec3 acc = uBase;
 
+  /* ★★ 烟雾缭绕：**域扭曲（domain warping）** ——
+     把 uv 先用两层慢速噪声推开，再照常算那三团光斑。
+     于是**光斑的形状与颜色一点没变**（用户要的"原来的那个光斑"），
+     变的只是它们的边界：被揉成流动的烟絮，而不是干净的圆。
+     ★ 为什么不用上一轮那种"亮丝"：那层亮丝是**加**上去的第三个东西，
+       观感上把原来的三团挤掉了（用户的原话是"好丑"）。
+       域扭曲不动配色、只动边界 —— 这才是"原来的光斑 + 烟雾感"。
+     ★ 幅度分两级：大的 0.13 负责"烟"的整体形变，小的 0.045 叠细节层次。 */
+  vec2 q = vec2(
+    vnoise(uv * 3.2 + vec2(uTime * 0.045, 0.0)),
+    vnoise(uv * 3.2 + vec2(0.0, uTime * 0.038) + 17.3)
+  ) - 0.5;
+  vec2 wuv = uv + q * 0.13;
+  vec2 q2 = vec2(
+    vnoise(wuv * 7.0 - vec2(uTime * 0.03, 0.0)),
+    vnoise(wuv * 7.0 + vec2(0.0, uTime * 0.026) + 5.1)
+  ) - 0.5;
+  wuv += q2 * 0.045;
+  /* 烟还有"浓淡不均"：一团烟的边缘该有疏有密 */
+  float density = 0.82 + 0.36 * vnoise(wuv * 4.6 + vec2(uTime * 0.02, uTime * 0.013));
+
+  vec3 smoke = vec3(0.0);
   for (int i = 0; i < 3; i++) {
     float fi = float(i);
     vec2 c = uCenter[i] + par;
     // 缓慢缩放：让"三团圆"看着像在流动，而不是三个贴纸在平移
     float breathe = 1.0 + 0.07 * sin(uTime * 0.11 + fi * 2.1);
-    vec2 d = (uv - c) / max(uRadius[i] * breathe, vec2(1e-4));
+    vec2 d = (wuv - c) / max(uRadius[i] * breathe, vec2(1e-4));
     float r = length(d);
 
     float w = smoothstep(1.0, 0.05, r);
     float inner = smoothstep(0.45, 0.0, r);
     vec3 col = mix(uMid[i], uCore[i], inner);
-    acc += col * w * uGain;
+    smoke += col * w * uGain;
   }
-
-  /* 慢流场（亮丝）：~70px 尺度、随时间长流。见上面那段说明 ——
-     它是"折射看得见"的前提，不是装饰。用蓝色那团光斑的色，主题一改跟着改。
-     ★ 速度取得很慢（每秒约 12px）：既是"缓流"的观感，也让像素级对照
-       有机会把"折射造成的位移"从"背景自己在动"里分出来。 */
-  vec2 fp = vec2(uv.x * uRes.x / max(uRes.y, 1.0), uv.y) * 13.0;
-  float flow = vnoise(fp + vec2(uTime * 0.012, uTime * 0.007))
-             + 0.5 * vnoise(fp * 2.13 - vec2(uTime * 0.009, uTime * 0.004));
-  flow /= 1.5;
-  float filament = smoothstep(0.54, 0.93, flow);
-  acc += uCore[2] * filament * 1.9;
+  acc += smoke * density;
 
   // 颗粒：±1/255 的抖动，专门打散暗部色带
   float n = hash(gl_FragCoord.xy + fract(uTime) * 91.7) - 0.5;
@@ -386,7 +400,15 @@ export function createAmbientGL(canvas: HTMLCanvasElement): AmbientGL | null {
     antialias: false,
     depth: false,
     stencil: false,
-    powerPreference: 'low-power',
+    /*
+     * ★ 2026-09-22：`low-power` → **`high-performance`**。
+     *   用户要求「选择灵动视效并且启动器在前台时**强制用 GPU 渲染**」。
+     *   这一条是那个要求里能由我们控制的部分：告诉浏览器"这是前台的高级效果，
+     *   请用独显/高性能档"。双显卡笔记本上 `low-power` 会把我们丢给核显。
+     *   （另外两条配套改动：循环在后台**不被调度**，见 `ui/glass.ts` 的
+     *     `applyVisibility`；动画层加 `will-change: transform` 促使其上合成器。）
+     */
+    powerPreference: 'high-performance',
   });
   if (!gl) return null;
 

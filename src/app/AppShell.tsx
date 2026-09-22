@@ -160,6 +160,71 @@ export function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [go]);
 
+  /**
+   * 顶部玻璃的"滚动后淡入"开关（`<html>.is-scrolled`）。
+   *
+   * ★ 抄用户网站 `nav-glass.js` 的两处选择，理由它都写了：
+   *   · **不监听 scroll 事件**：在页面顶部放一个 80px 的哨兵元素，用
+   *     `IntersectionObserver` 观察它 —— "比监听 scroll 事件更省（不占主线程），
+   *     也不受 rAF 节流影响"；
+   *   · 只给 `<html>` 加一个类，**玻璃本身的淡入交给 CSS 只过渡 opacity**
+   *     （"直接过渡渐变背景是动画不起来的"）。
+   */
+  useEffect(() => {
+    const root = document.documentElement;
+    const THRESHOLD = 8; // 页头本身约 52px 高，稍微一滚就该出现玻璃
+    const apply = (on: boolean) => root.classList.toggle('is-scrolled', on);
+
+    if (typeof IntersectionObserver === 'function') {
+      const sentinel = document.createElement('div');
+      sentinel.className = 'top-glass-sentinel';
+      sentinel.setAttribute('aria-hidden', 'true');
+      /*
+       * ★★ 哨兵必须是**在流内**的元素（`height` 撑出一点高度、再用负 margin 抵消），
+       *   不能是 `position: absolute` —— 这个是踩出来的：
+       *   `.content` 自己**没有定位**，绝对定位的哨兵会相对更外层的祖先定位，
+       *   于是它**根本不随内容滚动**，永远停在视口里，
+       *   `is-scrolled` 一辈子是 false（顶部玻璃也就永远不淡入）。
+       *   在流内 + 负 margin = 跟着内容滚、又一点都不占视觉空间。
+       */
+      sentinel.style.cssText = `height:${THRESHOLD}px;margin:0 0 -${THRESHOLD}px 0;width:100%;pointer-events:none;opacity:0`;
+      // 哨兵要挂在**滚动容器内部**（挂在 body 上永远不滚）
+      const content = document.querySelector('.content');
+      (content ?? document.body).insertBefore(sentinel, (content ?? document.body).firstChild);
+      const io = new IntersectionObserver((entries) => apply(!entries[0]?.isIntersecting), { threshold: 0 });
+      io.observe(sentinel);
+      // 页面切换（换页签）时哨兵会重建 → 顺手同步一次
+      const mo = new MutationObserver(() => {
+        const c = document.querySelector('.content');
+        if (c && !c.querySelector('.top-glass-sentinel')) {
+          c.insertBefore(sentinel, c.firstChild);
+          io.observe(sentinel);
+        }
+      });
+      mo.observe(document.body, { childList: true, subtree: true });
+      return () => {
+        io.disconnect();
+        mo.disconnect();
+        sentinel.remove();
+        apply(false);
+      };
+    }
+
+    // 回退：scroll 监听（rAF 节流）
+    const content = document.querySelector('.content');
+    let ticking = false;
+    const onScroll = () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => {
+        ticking = false;
+        apply((content?.scrollTop ?? window.scrollY) > THRESHOLD);
+      });
+    };
+    (content ?? window).addEventListener('scroll', onScroll, { passive: true });
+    return () => (content ?? window).removeEventListener('scroll', onScroll);
+  }, []);
+
   /** 停某一个实例（多开时每个都要能单独停） */
   async function handleStopOne(instanceId: string) {
     setStopping(true);
@@ -237,6 +302,20 @@ export function App() {
 
   return (
     <div className="app">
+      {/*
+        ★★ 顶部液态玻璃（2026-09-22，用户：「顶栏的大黑底好丑，顶部也要液态玻璃」）。
+
+        它是**独立的一个 fixed 层**，不是页头自己的背景：
+          · fixed 在视口坐标系里，`backdrop-filter` 能真的采到背后的滚动内容
+            （第三轮实测：粘性定位的页头采不到 —— 同一段 CSS 放 sticky 里
+             什么都不做，放 fixed/普通元素里就能糊）；
+          · **顶部时完全透明**，滚过阈值才淡入（`.is-scrolled`）——
+            照搬用户网站 nav-glass.js 的做法，它注释里写着"页面顶部时导航完全透明"，
+            以及"只过渡 opacity，直接过渡渐变背景是动画不起来的"。
+        阈值哨兵与 `is-scrolled` 在下面的 effect 里挂（用 IntersectionObserver，
+        不占主线程，也不受 rAF 节流影响 —— 同样抄自 nav-glass.js）。
+      */}
+      <div className="top-glass" aria-hidden="true" />
       {/* ==================== 顶栏（只有品牌、面包屑、任务、主题） ==================== */}
       {/*
         ★★ 顶栏现在**就是**窗口标题栏（2026-09-15）。

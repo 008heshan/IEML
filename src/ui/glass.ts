@@ -315,7 +315,8 @@ export function createGlassController(initial: VfxLevel): GlassController {
   const loop = () => {
     if (disposed || level !== 'aura') return;
     raf = requestAnimationFrame(loop);
-    if (document.hidden || !gl) return; // 窗口在后台就停 —— 没人看的时候别烧 GPU
+    // 后台时循环**根本不会被调度**（见 applyVisibility）——这里再兜一道
+    if (document.hidden || !gl) return;
     gl.frame((performance.now() - started) / 1000, pointerX, pointerY);
   };
 
@@ -439,6 +440,9 @@ export function createGlassController(initial: VfxLevel): GlassController {
   const register = (el: HTMLElement) => {
     if (registered.has(el)) return;
     registered.add(el);
+    // ② 高光的载体（固定尺寸光斑 + 边缘环）——只在需要时创建，创建后一直复用
+    if (!el.hasAttribute('data-no-glow')) ensureGlow(el);
+    rects.set(el, el.getBoundingClientRect());
     if (lensWanted() && el.matches(REFRACT_SELECTOR)) applyLens(el);
     const ro = new ResizeObserver(() => {
       if (lensWanted() && el.matches(REFRACT_SELECTOR)) applyLens(el);
@@ -475,40 +479,148 @@ export function createGlassController(initial: VfxLevel): GlassController {
     });
   };
 
-  /* ---------- 指针高光（委托：一个监听器管所有玻璃） ---------- */
-  let hovered: HTMLElement | null = null;
-  let pointerQueued = false;
-  const onPointerMove = (e: PointerEvent) => {
-    const target = e.target as HTMLElement | null;
-    const el = target?.closest?.('.glass') as HTMLElement | null;
-    if (el !== hovered) {
-      if (hovered) hovered.removeAttribute('data-hover');
-      hovered = el;
-      if (hovered) hovered.setAttribute('data-hover', '1');
-    }
-    if (!el || level === 'weak') return;
-    const r = el.getBoundingClientRect();
-    const nx = (e.clientX - r.left) / Math.max(r.width, 1);
-    const ny = (e.clientY - r.top) / Math.max(r.height, 1);
-    pointerX = nx * 2 - 1;
-    pointerY = ny * 2 - 1;
-    if (pointerQueued) return;
-    pointerQueued = true;
-    requestAnimationFrame(() => {
-      pointerQueued = false;
-      if (disposed || !el.isConnected) return;
+  /* ====================== ② 动态高光：固定光斑元素 + transform ======================
+   *
+   * ★★ 写法抄自用户自己的网站（`Infinity/source/custom/nav/nav-core.js`），
+   *   它把"为什么"写得很清楚，我照搬结论：
+   *
+   *   「光斑做成独立合成层(.nav-glow-spot) + 边缘环(.nav-edge>.nav-edge-light)，
+   *     位置全部由 JS【直写 style.transform】控制（不再用 CSS 变量，避免每帧
+   *     变量传播/样式重算/背景重绘造成的拖影与跳动）。
+   *     原方案是在 ::after 上移动 radial-gradient 中心(改 --gx/--gy)，
+   *     但那属于每帧重绘(paint)；改用固定尺寸光斑元素 + transform:translate3d，
+   *     transform 只走合成器(compositor)不触发重绘，帧数更高、更跟手。」
+   *
+   *   我上一版正是它点名的"原方案"（指针每动一次就改 `--glass-gx/--glass-gy`）。
+   *
+   * ★ 另外三个细节也照搬：
+   *   · 光心 = 指针到元素矩形的**最近投影点**（clamp）——
+   *     指针在元素外但靠近时，光斑压在最靠边的那一点，边缘被照亮；
+   *   · 亮度按**椭圆归一化距离**衰减（越近越亮，"接近即泛光"）；
+   *   · **rect 缓存**：不是每次 pointermove 都 getBoundingClientRect()
+   *     （那会强制同步布局）；滚动/尺寸变化时按 rAF 重测。
+   * ==================================================================== */
+
+  interface Glow {
+    spot: HTMLElement;
+    edge: HTMLElement;
+    edgeLight: HTMLElement;
+    alpha: string;
+    /** 最近一次写入的位置（用来各自去重：位置变了就写位置，亮度变了才写亮度） */
+    transform: string;
+  }
+  const glows = new WeakMap<HTMLElement, Glow>();
+  const rects = new WeakMap<HTMLElement, DOMRect>();
+
+  const ensureGlow = (el: HTMLElement): Glow => {
+    const hit = glows.get(el);
+    if (hit) return hit;
+    const clip = document.createElement('div');
+    clip.className = 'glass-glow';
+    clip.setAttribute('aria-hidden', 'true');
+    const spot = document.createElement('div');
+    spot.className = 'glass-glow-spot';
+    const edge = document.createElement('div');
+    edge.className = 'glass-edge';
+    const edgeLight = document.createElement('div');
+    edgeLight.className = 'glass-edge-light';
+    edge.appendChild(edgeLight);
+    clip.appendChild(spot);
+    clip.appendChild(edge);
+    el.insertBefore(clip, el.firstChild);
+    const g: Glow = { spot, edge, edgeLight, alpha: '', transform: '' };
+    glows.set(el, g);
+    return g;
+  };
+
+  /** 光斑椭圆半径（来自 CSS 令牌，改档/改尺寸时重读） */
+  let RX = 170;
+  let RY = 130;
+  let GLOW_W = 340;
+  let GLOW_H = 260;
+  const readGlowVars = () => {
+    const cs = getComputedStyle(document.documentElement);
+    const num = (k: string, fb: number) => {
+      const v = parseFloat(cs.getPropertyValue(k));
+      return Number.isFinite(v) && v > 0 ? v : fb;
+    };
+    RX = num('--glow-rx', 170);
+    RY = num('--glow-ry', 130);
+    GLOW_W = num('--glow-w', 340);
+    GLOW_H = num('--glow-h', 260);
+  };
+  readGlowVars();
+
+  const measureRects = () => {
+    for (const el of registered) if (el.isConnected) rects.set(el, el.getBoundingClientRect());
+  };
+  const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
+  /** 越近越亮：椭圆归一化距离的补数 */
+  const targetAlphaAt = (r: DOMRect, x: number, y: number) => {
+    let dx = 0;
+    let dy = 0;
+    if (x < r.left) dx = r.left - x;
+    else if (x > r.right) dx = x - r.right;
+    if (y < r.top) dy = r.top - y;
+    else if (y > r.bottom) dy = y - r.bottom;
+    const t = Math.hypot(dx / RX, dy / RY);
+    return Math.max(0, Math.min(1, 1 - t));
+  };
+
+  const pointer = { x: -1e5, y: -1e5 };
+  let glowQueued = false;
+
+  const writeGlows = () => {
+    glowQueued = false;
+    if (disposed) return;
+    for (const el of registered) {
+      const g = glows.get(el);
+      if (!g) continue;
+      const r = rects.get(el);
+      if (!r || !r.width || !r.height) continue;
+      // 弱化档不发光（那一档承诺"平"）；灵动/适中都发光
+      const want = level === 'weak' ? 0 : targetAlphaAt(r, pointer.x, pointer.y);
+      const a = want.toFixed(3);
+      const cx = clamp(pointer.x, r.left, r.right) - r.left;
+      const cy = clamp(pointer.y, r.top, r.bottom) - r.top;
+      const t = 'translate3d(' + (cx - GLOW_W / 2).toFixed(1) + 'px,' + (cy - GLOW_H / 2).toFixed(1) + 'px,0)';
       /*
-       * ★★ 变量名必须和 CSS 里**逐字一致**（`--glass-gx` / `--glass-gy`）。
-       *
-       *   这里踩过一次，而且是"看着完全正常"的那种踩法：写的是 `--gx`，
-       *   CSS 读的是 `--glass-gx` —— 于是**设置成功、没人读**，
-       *   高光永远停在 CSS 的初始值（26% / 4%）。
-       *   代码读起来毫无破绽（setProperty 不报错、变量也确实写进去了），
-       *   只有"移两次指针看这两个数有没有变"才抓得到。
+       * ★★ 位置与亮度要**各自**去重，不能"亮度没变就整次跳过" —— 这是踩出来的：
+       *   指针在元素**内部**移动时亮度一直是 1（不变），于是
+       *   "亮度相同 → continue" 把**位置更新也一起跳过**了，
+       *   症状是"在卡片上滑动时光斑不动"（真机检查一眼抓到）。
        */
-      el.style.setProperty('--glass-gx', `${(nx * 100).toFixed(1)}%`);
-      el.style.setProperty('--glass-gy', `${(ny * 100).toFixed(1)}%`);
-    });
+      if (t !== g.transform) {
+        g.transform = t;
+        g.spot.style.transform = t;
+        g.edgeLight.style.transform =
+          'translate3d(' + (cx - 1200).toFixed(1) + 'px,' + (cy - 600).toFixed(1) + 'px,0)';
+      }
+      if (a !== g.alpha) {
+        g.alpha = a;
+        g.spot.style.opacity = a;
+        g.edge.style.opacity = a;
+        if (Number(a) > 0.5) el.setAttribute('data-hover', '1');
+        else el.removeAttribute('data-hover');
+      }
+    }
+  };
+  const scheduleGlow = () => {
+    if (glowQueued || disposed) return;
+    glowQueued = true;
+    requestAnimationFrame(writeGlows);
+  };
+
+  const onPointerMove = (e: PointerEvent) => {
+    pointer.x = e.clientX;
+    pointer.y = e.clientY;
+    scheduleGlow();
+  };
+  /** 指针离开窗口：全部熄灭（否则光斑会停在最后一处） */
+  const onPointerLeave = () => {
+    pointer.x = -1e5;
+    pointer.y = -1e5;
+    scheduleGlow();
   };
 
   /* ---------- 组装 ---------- */
@@ -532,13 +644,31 @@ export function createGlassController(initial: VfxLevel): GlassController {
   };
 
   document.addEventListener('pointermove', onPointerMove, { passive: true });
+  document.addEventListener('pointerleave', onPointerLeave);
+  document.addEventListener('mouseleave', onPointerLeave);
   const mo = new MutationObserver(() => {
     unregisterGone();
     scan();
     scheduleTint();
   });
   mo.observe(document.body, { childList: true, subtree: true });
-  const onScroll = () => scheduleTint();
+  /**
+   * 滚动时要做两件事：重新取色 + **重测矩形**。
+   * ★ 为什么必须重测：卡片在滚动容器里，位置一直在变；而光斑用的是
+   *   `getBoundingClientRect`（视口坐标）——不重测的话，滚过之后
+   *   光斑就会"跟错地方"（这是用户网站注释里点名的第二个坑：
+   *   "导航栏缩小后光效位置不对"）。
+   */
+  let measureQueued = false;
+  const onScroll = () => {
+    scheduleTint();
+    if (measureQueued) return;
+    measureQueued = true;
+    requestAnimationFrame(() => {
+      measureQueued = false;
+      if (!disposed) measureRects();
+    });
+  };
   document.addEventListener('scroll', onScroll, { passive: true, capture: true });
   window.addEventListener('resize', () => {
     sampler.refresh();
@@ -549,6 +679,39 @@ export function createGlassController(initial: VfxLevel): GlassController {
   const tintTimer = window.setInterval(() => {
     if (level === 'aura' && !document.hidden) scheduleTint();
   }, 900);
+
+  /* ====================== ④ 前台才渲染高级效果 ======================
+   *
+   * 用户要求：「选择灵动视效并且启动器在前台时强制用 GPU 渲染，
+   *           在后台时不渲染高级效果」。
+   *
+   * ★ 做法抄自用户网站的 `perf/tab-visibility.js`（它连原因都写了）：
+   *   「.bg-liquid 全屏光斑层有 46s 的 CSS 动画，浏览器在标签页失焦时会对动画
+   *     节流(throttling)，重新聚焦一瞬间会一次性重算该全屏动画 + 全部
+   *     backdrop-filter 模糊层 → 卡一下。
+   *     方案: 监听 visibilitychange，页面隐藏时给 <html> 加 .tab-hidden，
+   *     CSS 据此暂停所有动画(animation-play-state: paused)；切回时移除。」
+   *
+   * 我们这边"高级效果"有三样，后台时**全部停掉**：
+   *   ① GL 背景的 rAF 循环（停止调度，不只是 return —— 省掉每帧的回调）；
+   *   ② 取色定时器（已在上面用 document.hidden 挡着）；
+   *   ③ CSS 动画（由 .tab-hidden 里的 animation-play-state: paused 承担）。
+   *   回前台时原样恢复：重开 rAF、必要时补一次取色。
+   */
+  const applyVisibility = () => {
+    const hidden = document.hidden;
+    document.documentElement.classList.toggle('tab-hidden', hidden);
+    if (hidden) {
+      if (raf) {
+        cancelAnimationFrame(raf);
+        raf = 0;
+      }
+    } else if (level === 'aura' && !raf) {
+      raf = requestAnimationFrame(loop);
+      scheduleTint();
+    }
+  };
+  document.addEventListener('visibilitychange', applyVisibility);
 
   scan();
   applyLevel(initial);
@@ -577,6 +740,10 @@ export function createGlassController(initial: VfxLevel): GlassController {
       disposed = true;
       if (tintTimer) clearInterval(tintTimer);
       document.removeEventListener('pointermove', onPointerMove);
+      document.removeEventListener('pointerleave', onPointerLeave);
+      document.removeEventListener('mouseleave', onPointerLeave);
+      document.removeEventListener('visibilitychange', applyVisibility);
+      document.documentElement.classList.remove('tab-hidden');
       document.removeEventListener('scroll', onScroll, true);
       mo.disconnect();
       for (const el of registered) {
