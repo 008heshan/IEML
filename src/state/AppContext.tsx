@@ -83,7 +83,12 @@ import { syncWindowTitle } from '../bridge/web';
  * ★ 必须与 CSS 里 `.toast.leaving` 的 `animation-duration` 一致 ——
  *   短了会截断动画，长了会留一条"已经该没了"的空壳。
  */
-const TOAST_EXIT_MS = 200;
+/*
+ * ★★ 2026-09-23：从 200 改成 260 —— **必须 ≥ CSS 里退场动画的时长**。
+ *   原来动画 200ms、这里也 200ms，等于"动画刚开始跑就把元素删了"，
+ *   用户看到的就是"啪地不见"（用户原话：「我的滑走在哪里？？？」）。
+ */
+const TOAST_EXIT_MS = 260;
 
 function toastSticky(_kind: ToastItem['kind']): boolean {
   return false;

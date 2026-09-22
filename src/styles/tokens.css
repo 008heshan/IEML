@@ -85,6 +85,12 @@
    *   → 与 `--ease-in-out` 同值（绝大多数调用处想要的就是这个"标准缓动"）。
    */
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  /*
+   * ★★ 2026-09-23：退场动画要"越滑越快"（像被抽走），所以需要一条 ease-in。
+   *   加它的时候**门禁当场抓到了**"引用了没定义的令牌"（那道检查就是为这类事故加的）——
+   *   证明它有用。
+   */
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
 
   --font-sans: system-ui, -apple-system, "Segoe UI Variable Text", "Segoe UI",
     "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB",
