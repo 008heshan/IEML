@@ -328,6 +328,19 @@ const loaderPage = await ev(`(() => {
       };
     })(),
     'foot': (foot?.innerText || '').replace(/\\s+/g, ' ').trim(),
+    /*
+     * ★★ 用户 2026-09-24：「**这个底黑的视觉效果好诡异啊**」——
+     *   .cw-foot 从弹窗那边带来了 var(--bg-surface)，在玻璃整页上
+     *   就是一条突兀的实心深色横带。判据：它的底色必须是**透明**的，
+     *   而且**上面那条发丝线还得在**（否则与正文糊在一起）。
+     */
+    'footStyle': foot
+      ? {
+          'bg': getComputedStyle(foot).backgroundColor,
+          'borderTop': getComputedStyle(foot).borderTopWidth,
+          'borderTopColor': getComputedStyle(foot).borderTopColor,
+        }
+      : null,
     'install': (install?.textContent || '').trim(),
     'installEnabled': install ? !install.disabled : null,
     'w': r ? Math.round(r.width) : 0,
@@ -352,6 +365,12 @@ check(
   JSON.stringify(loaderPage?.nameBox),
 );
 check('★ D8 底部动作条：写清装什么 + 安装按钮可点', /约下载/.test(loaderPage?.foot ?? '') && /^安装/.test(loaderPage?.install ?? '') && loaderPage?.installEnabled === true, String(loaderPage?.install));
+{
+  const fs = loaderPage?.footStyle;
+  const transparent = /rgba\(0, 0, 0, 0\)|transparent/.test(fs?.bg ?? '');
+  check('★ D8b 动作条**没有**那条奇怪的深色底（底色透明）', transparent, JSON.stringify(fs));
+  check('★ D8c 但它与正文之间仍有发丝分隔线', parseFloat(fs?.borderTop ?? '0') > 0, JSON.stringify(fs));
+}
 check('★ D9 整屏铺满内容区（不是缩在角落）', (loaderPage?.w ?? 0) > 600 && (loaderPage?.h ?? 0) > 400, `w=${loaderPage?.w} h=${loaderPage?.h}`);
 
 /* ---------- E：附加组件的短状态写「无」（用户第 2 条） ---------- */
