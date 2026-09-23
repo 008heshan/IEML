@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AppProvider } from './state/AppContext';
 import { App } from './app/AppShell';
+import { ConfirmProvider } from './ui/confirm';
 import { applyMotion, readMotion } from './ui/motion';
 import { applyVfx, readVfx } from './ui/vfx';
 import { installAmbientCss } from './ui/ambient';
@@ -80,7 +81,14 @@ document.addEventListener('keydown', (e) => {
 createRoot(root).render(
   <StrictMode>
     <AppProvider>
-      <App />
+      {/*
+        ★★ 确认弹窗的宿主（见 `ui/confirm.tsx` 的头注释）：
+          `window.confirm` 在这个壳里是坏的（Tauri 把它换成了 async 包装，
+          而权限又没授），所以删除类确认全部走应用自己的弹窗。
+      */}
+      <ConfirmProvider>
+        <App />
+      </ConfirmProvider>
     </AppProvider>
   </StrictMode>,
 );

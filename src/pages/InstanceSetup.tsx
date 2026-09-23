@@ -12,6 +12,7 @@
  *   "空值=继承"这个隐藏约定又请回来了）。
  */
 import { useMemo, useState } from 'react';
+import { useConfirm } from '../ui/confirm';
 import { useApp } from '../state/AppContext';
 import { formatBytes } from '../domain';
 // ★ Java 要求：`declaredJava` 是后端取回来的「Mojang 声明的版本」
@@ -65,6 +66,8 @@ import {
 } from '../domain';
 
 export function InstanceSetup() {
+  /** 应用自己的确认弹窗（`window.confirm` 在这个壳里是坏的，见 `ui/confirm.tsx`） */
+  const confirm = useConfirm();
   const {
     open: active,
     state,
@@ -272,7 +275,7 @@ export function InstanceSetup() {
             variant="danger"
             size="sm"
             title="默认移入系统回收站；按住 Shift 点击则永久删除"
-            onClick={(e) => {
+            onClick={async (e) => {
               const copy = describeDelete({
                 what: `「${active.config.name}」`,
                 items: [
@@ -281,7 +284,18 @@ export function InstanceSetup() {
                 note: '共享的游戏文件不会被删除，其他版本还能用。',
                 intent: deleteIntent(e),
               });
-              if (!confirm(copy.message)) return;
+              /* ★★ 2026-09-24（A-0）：原来是同步判断 + Tauri 那个 async 包装的
+                 window.confirm ⇒ 守卫永远放行、框也不弹。改成应用弹窗 + await。 */
+              if (
+                !(await confirm({
+                  title: '删除这个版本',
+                  danger: true,
+                  confirmText: copy.permanent ? '永久删除' : '删除',
+                  message: copy.message,
+                }))
+              ) {
+                return;
+              }
               // ★ 审计发现：以前只删记录不删磁盘，确认框却写着会删存档。现在真的删。
               const report = (bytes: number, verb: string) => {
                 toast(
@@ -295,9 +309,17 @@ export function InstanceSetup() {
               };
               void removeInstance(active.id, copy.permanent)
                 .then((bytes) => report(bytes, copy.doneVerb))
-                .catch((err) => {
+                .catch(async (err) => {
                   // ★ 回收站不可用时不静默降级，先问用户
-                  if (!copy.permanent && confirm(trashUnavailablePrompt(err))) {
+                  if (
+                    !copy.permanent &&
+                    (await confirm({
+                      title: '回收站用不了',
+                      danger: true,
+                      confirmText: '永久删除',
+                      message: trashUnavailablePrompt(err),
+                    }))
+                  ) {
                     void removeInstance(active.id, true)
                       .then((bytes) => report(bytes, '已永久删除'))
                       .catch((e2) =>
@@ -768,7 +790,7 @@ export function InstanceSetup() {
             <div className="field-control">
               <Button
                 variant="secondary"
-                onClick={() => {
+                onClick={async () => {
                   const covered: string[] = [];
                   if (active.config.isolation !== 'auto') covered.push('版本隔离');
                   if (active.config.memorySource !== 'global') covered.push('内存分配');
@@ -780,7 +802,18 @@ export function InstanceSetup() {
                       ? '本实例没有单独设定过的项，重置不会改变任何东西。'
                       : `以下 ${covered.length} 项将被重置为跟随全局：\n\n· ${covered.join('\n· ')}\n\n` +
                         `★ 重置后这些值就找不回来了（当前还没有"设置备份"功能）。确定继续？`;
-                  if (!confirm(msg)) return;
+                  /* ★★ 2026-09-24（A-0）：window.confirm 是 async 的（Tauri 换过），
+                     同步判断永远为假 ⇒ 这里也要 await（否则等于没问就重置）。 */
+                  if (
+                    !(await confirm({
+                      title: '重置为跟随全局',
+                      danger: true,
+                      confirmText: '重置',
+                      message: msg,
+                    }))
+                  ) {
+                    return;
+                  }
                   /*
                    * ★ 审计发现：这句话以前写着「重置前会自动备份当前设置」——
                    *   而整个项目**没有任何备份实现**。用户信了这句话就点了确定，

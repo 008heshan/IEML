@@ -1057,24 +1057,42 @@ export function AppProvider({ children }: { children: ReactNode }) {
    * ★ 默认进**系统回收站**（`permanent = false`）：实例里有存档，
    *   这是最不该"删错了就没了"的东西。
    *
+   * ★★ 2026-09-24（A-3）**顺序改过来了：先删文件、成功之后再删记录**。
+   *
+   *   原来反过来（先 `dispatch(remove)` 再删磁盘），于是"删文件失败"时
+   *   记录已经没了、目录还在，用户看到的是：
+   *     · 列表里那条消失了；
+   *     · 想再删一次 —— **再没有入口**（记录没了，界面上找不到它）；
+   *     · 而重试分支又调了同一个函数，`find` 找不到记录 → `return 0` **什么都没删**，
+   *       调用方却无条件弹「已永久删除」。
+   *   真机复现过（`tools/live/probe-bug-repro-4.mjs`）：弹「已永久删除」、
+   *   记录消失、`instances/<slug>/` 还在磁盘上。
+   *
+   *   现在：**失败就什么都不动**（记录还在、可以重试），成功才从列表里移除。
+   *
    * 返回删掉的字节数（0 = 目录本来就不存在）。
    */
   const removeInstance = useCallback(
     async (id: string, permanent = false): Promise<number> => {
       const inst = instancesRef.current.find((i) => i.id === id);
-      dispatch({ type: 'instances/remove', id });
-      if (!inst) return 0;
+      if (!inst) {
+        /*
+         * ★ 记录不在了就**别假装删过**：说清楚，也别去碰磁盘 ——
+         *   我们连 slug 都不敢确定（列表可能刚被刷新过）。
+         */
+        throw new Error('这条记录已经不在了（列表可能刚刷新过）—— 重看一遍再删。');
+      }
+      let bytes = 0;
       try {
-        const bytes = await backend.deleteInstanceFiles(inst.config.slug, permanent);
-        return bytes ?? 0;
+        bytes = (await backend.deleteInstanceFiles(inst.config.slug, permanent)) ?? 0;
       } catch (e) {
-        // 记录已经删了（内存里），但磁盘没删干净 —— 必须说出来
         throw new Error(
-          `实例记录已从列表移除，但磁盘目录没删掉：${
-            e instanceof Error ? e.message : String(e)
-          }（目录：instances/${inst.config.slug}/）`,
+          `${e instanceof Error ? e.message : String(e)}（目录：instances/${inst.config.slug}/）`,
         );
       }
+      // ★ 磁盘处理完了才动记录 —— 顺序反过来就是上面那条缺陷
+      dispatch({ type: 'instances/remove', id });
+      return bytes;
     },
     [backend],
   );
