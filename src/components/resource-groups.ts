@@ -120,8 +120,14 @@ export function useVersionGroups<T extends VersionLike>(
 
   const firstKey = groups[0]?.key;
   const isOpen = (key: string) => {
-    // ① 被"强制展开"的组永远展开（推荐在里面）
-    if (forceOpenKey && key === forceOpenKey && collapsed[key] !== false) return true;
+    /*
+     * ★★ 2026-09-23 用户（截图）：「**有推荐版本的那一栏没办法收起**」——
+     *   这里原来写的是 `collapsed[key] !== false`：用户点一下收起会写进 `true`，
+     *   而 `true !== false` 仍然成立 → **照样展开**，于是"点了没反应"。
+     *   正确语义与下面第一组那条**完全一样**：**只有明确收起过（=== true）才收起**；
+     *   没点过（undefined）时靠强制展开把推荐露出来。
+     */
+    if (forceOpenKey && key === forceOpenKey) return collapsed[key] !== true;
     if (key === firstKey) return collapsed[key] !== true;
     return collapsed[key] === false;
   };
