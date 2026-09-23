@@ -109,7 +109,7 @@ export interface AvailableLoaders {
  *   返回的是 mod），它靠 `categories:datapack` 区分 —— 那一层由后端做，
  *   前端只需要说"我要数据包"。
  */
-export type ResourceKindName = 'mod' | 'resourcepack' | 'shader' | 'datapack';
+export type ResourceKindName = 'mod' | 'resourcepack' | 'shader' | 'datapack' | 'modpack';
 
 /**
  * ★★ 社区资源的两个来源（ADR-052）。

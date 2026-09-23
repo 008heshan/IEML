@@ -7,7 +7,7 @@
 //!
 //! | 事实 | 实测结论（`tools/probe/probe-curseforge*.mjs` 跑出来的） |
 //! |---|---|
-//! | 每种资源的 `classId` | mod=**6** · resourcepack=**12** · shader=**6552** · datapack=**6945** |
+//! | 每种资源的 `classId` | mod=**6** · resourcepack=**12** · shader=**6552** · datapack=**6945** · modpack=**4471** |
 //! | `modLoaderType` 的数字 | forge=**1** · fabric=**4** · quilt=**5** · neoforge=**6**（**liteloader=3 查不出东西**，见 `loader_type`） |
 //! | 文件列表顺序 | `/mods/{id}/files` **默认按 `fileDate` 倒序**，`data[0]` 就是最新 |
 //! | 指纹端点 | **`POST /v1/fingerprints`** —— `/v1/mods/fingerprints` 是 **404**（文档不好找，只能试） |
@@ -181,6 +181,12 @@ pub fn class_id(kind: ResourceKind) -> u32 {
         ResourceKind::ResourcePack => 12,
         ResourceKind::Shader => 6552,
         ResourceKind::Datapack => 6945,
+        /*
+         * ★★ 2026-09-23（用户：「PCL 的整合包可以用 curseforge 啊」）：
+         *   整合包在 CurseForge 的分类 id 是 **4471**（Modpacks）。
+         *   有了它，`classId=4471` 才能查到整合包那一类。
+         */
+        ResourceKind::Modpack => 4471,
     }
 }
 
@@ -574,6 +580,12 @@ fn cf_url_segment(kind: ResourceKind) -> &'static str {
         ResourceKind::ResourcePack => "texture-packs",
         ResourceKind::Shader => "shaders",
         ResourceKind::Datapack => "data-packs",
+        /*
+         * ★ 2026-09-23：整合包在 curseforge.com 上的网址段是 `/minecraft/modpacks/`
+         *   （其它四种分别是 mc-mods / texture-packs / shaders / data-packs）。
+         *   这一段只用于拼"去项目页看看"的链接。
+         */
+        ResourceKind::Modpack => "modpacks",
     }
 }
 
