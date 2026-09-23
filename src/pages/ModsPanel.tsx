@@ -37,6 +37,7 @@ import {
   availableFilters,
   filterMods,
   judgeModState,
+  oldFilesToDrop,
   toggledName,
 } from '../domain/mods.ts';
 import type { ModEntry, ModStateResult } from '../domain/mods.ts';
@@ -554,6 +555,8 @@ export function ModsPanel() {
     setUpdateOpen(false);
     setUnchecked(new Set());
     let done = 0;
+    /** ★ B-1：被移进回收站的旧文件数（"替换"这件事的证据） */
+    let dropped = 0;
     const failed: string[] = [];
     for (const u of targets) {
       if (!u.download_url || !u.file_name) {
@@ -562,6 +565,23 @@ export function ModsPanel() {
       }
       try {
         await api.modrinth.installMod(u.download_url, u.file_name, active.config.slug);
+        /*
+         * ★★ 2026-09-24（B-1 修复）：装完**必须删掉旧的**那一份。
+         *
+         *   以前这里只装不删，而提示写着「已替换为新版本」——
+         *   于是 mods/ 里同时留下新旧两个 jar：游戏可能加载旧的那个，
+         *   而界面说"已替换"。判据在 `domain/mods.ts::oldFilesToDrop`
+         *   （只认同一个 sha1、同名不删），**删除走系统回收站**（默认 non-permanent）。
+         */
+        const stale = oldFilesToDrop(state.mods.entries, u.sha1, u.file_name);
+        if (stale.length > 0) {
+          try {
+            dropped += await api.modrinth.deleteMods(active.config.slug, stale, false);
+          } catch (e) {
+            /* 新文件已经装好了 —— 删不掉不算更新失败，但必须如实说 */
+            failed.push(`旧文件没删掉：${stale.join('、')}（${e instanceof Error ? e.message : String(e)}）`);
+          }
+        }
         done += 1;
       } catch (e) {
         failed.push(`${u.file_name}（${e instanceof Error ? e.message : String(e)}）`);
@@ -569,7 +589,12 @@ export function ModsPanel() {
     }
     await reloadMods();
     if (failed.length === 0) {
-      toast('ok', '更新完成', `${done} 个 Mod 已替换为新版本`);
+      toast(
+        'ok',
+        '更新完成',
+        `${done} 个 Mod 已替换为新版本` +
+          (dropped > 0 ? `；${dropped} 个旧文件已移入系统回收站（删错了还能捞回来）` : ''),
+      );
     } else {
       toast(
         done > 0 ? 'warning' : 'err',

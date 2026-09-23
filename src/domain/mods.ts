@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Mod 状态判定（ADR-018 / ADR-019）
  * ------------------------------------------------------------------
  * ★ 最重要的一条源码事实（源码研读第 12 章）：
@@ -65,8 +65,44 @@ export interface ModEntry {
   errored?: boolean;
 }
 
-/* ====================== 扩展名判定（核心事实） ====================== */
+/**
+ * ★★ 更新一个 Mod 时，**装完新文件之后要删掉哪些旧文件**（B-1 修复）。
+ *
+ * ## 缺陷原状
+ *
+ *   `ModsPanel.applyUpdates()` 只调 `installMod`（下载 + 写入新文件），
+ *   **从不删旧的** —— 而提示写着「N 个 Mod **已替换**为新版本」。
+ *   真机后果：更新一次 = `mods/` 里同时躺著新旧两个 jar，
+ *   游戏可能加载旧的那个（同一个 Mod 两个文件 = 重复加载/崩溃），
+ *   而界面告诉你"已替换"。**提示与事实相反，且后果由用户承担。**
+ *
+ * ## 判据（刻意收得很窄，宁可少删也不多删）
+ *
+ *   · 只认**同一个 sha1** 的那些文件 —— sha1 就是"这次要更新的那个旧文件"的身份，
+ *     它来自在线库的反查结果（`ModUpdateCandidate.sha1`）；
+ *   · 新文件名与旧文件**同名** → **不删**（`installMod` 会直接覆盖它，
+ *     这时候去删就等于把刚下下来的新文件删掉）；
+ *   · 不比对 displayName / 前缀相似度 —— 那种"看起来像同一个 Mod"的猜测
+ *     会误删用户手放的其它版本（这个仓库为"猜"付过代价）。
+ *
+ * ★ 删除**由调用方走系统回收站**（`deleteMods(..., permanent=false)`）：
+ *   万一判据错了，用户还能捞回来。
+ */
+export function oldFilesToDrop(
+  entries: ModEntry[],
+  oldSha1: string,
+  newFileName: string,
+): string[] {
+  const target = (oldSha1 ?? '').trim().toLowerCase();
+  if (!target) return [];
+  const keep = (newFileName ?? '').trim().toLowerCase();
+  return entries
+    .filter((e) => (e.sha1 ?? '').trim().toLowerCase() === target)
+    .filter((e) => (e.fileName ?? '').trim().toLowerCase() !== keep)
+    .map((e) => e.path);
+}
 
+/* ====================== 扩展名判定（核心事实） ====================== */
 /** 被承认的 Mod 扩展名 —— 注意认 .zip（很多 Mod 打包成 zip） */
 const ENABLED_EXTS = ['.jar', '.zip', '.litemod'];
 /** 禁用后缀，按源码事实：主用 .disabled，兼容遗留的 .old */

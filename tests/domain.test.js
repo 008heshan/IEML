@@ -13,7 +13,7 @@ import { resolveJavaRequirement, pickJava, validateJavaRangeText, inJavaRange, d
 import { resolveIsolation } from '../src/domain/isolation.ts';
 import {
   isEnabled, toggledName, displayNameOf, scanMods, findDuplicates, judgeModState,
-  availableFilters, hashCacheKey,
+  availableFilters, hashCacheKey, oldFilesToDrop,
 } from '../src/domain/mods.ts';
 import { compareVersion, forgeVersionSatisfies, parseRange, inRange } from '../src/domain/version.ts';
 
@@ -949,4 +949,36 @@ test('通用区间解析与判定', () => {
     assert.equal(inRange(17, r.range), true);
     assert.equal(inRange(22, r.range), false);
   }
+});
+
+/* ============ ★★ B-1：更新 Mod 时该删掉哪些旧文件 ============ */
+
+test('更新时只删**同一个 sha1** 的旧文件（B-1）', () => {
+  const entries = [
+    { displayName: 'sodium', fileName: 'sodium-0.5.8.jar', path: '/m/sodium-0.5.8.jar', enabled: true, bytes: 1, mtimeMs: 1, sha1: 'AAA' },
+    { displayName: 'lithium', fileName: 'lithium-0.12.jar', path: '/m/lithium-0.12.jar', enabled: true, bytes: 1, mtimeMs: 1, sha1: 'BBB' },
+  ];
+  assert.deepEqual(oldFilesToDrop(entries, 'AAA', 'sodium-0.5.11.jar'), ['/m/sodium-0.5.8.jar']);
+  // 别的 Mod 一个都不许动
+  assert.equal(oldFilesToDrop(entries, 'AAA', 'sodium-0.5.11.jar').includes('/m/lithium-0.12.jar'), false);
+});
+
+test('★ 新文件名与旧文件同名时**不删**（否则会把刚下的新文件删掉）', () => {
+  const entries = [
+    { displayName: 'x', fileName: 'mod-1.0.jar', path: '/m/mod-1.0.jar', enabled: true, bytes: 1, mtimeMs: 1, sha1: 'AAA' },
+  ];
+  assert.deepEqual(oldFilesToDrop(entries, 'AAA', 'mod-1.0.jar'), []);
+  // 大小写不同也算同名
+  assert.deepEqual(oldFilesToDrop(entries, 'AAA', 'MOD-1.0.JAR'), []);
+});
+
+test('★ 同一个 sha1 有多份（用户放了两遍）→ 全删；没有 sha1 → 一个都不删', () => {
+  const entries = [
+    { displayName: 'a', fileName: 'a.jar', path: '/m/a.jar', enabled: true, bytes: 1, mtimeMs: 1, sha1: 'AAA' },
+    { displayName: 'a', fileName: 'a副本.jar', path: '/m/a副本.jar', enabled: true, bytes: 1, mtimeMs: 1, sha1: 'AAA' },
+    { displayName: 'u', fileName: 'u.jar', path: '/m/u.jar', enabled: true, bytes: 1, mtimeMs: 1 },
+  ];
+  assert.deepEqual(oldFilesToDrop(entries, 'AAA', 'a-2.0.jar').sort(), ['/m/a.jar', '/m/a副本.jar']);
+  // 空 sha1 = "不知道要更新的是哪个文件" → 不许删任何东西（宁可留下旧文件）
+  assert.deepEqual(oldFilesToDrop(entries, '', 'a-2.0.jar'), []);
 });
