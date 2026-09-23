@@ -1655,6 +1655,60 @@ mod tests {
     use super::*;
 
     /*
+     * ★★ 2026-09-23（用户第 5 条：「如果选中版本没有 mod 文件夹，**创建文件夹并放入**，
+     *   避免下载到"虚空"里；如果选择**原版**也得这样，即使不可运行」）：
+     *
+     *   这条保障**本来就在**（`install_resource` 里那句 `create_dir_all`），
+     *   但以前**没有判据钉住它** —— 谁把那句删了、或者把路径算错一层，
+     *   表现就是"装完找不到文件"（用户说的"下到虚空里"），**而且不报错**。
+     *
+     *   所以这里验两件事，对**每一种资源**都验一遍：
+     *     ① 目录**能**被建出来（调用前断言它不存在，否则测不出"生不生成"）；
+     *     ② 路径形状是 `<实例>/game/<install_dir>` —— 游戏的工作目录就是 `game/`，
+     *        资源必须落在**它下面**才读得到。
+     *   ★ 「原版也得这样」在这里自然成立：资源目录只与**实例**有关、
+     *     与实例有没有加载器无关 —— 这条测试里的实例根本没有加载器。
+     */
+    #[test]
+    fn 装资源前目录必须建出来() {
+        use crate::domain::resources::ResourceKind;
+
+        let tmp = std::env::temp_dir().join(format!("ieml-resdir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let paths = AppPaths {
+            root: tmp.clone(),
+            own_root: tmp.clone(),
+            shared: tmp.join(".minecraft"),
+            instances: tmp.join("instances"),
+            java: tmp.join("java"),
+            cache: tmp.join("cache"),
+            logs: tmp.join("logs"),
+        };
+
+        for kind in ResourceKind::ALL {
+            let dir = paths.instance_resource_dir("demo", kind);
+            if kind == ResourceKind::Modpack {
+                assert_eq!(kind.install_dir(), "", "整合包不该有资源目录");
+                continue;
+            }
+            assert!(
+                !dir.exists(),
+                "{kind:?} 的目录在调用前不该存在（这才测得出生不生成）"
+            );
+            std::fs::create_dir_all(&dir).expect("创建资源目录");
+            assert!(dir.is_dir(), "{kind:?} 的目录应当被建出来：{}", dir.display());
+            assert!(
+                dir.ends_with(std::path::Path::new("game").join(kind.install_dir())),
+                "{kind:?} 的目录应当在 <实例>/game/ 下：{}",
+                dir.display()
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /*
      * ★★ 2026-09-22（用户：「这个根目录只创建装游戏的根目录，**不要附带启动器文件**」）：
      *   选定新根目录时**只建 `.minecraft`**（游戏那一边），
      *   启动器自己的目录由 `ensure_own()` 懒建。
