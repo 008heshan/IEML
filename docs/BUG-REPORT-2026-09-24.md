@@ -225,9 +225,47 @@ if (!inst) return 0;                          // ← 第二次调用时 inst 已
 
 ---
 
+### A-5　★★ **实例级的 7 个设置存不进磁盘**：Rust 的 `InstanceConfig` 比前端少 7 个字段【真机 + 代码】
+
+**现象**：在实例设置页填了这些，**重启就没了**；其中「启动后自动进入服务器」**当场就不生效**：
+* 启动后自动进服（`joinServer`）
+* 指定 Java 路径（`javaPath`）、Java 区间（`javaRange`）
+* 实例级 JVM 参数（`jvmArgs`）、游戏参数（`gameArgs`）
+* 窗口标题覆盖（`windowTitle`）、自定义信息（`customInfo`）
+
+**真机证据（就是上一节 B-4 那次沙盒实验顺手撞出来的）**：
+沙盒实例的配置里明明写着 `joinServer: "1.2.3.4:abc"`，
+而启动页「预览命令」的命令行里**既没有 `--server` 也没有 `--port`** ——
+也就是这个值**根本没传到启动侧**。而 `redact_command` 不截断、预览弹窗也是整段渲染
+（`LaunchPage.tsx:799 {preview.command}`），所以不是显示问题。
+
+**代码证据（两份结构体字段数不一样）**：
+
+| | 字段 |
+|---|---|
+| 前端 `src/domain/types.ts:85-116` | name · slug · isolation · memoryMb · memorySource · javaMode · **javaRange** · **javaPath** · **windowTitle** · **joinServer** · **customInfo** · **jvmArgs** · **gameArgs**（13 个） |
+| Rust `src-tauri/src/domain/types.rs:245-253` | name · slug · isolation · memory_mb · memory_source · java_mode（**6 个**） |
+
+**机制**：实例清单的**读写都要经过 Rust**（`save_instances` / `list_instances`，
+`commands.rs:471/515`），而 serde **默认丢弃结构体里没有的字段** ——
+于是前端那 7 个字段在**存盘那一刻就没了**，重启后自然读不回来。
+界面上"填了、看着在"是因为内存里的 React state 还留着，**一重启就现原形**。
+
+**影响**：7 条设置全是"能填、能保存、看着生效、实际不生效（或重启即失）"。
+其中「启动后自动进服」是 PCL 同款能力、界面上有专门一栏，**从来没有工作过**。
+
+**复现**：沙盒里写一份带 `joinServer` 的 `instances.json` → 启动 → 启动页「预览命令」
+→ 命令行里没有 `--server`（`tools/live/probe-bug-repro-11.mjs` 的第 ① 段）。
+
+**没有真机做完的那半（如实说）**：我没有去点"保存"再看文件里字段是不是真的没了 ——
+但代码这条链是确定的（写盘序列化的是 Rust 那个结构体）。
+要补一次真机确认也不难：沙盒里改一个设置 → 保存 → 直接读 `%TEMP%` 那份 `instances.json`。
+
+---
+
 ## 二、高
 
-### B-1　Mod 更新说「N 个 Mod 已替换为新版本」，旧 jar 一个都没删【代码】
+### B-1　Mod 更新说「N 个 Mod 已替换为新版本」，旧 jar 一个都没删【真机（机制级）】(见第 2–3 轮升级表)
 
 `ModsPanel.applyUpdates` 只调 `api.modrinth.installMod` → `install_mod`
 （`commands_real.rs:1813-1836`）＝ `create_dir_all` + `download_one`，
