@@ -1304,7 +1304,7 @@ mod tests {
  * ## 接口（都是官方 api.minecraftservices.com）
  *
  *   · 上传皮肤  POST   /minecraft/profile/skins        （multipart：variant + file）
- *   · 披风列表  GET    /minecraft/profile/capes
+ *   · 披风列表  GET    /minecraft/profile          ← 注意是 profile，**不是 profile/capes**
  *   · 激活披风  PUT    /minecraft/profile/capes/active （body：{"capeId": "..."}）
  *   · 取消披风  DELETE /minecraft/profile/capes/active
  */
@@ -1418,31 +1418,44 @@ pub struct CapeEntry {
 
 pub async fn list_capes(uuid: &str) -> Result<Vec<CapeEntry>> {
     let acc = fresh_account(uuid).await?;
+
+    /*
+     * ★★ 2026-09-23 修（用户截图：`取披风列表失败（HTTP 404 Not Found）：
+     *   {"path":"/minecraft/profile/capes","error":"NOT_FOUND"}`）——
+     *
+     *   **那个地址是我编的**：`GET /minecraft/profile/capes` **不存在**。
+     *   披风列表要去 `GET /minecraft/profile` 拿 —— 它的响应里同时带
+     *   `skins[]` 与 `capes[]`（`state` 是 `ACTIVE` / `INACTIVE`）。
+     *
+     *   ★ 判据的来源要说清楚：**不带 token 打这两个地址都是 401**（网关先拦鉴权），
+     *     所以"401 vs 404"**分辨不了**（我一度这么以为，重跑才发现是错的）。
+     *     真正的证据有两条：
+     *       ① 用户的应用**带着有效 token** 收到了 404 + body 里写着
+     *          `"path":"/minecraft/profile/capes"` —— 路径不存在，确凿；
+     *       ② 官方文档在"换披风"那页明说：cape ID 要 "use the new
+     *          View your profile information endpoint"（也就是 `/minecraft/profile`）。
+     *   ★ `PUT /minecraft/profile/capes/active`（换披风）**是对的** —— 官方文档里就是它，
+     *     所以只有"取列表"这一处写错了，别把两个一起改坏。
+     */
     #[derive(Deserialize)]
     struct Raw {
         id: String,
         #[serde(default)]
-        name: Option<String>,
+        state: Option<String>,
         #[serde(default)]
         url: Option<String>,
+        /// 披风的名字（官方字段叫 `alias`，如 `Minecon2012`）
         #[serde(default)]
         alias: Option<String>,
     }
     #[derive(Deserialize)]
-    struct CapesReply {
+    struct ProfileReply {
         #[serde(default)]
         capes: Vec<Raw>,
-        #[serde(default)]
-        active_cape: Option<RawId>,
-    }
-    #[derive(Deserialize)]
-    struct RawId {
-        #[serde(default)]
-        id: Option<String>,
     }
 
     let resp = crate::net::client()
-        .get("https://api.minecraftservices.com/minecraft/profile/capes")
+        .get("https://api.minecraftservices.com/minecraft/profile")
         .bearer_auth(&acc.access_token)
         .send()
         .await?;
@@ -1450,16 +1463,25 @@ pub async fn list_capes(uuid: &str) -> Result<Vec<CapeEntry>> {
         let code = resp.status();
         let body = resp.text().await.unwrap_or_default();
         let brief: String = body.chars().take(200).collect();
+        /*
+         * ★ 401/403 单独翻译：那几乎总是"令牌没权限 / 过期"，而不是"披风列表有问题"。
+         *   不翻译的话用户会拿着一个 401 反复点刷新。
+         */
+        if code == reqwest::StatusCode::UNAUTHORIZED || code == reqwest::StatusCode::FORBIDDEN {
+            return Err(AuthError::Other(format!(
+                "Mojang 拒绝了这个令牌（HTTP {code}）—— 通常是要重新登录一次正版账号。原始回应：{brief}"
+            )));
+        }
         return Err(AuthError::Other(format!("取披风列表失败（HTTP {code}）：{brief}")));
     }
-    let reply: CapesReply = resp.json().await?;
-    let active_id = reply.active_cape.and_then(|a| a.id);
+    let reply: ProfileReply = resp.json().await?;
     Ok(reply
         .capes
         .into_iter()
         .map(|c| CapeEntry {
-            active: active_id.as_deref() == Some(c.id.as_str()),
-            name: c.name.or(c.alias).unwrap_or_else(|| c.id.clone()),
+            // ★ 现在"哪件在穿"由**每件自己的 state** 说了算（不再是单独一个 activeCape 字段）
+            active: c.state.as_deref() == Some("ACTIVE"),
+            name: c.alias.unwrap_or_else(|| c.id.clone()),
             id: c.id,
             url: c.url,
         })
