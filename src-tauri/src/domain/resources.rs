@@ -207,7 +207,18 @@ pub fn parse_kind(s: &str) -> Option<ResourceKind> {
             || (k == &ResourceKind::ResourcePack && t == "resourcepacks")
             || (k == &ResourceKind::Shader && (t == "shaders" || t == "shaderpack"))
             || (k == &ResourceKind::Datapack && t == "datapacks")
-            || (k == &ResourceKind::Mod && (t == "mods" || t == "modpack"))
+            || (k == &ResourceKind::Mod && t == "mods")
+            /*
+             * ★★ 2026-09-23：**这里原来把 "modpack" 也映射到 Mod** ——
+             *   那是"整合包还不是一种资源"时代的写法。
+             *   加了 \`ResourceKind::Modpack\` 之后它必须走自己的键，
+             *   否则前端传 `kind: 'modpack'` 会被解析成 **Mod**，
+             *   于是 CurseForge 那边用 `classId=6`（模组）去查 ——
+             *   **结果全是模组，不是整合包**（用户截图就是这个）。
+             *   ★ 而且 \`ALL\` 的 \`find\` 是按顺序取**第一个**匹配，
+             *     Mod 排在 Modpack 前面，所以这一行不改的话永远轮不到 Modpack。
+             */
+            || (k == &ResourceKind::Modpack && t == "modpacks")
     })
 }
 
@@ -336,6 +347,18 @@ mod tests {
         assert_eq!(parse_kind("shader"), Some(ResourceKind::Shader));
         assert_eq!(parse_kind("shaders"), Some(ResourceKind::Shader));
         assert_eq!(parse_kind("datapack"), Some(ResourceKind::Datapack));
+        /*
+         * ★★ 2026-09-23：**这一条就是为上面那个 bug 加的** ——
+         *   原来 "modpack" 被解析成 Mod，导致 CurseForge 拿 classId=6（模组）去查，
+         *   界面上"整合包"页签里出来的全是模组（用户截图）。
+         *   判据必须钉住"它解析成**整合包**"，而不是"能解析出点什么"。
+         */
+        assert_eq!(
+            parse_kind("modpack"),
+            Some(ResourceKind::Modpack),
+            "modpack 必须解析成整合包，不是 Mod"
+        );
+        assert_eq!(parse_kind("modpacks"), Some(ResourceKind::Modpack));
         assert_eq!(parse_kind("Datapacks"), Some(ResourceKind::Datapack));
         // 不认识 → None（**不猜**，由调用方报错）
         assert_eq!(parse_kind("whatever"), None);

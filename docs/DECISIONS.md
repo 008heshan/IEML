@@ -5889,3 +5889,40 @@ if (forceOpenKey && key === forceOpenKey && collapsed[key] !== false) return tru
    （4471 是官方 Modpacks 分类 id，但它是不是 CF **搜索**接口认的那个 classId，我还没验实。）
    **判据里要加一条**：CF 结果里前几条**必须是整合包**（比如名字/分类能对上），
    而不是只验"有 20 张卡"。
+### 四十八、CF 出来的是模组 —— `parse_kind` 把 `modpack` 解析成了 `Mod`（2026-09-23）
+
+用户（截图）：「**怎么是模组啊**」—— CurseForge 那一栏出来的是 GeckoLib / JEI / Cloth Config…
+
+根因（一行）：
+
+```rust
+// parse_kind 里，Mod 那一支多认了一个词
+|| (k == &ResourceKind::Mod && (t == "mods" || t == "modpack"))
+```
+
+这行是"整合包还不是一种资源"时代留下的：那时候前端传 `modpack`，我们当 Mod 处理。
+加了 `ResourceKind::Modpack` 之后它必须走自己的键 —— 不改的话：
+
+* 前端传 `kind: 'modpack'` → **解析成 `Mod`** → CurseForge 用 **classId=6（模组）** 去查 →
+  结果全是模组（**这正是截图**）；
+* 而且 `ALL` 的 `find` 是取**第一个**匹配，Mod 排在 Modpack 前面 —— 不改这一行，
+  Modpack 永远轮不到。
+
+修：把 `t == "modpack"` 从 Mod 那支摘掉，改成 `Modpack => t == "modpacks"`。
+
+★ **判据补了一条本来早该有的**：
+```rust
+assert_eq!(parse_kind("modpack"), Some(ResourceKind::Modpack), "modpack 必须解析成整合包，不是 Mod");
+```
+  —— 这条断言**正好能抓住这个 bug**，而它以前不存在（所以这个 bug 一直躲着）。
+
+★ 真机判据也**加硬**了：光是"有 20 张卡"抓不住这个 bug（模组也有 20 张），
+  现在断言"**前 8 张里像模组的 ≤ 1**"（拿那批最常见的库模组名做黑名单）。
+  实测：**像模组的 0 / 8** ✓，榜首是 `All the Mods 10 - ATM10`（真整合包）。
+
+★ 顺手修一处**假信息**：页面底部原来写死"数据来自 Modrinth"，
+  来源切成 CurseForge 之后它还说 Modrinth ✗ → 改成跟着来源走。
+
+★ 还有一条**判据自己写歪**的：我原来断言"切源之后**首条必须不同**" ——
+  而 `All the Mods 10` 在 Modrinth 与 CurseForge 上**都是榜首**，两边的第一名合法地可以一样。
+  **判据不能把"正常"当成"失败"。** 改成：① 断言"数据来自 X"跟着变；② 断言整批 8 张不同。

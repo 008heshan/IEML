@@ -73,7 +73,7 @@ await ev(`(() => {
 })()`);
 await sleep(1500);
 
-const names = () => ev(`[...document.querySelectorAll('.pack-card:not(.pack-card-sk) .pack-title, .pack-card:not(.pack-card-sk)')].slice(0, 5).map((x) => (x.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 40))`);
+const names = () => ev(`[...document.querySelectorAll('.pack-card:not(.pack-card-sk) .pack-title, .pack-card:not(.pack-card-sk)')].slice(0, 8).map((x) => (x.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 40))`);
 
 let cards = 0;
 for (let i = 0; i < 80; i += 1) {
@@ -110,14 +110,50 @@ const after = await names();
 console.log(`  CurseForge 卡片：${afterCards}`);
 console.log('  前几条：' + JSON.stringify(after?.[0] ?? null));
 check('★ 切到 CurseForge 之后**有结果**（不是空的）', afterCards > 0, `${afterCards} 张`);
+/*
+ * ★★ 2026-09-23：这条断言第一版写的是"**首条必须不同**" —— 那是错的：
+ *   `All the Mods 10` 在 Modrinth 与 CurseForge 上**都是榜首**，
+ *   两边的第一名合法地可以一样。判据不能把"正常"当成"失败"。
+ *
+ *   改成两条更站得住的：
+ *     ① 页面底部那句"数据来自 X"**跟着来源变**（写死就是假信息）；
+ *     ② 整批 8 张至少有一处不同（两侧的榜单不会完全重合）。
+ */
+const srcLabel = await ev(`(document.body.innerText.match(/数据来自\\s*(\\S+)/) || [])[1] ?? null`);
+console.log('  来源标签：' + srcLabel);
+check('★ 页面写着"数据来自 CurseForge"（标签跟着来源走）', /CurseForge/i.test(String(srcLabel)), String(srcLabel));
 check(
-  '★ 结果集**真的换了**（不是同一批）',
+  '★ 整批结果与 Modrinth 那批不同（两侧榜单不会完全重合）',
   JSON.stringify(before) !== JSON.stringify(after),
-  `Modrinth: ${JSON.stringify(before?.[0])} vs CF: ${JSON.stringify(after?.[0])}`,
+  `首条 Modrinth: ${JSON.stringify(before?.[0])} / CF: ${JSON.stringify(after?.[0])}`,
 );
 
 const shot = await send('Page.captureScreenshot', { format: 'png' });
 if (shot.result?.data) writeFileSync(path.join(OUT, '来源-CurseForge.png'), Buffer.from(shot.result.data, 'base64'));
+
+/*
+ * ★★ 2026-09-23：**这条是为"点名的那个 bug"加的** ——
+ *   第一版切到 CurseForge 出来的全是**模组**（GeckoLib / JEI / Cloth Config…），
+ *   因为后端 `parse_kind("modpack")` 把它解析成了 **Mod**，
+ *   于是 CF 那边拿 classId=6（模组）去查（用户截图：怎么是模组啊）。
+ *
+ *   ★ 光断言"有 20 张卡"是**抓不住**的 —— 模组也有 20 张。
+ *     必须断言"**这些是整合包**"：那批最常见的库模组**不该**出现在这里。
+ */
+const kinds = await ev(`(() => {
+  const cards = [...document.querySelectorAll('.pack-card:not(.pack-card-sk)')].slice(0, 8);
+  const bad = /geckolib|just enough items|cloth config|architecture api|mouse tweaks|appleskin|sodium|fabric api|iris|mod menu/;
+  return {
+    '样本': cards.map((c) => (c.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 34)),
+    '像模组的数': cards.filter((c) => bad.test((c.textContent || '').toLowerCase())).length,
+  };
+})()`);
+console.log('  前几张：' + JSON.stringify(kinds, null, 1));
+check(
+  '★ CurseForge 出来的**是整合包**（不是那批常见模组）',
+  (kinds?.像模组的数 ?? 99) <= 1,
+  `像模组的 ${kinds?.像模组的数} / 8`,
+);
 
 check('全程没有异常', errors.length === 0, errors.slice(0, 2).join(' | '));
 console.log(`\n截图：${OUT}`);
