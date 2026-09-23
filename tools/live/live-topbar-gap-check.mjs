@@ -81,9 +81,26 @@ const glass = await ev(`(() => {
 })()`);
 console.log('  顶部模糊带：' + JSON.stringify(glass));
 check('★ 模糊带还在（用户："标题栏底部模糊没了"）', glass?.存在 === true && glass?.模糊 !== 'none', JSON.stringify(glass?.模糊));
-check('★ 只 14px 的细带', glass?.高 === 14, `${glass?.高}px`);
+check('★ 高度够看得出磨砂（≥ 32px）', (glass?.高 ?? 0) >= 32, `${glass?.高}px`);
 check('★ 下边缘是**淡出**（有 mask），不是硬边', glass?.['有遮罩(淡出)'] === true, String(glass?.['有遮罩(淡出)']));
-check('★ 不压住页头文字', glass?.压住页头吗 === false, `带底 ${glass?.范围?.[1]} / 标题顶 ${glass?.页头标题顶}`);
+/*
+ * ★ 判据也跟着改：以前是"不许碰到标题顶"（靠"只 14px"来保证），
+ *   现在是"**标题必须画在它之上**"（z-index: page-head 20 > glass 5）——
+ *   所以这里量的是**层级**，不是几何。
+ *   （用户要的是"模糊够明显"，而不是"带子必须很短"。）
+ */
+check(
+  '★ 页头文字画在模糊带**之上**（z-index 更高，不会被糊）',
+  await ev(`(() => {
+    const t = document.querySelector('.page-title');
+    const g = document.querySelector('.top-glass');
+    if (!t || !g) return false;
+    const tz = Number(getComputedStyle(t.closest('.page-head') ?? t).zIndex || 0);
+    const gz = Number(getComputedStyle(g).zIndex || 0);
+    return tz > gz;
+  })()`) === true,
+  `带高 ${glass?.高}px`,
+);
 
 /* 整合包页签：工具栏与搜索行的间距 */
 await ev(`[...document.querySelectorAll('.nav-item')].find((b) => (b.textContent || '').includes('下载'))?.click()`);
