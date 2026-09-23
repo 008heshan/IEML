@@ -2839,10 +2839,22 @@ tbody tr.clickable:focus-visible {
    *       窗口按钮仍然清清楚楚，内容一个字都不会被糊。
    *   ★ 一句话：玻璃的边界必须落在"谁都不属于"的地方，不能切在内容中间。
    */
-  top: 0;
+  /*
+   * ★★ 2026-09-23 用户：「页面顶部**标题栏底部模糊没了**」——
+   *   上一轮我把它收进标题栏（0 → 48）并在标题栏之下，结果**完全看不见了**。
+   *   用户要的是"标题栏下沿那一条磨砂"（内容从它下面滚过去）。
+   *
+   *   所以定位回标题栏下沿，但只 **14px**，并且**用 mask 往下淡出**：
+   *     · 页头标题从 y=64 开始，48+14=62 —— **碰不到它**（上一轮盖住标题就是因为高 56px）；
+   *     · mask 让下边缘渐隐，不再是"一条硬边切在内容中间"（那正是"镂空"的观感来源）。
+   *   ★ 一句话：**要那条模糊，但边界必须是软的。**
+   */
+  top: var(--titlebar-h);
   left: var(--sidebar-w);
   right: 0;
-  height: var(--titlebar-h);
+  height: 14px;
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, rgba(0, 0, 0, 0.55) 55%, transparent 100%);
+  mask-image: linear-gradient(180deg, #000 0%, rgba(0, 0, 0, 0.55) 55%, transparent 100%);
   /* z-index 5：在内容之下（内容不需要它糊），也在标题栏控件之下 */
   z-index: 5;
   pointer-events: none;
@@ -3485,4 +3497,11 @@ svg {
   fill: none;
   stroke: currentColor;
   stroke-width: 1.8;
+}
+
+/* ★★ 2026-09-23 用户（截图）：「**图二这个贴得太近了**」——
+   筛选那一行与下面的搜索框之间没有留白，两行挤在一起。
+   统一给"搜索行"加上到上一行的间距（资源页与整合包页共用这个类）。 */
+.res-search {
+  margin-top: var(--space-3);
 }
