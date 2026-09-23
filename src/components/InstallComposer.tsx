@@ -158,6 +158,18 @@ export interface InstallComposerProps {
   onInstalled?: (inst: Instance) => void;
   /** 取消（modal 用） */
   onCancel?: () => void;
+  /**
+   * ★★ 2026-09-23 晚：整页形态**换屏**时通知外层。
+   *
+   *   `true` = 正在「模组加载器」那一屏（它是**自己的一页**，要整屏显示），
+   *   外层（下载页）据此把**页头与页签收起来** ——
+   *   与整合包安装页用的是同一套做法（见 ADR-059 那条"整屏"的历史）。
+   *
+   *   ★ 为什么要通知外层而不是自己开一条路由：安装流程的状态（选中的版本、
+   *     加载器、附加组件、名称）都在这个组件里，**换路由会把它整份丢掉** ——
+   *     那正是这个仓库反复踩过的"事件/状态在挂载前被丢掉"那一类。
+   */
+  onStepChange?: (inLoaderPage: boolean) => void;
 }
 
 export function InstallComposer({
@@ -165,6 +177,7 @@ export function InstallComposer({
   initialVersion,
   onInstalled,
   onCancel,
+  onStepChange,
 }: InstallComposerProps) {
   const { state, createInstance, toast } = useApp();
   const { api } = useRealApi();
@@ -1028,21 +1041,29 @@ export function InstallComposer({
    *   `'version'`（默认）→ 选游戏版本；`'loader'` → 选模组加载器。
    *
    * ★ 为什么不是"两个页签"：页签是**并列**的关系，而这两步是**先后**关系
-   *   （先有版本，才知道有哪些加载器可用）。步骤条也是这个意思 ——
-   *   第 2 步在没选版本之前是灰的，页签做不到这件事。
+   *   （先有版本，才知道有哪些加载器可用）。
    * ★ 弹窗形态（`variant === 'modal'`）不看这个值：弹窗里一屏选完，
    *   没有"下一页"可翻（modal 分支在下面直接 return）。
+   * ★★ 2026-09-23 晚：换屏要**通知外层**（`onStepChange`）——
+   *   第 2 屏是"模组加载器自己的一页"，下载页的页头与页签在那时要收起来。
    */
   const [step, setStep] = useState<'version' | 'loader'>('version');
+  useEffect(() => {
+    onStepChange?.(step === 'loader');
+  }, [step, onStepChange]);
+  /* 组件卸载（换页签/离开下载页）时也要把外层那个标记复位，否则回来只剩一屏 */
+  useEffect(() => () => onStepChange?.(false), [onStepChange]);
 
   /* ====================== 渲染 ======================
    *
    * ★★ 2026-09-23（用户第 4 条）：「安装游戏我也要单开一页，以解放视觉繁乱……
    *   默认页面：游戏版本选择。单开一页选择模组加载器」。
+   * ★★ 2026-09-23 晚（用户）：「**像 mod 一样点击那行比较不错，然后给模组加载器
+   *   像 mod 页那样单开一页**」——第 2 屏真的成了**整屏的一页**（见下面那段注释）。
    *
    *   于是**同一份逻辑**现在有两种排布：
    *     · `modal` —— 「创建版本」弹窗，仍然左右两栏（弹窗里没有"下一页"，一屏选完最省事）；
-   *     · `page`  —— 「安装游戏」整页，**两步向导**：① 选版本 → ② 选加载器。
+   *     · `page`  —— 「安装游戏」：**一列版本清单** → 点一行 → **模组加载器整屏页**。
    *   零件（版本清单 / 加载器 / 名称 / 校验结论 / 底部按钮）在下面各写**一次**，
    *   两种排布只是把它们摆进不同的容器 —— 规则、文案、判据都不会漂移。
    */
@@ -1082,6 +1103,17 @@ export function InstallComposer({
             —— 上一轮我理解反了：把设置页那个选择器删了、把这个留下了。
             这里不再给选择：源由后端自动决定（官方优先、慢或失败换镜像，见 Rust parse_source）。
         */}
+        {/*
+          ★★ 2026-09-23 晚：**把"点一行会发生什么"说出来**。
+            这一步的交互是"点一行就进下一页"，而页面上没有任何按钮提示这件事
+            （下一步那个按钮连同右栏一起删了）。一句话比一条步骤条省地方，
+            也正是它替代了原来那条步骤条的位置。
+        */}
+        {variant === 'page' ? (
+          <p className="gw-tip">
+            点一行就进下一页（选模组加载器）—— 不选加载器就是纯原版
+          </p>
+        ) : null}
       </div>
 
       {/*
@@ -1185,6 +1217,14 @@ export function InstallComposer({
                     setBase(null);
                     setBaseVersion('');
                     setAddons([]);
+                    /*
+                     * ★★ 2026-09-23 晚（用户）：「**像 mod 一样点击那行比较不错**」——
+                     *   **点一行就进下一页**（Mod 页是"点一行就开始装"，同一个手感），
+                     *   不再需要"先选中、再点下一步"两下。
+                     * ★ 只有整页形态这样走：弹窗里没有"下一页"，点了就是选中
+                     *   （见上面 `variant === 'modal'` 那条分支）。
+                     */
+                    if (variant === 'page') setStep('loader');
                   }}
                 >
                   <VersionIcon version={v.id} size={30} />
@@ -1701,13 +1741,17 @@ export function InstallComposer({
     </>
   );
 
-  /** ③ 版本名称 */
-  const nameBlock = (
-    <section className="wz-block">
-      <div className="wz-block-title">
-        版本名称
-        <span className="wz-block-hint">之后可以在设置里改</span>
-      </div>
+  /**
+   * ③ 版本名称 —— **只有一份**输入框，两种排布共用。
+   *
+   * ★★ 2026-09-23 晚：整页形态把它放进了**页头右侧**（见下面 `gw-name`）。
+   *   原因是真的量出来的：那一页正文的可视高度 507px，而"加载器 + 附加组件 +
+   *   版本名称"三块加起来 589px —— 名字那一块被挤到**折线以下**，
+   *   不滚动就看不见（截图里那块是空白，我第一版的检查只从 DOM 读了值，
+   *   **看不见这个问题**）。放进页头之后它永远在屏幕上，也不受窗口高度影响。
+   */
+  const nameField = (
+    <>
       <input
         className="input"
         value={name}
@@ -1731,6 +1775,17 @@ export function InstallComposer({
           改回建议名称「{suggestedName}」
         </button>
       ) : null}
+    </>
+  );
+
+  /** ③′ 弹窗形态：名字是正文里的一块 */
+  const nameBlock = (
+    <section className="wz-block">
+      <div className="wz-block-title">
+        版本名称
+        <span className="wz-block-hint">之后可以在设置里改</span>
+      </div>
+      {nameField}
     </section>
   );
 
@@ -1850,199 +1905,106 @@ export function InstallComposer({
   }
 
   /* ------------------------------------------------------------------
-   * 整页形态：两步向导
-   * ------------------------------------------------------------------ */
-  return (
-    <div className="cw-shell cw-shell-page gw">
-      {/*
-        ★ 步骤条同时是**导航**与**状态**：
-          已经选好的值（版本号 / 加载器）直接写在标签下面 ——
-          这样"我在装什么"这件事永远在屏幕上，不用回头翻。
-      */}
-      <ol className="gw-steps" aria-label="安装步骤">
-        <li className="gw-step-li">
-          <button
-            type="button"
-            className={'gw-step' + (step === 'version' ? ' on' : ' done')}
-            aria-current={step === 'version' ? 'step' : undefined}
-            onClick={() => setStep('version')}
-          >
-            <em className="gw-step-no">{step === 'version' ? '1' : <IconCheck />}</em>
-            <span className="gw-step-text">
-              <span className="gw-step-label">选择游戏版本</span>
-              <span className="gw-step-value mono">{mcVersion || '还没选'}</span>
+   * 整页形态（下载页第一格）
+   * ------------------------------------------------------------------
+   * ★★ 2026-09-23 晚（用户）：「**像 mod 一样点击那行比较不错，然后给模组加载器
+   *   像 mod 页那样单开一页**」。
+   *
+   *   于是这一形态下不再是"一页里翻两步"：
+   *     · **第 1 屏 = 一列版本清单**（整宽，没有右栏）——
+   *       **点任意一行就进下一页**，与 Mod 页"点一行就装"是同一个手感；
+   *     · **第 2 屏 = 模组加载器整屏页**（`page-head` + `← 返回` + 标题 +
+   *       底部动作条），与 Mod 的安装页（`ResourceInstallPage`）同一套语言。
+   *
+   *   ★ 所以**步骤条删掉了**：它说的是"现在在第几步"，而现在"在哪一步"由
+   *     **页面本身**回答（第 2 屏没有下载页的页头和页签，自己带页头）。
+   *     清单上面留**一句**提示，把"点一行会发生什么"说清楚，比一条步骤条省地方。
+   *
+   *   ★ 第 2 屏是"自己的页"这件事要**外层配合**：下载页的头与页签由
+   *     `onStepChange` 通知后收起来（与整合包安装页同一套做法，见 §46）。
+   */
+  if (step === 'loader') {
+    return (
+      <div className="gw-full">
+        <div className="page-head">
+          <div>
+            <div className="row" style={{ gap: 'var(--space-2)', alignItems: 'center' }}>
+              <Button size="sm" variant="ghost" onClick={() => setStep('version')}>
+                <IconChevronRight className="gw-back" /> 返回
+              </Button>
+              <h1 className="page-title">模组加载器</h1>
+            </div>
+            <p className="page-desc">
+              装到 <b className="mono">{mcVersion}</b> · {pickedChannel}
+              {pickedRow?.released_at ? ` · ${pickedRow.released_at.slice(0, 10)}` : ''}
+              {' —— '}不选加载器就是纯原版
+            </p>
+          </div>
+          {/*
+            ★ 「盘上有没有」这一条留着：它决定这次要不要真下载游戏文件
+              （盘上有 → 只补加载器，几秒钟的事）。
+          */}
+          {/*
+            ★★ 版本名称放**页头右侧**（2026-09-23 晚，量出来之后改的）：
+              原来它在正文最后一块，而正文可视高度只有 507px、内容 589px ——
+              它被挤到折线以下，**不滚动就看不见**。放这里永远看得见，
+              而且与右下角那个「安装 X」按钮的文案是同一个值（改名按钮上的字会跟着变）。
+          */}
+          <div className="gw-name">
+            <span className="gw-name-label">
+              版本名称
+              <Chip tone={pickedRow?.installed ? 'success' : 'neutral'}>
+                {pickedRow?.installed
+                  ? pickedRow.in_use === false
+                    ? '盘上有游戏文件（暂无版本在用）'
+                    : '盘上有游戏文件'
+                  : '要下载游戏文件'}
+              </Chip>
             </span>
-          </button>
-        </li>
-        <li className="gw-step-line" aria-hidden="true" />
-        <li className="gw-step-li">
-          <button
-            type="button"
-            className={'gw-step' + (step === 'loader' ? ' on' : '')}
-            aria-current={step === 'loader' ? 'step' : undefined}
-            disabled={!mcVersion}
-            onClick={() => setStep('loader')}
-          >
-            <em className="gw-step-no">2</em>
-            <span className="gw-step-text">
-              <span className="gw-step-label">选择模组加载器</span>
-              <span className="gw-step-value">{loaderSummary}</span>
-            </span>
-          </button>
-        </li>
-      </ol>
-
-      <div className="cw-body gw-body">
-        {/* ============ 左边：这一步要做的选择 ============ */}
-        <div className="gw-col">
-          {step === 'version' ? versionPaneBody : <div className="gw-pad">{loaderPaneBody}</div>}
+            {nameField}
+          </div>
         </div>
 
-        {/* ============ 右边：这一步的结论 + 下一步 ============ */}
-        <aside className="gw-side">
-          {step === 'version' ? (
-            /*
-             * 第 1 步的右栏不重复清单里已有的信息，只回答三件事：
-             *   你选中的是哪个 · 盘上现在有没有 · 下一步去哪。
-             *
-             * ★★ 但**清单还没到**的时候（真机实测：桌面版冷启动要几秒）右栏
-             *   绝不能装作"已经选好了"—— 那时 `mcVersion` 还是空串，
-             *   下面那三行会拿空版本去算，于是显示「还没选 / Java 8 / 220 MB」，
-             *   三个都是**编出来的**（Java 8 是"空版本号"走的兜底值）。
-             *   所以这一个分支单独写：只说"正在拉清单"，并把下一步按钮明确禁用。
-             */
-            mcVersion ? (
-            <section className="wz-block">
-              <div className="wz-block-title">
-                选中的版本
-                <span className="wz-block-hint">点左边任意一行可以换</span>
-              </div>
-              <div className="gw-pick">
-                <VersionIcon version={mcVersion} size={44} />
-                <div className="gw-pick-body">
-                  <div className="gw-pick-id mono">{mcVersion}</div>
-                  <div className="gw-pick-sub">
-                    {pickedChannel}
-                    {pickedRow?.released_at ? ' · ' + pickedRow.released_at.slice(0, 10) : ''}
-                  </div>
-                </div>
-              </div>
-              <dl className="gw-facts">
-                <div>
-                  <dt>盘上</dt>
-                  <dd>
-                    {pickedRow?.installed
-                      ? pickedRow.in_use === false
-                        ? '有游戏文件（暂无版本在用）'
-                        : '有游戏文件'
-                      : '还没有 —— 装的时候要下载'}
-                  </dd>
-                </div>
-                <div>
-                  <dt>需要的 Java</dt>
-                  <dd>{javaLine}</dd>
-                </div>
-                <div>
-                  <dt>原版体积</dt>
-                  <dd className="mono">约 {formatBytes(estimateVanillaBytes(mcVersion))}</dd>
-                </div>
-              </dl>
-              <div className="gw-actions">
-                <Button variant="primary" onClick={() => setStep('loader')}>
-                  下一步：选模组加载器 <IconChevronRight />
-                </Button>
-              </div>
-              <p className="gw-note">
-                不装模组加载器也行 —— 下一步直接点「安装」就是纯原版。
-              </p>
-            </section>
-            ) : (
-            <section className="wz-block">
-              <div className="wz-block-title">选中的版本</div>
-              <div className="gw-pick">
-                <VersionIcon version="" size={44} />
-                <div className="gw-pick-body">
-                  <div className="gw-pick-id">
-                    {manifestError ? '没拿到版本清单' : '正在拉取版本清单…'}
-                  </div>
-                  <div className="gw-pick-sub">
-                    {manifestError
-                      ? '左边的列表里有「重试」，拉到之后会自动选中最新正式版'
-                      : '拉到之后会自动选中最新正式版'}
-                  </div>
-                </div>
-              </div>
-              <div className="gw-actions">
-                <Button variant="primary" disabled>
-                  下一步：选模组加载器 <IconChevronRight />
-                </Button>
-              </div>
-              <p className="gw-note">左边的清单还没到，现在选不了 —— 不用你做什么，稍等一下。</p>
-            </section>
-            )
-          ) : (
-            <>
-              {nameBlock}
-              {/*
-                ★ 「这次会装什么」= 装之前最后一次确认。
-                  它的每一项都来自上面那些选择的**实际值**（不是另算一遍），
-                  所以这里显示的与真正会发生的必然是同一件事。
-              */}
-              <section className="wz-block">
-                <div className="wz-block-title">
-                  这次会装什么
-                  <span className="wz-block-hint">确认一下再开始</span>
-                </div>
-                <dl className="gw-facts">
-                  <div>
-                    <dt>游戏版本</dt>
-                    <dd className="mono">{mcVersion}</dd>
-                  </div>
-                  <div>
-                    <dt>模组加载器</dt>
-                    <dd>{loaderSummary}</dd>
-                  </div>
-                  {verdict.autoApis.length > 0 ? (
-                    <div>
-                      <dt>自动安装</dt>
-                      <dd>{verdict.autoApis.map((l) => l.name).join(' + ')}</dd>
-                    </div>
-                  ) : null}
-                  <div>
-                    <dt>要下载</dt>
-                    <dd className="mono">{formatBytes(estimate.download)}</dd>
-                  </div>
-                  <div>
-                    <dt>可复用</dt>
-                    <dd className="mono">{formatBytes(estimate.cached)}</dd>
-                  </div>
-                  <div>
-                    <dt>需要的 Java</dt>
-                    <dd>{javaLine}</dd>
-                  </div>
-                  <div>
-                    <dt>预计耗时</dt>
-                    <dd className="mono">{formatDuration(estimate.seconds)}</dd>
-                  </div>
-                </dl>
-                {notesBlock}
-                <div className="gw-actions">
-                  <Button variant="ghost" onClick={() => setStep('version')}>
-                    <IconChevronRight className="gw-back" /> 上一步
-                  </Button>
-                  <Button
-                    variant="primary"
-                    loading={installing}
-                    disabled={!verdict.valid || !mcVersion}
-                    onClick={() => void handleInstall()}
-                  >
-                    <IconPlus /> 安装 {name || suggestedName}
-                  </Button>
-                </div>
-              </section>
-            </>
-          )}
-        </aside>
+        <div className="gw-full-body">{loaderPaneBody}</div>
+
+        {/* 组合不可用的红条永远看得见（它挡着下面那个按钮） */}
+        {notesBlock}
+
+        {/*
+          ★ 底部动作条 = **装之前最后一次确认**：
+            版本 / 加载器 / 体积 / Java / 耗时一句话说完，右边两个按钮。
+            （原来那套「这次会装什么」的表格删掉了 —— 它列的六项里，
+              版本与加载器现在就在屏幕上，重复列一遍只是增加一屏字。）
+        */}
+        <div className="cw-foot">
+          <span className="dim">
+            <b className="mono">{mcVersion}</b> · {loaderSummary} · 约下载{' '}
+            <b className="mono">{formatBytes(estimate.download)}</b> · 可复用{' '}
+            {formatBytes(estimate.cached)} · Java {javaLine} · 预计{' '}
+            <b className="mono">{formatDuration(estimate.seconds)}</b>
+          </span>
+          <div className="spacer" />
+          <Button variant="ghost" onClick={() => setStep('version')}>
+            <IconChevronRight className="gw-back" /> 换一个版本
+          </Button>
+          <Button
+            variant="primary"
+            loading={installing}
+            disabled={!verdict.valid || !mcVersion}
+            onClick={() => void handleInstall()}
+          >
+            <IconPlus /> 安装 {name || suggestedName}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  /* 第 1 屏：整宽的版本清单（点一行 = 进下一页） */
+  return (
+    <div className="cw-shell cw-shell-page gw">
+      <div className="cw-body gw-body">
+        <div className="gw-col">{versionPaneBody}</div>
       </div>
     </div>
   );

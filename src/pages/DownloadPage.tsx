@@ -205,14 +205,23 @@ export function DownloadPage() {
    */
   const [inModpackInstall, setInModpackInstall] = useState(false);
 
+  /*
+   * ★★ 2026-09-23 晚（用户）：「给模组加载器**像 mod 页那样单开一页**」——
+   *   「模组加载器」那一屏也是整屏的一页（自带页头 + `← 返回` + 底部动作条），
+   *   所以下载页这边同样要把页头与页签收起来（**与整合包同一套做法**）。
+   *   ★ 组件里只通知"现在在哪一屏"，收不收由本页决定 —— 显示与流程分开。
+   */
+  const [inLoaderPage, setInLoaderPage] = useState(false);
+
   /* 切到别的页签时要把"正在安装页"重置，否则回来会只剩一个安装视图 */
   useEffect(() => {
     if (tab !== 'modpack') setInModpackInstall(false);
+    if (tab !== 'game') setInLoaderPage(false);
   }, [tab]);
 
   return (
     <div className="page-fill">
-      {inModpackInstall ? null : (
+      {inModpackInstall || inLoaderPage ? null : (
         <>
           <div className="page-head">
             <div>
@@ -241,13 +250,16 @@ export function DownloadPage() {
       )}
 
       {/*
-        ★★ 第一格：安装游戏（两步向导）。
-        ★ 它自己**不带页头** —— 上面那个「下载」页头与这排页签就是它的外壳
-          （独立页那版有一个自己的页头，合并回来时删掉了）。
+        ★★ 第一格：安装游戏。
+        ★ 它自己**不带页头**（下面那一屏「模组加载器」才带自己的页头）——
+          本页的页头与页签就是它在版本清单那一屏的外壳。
+        ★ 点一行版本 → 进「模组加载器」整屏页 → `onStepChange(true)` 让本页
+          把页头与页签收起来（与整合包安装页同一套）。
       */}
       {tab === 'game' ? (
         <InstallComposer
           variant="page"
+          onStepChange={setInLoaderPage}
           onInstalled={() => {
             toast('info', '已加入版本列表', '去「版本列表」双击它就能进设置或启动。');
             go('versions');
