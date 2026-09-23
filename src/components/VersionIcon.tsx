@@ -25,9 +25,20 @@
  *
  * 哪个版本算哪一代，只在这个文件的 `versionFamily()` 里判一次。
  * 界面别处（版本列表、下载页、概览）都调它 —— 否则同一条规则会出现第二份。
+ *
+ * ★★ 2026-09-23 晚（用户看着「愚人节」那一档说「**这个分类就有点莫名其妙了**」）：
+ *   "愚人节是哪些版本"这件事，`domain/loader-caps.ts` 里**已经有一份白名单**
+ *   （`APRIL_FOOLS`，9 个，还写着"宁可漏一个，不可错一个"的理由）。
+ *   而这里**又抄了一份**（只有 4 个），并且**排在快照规则后面**。两处后果：
+ *     · `15w14a` / `1.RV-Pre1` 被快照规则 `-(pre|rc)\d*$` 吞掉 → 标成「快照」；
+ *     · `24w14potato` / `25w14craftmine` 谁都不认 → 标成「其他」。
+ *   于是"愚人节"档里出现了「其他 / 愚人节 / 快照」三个分组 —— 那正是用户看到的莫名其妙。
+ *   现在**只留一份**：下面直接调 `isAprilFoolsVersion()`，而且**排在快照之前**判。
+ *   （这就是 ADR-051 那条"同一个判据写两遍"的老毛病，第 N 次。）
  */
 
 import versionIcon from '../assets/version-icon.png';
+import { isAprilFoolsVersion } from '../domain';
 
 /** 一个版本世代：谁属于它、叫什么、用什么色 */
 export interface VersionFamily {
@@ -54,13 +65,17 @@ export interface VersionFamily {
  */
 export function versionFamily(version: string): VersionFamily {
   const v = (version || '').trim();
+  /*
+   * ★★ 愚人节必须**排在快照之前**判：`15w14a` 长得就像普通快照，
+   *   `1.RV-Pre1` 还会被下面的 `-(pre|rc)\d*$` 命中 —— 先问白名单，
+   *   这两类就不会被误判成「快照」（判据只有 `isAprilFoolsVersion()` 一处）。
+   */
+  if (isAprilFoolsVersion(v)) {
+    return { key: 'april', label: '愚人节', tone: 'april', rank: 8999 };
+  }
   // 快照：`25w14a` / `1.21.2-pre1` / `24w03a`
   if (/^\d{2}w\d{2}[a-z]$/i.test(v) || /-(pre|rc)\d*$/i.test(v)) {
     return { key: 'snap', label: '快照', tone: 'snapshot', rank: 9000 };
-  }
-  // 愚人节版本（固定几个知名版本号，不猜）
-  if (['23w13a_or_b', '22w13oneblockatatime', '3D Shareware v1.34', '20w14infinite'].includes(v)) {
-    return { key: 'april', label: '愚人节', tone: 'april', rank: 8999 };
   }
   const m = v.match(/^(\d+)\.(\d+)/);
   if (!m) return { key: 'other', label: '其他', tone: 'classic', rank: 0 };

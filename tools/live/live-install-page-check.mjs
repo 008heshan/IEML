@@ -194,6 +194,79 @@ check('★ C6 步骤条也没了（"在第几步"现在由页面本身回答）'
 check('★ C7 清单有真实高度', (list?.listH ?? 0) > 150, `高度=${list?.listH}`);
 await shot('清单页-下载第一格.png');
 
+/* ---------- K：「愚人节」那一档的分类（用户：「这个分类就有点莫名其妙了」） ----------
+ *
+ * 用户给的截图里，愚人节档被切成了「其他 / 愚人节 / 快照」三组 —— 那是
+ * **同一件事有两份白名单**造成的：`domain/loader-caps.ts` 里 9 个，
+ * `VersionIcon.tsx` 里另抄了 4 个、还排在快照规则后面，于是
+ * `15w14a`/`1.RV-Pre1` 被 `-(pre|rc)` 判成「快照」、`24w14potato`/`25w14craftmine` 落进「其他」。
+ * 现在：白名单只留一份 + 愚人节先判 + 这一档**平铺不分组**。
+ */
+const clickChannel = (label) =>
+  ev(`[...document.querySelectorAll('.gw-col .cw-left-tools .seg button')].find((b) => (b.textContent || '').trim() === '${label}')?.click()`);
+const readList = () =>
+  ev(`(() => ({
+    'groups': [...document.querySelectorAll('.gw-col .ver-group')].map((g) => (g.textContent || '').replace(/\\s+/g, ' ').trim()),
+    'rows': [...document.querySelectorAll('.gw-col .wz-item')].map((r) => ({
+      'id': (r.querySelector('.wz-item-name')?.textContent || '').trim(),
+      'tone': (r.querySelector('.vi')?.className || '').replace('vi ', '').trim(),
+    })),
+  }))()`);
+
+await clickChannel('愚人节');
+await sleep(900);
+const fools = await readList();
+console.log('  愚人节档：' + JSON.stringify(fools));
+check('★ K1 愚人节档**一个组标题都没有**（平铺）', (fools?.groups ?? ['x']).length === 0, JSON.stringify(fools?.groups));
+check('★ K2 愚人节档列出了版本', (fools?.rows ?? []).length >= 6, `${(fools?.rows ?? []).length} 行`);
+check(
+  '★ K3 每一行的图标都是「愚人节」配色（vi-april）',
+  (fools?.rows ?? []).every((r) => r.tone === 'vi-april'),
+  JSON.stringify((fools?.rows ?? []).map((r) => [r.id, r.tone])),
+);
+{
+  /* 这四个正是原来被错标成「快照」/「其他」的 */
+  const ids = (fools?.rows ?? []).map((r) => r.id);
+  const must = ['15w14a', '1.RV-Pre1', '24w14potato', '25w14craftmine'];
+  check('★ K4 原来被错标的四个都在这一档里', must.every((m) => ids.includes(m)), JSON.stringify(ids));
+}
+await shot('愚人节档-平铺.png');
+
+await clickChannel('快照');
+await sleep(900);
+const snaps = await readList();
+check(
+  '★ K5 快照档里没有愚人节版本混进来（图标配色判）',
+  (snaps?.rows ?? []).every((r) => r.tone !== 'vi-april'),
+  JSON.stringify((snaps?.rows ?? []).filter((r) => r.tone === 'vi-april').map((r) => r.id)),
+);
+check('★ K6 快照档仍然分组显示（世代分组是有用的）', (snaps?.groups ?? []).length > 0, JSON.stringify(snaps?.groups?.slice(0, 3)));
+
+/* 全部档里搜一个愚人节版本：它的组标题应当是「愚人节」而不是「快照」 */
+await clickChannel('全部');
+await sleep(700);
+await ev(`(() => {
+  const input = document.querySelector('.gw-col .cw-left-tools input');
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+  setter.call(input, '15w14a');
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+})()`);
+await sleep(900);
+const searched = await readList();
+console.log('  搜 15w14a：' + JSON.stringify(searched));
+check('★ K7 搜到的 15w14a 图标是愚人节配色（不再被当成快照）', searched?.rows?.[0]?.tone === 'vi-april', JSON.stringify(searched?.rows));
+check('★ K8 它的组标题写「愚人节」', (searched?.groups ?? []).some((g) => g.includes('愚人节')), JSON.stringify(searched?.groups));
+
+/* 回到正式版，后面的步骤（点一行进下一页）按原来的路走 */
+await ev(`(() => {
+  const input = document.querySelector('.gw-col .cw-left-tools input');
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+  setter.call(input, '');
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+})()`);
+await clickChannel('正式版');
+await sleep(900);
+
 /* ---------- D：点一行 → 整屏的「模组加载器」页 ---------- */
 const picked = await ev(`(() => {
   const row = document.querySelector('.gw-col .wz-item');

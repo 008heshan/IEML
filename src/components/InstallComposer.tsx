@@ -1067,6 +1067,85 @@ export function InstallComposer({
    *   零件（版本清单 / 加载器 / 名称 / 校验结论 / 底部按钮）在下面各写**一次**，
    *   两种排布只是把它们摆进不同的容器 —— 规则、文案、判据都不会漂移。
    */
+  /**
+   * 版本清单里的**一行** —— 只有这一份实现。
+   *
+   * ★★ 2026-09-23 晚（用户）：「**愚人节那一档的分类莫名其妙**」——
+   *   那一档整档本来就是同一类东西，再按"世代"切就会切出
+   *   「其他 / 愚人节 / 快照」这种说不通的标题（根因见 `VersionIcon.versionFamily`：
+   *   愚人节的白名单曾经抄了两份、还排在快照规则后面）。
+   *   现在愚人节那一档**平铺**显示、组标题一概不出现；
+   *   而"行长什么样"仍然只有这一处，两种排布不会漂移。
+   */
+  const versionRow = (v: ManifestRow) => (
+    <button
+      key={v.id}
+      type="button"
+      role="option"
+      aria-selected={v.id === mcVersion}
+      className={`wz-item${v.id === mcVersion ? ' on' : ''}`}
+      onClick={() => {
+        setMcVersion(v.id);
+        // ★ 切版本必须同时清掉加载器选择：留着上一个版本选好的 Forge
+        //   会让"这个版本没有 Forge"和"已经选了 Forge"同时成立，
+        //   界面自相矛盾（用户报的串台 bug 就是从这来的）。
+        setBase(null);
+        setBaseVersion('');
+        setAddons([]);
+        /*
+         * ★★ 2026-09-23 晚（用户）：「**像 mod 一样点击那行比较不错**」——
+         *   **点一行就进下一页**（Mod 页是"点一行就开始装"，同一个手感），
+         *   不再需要"先选中、再点下一步"两下。
+         * ★ 只有整页形态这样走：弹窗里没有"下一页"，点了就是选中
+         *   （见上面 `variant === 'modal'` 那条分支）。
+         */
+        if (variant === 'page') setStep('loader');
+      }}
+    >
+      <VersionIcon version={v.id} size={30} />
+      <span className="wz-item-body">
+        <span className="wz-item-name mono">{v.id}</span>
+        <span className="wz-item-sub">
+          {v.released_at ? v.released_at.slice(0, 10) : ''}
+          {/*
+            ★★ **"盘上有"与"有版本在用"必须分开说**（用户报的 bug）。
+
+            原话：「版本列表删除有模组加载器的版本之后，下载列表的
+            对应版本有模组加载器的版本，**还显示已装**」。
+
+            因为两张表读的是两个不同的东西：版本列表读
+            `instances.json`，这一页直接扫 `shared/versions/`。
+            删实例只删 `instances/{slug}/`，**共享的游戏文件**
+            （`shared/versions/`、`libraries/`）故意留着 ——
+            别的实例可能还在用。于是这里照旧扫到那个加载器目录。
+
+            两句话都对，但只写"已装"就是在骗人：
+            它让人以为那个版本能用，而其实没有任何版本在用它。
+
+            现在分三种写法：
+              · 有实例在用          → 「已装 Forge 47.4.23」
+              · 盘上有、没实例在用   → 「盘上有 Forge 47.4.23（暂无版本在用）」
+              · 都没有              → 什么都不写
+          */}
+          {v.loaders && v.loaders.length > 0
+            ? ` · ${
+                v.in_use === false ? '盘上有 ' : '已装 '
+              }` +
+              v.loaders
+                .map((l) => (l.version ? `${l.name} ${l.version}` : l.name))
+                .join(' + ') +
+              (v.in_use === false ? '（暂无版本在用）' : '')
+            : v.installed
+              ? v.in_use === false
+                ? ' · 盘上有原版（暂无版本在用）'
+                : ' · 已装原版'
+              : ''}
+        </span>
+      </span>
+      {latest === v.id ? <Chip tone="success">最新</Chip> : null}
+    </button>
+  );
+
   /** ① 版本清单的正文（演示模式提示 + 搜索与筛选 + 分组列表） */
   const versionPaneBody = (
     <>
@@ -1162,6 +1241,20 @@ export function InstallComposer({
           <div className="empty-note" style={{ padding: 'var(--space-3)' }}>
             {rows.length === 0 ? '还没有拿到版本清单' : `没有匹配「${query}」的版本`}
           </div>
+        ) : channel === 'fools' ? (
+          /*
+           * ★★ 2026-09-23 晚（用户看着这一档的截图）：「**这个分类就有点莫名其妙了**」。
+           *
+           *   那一档里每一行**本来就是同一类东西**（都是愚人节版本），
+           *   再按"世代"切只会切出「其他 / 愚人节 / 快照」这种说不通的标题 ——
+           *   根因是愚人节白名单曾经抄了两份、还排在快照规则后面
+           *   （见 `VersionIcon.versionFamily` 上面的说明，已改成只留一份并提前判）。
+           *
+           *   ★ 所以这一档**平铺**：一行一个，没有组标题，也没有折叠。
+           *     愚人节版本总共不到十个，本来就不需要"一堵墙"的管理手段。
+           *   ★ 行的实现仍然只有 `versionRow` 一处 —— 两种排布不会漂移。
+           */
+          <>{filtered.slice(0, 200).map((v) => versionRow(v))}</>
         ) : (
           /*
            * ★★ 分组显示（0.1.0-beta.1，用户要求"不要展开后看到版本们
@@ -1202,74 +1295,7 @@ export function InstallComposer({
                 <span className="ver-group-line" />
                 <span className="dim">{g.rows.length} 个</span>
               </button>
-              {folded ? null : g.rows.map((v) => (
-                <button
-                  key={v.id}
-                  type="button"
-                  role="option"
-                  aria-selected={v.id === mcVersion}
-                  className={`wz-item${v.id === mcVersion ? ' on' : ''}`}
-                  onClick={() => {
-                    setMcVersion(v.id);
-                    // ★ 切版本必须同时清掉加载器选择：留着上一个版本选好的 Forge
-                    //   会让"这个版本没有 Forge"和"已经选了 Forge"同时成立，
-                    //   界面自相矛盾（用户报的串台 bug 就是从这来的）。
-                    setBase(null);
-                    setBaseVersion('');
-                    setAddons([]);
-                    /*
-                     * ★★ 2026-09-23 晚（用户）：「**像 mod 一样点击那行比较不错**」——
-                     *   **点一行就进下一页**（Mod 页是"点一行就开始装"，同一个手感），
-                     *   不再需要"先选中、再点下一步"两下。
-                     * ★ 只有整页形态这样走：弹窗里没有"下一页"，点了就是选中
-                     *   （见上面 `variant === 'modal'` 那条分支）。
-                     */
-                    if (variant === 'page') setStep('loader');
-                  }}
-                >
-                  <VersionIcon version={v.id} size={30} />
-                  <span className="wz-item-body">
-                    <span className="wz-item-name mono">{v.id}</span>
-                    <span className="wz-item-sub">
-                      {v.released_at ? v.released_at.slice(0, 10) : ''}
-                      {/*
-                        ★★ **"盘上有"与"有版本在用"必须分开说**（用户报的 bug）。
-
-                        原话：「版本列表删除有模组加载器的版本之后，下载列表的
-                        对应版本有模组加载器的版本，**还显示已装**」。
-
-                        因为两张表读的是两个不同的东西：版本列表读
-                        `instances.json`，这一页直接扫 `shared/versions/`。
-                        删实例只删 `instances/{slug}/`，**共享的游戏文件**
-                        （`shared/versions/`、`libraries/`）故意留着 ——
-                        别的实例可能还在用。于是这里照旧扫到那个加载器目录。
-
-                        两句话都对，但只写"已装"就是在骗人：
-                        它让人以为那个版本能用，而其实没有任何版本在用它。
-
-                        现在分三种写法：
-                          · 有实例在用          → 「已装 Forge 47.4.23」
-                          · 盘上有、没实例在用   → 「盘上有 Forge 47.4.23（暂无版本在用）」
-                          · 都没有              → 什么都不写
-                      */}
-                      {v.loaders && v.loaders.length > 0
-                        ? ` · ${
-                            v.in_use === false ? '盘上有 ' : '已装 '
-                          }` +
-                          v.loaders
-                            .map((l) => (l.version ? `${l.name} ${l.version}` : l.name))
-                            .join(' + ') +
-                          (v.in_use === false ? '（暂无版本在用）' : '')
-                        : v.installed
-                          ? v.in_use === false
-                            ? ' · 盘上有原版（暂无版本在用）'
-                            : ' · 已装原版'
-                          : ''}
-                    </span>
-                  </span>
-                  {latest === v.id ? <Chip tone="success">最新</Chip> : null}
-                </button>
-              ))}
+              {folded ? null : g.rows.map(versionRow)}
             </div>
             );
           })
