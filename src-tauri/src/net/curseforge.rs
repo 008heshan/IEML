@@ -105,18 +105,26 @@ pub fn key_hint() -> Option<String> {
     })
 }
 
-/// key 落盘位置：**数据目录**下的独立文件。
+/// key 落盘位置：**启动器自己的家**（`own_root`，`%APPDATA%\IEML`）下的独立文件。
+///
+/// ★★ A-4（2026-09-24）：与 `instances.json` / `prefs.json` 一起搬出**游戏根目录** ——
+///   以前它在 `paths.root` 下，用户删掉那个游戏根目录时 key 会跟着没。
+///   老位置那份由 `platform::adopt_records` 在启动时收养（只复制、不删源）。
 ///
 /// ★ 为什么不塞进 `prefs.json`：那份文件是**前端**管的（`save_prefs`
 ///   整份覆盖写回），而这个 key 后端随时要用 —— 放一起会出现
 ///   "前端用旧值覆盖掉刚写的 key"这种竞态（`ms_client_id.txt` 同理由）。
 pub fn api_key_file(paths: &crate::platform::AppPaths) -> PathBuf {
-    paths.root.join("cf_api_key.txt")
+    paths.own_file("cf_api_key.txt")
 }
 
 /// 启动时读一次（`lib.rs` 调用）
 pub fn load_api_key_from_disk(paths: &crate::platform::AppPaths) {
-    if let Ok(text) = std::fs::read_to_string(api_key_file(paths)) {
+    // 读：优先 own_root，那儿没有才回退到游戏根目录的老位置（A-4）
+    let Some(store) = paths.own_file_for_read("cf_api_key.txt") else {
+        return;
+    };
+    if let Ok(text) = std::fs::read_to_string(store) {
         let first = text.lines().next().unwrap_or("").trim().to_string();
         if !first.is_empty() {
             set_api_key(&first);
@@ -133,6 +141,8 @@ pub fn save_api_key(paths: &crate::platform::AppPaths, key: &str) -> Result<()> 
     let trimmed = key.trim().to_string();
     if trimmed.is_empty() {
         let _ = std::fs::remove_file(api_key_file(paths));
+        /* ★ A-4：老位置那份也删 —— 否则下次启动会被 adopt_records 收养回来 */
+        let _ = std::fs::remove_file(paths.legacy_record_file("cf_api_key.txt"));
         set_api_key("");
         return Ok(());
     }

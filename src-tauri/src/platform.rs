@@ -145,6 +145,52 @@ impl AppPaths {
     ) -> PathBuf {
         self.instance_game_dir(slug).join(kind.install_dir())
     }
+
+    /* ============ 启动器自己的文件（★★ A-4 修复：搬出游戏根目录） ============ */
+
+    /// ★★ 启动器自己的一个文件（`instances.json` / `prefs.json` /
+    ///   `ms_client_id.txt` / `cf_api_key.txt`）—— 它们住在**启动器自己的家**
+    ///   （`own_root`，Windows 上是 `%APPDATA%\IEML`），**不在游戏根目录里**。
+    ///
+    ///   2026-09-24（缺陷报告 A-4）：「启动器数据目录搬出游戏根目录」原来**只搬了一半** ——
+    ///   `instances/ java/ cache/ logs/` 早就挂在 `own_root`，而这四个文件还留在
+    ///   游戏根目录里。真机后果：用户在「候选盘」那页删掉一个游戏根目录，
+    ///   会**连实例清单与全部设置一起删掉**，而两道确认框里都没有这句话。
+    pub fn own_file(&self, name: &str) -> PathBuf {
+        self.own_root.join(name)
+    }
+
+    /// 同上，但用来**读**：优先 `own_root`，那儿没有才回退到游戏根目录的老位置。
+    ///
+    /// ★ 为什么要留回退：老用户（0.1.0-rc.1 及以前）的文件就在游戏根目录里。
+    ///   启动时的 [`adopt_records`] 会把它们**复制**过来；万一复制失败
+    ///   （磁盘满 / 权限），读这一侧仍然读得到老位置 —— 不至于让用户觉得"东西没了"。
+    pub fn own_file_for_read(&self, name: &str) -> Option<PathBuf> {
+        let own = self.own_file(name);
+        if own.is_file() {
+            return Some(own);
+        }
+        let legacy = self.legacy_record_file(name);
+        if legacy.is_file() {
+            return Some(legacy);
+        }
+        None
+    }
+
+    /// 这四个文件在**游戏根目录**里的老位置（0.1.0-rc.1 及以前）。
+    pub fn legacy_record_file(&self, name: &str) -> PathBuf {
+        self.root.join(name)
+    }
+
+    /// 实例清单文件（`list_instances` / `save_instances` 用的那个）
+    pub fn instances_file(&self) -> PathBuf {
+        self.own_file("instances.json")
+    }
+
+    /// 全局偏好文件（主题 / 下载源 / 并发数 / 账号 uuid …）
+    pub fn prefs_file(&self) -> PathBuf {
+        self.own_file("prefs.json")
+    }
 }
 
 fn dirs_data_dir() -> PathBuf {
@@ -932,8 +978,85 @@ fn should_take_record(from: &Path, to: &Path) -> std::io::Result<bool> {
     }
 }
 
-/// 递归复制：**目标已有的文件一个字节都不动**，缺什么补什么。
+/// ★★ 启动时把**老位置**（游戏根目录）里的启动器文件"收养"到 `own_root`（A-4 修复）。
 ///
+/// 管这四个：`instances.json`、`prefs.json`、`ms_client_id.txt`、`cf_api_key.txt`。
+///
+/// ## 三条规矩（与 `migrate_data_root` 一致）
+///
+///   ① **只复制、绝不删源** —— 用户随时可能退回旧版启动器，那份还在原地；
+///   ② 目标已有、而且**不比源旧** → 一个字节都不动（目标那份才是"现在正在用的"）；
+///   ③ 真要覆盖目标之前，先把目标备份成 `<名字>.bak` —— 万一判断错了，东西还在。
+///
+/// ## 为什么判据里必须有"源比目标新"这一条
+///
+///   这是在本机真机上量出来的：`D:\IEML\instances.json`（游戏根目录那份）
+///   是**应用一直在写**的那份，而 `%APPDATA%\IEML\instances.json` 是
+///   2026-09-13 的**陈旧副本**（连主题都还停在 dark）。
+///   若只按"目标存在就跳过"，用户最近十天的改动会被那份陈旧副本永远盖住 ——
+///   那正是 A-4 里"两处各有一份、谁看谁糊涂"的坑（我自己就据它误判过一次）。
+///
+/// 返回复制了多少字节（0 = 什么都不需要做）。
+pub fn adopt_records(paths: &AppPaths) -> u64 {
+    const NAMES: [&str; 4] = [
+        "instances.json",
+        "prefs.json",
+        "ms_client_id.txt",
+        "cf_api_key.txt",
+    ];
+    let mut copied = 0u64;
+    for name in NAMES {
+        let from = paths.legacy_record_file(name);
+        if !from.is_file() {
+            continue;
+        }
+        let to = paths.own_file(name);
+        if !should_adopt(&from, &to) {
+            continue;
+        }
+        if let Err(e) = std::fs::create_dir_all(&paths.own_root) {
+            say!(
+                "[IEML/records] 建不了启动器数据目录（{}）：{e}",
+                paths.own_root.display()
+            );
+            continue;
+        }
+        if to.is_file() {
+            let bak = paths.own_root.join(format!("{name}.bak"));
+            let _ = std::fs::copy(&to, &bak);
+            say!("[IEML/records] 覆盖前把目标那份备份到 {}", bak.display());
+        }
+        match std::fs::copy(&from, &to) {
+            Ok(n) => {
+                copied += n;
+                say!(
+                    "[IEML/records] {name} 复制到启动器自己的目录（{n} 字节）—— 游戏根目录那份保留不动"
+                );
+            }
+            Err(e) => say!("[IEML/records] 复制 {name} 失败：{e}"),
+        }
+    }
+    copied
+}
+
+/// 目标那份要不要用源那份替换？（[`adopt_records`] 的判据）
+fn should_adopt(from: &Path, to: &Path) -> bool {
+    if !to.is_file() {
+        return true; // 目标没有 → 直接补
+    }
+    // 目标是个"空壳"而源里有东西 → 补（沿用 should_take_record 的老规矩）
+    if matches!(should_take_record(from, to), Ok(true)) {
+        return true;
+    }
+    // ★ 源比目标新 → 源才是"当前在用的那份"（见 adopt_records 的说明）
+    let mtime = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    match (mtime(from), mtime(to)) {
+        (Some(a), Some(b)) => a > b,
+        _ => false,
+    }
+}
+
+/// 递归复制：**目标已有的文件一个字节都不动**，缺什么补什么。
 /// 为什么不是"目标存在就整体跳过"：那样目标上任何一处损坏
 /// （例如被写空的 `instances.json`）都永远修不回来。见
 /// `migrate_data_root` 的说明 —— 这是实测丢过用户数据之后改的。
@@ -2353,5 +2476,157 @@ mod tests {
                 "{p} 不是系统盘却被判成系统盘"
             );
         }
+    }
+
+    /* ==================== ★★ A-4：启动器自己的文件不住游戏根目录 ==================== */
+
+    /// 造一对临时根目录（游戏根 + 启动器的家），返回拼好的 `AppPaths`。
+    fn tmp_paths(tag: &str) -> (AppPaths, PathBuf, PathBuf) {
+        let root = tmp(&format!("a4-root-{tag}"));
+        let own = tmp(&format!("a4-own-{tag}"));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&own);
+        std::fs::create_dir_all(&root).unwrap();
+        let p = AppPaths {
+            shared: root.join(GAME_DIR_NAME),
+            instances: own.join("instances"),
+            java: own.join("java"),
+            cache: own.join("cache"),
+            logs: own.join("logs"),
+            root: root.clone(),
+            own_root: own.clone(),
+        };
+        (p, root, own)
+    }
+
+    /// 这四个文件的**目标位置**必须都在 `own_root` 下，而且不在游戏根目录里。
+    #[test]
+    fn launcher_records_live_in_own_root_not_in_the_game_root() {
+        let (p, root, own) = tmp_paths("where");
+        for name in [
+            "instances.json",
+            "prefs.json",
+            "ms_client_id.txt",
+            "cf_api_key.txt",
+        ] {
+            let f = p.own_file(name);
+            assert!(f.starts_with(&own), "{name} 应当在 own_root 下：{}", f.display());
+            assert!(
+                !f.starts_with(&root),
+                "{name} **不该**在游戏根目录里：{}",
+                f.display()
+            );
+        }
+        assert!(p.instances_file().starts_with(&own));
+        assert!(p.prefs_file().starts_with(&own));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&own);
+    }
+
+    /// 老用户：文件都在游戏根目录里 → 启动时被**复制**到 `own_root`，源保留。
+    /// 第二次调用必须什么都不做（幂等）。
+    #[test]
+    fn adopt_records_copies_from_the_game_root_and_keeps_the_source() {
+        let (p, root, own) = tmp_paths("adopt");
+        let inst = r#"{"instances":[{"id":"a"},{"id":"b"}],"active_id":"a"}"#;
+        std::fs::write(root.join("instances.json"), inst).unwrap();
+        std::fs::write(root.join("prefs.json"), r#"{"theme":"daiqing"}"#).unwrap();
+        std::fs::write(root.join("ms_client_id.txt"), "1111\n").unwrap();
+
+        let copied = adopt_records(&p);
+        assert!(copied > 0, "应当真的复制了东西");
+        assert_eq!(
+            std::fs::read_to_string(own.join("instances.json")).unwrap(),
+            inst,
+            "清单应当一字不差地复制过去"
+        );
+        assert_eq!(
+            std::fs::read_to_string(own.join("prefs.json")).unwrap(),
+            r#"{"theme":"daiqing"}"#
+        );
+        assert!(own.join("ms_client_id.txt").is_file());
+        assert!(
+            root.join("instances.json").is_file(),
+            "★ 源文件必须保留（用户可能退回旧版启动器）"
+        );
+
+        // 幂等：第二次不再复制（目标已是新的那份）
+        assert_eq!(adopt_records(&p), 0, "第二次不该再复制");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&own);
+    }
+
+    /// ★ 真机上量出来的那条：目标（`%APPDATA%`）那份是**陈旧副本**，
+    ///   源（游戏根目录）比它新 → 必须用源，并且把旧的目标备份下来。
+    #[test]
+    fn adopt_records_lets_the_newer_copy_win_and_backs_up_the_old_one() {
+        let (p, root, own) = tmp_paths("newer");
+        std::fs::create_dir_all(&own).unwrap();
+        // 先写目标（旧），再写源（新）—— 时间顺序就是判据
+        std::fs::write(own.join("instances.json"), r#"{"instances":[{"id":"stale"}],"active_id":null}"#)
+            .unwrap();
+        std::fs::write(
+            root.join("instances.json"),
+            r#"{"instances":[{"id":"fresh-1"},{"id":"fresh-2"}],"active_id":"fresh-1"}"#,
+        )
+        .unwrap();
+
+        let copied = adopt_records(&p);
+        assert!(copied > 0, "源更新 → 应当收养");
+        let got = std::fs::read_to_string(own.join("instances.json")).unwrap();
+        assert!(got.contains("fresh-2"), "应当用新的那份：{got}");
+        let bak = own.join("instances.json.bak");
+        assert!(bak.is_file(), "被覆盖的那份必须留一个 .bak");
+        assert!(
+            std::fs::read_to_string(&bak).unwrap().contains("stale"),
+            "备份里应当是原来那份"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&own);
+    }
+
+    /// 反过来：目标（已经在 `own_root` 里、且更新）比源新 → **一个字节都不动**。
+    #[test]
+    fn adopt_records_leaves_a_newer_target_alone() {
+        let (p, root, own) = tmp_paths("target");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::write(root.join("instances.json"), r#"{"instances":[{"id":"old"}],"active_id":null}"#)
+            .unwrap();
+        std::fs::write(
+            own.join("instances.json"),
+            r#"{"instances":[{"id":"mine-1"},{"id":"mine-2"}],"active_id":null}"#,
+        )
+        .unwrap();
+
+        assert_eq!(adopt_records(&p), 0, "目标更新时不该动它");
+        let got = std::fs::read_to_string(own.join("instances.json")).unwrap();
+        assert!(got.contains("mine-1"), "目标被覆盖了：{got}");
+        assert!(!own.join("instances.json.bak").exists(), "没覆盖就不该产生 .bak");
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&own);
+    }
+
+    /// 读的那一侧：`own_root` 没有时回退到游戏根目录的老位置（老用户升级的当次启动）。
+    #[test]
+    fn own_file_for_read_falls_back_to_the_old_game_root_location() {
+        let (p, root, own) = tmp_paths("read");
+        assert_eq!(p.own_file_for_read("instances.json"), None, "两边都没有 → None");
+
+        std::fs::write(root.join("instances.json"), "{}").unwrap();
+        assert_eq!(
+            p.own_file_for_read("instances.json"),
+            Some(root.join("instances.json")),
+            "只有老位置有 → 读老位置"
+        );
+
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::write(own.join("instances.json"), "{}").unwrap();
+        assert_eq!(
+            p.own_file_for_read("instances.json"),
+            Some(own.join("instances.json")),
+            "两边都有 → **优先** own_root"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&own);
     }
 }

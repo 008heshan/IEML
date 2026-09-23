@@ -162,13 +162,31 @@ pub fn run() {    /*
      * ★★ 2026-09-22：启动器**自己的**目录单独一段（`ensure_own`）。
      *
      *   拆开的理由见 `AppPaths::ensure` 的说明（用户要求"根目录只创建装游戏的目录"）。
-     *   ★ 现在仍然在启动时一起建 —— 因为版本、Java、缓存、日志都还住在这个根目录里，
-     *     不建就会在第一次用到时报错。
-     *     **把启动器数据整体搬出游戏根目录**（比如搬到 %APPDATA%）是一次数据布局迁移，
-     *     会影响所有既有安装 —— 那一步需要用户明确同意后再做，不在这一轮里擅自做。
+     *   ★ 2026-09-24（A-4 修复）：`instances/ java/ cache/ logs/` **以及**
+     *     `instances.json` / `prefs.json` / `ms_client_id.txt` / `cf_api_key.txt`
+     *     现在都住在 `own_root`（`%APPDATA%\IEML`）—— 游戏根目录里只剩游戏的东西。
+     *     （这段注释原来写着"它们还住在这个根目录里、整体搬迁要等用户同意"，
+     *      而 2026-09-23 用户已经同意并搬走了目录，只剩这四个文件没走完 —— 现已补齐。）
      */
     if let Err(e) = paths.ensure_own() {
-        say!("[IEML/paths] 创建启动器目录失败：{e}（{}）", paths.root.display());
+        say!("[IEML/paths] 创建启动器目录失败：{e}（{}）", paths.own_root.display());
+    }
+
+    /*
+     * ★★ A-4：把老位置（游戏根目录）里的启动器文件**收养**到 `own_root`。
+     *
+     *   必须早于**任何**读写这四个文件的地方（下面的 auth / curseforge 载入、
+     *   以及前端的 `list_instances` / `load_prefs`）—— 否则这一次启动里
+     *   前端会先读到老位置那份（内容对，但下一次写入才会落到新位置）。
+     *   ★ 只复制、绝不删源；目标比源新就不动它。见 `platform::adopt_records`。
+     */
+    let adopted = platform::adopt_records(&paths);
+    if adopted > 0 {
+        say!(
+            "[IEML/records] 已把游戏根目录里的启动器文件复制到 {}（{:.1} KB）—— 游戏根目录那份保留不动",
+            paths.own_root.display(),
+            adopted as f64 / 1024.0
+        );
     }
 
     /*
