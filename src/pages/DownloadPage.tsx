@@ -902,7 +902,8 @@ function ModpackTab({
       </div>
 
       <div className="dim" style={{ marginTop: 'var(--space-2)' }}>
-        数据来自 Modrinth
+        {/* ★ 2026-09-23：来源可切换之后这句话要**跟着来源走** —— 写死"来自 Modrinth" 是假信息 */}
+        数据来自 {packSource === 'curseforge' ? 'CurseForge' : 'Modrinth'}
       </div>
 
       {error ? (
