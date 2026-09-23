@@ -973,6 +973,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const setTheme = useCallback((theme: ThemeId) => dispatch({ type: 'theme', theme }), []);
 
+  /**
+   * ★★ 2026-09-23（用户第 3 条：「**资源管理器里删除版本，启动器不会同步删除**」）：
+   *
+   *   重新对一遍磁盘：后端 `list_instances` 会在读清单时把**目录已经不在了**的条目
+   *   剔掉（并且写回清单），所以这里只要重新读一次、替换 state，同步就完成了。
+   *
+   *   ★ 为什么挂在"重获焦点"而不是定时轮询：用户删目录这个动作发生在**别的窗口**，
+   *     他回到启动器那一刻就是最该刷新的时刻；定时轮询既费电，又可能在他正操作时改列表。
+   */
+  const refreshInstances = useCallback(async () => {
+    try {
+      const r = await backend.loadInstances();
+      dispatch({ type: 'instances/refresh', instances: r.instances });
+    } catch {
+      /* 读不到就保持现状 —— 刷新失败不该把列表清空 */
+    }
+  }, [backend]);
+
+  useEffect(() => {
+    const onFocus = () => void refreshInstances();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [refreshInstances]);
+
   const setLaunchTarget = useCallback((id: string | null) => {
     dispatch({ type: 'instances/last', id });
   }, []);

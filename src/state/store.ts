@@ -299,6 +299,11 @@ export type Action =
    * ★★ C5：打开 / 关闭独立安装页的目标。
    *   `hit` 是 Modrinth 的项目信息（界面原样用，store 不解析它）。
    */
+  /**
+   * ★★ 2026-09-23：**重新对了一遍磁盘之后的实例列表**（用户第 3 条）。
+   *   只换 instances —— 别的一律不动（刷新不该顺手改选中、改页面）。
+   */
+  | { type: 'instances/refresh'; instances: AppState['instances'] }
   | { type: 'resource/open'; hit: unknown; kind: string }
   | { type: 'resource/close' }
   | {
@@ -405,6 +410,8 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, ready: true, bootError: action.error };
 
     /* ---------- 导航 ---------- */
+    case 'instances/refresh':
+      return { ...state, instances: action.instances };
     case 'resource/open':
       return { ...state, resourceTarget: { hit: action.hit, kind: action.kind } };
     case 'resource/close':

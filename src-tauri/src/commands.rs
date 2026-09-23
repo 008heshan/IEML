@@ -479,6 +479,23 @@ pub fn list_instances(state: State<'_, AppState>) -> Result<InstanceStore, Strin
         return Ok(InstanceStore::default());
     }
     let text = std::fs::read_to_string(&path).map_err(|e| format!("读取实例列表失败：{e}"))?;
+    /*
+     * ★★ 2026-09-23：**回退**（第 3 条"删目录要同步"的第一版实现有严重错误）
+     *
+     *   我原来在这里加了 `retain(|i| paths.instance_dir(&i.config.slug).is_dir())` ——
+     *   本意是"目录没了的条目别列出来"，结果**把所有实例都滤掉了**：
+     *   **清单里的 `config.slug` 并不等于磁盘上的目录名**（真机上一眼可见：
+     *   清单里是 `vanilla-262` 这类，而目录名是 `26.3-fabric-0.19.5`）。
+     *   于是启动页变成"还没有可启动的版本"。
+     *
+     *   ★ 更糟的是：**我当时那条"同步成功（1 → 0）"的验证是假的** ——
+     *     它证明的不是"同步生效"，而是"过滤把一切都滤掉了"。
+     *     **一个把功能全关掉的改动，会让"同步"这条判据显得特别成功。**
+     *
+     *   所以先**退回原样**（读清单、不动它），第 3 条换个正确做法：
+     *   先搞清楚"一个实例在磁盘上到底由哪个路径唯一标识"，再谈"目录没了"。
+     *   ——**在搞清楚这件事之前，任何"顺手对一遍磁盘"的代码都是猜。**
+     */
     serde_json::from_str(&text).map_err(|e| format!("实例列表损坏：{e}（文件在 {}）", path.display()))
 }
 
