@@ -14,6 +14,7 @@ import { createPortal } from 'react-dom';
 import { useApp } from '../state/AppContext';
 import { isInstanceRunning } from '../state/store';
 import { EmptyState, Button, Chip, Note, SearchBox, Segmented } from '../ui';
+import { useConfirm } from '../ui/confirm';
 // ★ 版本图标（自绘方块，按世代配色）—— 与下载页、启动页用的是同一个组件
 import { VersionIcon } from '../components/VersionIcon';
 // ★ 行菜单的图标：每个菜单项都要有，视觉效果才统一（用户要求）
@@ -95,6 +96,8 @@ function menuLayout(anchor: DOMRect, height: number): MenuPos {
 }
 
 export function VersionsPage() {
+  /** 应用自己的确认弹窗（`window.confirm` 在这个壳里是坏的，见 `ui/confirm.tsx`） */
+  const confirm = useConfirm();
   const { state, goDownloadTab, goDownloadFor, openVersion, toast, removeInstance, duplicateInstance, renameInstance } =
     useApp();
   const { api } = useRealApi();
@@ -754,7 +757,7 @@ export function VersionsPage() {
                         role="menuitem"
                         className="danger"
                         title="默认移入系统回收站；按住 Shift 点击则永久删除"
-                        onClick={(e) => {
+                        onClick={async (e) => {
                           setMenuFor(null);
                           const copy = describeDelete({
                             what: `「${inst.config.name}」`,
@@ -765,7 +768,22 @@ export function VersionsPage() {
                               '共享的游戏文件（libraries / assets）不会被删除，其他版本还能用。',
                             intent: deleteIntent(e),
                           });
-                          if (!confirm(copy.message)) return;
+                          /*
+                           * ★★ 2026-09-24（A-0）：原来是 `if (!confirm(copy.message)) return;`
+                           *   —— `window.confirm` 被 Tauri 换成了 async 包装，返回的是 Promise，
+                           *   所以那句判断**永远是假**（守卫形同虚设、框也不弹）。
+                           *   现在走应用自己的弹窗，**必须 await**。
+                           */
+                          if (
+                            !(await confirm({
+                              title: '删除这个版本',
+                              danger: true,
+                              confirmText: copy.permanent ? '永久删除' : '删除',
+                              message: copy.message,
+                            }))
+                          ) {
+                            return;
+                          }
                           /*
                            * ★ 审计发现：以前这里只从列表里删记录，
                            *   而确认框写着"存档与配置会一起删除" —— 磁盘没动。
@@ -781,12 +799,31 @@ export function VersionsPage() {
                                   : `${inst.config.name}（磁盘上本来就没有这个目录）`,
                               ),
                             )
-                            .catch((err) => {
+                            .catch(async (err) => {
                               // ★ 回收站不可用时不静默降级，先问用户
-                              if (!copy.permanent && confirm(trashUnavailablePrompt(err))) {
-                                void removeInstance(inst.id, true)
-                                  .then(() =>
-                                    toast('warning', '已永久删除', inst.config.name),
+                              if (
+                                !copy.permanent &&
+                                (await confirm({
+                                  title: '回收站用不了',
+                                  danger: true,
+                                  confirmText: '永久删除',
+                                  message: trashUnavailablePrompt(err),
+                                }))
+                              ) {
+                                /*
+                                 * ★★ 2026-09-24（A-3）：`removeInstance` 现在是
+                                 *   **先删文件、成功之后再删记录**，所以这里重试一次
+                                 *   就行（记录还在），并且按真实结果说话。
+                                 */
+                                return removeInstance(inst.id, true)
+                                  .then((bytes) =>
+                                    toast(
+                                      'warning',
+                                      '已永久删除',
+                                      bytes > 0
+                                        ? `${inst.config.name} · 磁盘上释放了 ${formatBytes(bytes)}`
+                                        : `${inst.config.name}（磁盘上本来就没有这个目录）`,
+                                    ),
                                   )
                                   .catch((e2) =>
                                     toast(
@@ -795,7 +832,6 @@ export function VersionsPage() {
                                       e2 instanceof Error ? e2.message : String(e2),
                                     ),
                                   );
-                                return;
                               }
                               toast(
                                 'err',

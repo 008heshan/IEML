@@ -10,6 +10,7 @@
  *      这里是真的 checkbox，风险项默认不勾，用户可以自己勾
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useConfirm } from '../ui/confirm';
 import { useApp } from '../state/AppContext';
 import {
   Button,
@@ -78,6 +79,8 @@ function judgeAll(
 }
 
 export function ModsPanel() {
+  /** 应用自己的确认弹窗（`window.confirm` 在这个壳里是坏的，见 `ui/confirm.tsx`） */
+  const confirm = useConfirm();
   const {
     state,
     open: active,
@@ -497,14 +500,35 @@ export function ModsPanel() {
       bytes: targets.reduce((s, t) => s + (t.bytes ?? 0), 0),
       intent: deleteIntent(e),
     });
-    if (!confirm(copy.message)) return;
+    /* ★★ 2026-09-24（A-0）：原来写的是 if (!confirm(copy.message)) return; ——
+       而 window.confirm 被 Tauri 换成了 async 包装（返回 Promise），
+       那句判断**永远为假**，于是"删除 Mod"从来不问、直接就删。
+       改成应用自己的弹窗，**必须 await**。 */
+    if (
+      !(await confirm({
+        title: '删除 Mod',
+        danger: true,
+        confirmText: copy.permanent ? '永久删除' : '删除',
+        message: copy.message,
+      }))
+    ) {
+      return;
+    }
     const paths = targets.map((t) => t.path);
     try {
       const done = await api.modrinth.deleteMods(active.config.slug, paths, copy.permanent);
       toast('ok', copy.doneVerb, `${done} 个 Mod 已处理`);
     } catch (err) {
       // ★ 回收站不可用时不静默降级：把后端原话给用户，问他要不要永久删
-      if (!copy.permanent && confirm(trashUnavailablePrompt(err))) {
+      if (
+        !copy.permanent &&
+        (await confirm({
+          title: '回收站用不了',
+          danger: true,
+          confirmText: '永久删除',
+          message: trashUnavailablePrompt(err),
+        }))
+      ) {
         try {
           const done = await api.modrinth.deleteMods(active.config.slug, paths, true);
           toast('ok', '已永久删除', `${done} 个 Mod 已处理`);

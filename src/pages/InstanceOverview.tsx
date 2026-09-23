@@ -15,6 +15,7 @@ import { useMemo, useState } from 'react';
 import { useApp } from '../state/AppContext';
 import { isInstanceRunning } from '../state/store';
 import { Button, Note } from '../ui';
+import { useConfirm } from '../ui/confirm';
 import {
   IconAlert,
   IconBox,
@@ -47,6 +48,8 @@ import {
 } from '../domain/delete.ts';
 
 export function InstanceOverview() {
+  /** 应用自己的确认弹窗（`window.confirm` 在这个壳里是坏的，见 `ui/confirm.tsx`） */
+  const confirm = useConfirm();
   const {
     open: inst,
     state,
@@ -394,7 +397,7 @@ export function InstanceOverview() {
           <Button
             variant="danger"
             title="默认移入系统回收站；按住 Shift 点击则永久删除"
-            onClick={(e) => {
+            onClick={async (e) => {
               // ★ 具体清单比抽象警告有用（PCL2 的做法）
               const detail = state.mods.entries
                 .slice(0, 6)
@@ -415,7 +418,19 @@ export function InstanceOverview() {
                 // 实例大小要真去遍历磁盘才知道 —— 不编数字，所以不传 bytes
                 intent: deleteIntent(e),
               });
-              if (!confirm(copy.message)) return;
+              /* ★★ 2026-09-24（A-0）：window.confirm 被 Tauri 换成 async 包装，
+                 返回 Promise ⇒ !confirm(...) 永远是假，守卫形同虚设。
+                 改成应用自己的弹窗，**必须 await**。 */
+              if (
+                !(await confirm({
+                  title: '删除这个版本',
+                  danger: true,
+                  confirmText: copy.permanent ? '永久删除' : '删除',
+                  message: copy.message,
+                }))
+              ) {
+                return;
+              }
               /*
                * ★ 审计发现：这里原来只删记录、不删磁盘，而确认框写着会删存档。
                *   现在真的删，并按结果说话。
@@ -432,14 +447,28 @@ export function InstanceOverview() {
                       : `${inst.config.name}（磁盘上本来就没有这个目录）`,
                   );
                 })
-                .catch((err) => {
+                .catch(async (err) => {
                   // ★ 回收站不可用时不静默降级成永久删，先问用户
-                  if (!copy.permanent && confirm(trashUnavailablePrompt(err))) {
+                  if (
+                    !copy.permanent &&
+                    (await confirm({
+                      title: '回收站用不了',
+                      danger: true,
+                      confirmText: '永久删除',
+                      message: trashUnavailablePrompt(err),
+                    }))
+                  ) {
                     void removeInstance(inst.id, true)
-                      .then(() => {
+                      .then((bytes) => {
                         closeVersion();
                         go('versions');
-                        toast('warning', '已永久删除', inst.config.name);
+                        toast(
+                          'warning',
+                          '已永久删除',
+                          bytes > 0
+                            ? `${inst.config.name} · 磁盘上释放了 ${formatBytes(bytes)}`
+                            : `${inst.config.name}（磁盘上本来就没有这个目录）`,
+                        );
                       })
                       .catch((e2) => {
                         closeVersion();

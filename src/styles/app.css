@@ -1958,6 +1958,22 @@ tbody tr.clickable:focus-visible {
   flex: 1;
 }
 
+/* ============================ 确认弹窗（`ui/confirm.tsx`） ============================
+ * ★★ 2026-09-24（A-0）：`window.confirm` 在这个壳里是坏的（Tauri 把 window.confirm
+ *   换成了 async 包装，而 `plugin:dialog|confirm` 又没进 ACL），于是全仓库 14 处
+ *   "确定要删除吗"**从来不问、直接就删**。现在统一走应用自己的弹窗，
+ *   正文由 `delete.ts` 生成 —— 里面有 `\n` 和 `**加粗**`，所以这里必须保留换行。
+ */
+.confirm-text {
+  white-space: pre-wrap;
+  font-size: var(--text-base);
+  line-height: 1.65;
+  color: var(--text-secondary);
+  /* 长清单（比如"这 20 个 Mod"）不该把弹窗撑到屏幕外 */
+  max-height: 52vh;
+  overflow-y: auto;
+}
+
 /* ============================ Toast ============================
    ★★ 2026-09-22 用户：「这个提示，消失时没动画，哦对，改到右下角」。
 

@@ -23,6 +23,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Chip, Modal, Note } from '../ui';
+import { useConfirm } from '../ui/confirm';
 import { IconAlert, IconRefresh } from '../ui/Icons';
 import { useRealApi } from '../hooks/useRealApi';
 import type { DataRoot } from '../bridge/tauri';
@@ -39,6 +40,8 @@ export interface DataRootPickerProps {
 
 export function DataRootPicker({ open, onClose, current, toast, onChanged }: DataRootPickerProps) {
   const { api } = useRealApi();
+  /** 应用自己的确认弹窗（`window.confirm` 在这个壳里是坏的，见 `ui/confirm.tsx`） */
+  const confirm = useConfirm();
   /** 用过的游戏文件夹（PCL 那张「文件夹列表」） */
   const [roots, setRoots] = useState<DataRoot[]>([]);
   const [loading, setLoading] = useState(false);
@@ -137,13 +140,28 @@ export function DataRootPicker({ open, onClose, current, toast, onChanged }: Dat
       toast('info', '演示模式', '浏览器里删不了目录');
       return;
     }
-    const ok1 = window.confirm(
-      `要删除这个游戏根目录吗？\n\n${path}\n\n` +
+    /*
+     * ★★ 2026-09-24（A-0）：这里原来是 `window.confirm(...)` ——
+     *   而 Tauri 把它换成了 **async 包装**，返回的是 Promise：
+     *   `if (!ok1)` 永远为假 ⇒ **两道确认都不生效，点了直接删**。
+     *   现在走应用自己的确认弹窗（`useConfirm`），**必须 await**。
+     */
+    const ok1 = await confirm({
+      title: '删除游戏根目录',
+      danger: true,
+      confirmText: '继续',
+      message:
+        `要删除这个游戏根目录吗？\n\n${path}\n\n` +
         '注意：**连目录里的文件一起删**（版本 / 存档 / Mod 都在里面），删完不可恢复。\n' +
         '如果只想让它从这张列表里消失，请点「移除」。',
-    );
+    });
     if (!ok1) return;
-    const ok2 = window.confirm(`再确认一次：真的删除 ${path} ？\n\n这一步之后没法撤销。`);
+    const ok2 = await confirm({
+      title: '再确认一次',
+      danger: true,
+      confirmText: '永久删除',
+      message: `真的删除 ${path} ？\n\n这一步之后没法撤销。`,
+    });
     if (!ok2) return;
 
     setBusy(path);

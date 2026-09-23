@@ -6516,3 +6516,64 @@ find_version_json(shared, &vid, &i.mcVersion, kind).is_some()
 真机判据（`D8b` / `D8c`）：动作条的 `backgroundColor` 必须是
 `rgba(0, 0, 0, 0)`，而 `borderTopWidth` 必须 > 0 ——
 **一条断言防"又给它铺上一层色"、另一条防"顺手把分隔线也删了"**。
+
+---
+
+### 六十二、修复批（一）：**A-0 确认框全是摆设** → 换成应用自己的弹窗（2026-09-24）
+
+> 缺陷报告见 `docs/BUG-REPORT-2026-09-24.md`。用户看完报告说「**全权交由你来做**」，
+> 于是按报告第九节的顺序逐批修，每批都要过门禁 + 真机验。
+
+#### 62.1　根因回顾（三段咬在一起）
+
+1. `tauri-plugin-dialog` 注入的 `init-iife.js` 把 `window.confirm` 换成了 **async 包装**
+   → 它**永远返回 Promise**；
+2. 全仓库 14 处写的是**同步**判断 `if (!confirm(msg)) return;`
+   → `!Promise` 恒为 `false` ⇒ **守卫永远放行**（"用户点了取消"在语法上不可能发生）；
+3. 而 `plugin:dialog|confirm` 又**没被授权**（该插件 `default` 权限集只有
+   `allow-message / allow-save / allow-open`）⇒ 框也不弹，Promise 以 ACL 错误 reject。
+
+**真机证据**：`confirm('…')` 返回 `[object Promise]`、耗时 0ms；`await` 它得到
+`Command plugin:dialog|confirm not allowed by ACL`；守卫写法恒放行。
+沙盒里走完整删除流程：**0 个对话框事件**，记录照样被删。
+
+#### 62.2　决定：**不再用 `window.confirm`**，改成应用自己的确认弹窗
+
+新增 `src/ui/confirm.tsx`（`ConfirmProvider` + `useConfirm`）：
+
+* API 是 **`Promise<boolean>`**，调用点**必须 `await`** —— 从语法上杜绝
+  "把 Promise 当真值"这一类错（`tsc` 还会用 `TS2801` 兜住）；
+* 走应用自己的 `Modal`，观感与主题一致（原生弹窗在玻璃界面里本来就出戏）；
+* 正文支持 `**加粗**` 与换行（`delete.ts` 生成的说明是多行的）；
+* **默认焦点给「取消」**：危险操作不该让 Enter 直接等于"确定"；
+* 在 `ConfirmProvider` 之外调用 `useConfirm` 时**直接抛错**，不静默退回
+  `window.confirm`（退回去就等于悄悄恢复成"点了不问直接删"）。
+
+14 处调用点全部改成 `await confirm({...})`，宿主函数相应改成 `async`。
+
+★★ **一个漂亮的旁证**：改之前 `tsc` 对着那些老写法报
+`TS2801: 这个条件永远为真，因为 'Promise<boolean>' 总是有定义` ——
+**编译器其实一直在指认这条缺陷**，只是过去没人把它当回事。
+
+#### 62.3　顺带把 A-3（假"已永久删除"）一起修了
+
+`AppContext.removeInstance` 原来是**先删记录、再删磁盘**，于是"删磁盘失败"时：
+记录没了、目录还在、界面找不到它，重试分支又因为 `find` 不到而 `return 0` 什么都不删，
+调用方却无条件弹「已永久删除」。
+
+现在**顺序倒过来**：先删文件 → 成功之后才 `dispatch(instances/remove)`；
+找不到记录时**直接抛错**（不假装删过），失败时**什么都不动**（记录还在，可以重试）。
+
+#### 62.4　真机验收（`tools/live/probe-a0-fixed.mjs`，沙盒）
+
+```
+① 点「删除」→ 出现应用自己的确认框：标题「删除这个版本」，
+   正文「确定删除「探针·确认框」？ 将被删除的内容：· 实例目录 instances/probe-a0/…」，
+   按钮 ["取消","删除"]
+② 点「取消」→ 记录还在 / 目录还在 / **存档文件还在**（← 这是从来没有过的行为）
+③ 再点「删除」→ 点确认 → 记录清空、目录没了、提示「已移到回收站…释放了 128 B」
+④ 运行时异常：无
+```
+
+★ 这条探针我自己先踩了个坑：**忘了传 exe 参数**，于是验的是旧的 release 版，
+四条判据全红。**验修复一定要指名"验的是哪个产物"** —— 已记进 MEMORY。

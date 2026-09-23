@@ -12,6 +12,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { useApp } from '../state/AppContext';
 import { Button, Card, CardTitle, Chip, Field, Note, Segmented, Switch, CustomSelect } from '../ui';
+import { useConfirm } from '../ui/confirm';
 import {
   IconAlert,
   IconGear,
@@ -46,6 +47,8 @@ import type { DownloadSourcesPayload } from '../bridge/tauri';
 
 
 export function SettingsPage() {
+  /** 应用自己的确认弹窗（`window.confirm` 在这个壳里是坏的，见 `ui/confirm.tsx`） */
+  const confirm = useConfirm();
   const { state, rescanJava, toast, backend, refreshJava, prefsSaveFailed, vfx, setTheme } = useApp();
   const { api } = useRealApi();
   /*
@@ -528,8 +531,15 @@ export function SettingsPage() {
                       );
                       return;
                     }
-                    const ok = confirm(
-                      `可以释放约 ${humanBytes(bytes)}：\n\n` +
+                    /* ★★ 2026-09-24（A-0）：原来是同步的 `const ok = confirm(...)` ——
+                       而 window.confirm 是 async 的（Tauri 换过）⇒ ok 是个 Promise，
+                       `if (!ok)` 永远为假 ⇒ **不问就清**。改成应用弹窗 + await。 */
+                    const ok = await confirm({
+                      title: '清理缓存与无用文件',
+                      danger: true,
+                      confirmText: '清理',
+                      message:
+                        `可以释放约 ${humanBytes(bytes)}：\n\n` +
                         `· 没有版本引用的共享文件 ${unused.candidates} 个` +
                         `（保留 ${unused.kept_libraries} 个库、${unused.kept_assets} 个资源文件）\n` +
                         `· 缓存的安装器 ${caches.installer_files} 个（Forge / OptiFine，要用时会重新下载）\n` +
@@ -538,7 +548,7 @@ export function SettingsPage() {
                         `不动：断点续传的 .part 临时文件；游戏文件（libraries / assets / 已装版本）一个都不动。\n` +
                         `注意：这些是缓存，会直接永久删除（不进回收站 —— 几百上千个碎文件进回收站反而会把回收站塞爆）。\n\n` +
                         `确定清理？`,
-                    );
+                    });
                     if (!ok) return;
                     const [doneUnused, doneCaches] = await Promise.all([
                       api.installer.cleanUnused(false),
@@ -659,7 +669,7 @@ export function SettingsPage() {
                       size="sm"
                       variant="ghost"
                       title="默认移入系统回收站；按住 Shift 点击则永久删除"
-                      onClick={(e) => {
+                      onClick={async (e) => {
                         const copy = describeDelete({
                           what: '这个 Java',
                           items: [j.path],
@@ -667,7 +677,18 @@ export function SettingsPage() {
                           note: '如果还有版本在用它，启动时会提示重新指定。',
                           intent: deleteIntent(e),
                         });
-                        if (!confirm(copy.message)) return;
+                        /* ★★ 2026-09-24（A-0）：同步判断 + async 的 window.confirm
+                           ⇒ 守卫永远放行。改成应用弹窗 + await。 */
+                        if (
+                          !(await confirm({
+                            title: '删除这个 Java',
+                            danger: true,
+                            confirmText: copy.permanent ? '永久删除' : '删除',
+                            message: copy.message,
+                          }))
+                        ) {
+                          return;
+                        }
                         /*
                          * ★ 审计发现：这里没有 `.catch` —— 文件被占用或没权限时
                          *   删除会静默失败，用户点了几次都"没反应"。
@@ -683,9 +704,17 @@ export function SettingsPage() {
                                 j.bytes > 0 ? `释放了 ${humanBytes(j.bytes)}` : j.path,
                               );
                             })
-                            .catch((err) => {
+                            .catch(async (err) => {
                               // ★ 回收站不可用时不静默降级成永久删，先问用户
-                              if (!permanent && confirm(trashUnavailablePrompt(err))) {
+                              if (
+                                !permanent &&
+                                (await confirm({
+                                  title: '回收站用不了',
+                                  danger: true,
+                                  confirmText: '永久删除',
+                                  message: trashUnavailablePrompt(err),
+                                }))
+                              ) {
                                 void attempt(true);
                                 return;
                               }
