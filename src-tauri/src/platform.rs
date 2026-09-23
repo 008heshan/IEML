@@ -197,6 +197,7 @@ fn default_own_root() -> PathBuf {
     dirs_data_dir().join("IEML")
 }
 
+
 /// 一个候选磁盘上，我们打算用的子目录名
 const DATA_DIR_NAME: &str = "IEML";
 
@@ -577,13 +578,39 @@ pub fn list_volumes(current: &Path) -> Vec<VolumeInfo> {
 ///   大小写不敏感、末尾分隔符不算差别（`D:\IEML` 与 `D:\IEML\` 是一个地方）。
 ///   不解析 `..`、不碰符号链接：这里比的是**我们自己拼出来的**建议路径
 ///   与用户记录里的路径，不是任意两个用户输入。
-fn same_path(a: &Path, b: &Path) -> bool {
+pub fn same_path(a: &Path, b: &Path) -> bool {
     let norm = |p: &Path| {
         p.to_string_lossy()
             .trim_end_matches(['\\', '/'])
             .to_lowercase()
     };
     !a.as_os_str().is_empty() && norm(a) == norm(b)
+}
+
+/// 这个目录是不是"一次手滑会删掉一大片"的那种（盘符根 / 用户目录 / 系统目录）。
+///
+/// ★ 危险操作的判据要**宽进严出**：宁可多拦几个（用户还能去资源管理器自己删），
+///   也不能放过一个 —— 放过的代价是不可恢复的。
+pub fn is_dangerous_root(p: &Path) -> bool {
+    // 盘符根：`D:` 这种（去掉尾分隔符后只剩两字符且以冒号结尾）
+    let s = p.to_string_lossy();
+    let trimmed = s.trim_end_matches(['\\', '/']);
+    if trimmed.len() == 2 && trimmed.ends_with(':') {
+        return true;
+    }
+    if let Some(home) = std::env::var_os("USERPROFILE") {
+        if same_path(p, Path::new(&home)) {
+            return true;
+        }
+    }
+    for key in ["SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramData"] {
+        if let Some(v) = std::env::var_os(key) {
+            if same_path(p, Path::new(&v)) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /* ====================== 「用过的游戏文件夹」列表（PCL 那种） ====================== */
@@ -1632,7 +1659,7 @@ fn push_unique(list: &mut Vec<JavaRuntime>, rt: JavaRuntime) {
     }
 }
 /// 目录占用（用于让用户看到"自动下载的 Java 占了多大"）
-fn dir_size(dir: &Path) -> u64 {
+pub fn dir_size(dir: &Path) -> u64 {
     let mut total = 0u64;
     let Ok(entries) = std::fs::read_dir(dir) else {
         return 0;

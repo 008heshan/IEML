@@ -125,6 +125,44 @@ export function DataRootPicker({ open, onClose, current, toast, onChanged }: Dat
   }
 
   /** 系统文件夹对话框 —— 留给"想放在别的地方"的人（可以在里面新建文件夹） */
+  /**
+   * **删除一个根目录（连目录一起删）** —— 用户图二要求的能力，且明确选了"连目录删"。
+   *
+   * ★ 两次确认，第一次把**要删什么**写清楚：
+   *   "哪个路径" + "这是不可恢复的" + "里面可能有什么"。
+   *   第二次是一句更短的"真的删吗" —— 两步之间用户有时间反悔。
+   */
+  async function removeDir(path: string) {
+    if (!api) {
+      toast('info', '演示模式', '浏览器里删不了目录');
+      return;
+    }
+    const ok1 = window.confirm(
+      `要删除这个游戏根目录吗？\n\n${path}\n\n` +
+        '注意：**连目录里的文件一起删**（版本 / 存档 / Mod 都在里面），删完不可恢复。\n' +
+        '如果只想让它从这张列表里消失，请点「移除」。',
+    );
+    if (!ok1) return;
+    const ok2 = window.confirm(`再确认一次：真的删除 ${path} ？\n\n这一步之后没法撤销。`);
+    if (!ok2) return;
+
+    setBusy(path);
+    try {
+      const bytes = await api.launcher.deleteDataRoot(path);
+      const mb = bytes > 0 ? `释放了 ${(bytes / 1024 / 1024).toFixed(1)} MB` : '目录本来是空的';
+      toast('ok', '已删除', `${path}（${mb}）`);
+      await load();
+    } catch (e) {
+      /*
+       * ★ 后端的拒绝**带原因**（当前根目录 / 启动器数据目录 / 盘符根 / 不是目录），
+       *   原样显示 —— 不要把它翻译成一句"删除失败"。
+       */
+      toast('err', '没删成', e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function browse() {
     let picked: string | null = null;
     try {
@@ -223,16 +261,42 @@ export function DataRootPicker({ open, onClose, current, toast, onChanged }: Dat
                 这是"禁用必须给具体理由"的另一种形态：**给一个能做的动作**。
             */}
             {r.exists ? (
-              <Button
-                size="sm"
-                variant={r.isCurrent ? 'ghost' : 'primary'}
-                disabled={r.isCurrent || busy !== null}
-                loading={busy === r.path}
-                title={r.isCurrent ? '现在用的就是这个目录' : `把游戏根目录换成 ${r.path}`}
-                onClick={() => void apply(r.path)}
-              >
-                {r.isCurrent ? '当前' : '用这个'}
-              </Button>
+              <>
+                <Button
+                  size="sm"
+                  variant={r.isCurrent ? 'ghost' : 'primary'}
+                  disabled={r.isCurrent || busy !== null}
+                  loading={busy === r.path}
+                  title={r.isCurrent ? '现在用的就是这个目录' : `把游戏根目录换成 ${r.path}`}
+                  onClick={() => void apply(r.path)}
+                >
+                  {r.isCurrent ? '当前' : '用这个'}
+                </Button>
+                {/*
+                  ★★ 2026-09-23 用户（图二）：「游戏根目录要**允许用户删除**」，
+                    并明确选了 **B：连目录一起删**。
+
+                  ★ 这是**不可恢复**的操作，所以：
+                    · 当前正在用的那个**不给删**（title 说明原因：先切走再删）；
+                    · 点下去要**两次确认**，第一次把"删哪个路径、里面有多少东西"写清楚，
+                      第二次再确认一次 —— 两句话都点"确定"才真的删。
+                  ★ 后端还有另外三道闸（启动器数据目录 / 盘符根 / 必须真是目录），
+                    拒绝时会带原因回来，这里原样显示。
+                */}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={r.isCurrent || busy !== null}
+                  title={
+                    r.isCurrent
+                      ? '这是现在正在用的根目录 —— 先切换到别的目录，再删它'
+                      : `删除 ${r.path}（连里面的文件一起删，不可恢复）`
+                  }
+                  onClick={() => void removeDir(r.path)}
+                >
+                  删除
+                </Button>
+              </>
             ) : (
               <Button
                 size="sm"

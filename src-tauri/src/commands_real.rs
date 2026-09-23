@@ -4531,6 +4531,78 @@ pub fn list_data_roots(state: State<'_, AppState>) -> Vec<crate::platform::Known
     crate::platform::list_known_roots(&state.paths.root)
 }
 
+/// **删除一个游戏根目录**（连目录一起删）—— 用户在图二那一页要求的能力。
+///
+/// ## 这不是"从列表移除"，是**真删磁盘**
+///
+///   所以有四道闸（见函数体），任何一道过不去都直接拒绝并说清原因 ——
+///   **危险操作宁可拒绝，也不要"尽力而为"**。
+///
+/// 返回：删掉的字节数（界面用它说清"释放了多少"）。
+#[tauri::command]
+pub async fn delete_data_root(path: String, state: State<'_, AppState>) -> Result<u64, String> {
+    let target = std::path::PathBuf::from(path.trim());
+    if target.as_os_str().is_empty() {
+        return Err("要删除的是一个空路径".into());
+    }
+    if !target.is_absolute() {
+        return Err(format!("要一个完整路径，现在是相对路径：{}", target.display()));
+    }
+
+    // ① 当前正在用的根目录：**先切走再删**（否则下一次启动就没家了）
+    if crate::platform::same_path(&target, &state.paths.root) {
+        return Err(
+            "这是**现在正在用**的游戏根目录 —— 先在上面选另一个目录切换过去，再删这个。".into(),
+        );
+    }
+
+    /*
+     * ② 启动器自己的数据目录：**不许删目录**。
+     *   实例清单、自动下载的 Java、缓存、日志都住在里面 ——
+     *   删它等于把用户的实例全删掉。列表里可以从候选里移除，但目录得留着。
+     */
+    if crate::platform::same_path(&target, &state.paths.own_root) {
+        return Err(format!(
+            "这是**启动器自己的数据目录**（{}）：实例、Java、缓存、日志都在里面，\n\
+             删它会连你的实例一起删掉。想让它不出现在这张列表里，用「移除」就好。",
+            state.paths.own_root.display()
+        ));
+    }
+
+    // ③ 盘符根 / 家目录 / 系统盘根：一次手滑会删掉整块盘
+    if crate::platform::is_dangerous_root(&target) {
+        return Err(format!(
+            "{} 是盘符根目录（或你的用户目录）—— 删它会删掉整块盘里的东西，这里不做。\n\
+             如果你确实想清掉它，请到资源管理器里自己操作。",
+            target.display()
+        ));
+    }
+
+    // ④ 必须真的存在、而且是个目录
+    let meta = std::fs::symlink_metadata(&target)
+        .map_err(|e| format!("读不到这个目录：{e}"))?;
+    if !meta.is_dir() {
+        return Err(format!("{} 不是一个目录。", target.display()));
+    }
+
+    // 删除前**先量一下**（删完就量不到了）—— 这个数字要写进结果里
+    let bytes = crate::platform::dir_size(&target);
+
+    tokio::fs::remove_dir_all(&target)
+        .await
+        .map_err(|e| format!("删不掉 {}：{e}", target.display()))?;
+
+    // 删完把它从"用过的列表"里也去掉（否则会留下一条指向不存在目录的记录）
+    crate::platform::forget_root(&target);
+
+    say!(
+        "[IEML/paths] 用户删除了游戏根目录 {}（释放 {} 字节）",
+        target.display(),
+        bytes
+    );
+    Ok(bytes)
+}
+
 /// 忘记一个文件夹（目录已经没了时用户会点"移除"）。
 ///
 /// ★ 只动"用过的列表"，**不碰磁盘上任何东西** —— 移除了还能再选回来。

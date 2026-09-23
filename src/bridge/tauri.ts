@@ -1224,6 +1224,12 @@ export const launcher = {
 
   /** 忘掉一个文件夹（目录已经没了时用）—— 只动那张列表，不碰磁盘 */
   forgetDataRoot: (path: string) => call<void>('forget_data_root', { path }),
+  /**
+   * ★★ 2026-09-23：**连目录一起删**（用户定的 B）。返回释放的字节数。
+   *   ★ 后端有四道闸（当前根目录 / 启动器数据目录 / 盘符根 / 必须真是目录），
+   *     任何一道过不去都会带**原因**拒绝 —— 界面直接把那句话显示出来。
+   */
+  deleteDataRoot: (path: string) => call<number>('delete_data_root', { path }),
 };
 
 /**
