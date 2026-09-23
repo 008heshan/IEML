@@ -104,6 +104,15 @@ export function groupVersions<T extends VersionLike>(
 export function useVersionGroups<T extends VersionLike>(
   versions: T[],
   compare: (a: string, b: string) => number,
+  /**
+   * ★★ 2026-09-23：要**强制展开**的那个分组（推荐版本所在的组）。
+   *
+   *   为什么需要它：列表默认只展开第一组，其余折叠 —— 而"推荐"那一个
+   *   很可能不在第一组里，于是**用户根本看不到推荐标记**
+   *   （真机实测就是这样：分类对了、推荐数 0）。
+   *   ★ 推荐的东西必须**看得见**，否则等于没推。
+   */
+  forceOpenKey?: string | null,
 ) {
   const groups = useMemo(() => groupVersions(versions, compare), [versions, compare]);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
@@ -111,6 +120,8 @@ export function useVersionGroups<T extends VersionLike>(
 
   const firstKey = groups[0]?.key;
   const isOpen = (key: string) => {
+    // ① 被"强制展开"的组永远展开（推荐在里面）
+    if (forceOpenKey && key === forceOpenKey && collapsed[key] !== false) return true;
     if (key === firstKey) return collapsed[key] !== true;
     return collapsed[key] === false;
   };
