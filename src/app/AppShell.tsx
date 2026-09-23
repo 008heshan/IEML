@@ -74,10 +74,48 @@ function isLong(text: string): boolean {
 }
 
 export function App() {
-  const { state, go, dismissToast, closeVersion, setSubPage, open, openVersion } = useApp();
+  const { state, go, dismissToast, closeVersion, setSubPage, open, openVersion, setLaunchTarget } =
+    useApp();
   const [stopping, setStopping] = useState(false);
   /** 顶栏的账号弹窗（正版登录入口） */
   const [accountOpen, setAccountOpen] = useState(false);
+
+  /*
+   * ★★ 2026-09-24（A-1 修复）：**把 `ieml:launch-request` 的监听提到常驻层**。
+   *
+   *   缺陷原状：三个地方（实例侧栏「启动这个版本」、版本列表行的「启动」、概览页「启动」）
+   *   都 `window.dispatchEvent(new CustomEvent('ieml:launch-request'))`，
+   *   而**唯一的监听方在 `LaunchPage` 里** —— 它只在 `state.page === 'launch'` 时挂载。
+   *   于是在版本列表/概览上点「启动」：菜单关掉、什么都没有。
+   *   真机判据：那一页 `getEventListeners(window)['ieml:launch-request'].length === 0`。
+   *
+   *   现在监听挂在这里（AppShell 一直在），做的事情和以前**一模一样**：
+   *   定目标 → 切到启动页 → 等那个按钮出现后点它。
+   *   ★ **不在这里复制第二份启动逻辑** —— 真正的启动入口始终只有
+   *     `LaunchPage` 里那一个（`#ieml-launch-btn`），否则又是"同一件事两处实现"。
+   */
+  useEffect(() => {
+    const onLaunchRequest = (e: Event) => {
+      const id = (e as CustomEvent<string>).detail;
+      if (!id) return;
+      setLaunchTarget(id);
+      go('launch');
+      /* 等启动页挂载（原来写死 120ms；这里改成轮询，最多等 2 秒） */
+      let tries = 0;
+      const tick = window.setInterval(() => {
+        const btn = document.getElementById('ieml-launch-btn') as HTMLButtonElement | null;
+        if (btn && !btn.disabled) {
+          window.clearInterval(tick);
+          btn.click();
+          return;
+        }
+        tries += 1;
+        if (tries > 20) window.clearInterval(tick);
+      }, 100);
+    };
+    window.addEventListener('ieml:launch-request', onLaunchRequest);
+    return () => window.removeEventListener('ieml:launch-request', onLaunchRequest);
+  }, [go, setLaunchTarget]);
 
   /**
    * 把一条提示交给顶层的 toast 区域。
