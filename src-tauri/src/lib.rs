@@ -336,6 +336,7 @@ pub fn run() {    /*
             commands_real::list_data_roots,
             /* ★ 忘掉一个文件夹（只动那张列表，不碰磁盘上的东西） */
             commands_real::forget_data_root,
+        commands_real::delete_data_root,
             /* -------- 账号 -------- */
             /* ★★ 正版登录的可用性（client_id 配没配）+ 配置入口 */
             commands_real::ms_login_status,
