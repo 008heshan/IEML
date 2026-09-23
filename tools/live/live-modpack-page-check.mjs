@@ -71,8 +71,11 @@ for (let i = 0; i < 60; i += 1) { if ((await ev(`!!document.querySelector('.nav-
 
 await ev(`[...document.querySelectorAll('.nav-item')].find((b) => (b.textContent || '').includes('下载'))?.click()`);
 await sleep(1500);
-/* ★ 下载页默认在「游戏」页签 —— 必须先切到「整合包」，否则一张卡片都不会有
-   （第一版漏了这一步，7 条全是假红）。 */
+/*
+ * 点一次「整合包」页签再断言，不依赖"默认在哪一格"。
+ * （★ 2026-09-23：下载页的默认页签从「游戏」改成了「整合包」—— 用户第 4 条把
+ *   「安装游戏」整格搬去它自己的一页了。这里显式点一下，两边的默认值都不影响它。）
+ */
 const tabbed = await ev(`(() => {
   const t = [...document.querySelectorAll('.tabs button, .tabs [role=tab]')].find((x) => (x.textContent || '').trim() === '整合包');
   t?.click();
