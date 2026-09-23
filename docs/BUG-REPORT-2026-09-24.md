@@ -342,6 +342,7 @@ Modrinth 每次的 `filename` 通常带版本号 → 旧 jar 留着 → **同一
 | `tools/live/probe-confirm-acl.mjs` | `confirm()` 的返回值/耗时（A-0 的判据，真实配置下跑） |
 | `tools/live/probe-native-dialogs.mjs` | `confirm` / `alert` / `prompt` 三者的行为对照 |
 | `tools/live/probe-bug-repro-6.mjs` | **沙盒里对比"只差 addons 的两条记录"的启动命令行**（A-2：OptiFine 勾了也白勾） |
+| `tools/live/probe-bug-repro-7.mjs` | 沙盒里给探针实例连装同一 Mod 的两个版本，数 mods/ 里的 jar（B-1，**还没跑通**：见第七节） |
 
 跑法：`node tools/live/<脚本>.mjs ["<exe>"]`（默认用 `src-tauri/target/release/ieml.exe`，
 可以传桌面那份 exe）。
@@ -352,8 +353,14 @@ Modrinth 每次的 `filename` 通常带版本号 → 旧 jar 留着 → **同一
 
 | 条目 | 要复现需要什么 | 我为什么没做 |
 |---|---|---|
-| B-1 Mod 更新不删旧 jar | 装一个 Mod，等它有新版本，点「更新」 | 会真的往实例 mods/ 里写文件；`install_mod` 只有 `create_dir_all` + `download_one`（我逐行看过，没有任何 remove/rename）。★ 现在**可以放进沙盒做**了（同一个 Mod 装两个不同版本 → 看 mods/ 里是不是两个 jar），只差"挑一个 Mod + 跑两遍安装流程"，下一轮做 |
+| B-1 Mod 更新不删旧 jar | 装一个 Mod，等它有新版本，点「更新」 | 会真的往实例 mods/ 里写文件；`install_mod` 只有 `create_dir_all` + `download_one`（我逐行看过，没有任何 remove/rename）。★ **试过两次**（`probe-bug-repro-7.mjs`，沙盒里给一个 1.20.1+Fabric 的探针实例连装同一 Mod 的两个版本）：第一次选择器点错元素（卡片本身没有 onClick，按钮在卡片脚上）；第二次进到了安装页，但**点中的那行是 `blocked` 的**（版本不匹配/作者不允许第三方下载），`onClick` 直接 return，所以 mods/ 里没文件。**还差一步**：挑一个"版本号与 1.20.1 + Fabric 对得上、且没被 blocked"的 Mod（或者把探针实例改成 26.4 + Fabric）—— 下一轮补 |
 | C-2「mods 目录」按钮 | 点一下，看资源管理器打开的是哪个目录 | 会在你桌面上弹出窗口。代码侧 5 个 `openDir(` 调用点我都核对过：这一处传的是 `'instance'`，而 `'mods'` 那个分支另有其用。★ 要做也能做（沙盒里点一次，再关掉那个窗口），下一轮视情况做 |
+
+★ 两次失败的探针本身也留下两条经验（写下来省得下次再踩）：
+* 资源卡片**本身没有 onClick** —— 入口是卡片脚上那个「选择版本并安装」按钮；
+* 判"列表有没有数据"要用**确切的类名**（`.res-card`）。
+  我第一版用了一串松选择器，把版本 chips 也数成了"卡片"，
+  于是"上游没数据"这种情况**没被识别出来**（本该干净跳过的却继续往下跑）。
 
 ★ 顺带一条**探针自己的坑**（写下来免得误导）：
 第 2 轮的 CF 探针里，输入搜索词后我**立刻**去读卡片数，读到的还是上一批结果
