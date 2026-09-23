@@ -564,8 +564,29 @@ function ModpackTab({
       .catch(() => setTargetVersions([]));
   }, [installTarget, api]);
 
-  async function install() {
-    if (!selected) return;
+  /**
+   * 装一个整合包。
+   *
+   * ★★ 2026-09-24（C-5 修复）：加了 `version` 参数 —— 由**点击那一刻**直接传进来。
+   *
+   *   原来的写法是 `onPick` 里 `setPickedVersion(v)` 然后
+   *   `window.setTimeout(() => void install(), 0)`：那个 `install` 是**本次渲染的闭包**，
+   *   它读到的 `pickedVersion` 还是 `null`（`setState` 要下一次渲染才生效），
+   *   于是回退到 `versions(selected.id)[0]` —— **点哪一行都装最新那个版本**。
+   *   界面看起来正常（点了就装），错的是"装的是哪一个"。
+   *
+   *   现在：点行 → `install(v)` 把版本**当参数**传进来，根本不再经过 state 的时序；
+   *   state 里的 `pickedVersion` 仍然保留，给底栏那个「确认并开始安装」按钮用
+   *   （那条路径是"先选版本、再点确认"，时序上不存在这个问题）。
+   */
+  async function install(version?: ModrinthVersion) {
+    /*
+     * ★ 要装的是**这个安装页认定的那个包**（`installTarget`）——
+     *   不再依赖 `selected` 的时序：`install(v)` 是从 onPick 里同步调的，
+     *   闭包里的 state 都还是上一次渲染的值，靠它会让"点哪行装哪行"又变成空话。
+     */
+    const pack = installTarget ?? selected;
+    if (!pack) return;
     if (!api) {
       toast('warning', '演示模式', '浏览器里无法真实安装整合包');
       return;
@@ -577,7 +598,7 @@ function ModpackTab({
        *   内联面板时代只能装最新那个版本 —— 用户在安装页里选了半天，
        *   装的却还是最新，那就成了假控件。
        */
-      const first = pickedVersion ?? (await api.modrinth.versions(selected.id))[0];
+      const first = version ?? pickedVersion ?? (await api.modrinth.versions(pack.id))[0];
       const file = first?.files.find((f) => f.primary) ?? first?.files[0];
       if (!file) throw new Error('这个整合包没有可下载的文件');
 
@@ -586,7 +607,7 @@ function ModpackTab({
       if (!info.mc_version) {
         throw new Error('这个整合包的清单里没写游戏版本，无法安装');
       }
-      const packName = name.trim() || info.name || selected.name;
+      const packName = name.trim() || info.name || pack.name;
       const slug = `pack-${Date.now().toString(36).slice(-6)}`;
 
       // ★ 建任务：任务中心里能看到真实阶段与文件计数（不是假的进度条）
@@ -824,11 +845,16 @@ function ModpackTab({
               (targetVersions.find((v) => v.version_type === 'release') ?? targetVersions[0])?.id
             }
             onPick={(v) => {
-              // ★ 点哪个装哪个：先把选中的版本落进 state，再触发同一份 install()
+              /*
+               * ★★ 2026-09-24（C-5 修复）：**把版本当参数传进去**，不再
+               *   `setPickedVersion(v)` + `setTimeout(install, 0)` ——
+               *   那样 install 读到的还是上一次渲染的 pickedVersion（null），
+               *   结果"点哪一行都装最新那个"。见 install() 的说明。
+               */
               setSelected(installTarget);
               setPickedVersion(v);
               setName(name || installTarget.name);
-              window.setTimeout(() => void install(), 0);
+              void install(v);
             }}
             onRetry={() => setTargetVersions(null)}
           />

@@ -23,6 +23,7 @@
 | 4 | **A-1** 三处「启动」按钮 | ✅ **已修**（监听器搬到常驻 `AppShell`；启动页那份已删） | `probe-a1-fixed.mjs`：监听器 1 个 / 切页且选中那一行 / 沙盒日志 + java / 无进程漏到真实根 |
 | 5 | **A-4** 清单/偏好还在游戏根目录 | ✅ **已修**（四个文件搬进 `own_root`；老位置只读回退 + 启动时收养） | `probe-a4-fixed.mjs` 五条判据全绿 + 真实数据前后 mtime 对照（根里那两份一动没动） |
 | 6 | **B-2 / B-3 / B-4** 界面说的和做的不一致 | ✅ **已修**（3 条：更新状态撒谎 / Quilt 又装 QFAPI / 端口提示说反） | `probe-b2-fixed.mjs`（含把代理指死逼出的失败支）+ `probe-bug-repro-1.mjs` ② 段 + `probe-server-hint.mjs` |
+| 7b | **C-5** 整合包「点哪行装哪行」不成立 | ✅ **已修**（版本当参数传，不再依赖 state 时序） | `probe-c5-fixed.mjs` 差分判据：点 alpha.1 / alpha.2 → 装的是**各自**那个版本 |
 | 7 | **C-2 / C-3 / C-4 / C-6 / C-7** + 廉价低项 | ✅ **已修**（5 条 + C-16/C-17/C-18/C-19/C-22/C-26） | `probe-bug-repro-9.mjs` 一次跑完四条全绿；C-2 有两条 Rust 测试钉着；`cargo test --lib` 453 通过 |
 
 > 每批的详细记录在 `docs/DECISIONS.md`（从 ADR 六十二 起）。
@@ -460,7 +461,7 @@ blocks: [{模组加载器四选一}, {附加组件 OptiFine 清单来自在线}]
 | C-2 | 「mods 目录」按钮打开的是**实例根目录** | 标签/title 写「打开这个实例的 mods 目录（game\mods）」，实参却是 `openDir('instance', slug)`；Rust 有 `"mods"` 分支且 `CrashModal` 用的就是它 | 【代码】 |
 | C-3 | 「也可以把 .jar 文件直接拖进窗口。」——**没有任何拖放实现** | `onDrop/onDragOver/dataTransfer/onDragDropEvent` 在 `src` 里 **0 命中**，而 `tauri.conf.json` 是 `dragDropEnabled: true`（原生拖放被接管，没 JS 监听就等于什么都不做） | 【代码】 |
 | C-4 | 版本列表底部「这些版本还没有游戏文件 / 起不来」是**假警报** | 判据是 `MC_PROFILES` 那 10 个内置版本的静态表 ∩ 实例的 mcVersion，**不读盘**；装 1.21.4 能跑，列表仍挂着这句 | 【代码】 |
-| C-5 | 整合包安装页「点哪个装哪个」不成立 | `onPick` 里 `setPickedVersion(v)` 之后 `setTimeout(install, 0)` 捕获的是**本次渲染**的闭包，`pickedVersion` 仍是 `null` → 回退到"列表第一个" | 【代码】 |
+| C-5 | 整合包安装页「点哪个装哪个」不成立 | `onPick` 里 `setPickedVersion(v)` 之后 `setTimeout(install, 0)` 捕获的是**本次渲染**的闭包，`pickedVersion` 仍是 `null` → 回退到"列表第一个" | 【代码】→ ✅ **已修（第八批）**：版本改成**当参数**传进 `install(v)`；真机差分判据见 `probe-c5-fixed.mjs`（点 alpha.1 / alpha.2 → 实际去装的是各自那个版本，缺陷版本下两者会是同一个） |
 | C-6 | Fabric API 前置包判定有**两套文件名名单** | `commands_real.rs:2110-2115`（fabric → `fabric-api`/`fabric_api`，`contains`）vs `modrinth.rs:507-513`（4 个前缀，`starts_with`，限 `mods/*.jar`）。→ Quilt 整合包只带 `fabric-api-…jar` 时会被判"缺 QFAPI"并再装一个（正是 `modrinth.rs:486-493` 注释警告的"两个 API 实现"） | 【代码】 |
 | C-7 | 侧栏「最近玩过」**永不出现** | 判据依赖 `lastPlayedAt`，而 Tauri 路径**没有任何写入方**（新建/复制/整合包建实例都写 `null`；`AppContext.tsx:748-758` 注释明说"不再写"） | 【代码】 |
 | C-8 | 崩溃规则表**两份**：TS 36 条 / Rust 35 条，id 与正则都漂移（`out-of-memory-heap` vs `oom-heap` …） | 弹窗走 TS（并显示「查了 36 条日志特征」）；Rust 那份是死路径，但**有测试钉着它** | 【代码】 |

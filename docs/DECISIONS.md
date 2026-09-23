@@ -6998,3 +6998,61 @@ Modrinth 每次的 `filename` 通常带版本号（`sodium-0.5.11.jar` ≠ `sodi
   一次点中的那行是 `blocked`（`onClick` 直接 return）。**这一条我没有把它说成"已真机验证"。**
 * 删除动作本身用的是已在用的 `deleteMods`（它的"默认回收站"语义有
   `tests/delete-semantics.test.mjs` 与门禁守着）。
+
+### 六十九、修复批（八）：**C-5 整合包「点哪一行就装哪一个版本」是假的**（2026-09-24）
+
+#### 69.1　根因：state 的时序 + 闭包
+
+安装页的版本行是**整行可点**的（PCL 同款）。`onPick` 原来这么写：
+
+```js
+setSelected(installTarget);
+setPickedVersion(v);
+setName(...);
+window.setTimeout(() => void install(), 0);   // ← 这个 install 是**本次渲染的闭包**
+```
+
+`install()` 里读的是 `pickedVersion` 与 `selected` —— 而 `setState` 要**下一次渲染**
+才生效，所以那个闭包读到的 `pickedVersion` 仍是 `null`，于是回退：
+
+```js
+const first = pickedVersion ?? (await api.modrinth.versions(selected.id))[0];  // = 最新那个
+```
+
+**点哪一行都装最新那个版本**，而界面一切正常（点了就装、进度也走）。
+
+#### 69.2　修法：把版本当**参数**传进去
+
+`install(version?: ModrinthVersion)`：
+
+```js
+const first = version ?? pickedVersion ?? (await api.modrinth.versions(pack.id))[0];
+```
+
+`onPick` 改成 `void install(v)` —— 不再经过 state 的时序。
+另外把"要装哪个包"从 `selected` 改成 `installTarget ?? selected`：
+`install(v)` 是**同步**从 onPick 里调的，此时闭包里的两个 state 都还是旧值，
+依赖它们等于把同一个 bug 换个位置重演。
+
+★ 底栏那个「确认并开始安装」按钮的路径**不受影响**（先选版本、再点确认，
+时序上不存在这个问题），所以 `pickedVersion` 这个 state 仍然留着。
+
+#### 69.3　真机验收：**差分判据**（`tools/live/probe-c5-fixed.mjs`）
+
+不想等整合包下完，所以判据设计成"两组对照"：点**第一行** 与 点**第二行**，
+比较应用实际去装的那个版本。而"实际装哪个版本"的可观测点来自
+**应用自己的失败提示** —— 它把请求失败的 CDN URL 原样打了出来，
+URL 里带版本 id（`/data/<project>/versions/<version_id>/<file>`）：
+
+```
+A（第一行 15.0.0-alpha.1）→ https://cdn.modrinth.com/data/1KVo5zza/versions/gbioSm0H/…alpha.1.mrpack
+B（第二行 15.0.0-alpha.2）→ https://cdn.modrinth.com/data/1KVo5zza/versions/IpNvMMVS/…alpha.2.mrpack
+⇒ 两个 id 不同，且各自对应**所点的那一行** ✓
+```
+
+★ 缺陷版本下这两个 URL 会**完全相同**（都回退到"最新那个"）—— 这就是差分的意义。
+★ 顺带一条**环境事实**（不是产品缺陷，但影响验证）：这台机器上
+`cdn.modrinth.com` 的请求**超时**（`api.modrinth.com` 在应用里可用，
+但用 PowerShell 直连同样超时；两个域名都只解析出 Cloudflare 的 IPv6）。
+所以"真的把整合包装完"这一步在这台机器上走不到底 ——
+C-5 验的是**选择逻辑**（哪一个是证据里的 URL 决定的），不是下载本身。
