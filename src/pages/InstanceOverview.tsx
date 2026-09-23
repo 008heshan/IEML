@@ -310,7 +310,14 @@ export function InstanceOverview() {
           size="sm"
           variant="ghost"
           onClick={doDuplicate}
-          title="配置照搬一份，游戏文件共享，不会多占几百 MB"
+          /*
+           * ★★ 2026-09-24：这句 title 原来写的是「配置照搬一份，**游戏文件共享**，
+           *   不会多占几百 MB」—— 而实参是 `copyInstanceFiles(..., true)`，
+           *   也就是**整份复制**（`duplicateInstance` 里写死 true；
+           *   成功提示也写着"存档 / Mod / 配置都复制过去了（X MB）"）。
+           *   按钮上的说明必须与实际行为一致：这里就是一次真复制，会占空间。
+           */
+          title="把存档 / Mod / 配置整份复制到新实例（会占一份空间）"
         >
           <IconCopy /> 创建副本
         </Button>

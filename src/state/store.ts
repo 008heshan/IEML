@@ -164,7 +164,7 @@ export interface AppState {
    *
    *   `hit` 保持 unknown：store 这一层不解析 Modrinth 的字段（那是界面的活）。
    */
-  resourceTarget: { hit: unknown; kind: string } | null;
+  resourceTarget: { hit: unknown; kind: string; source?: string } | null;
 
   /* --- 全局 --- */
   theme: ThemeId;
@@ -312,7 +312,7 @@ export type Action =
    *   只换 instances —— 别的一律不动（刷新不该顺手改选中、改页面）。
    */
   | { type: 'instances/refresh'; instances: AppState['instances'] }
-  | { type: 'resource/open'; hit: unknown; kind: string }
+  | { type: 'resource/open'; hit: unknown; kind: string; source?: string }
   | { type: 'resource/close' }
   | {
       type: 'boot/ok';
@@ -421,7 +421,15 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'instances/refresh':
       return { ...state, instances: action.instances };
     case 'resource/open':
-      return { ...state, resourceTarget: { hit: action.hit, kind: action.kind } };
+      /*
+       * ★★ 2026-09-24（C-18 修复）：把**来源**一起带过去。
+       *   安装页原来在信息卡上写死「来自 Modrinth」—— 从 CurseForge 搜出来的包
+       *   也这么写，等于告诉用户一个假事实（他刚从 CF 那一栏点进来的）。
+       */
+      return {
+        ...state,
+        resourceTarget: { hit: action.hit, kind: action.kind, source: action.source },
+      };
     case 'resource/close':
       return { ...state, resourceTarget: null };
     case 'nav':

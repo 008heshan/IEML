@@ -2523,6 +2523,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&own);
     }
 
+    /// 把文件的 mtime 拨到指定时刻。
+    ///
+    /// ★ 为什么测试里必须显式拨：`should_adopt` 判的是 `源 mtime > 目标 mtime`，
+    ///   而"先 write 目标、再 write 源"这种写法**在同一个毫秒里就会相等** ——
+    ///   相等时按规矩不收养（目标优先），于是测试会**偶发地红**
+    ///   （第一次跑就撞上了：`adopt_records_lets_the_newer_copy_win_and_backs_up_the_old_one`）。
+    ///   判据本身没问题，是测试的构造不够确定。
+    fn set_mtime(p: &std::path::Path, t: std::time::SystemTime) {
+        let f = std::fs::File::options()
+            .write(true)
+            .open(p)
+            .expect("打开文件以改 mtime");
+        f.set_modified(t).expect("设置 mtime");
+    }
+
     /// 老用户：文件都在游戏根目录里 → 启动时被**复制**到 `own_root`，源保留。
     /// 第二次调用必须什么都不做（幂等）。
     #[test]
@@ -2570,6 +2585,10 @@ mod tests {
             r#"{"instances":[{"id":"fresh-1"},{"id":"fresh-2"}],"active_id":"fresh-1"}"#,
         )
         .unwrap();
+        /* ★ 显式把目标的 mtime 拨到 10 分钟前：不能靠"两次 write 的先后"，
+           同一毫秒里两次 write 的 mtime 会相等，判据（`>`）就判不出来 —— 实测踩过 */
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(600);
+        set_mtime(&own.join("instances.json"), old);
 
         let copied = adopt_records(&p);
         assert!(copied > 0, "源更新 → 应当收养");
@@ -2597,6 +2616,9 @@ mod tests {
             r#"{"instances":[{"id":"mine-1"},{"id":"mine-2"}],"active_id":null}"#,
         )
         .unwrap();
+        /* ★ 同理：把源的 mtime 拨到 10 分钟前，保证"目标更新"是**确定的**事实 */
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(600);
+        set_mtime(&root.join("instances.json"), old);
 
         assert_eq!(adopt_records(&p), 0, "目标更新时不该动它");
         let got = std::fs::read_to_string(own.join("instances.json")).unwrap();

@@ -62,6 +62,55 @@ pub fn display_name_of(file_name: &str) -> String {
     }
 }
 
+/// ★★ 这个文件名**提供的是哪个 API 前置包**？（`None` = 它不是 API 前置包）
+///
+/// 返回值就是内部的 kind 名：`"fabric-api"` / `"quilted-fabric-api"`。
+///
+/// ## 为什么要抽成一处（C-6 修复，2026-09-24）
+///
+/// 同一件事原来有**两套判据**，而且在同一件事上给出不同答案：
+///
+/// | 位置 | 名单 | 匹配方式 |
+/// |---|---|---|
+/// | `commands_real.rs::check_api_library` | `qfapi` / `quilted-fabric-api` / `qsl` · `fabric-api` / `fabric_api` | `contains` |
+/// | `modrinth.rs::MrpackIndex::has_fabric_api` | 上面四个的**并集** | `starts_with` |
+///
+/// 真机后果（`probe-bug-repro-9.mjs`）：Quilt 实例的 `mods/` 里放着
+/// `fabric-api-0.92.2+1.20.1.jar`，Mod 管理页报「**缺 Quilted Fabric API**」+
+/// 一键补装 —— 而 `modrinth.rs` 那边认为这就算"有 API"。
+/// 两套判据打架时，用户被引导去装**第二个 API 实现**，
+/// 而 `modrinth.rs` 的注释里恰好警告过这件事（"同一个实例里出现两个 API 实现"）。
+///
+/// ## 判据（都来自实测的真实发行文件名）
+///
+/// * Fabric API → `fabric-api-0.92.12+1.20.1.jar`、`fabric_api-…`
+/// * Quilt 的   → `qfapi-7.7.0_qsl-6.3.0_fapi-0.92.2_mc-1.20.1.jar`
+///   —— 注意它**不叫** `quilted-fabric-api`（那是旧发布名），
+///   只认后者的实现会被**误判成"没装"**。
+///
+/// ★ 只判"这个文件名属于哪一类"，**不判"该不该装"** ——
+///   `api_for_base` 管后者（Quilt 不自动装，见那边的说明）。
+pub fn api_library_from_filename(file_name: &str) -> Option<&'static str> {
+    let n = file_name.to_ascii_lowercase();
+    /*
+     * 前缀之后必须紧跟 `-`（带版本号，实测全是这样）或 `.`（`fabric-api.jar` 这种没写版本的）
+     * —— 用 `strip_prefix` 判，不分配字符串。
+     */
+    let hit = |p: &str| match n.strip_prefix(p) {
+        Some(rest) => rest.starts_with('-') || rest.starts_with('.'),
+        None => false,
+    };
+    const QUILT: [&str; 3] = ["qfapi", "quilted-fabric-api", "qsl"];
+    const FABRIC: [&str; 2] = ["fabric-api", "fabric_api"];
+    if QUILT.iter().any(|p| hit(p)) {
+        return Some("quilted-fabric-api");
+    }
+    if FABRIC.iter().any(|p| hit(p)) {
+        return Some("fabric-api");
+    }
+    None
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModFile {
     pub file_name: String,
@@ -206,5 +255,62 @@ mod tests {
         let a = hash_cache_key("a.jar", 100, 10);
         let b = hash_cache_key("a.jar", 200, 10);
         assert_ne!(a, b);
+    }
+
+    /* ============ ★★ C-6：API 前置包的文件名判据（只有这一处） ============ */
+
+    /// 实测的真实发行文件名，逐个钉住（见函数的文档注释）。
+    #[test]
+    fn api_library_filenames_are_recognised() {
+        // Fabric API（官方发布名 + 下划线变体）
+        assert_eq!(
+            api_library_from_filename("fabric-api-0.92.12+1.20.1.jar"),
+            Some("fabric-api")
+        );
+        assert_eq!(
+            api_library_from_filename("fabric_api-0.92.12+1.20.1.jar"),
+            Some("fabric-api")
+        );
+        // Quilt 的真实发布名：qfapi-7.7.0_qsl-6.3.0_fapi-0.92.2_mc-1.20.1.jar
+        assert_eq!(
+            api_library_from_filename("qfapi-7.7.0_qsl-6.3.0_fapi-0.92.2_mc-1.20.1.jar"),
+            Some("quilted-fabric-api")
+        );
+        // 旧发布名与单独发布的 QSL
+        assert_eq!(
+            api_library_from_filename("Quilted-Fabric-API-7.4.0.jar"),
+            Some("quilted-fabric-api"),
+            "大小写不敏感"
+        );
+        assert_eq!(
+            api_library_from_filename("qsl-6.3.0.jar"),
+            Some("quilted-fabric-api")
+        );
+        // 不相关的东西不许被认成 API 前置包
+        for other in [
+            "sodium-fabric-0.5.8.jar",
+            "fabric-api-extra-1.0.jar", // ★ 前缀匹配的已知误差（见下）
+            "my-fabric-api-fork.jar",
+            "fabric-language-kotlin-1.10.jar",
+        ] {
+            let got = api_library_from_filename(other);
+            if other == "fabric-api-extra-1.0.jar" {
+                // ★ 诚实记一笔：`fabric-api-extra-…` **会**被认成 fabric-api
+                //   （前缀就是 `fabric-api-`）。这是"文件名判据"的固有误差，
+                //   两个旧实现同样如此；宁可多认（少一次误报"缺前置"）也不漏认。
+                assert_eq!(got, Some("fabric-api"), "前缀匹配的已知误差");
+            } else {
+                assert_eq!(got, None, "{other} 不该被当成 API 前置包");
+            }
+        }
+    }
+
+    /// 禁用状态（`.disabled`）不影响识别 —— 判据是文件名，不是扩展名
+    #[test]
+    fn api_library_filename_ignores_disabled_suffix() {
+        assert_eq!(
+            api_library_from_filename("fabric-api-0.92.2.jar.disabled"),
+            Some("fabric-api")
+        );
     }
 }

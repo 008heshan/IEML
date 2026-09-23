@@ -1008,7 +1008,7 @@ export function ResourceCenterBody({
                  *   这里原来是**内联展开**版本列表。现在改成**进独立安装页** ——
                  *   资源信息与几十个版本各占一块，挑版本时能专心（PCL 就是这么分的）。
                  */
-                onClick={() => openResource(hit, kind)}
+                onClick={() => openResource(hit, kind, source)}
                 disabled={!instance}
                 title={instance ? '打开安装页，自己挑版本' : '先选一个版本'}
               >

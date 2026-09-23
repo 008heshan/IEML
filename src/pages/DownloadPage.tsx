@@ -23,6 +23,8 @@ import type { DownloadTab } from '../state/store';
 import { InstallComposer } from '../components/InstallComposer';
 import { ResourceCenterBody, VersionPicker } from '../components/ResourceBrowser';
 import { autoMemory, compareVersion, isSnapshotVersion, knownVersions } from '../domain';
+// ★ C-26：取消不是故障 —— 判据只有一处（见 `domain/cancel.ts` 的说明）
+import { isCancellation } from '../domain/cancel';
 import type { Instance } from '../domain';
 import type { ModrinthVersion, ResourceKindName } from '../bridge/tauri';
 import { registerTaskReplay } from '../flows/install';
@@ -714,7 +716,17 @@ function ModpackTab({
       setSelected(null);
       go('versions');
     } catch (e) {
-      toast('err', '安装失败', e instanceof Error ? e.message : String(e));
+      /*
+       * ★★ 2026-09-24（C-26 修复）：用户自己点「取消」时抛出来的是
+       *   「任务被取消」（Rust）/「已取消」（浏览器桥）—— 以前一律弹**红色「安装失败」**，
+       *   等于把用户自己的操作说成故障。取消 = 正常结果，说清"停下了、文件保留"。
+       */
+      const why = e instanceof Error ? e.message : String(e);
+      if (isCancellation(why)) {
+        toast('info', '已取消安装', '已经下载的文件保留着，下次会从断点继续。');
+      } else {
+        toast('err', '安装失败', why);
+      }
     } finally {
       setInstalling(false);
     }
@@ -750,7 +762,8 @@ function ModpackTab({
               <div className="res-detail-meta">
                 <span className="dim">{installTarget.author}</span>
                 <span className="dim">{installTarget.downloads} 次下载</span>
-                <span className="dim">来自 Modrinth</span>
+                {/* ★ C-18：来源跟着上面那个来源开关走，不写死「来自 Modrinth」 */}
+                <span className="dim">来自 {packSource === 'curseforge' ? 'CurseForge' : 'Modrinth'}</span>
               </div>
             </div>
           </div>

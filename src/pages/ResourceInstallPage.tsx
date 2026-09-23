@@ -17,7 +17,7 @@ import { VersionPicker } from '../components/ResourceBrowser';
 import { useRealApi } from '../hooks/useRealApi';
 import { useApp } from '../state/AppContext';
 import { installResourceVersion } from '../flows/resource-install';
-import type { ModrinthHit, ModrinthVersion, ResourceKindName } from '../bridge/tauri';
+import type { ModrinthHit, ModrinthVersion, ResourceKindInfo, ResourceKindName } from '../bridge/tauri';
 
 export function ResourceInstallPage() {
   const { state, closeResource, toast } = useApp();
@@ -30,6 +30,36 @@ export function ResourceInstallPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [installing, setInstalling] = useState<string | null>(null);
+  /*
+   * ★★ 2026-09-24（C-17 修复）：这一页原来把 `installNote` **写死成 null** ——
+   *   而"装完还有一步"的整条通路（flows 里的 `note` → 这里 `toast('info','还有一步')`）
+   *   于是永远不会触发：数据包装完不告诉你要放进世界、光影装完不说要 Iris。
+   *   说明文字**后端早就有**（`ResourceKind::install_note`，随 `resource_kinds` 下发），
+   *   所以正确做法是**取它**，而不是在前端再写一张表。
+   */
+  const [installNote, setInstallNote] = useState<string | null>(null);
+  /*
+   * ★★ 2026-09-24（C-18 修复）：来源如实显示 —— 这一页原来写死「来自 Modrinth」，
+   *   从 CurseForge 那一栏点进来的包也会这么写。
+   */
+  const source = state.resourceTarget?.source ?? 'modrinth';
+  const sourceLabel = source === 'curseforge' ? 'CurseForge' : 'Modrinth';
+
+  useEffect(() => {
+    if (!api || !kind) return;
+    let alive = true;
+    void api.modrinth
+      .resourceKinds()
+      .then((list: ResourceKindInfo[]) => {
+        if (alive) setInstallNote(list.find((k) => k.key === kind)?.install_note ?? null);
+      })
+      .catch(() => {
+        /* 取不到就不提示 —— 少一句提示，好过编一句 */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [api, kind]);
 
   /** 装到哪个实例：沿用下载页那一套（downloadTargetId → 否则最近玩过的） */
   const target =
@@ -63,7 +93,7 @@ export function ResourceInstallPage() {
         version: v,
         instanceSlug: target?.config.slug ?? null,
         display: target ? target.config.name : '',
-        installNote: null,
+        installNote,
       });
       if (!outcome.ok) {
         const r = outcome.refusal;
@@ -147,7 +177,8 @@ export function ResourceInstallPage() {
                   </Chip>
                 ))}
                 <span className="dim">{formatCount(hit.downloads)} 次下载</span>
-                <span className="dim">来自 Modrinth</span>
+                {/* ★ C-18：来源跟着实际搜索的那一栏走，不写死 */}
+                <span className="dim">来自 {sourceLabel}</span>
                 {/* ★ 装到哪个实例必须一直看得见 —— 否则装完不知道进了哪儿 */}
                 <span className="dim">装到：{target ? target.config.name : '（还没选版本）'}</span>
               </div>

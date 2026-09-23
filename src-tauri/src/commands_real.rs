@@ -2107,40 +2107,58 @@ pub fn check_api_library(
     } else {
         "Fabric API"
     };
-    // 文件名里的识别标记（都是实测过的发行名）
-    let needles: &[&str] = if kind == "quilt" {
-        &["qfapi", "quilted-fabric-api", "qsl"]
-    } else {
-        &["fabric-api", "fabric_api"]
-    };
 
+    /*
+     * ★★ 2026-09-24（C-6 修复）：判据改成**唯一那一份**
+     *   （`domain::mods::api_library_from_filename`）。
+     *
+     *   原来这里自带一张名单（`contains` 匹配），而 `modrinth.rs` 的
+     *   `MrpackIndex::has_fabric_api` 另有一张（`starts_with` 匹配四个前缀）——
+     *   两套判据在同一件事上给出不同答案，真机后果是：
+     *   Quilt 实例的 mods/ 里放着 `fabric-api-….jar` 时，这一页报
+     *   「缺 Quilted Fabric API」+ 一键补装，而整合包那边认为已经有 API 了
+     *   ⇒ 用户被引导去装**第二个 API 实现**（重复加载）。
+     *
+     *   ★ 判据放宽成"**只要有一个 API 实现就算有**"是有意的：
+     *     QFAPI 已内含 Fabric API，两者都能满足依赖它的 Mod；
+     *     真正该提醒的是"一个都没有"，那时才谈得上"缺前置"。
+     */
     let dir = state.paths.instance_mods_dir(&slug);
-    let mut found: Option<String> = None;
+    let mut found: Option<(String, &'static str)> = None;
     if let Ok(rd) = std::fs::read_dir(&dir) {
         for e in rd.flatten() {
-            let n = e.file_name().to_string_lossy().to_lowercase();
+            let n = e.file_name().to_string_lossy().to_string();
             if !crate::domain::mods::is_mod_file(&n) {
                 continue;
             }
-            if needles.iter().any(|k| n.contains(k)) {
-                found = Some(e.file_name().to_string_lossy().to_string());
+            if let Some(k) = crate::domain::mods::api_library_from_filename(&n) {
+                found = Some((n, k));
                 break;
             }
         }
     }
+    let found_name = found.as_ref().map(|(f, _)| f.clone());
+    let found_kind = found.as_ref().map(|(_, k)| *k);
 
     Ok(serde_json::json!({
         "needed": true,
-        "present": found.is_some(),
+        "present": found_name.is_some(),
         "name": name,
         "project": project,
         "kind": our_kind,
-        "filename": found,
+        "filename": found_name,
+        /* ★ 找到的那个**实际是哪个 API**（界面对 Quilt 实例要能说清"你装的是 Fabric API 本体"） */
+        "foundKind": found_kind,
         "modsDir": dir.to_string_lossy(),
-        "reason": if found.is_some() {
-            format!("{name} 已经在 mods 目录里")
-        } else {
-            format!("{name} 不在 mods 目录里 —— 依赖它的 Mod 启动时会报 requires fabric-api")
+        "reason": match found_kind {
+            Some(k) if k == our_kind => format!("{name} 已经在 mods 目录里"),
+            Some("fabric-api") => format!(
+                "mods 目录里的 Fabric API（{}）已经能满足依赖前置的 Mod —— \
+                 不必再装一份 {name}（两份 API 实现会让 Mod 重复加载）",
+                found_name.clone().unwrap_or_default()
+            ),
+            Some(_) => format!("{name} 已经在 mods 目录里"),
+            None => format!("{name} 不在 mods 目录里 —— 依赖它的 Mod 启动时会报 requires fabric-api"),
         },
     }))
 }
@@ -4481,6 +4499,28 @@ pub fn open_instance_folder(
     Ok(dir.to_string_lossy().to_string())
 }
 
+/// `which` → 目录（**纯函数**：不碰资源管理器，这样每个分支都能被单测钉住）。
+///
+/// ★★ 2026-09-24（C-2）：抽出来的理由是——用户报「'mods 目录'按钮打开的是实例根目录」，
+///   而这条命令本身做的事（打开哪个目录）**没法在单测里验**（它会真的弹资源管理器）。
+///   把"路径怎么算"与"打开"分开之后，路径这一半就能钉住了（见 `wire_tests::open_dir_*`）。
+pub(crate) fn resolve_open_dir(
+    paths: &crate::platform::AppPaths,
+    which: Option<&str>,
+    slug: Option<&str>,
+) -> std::path::PathBuf {
+    match which.unwrap_or("data") {
+        "shared" | "game" => paths.shared.clone(),
+        "logs" => paths.logs.clone(),
+        "java" => paths.java.clone(),
+        "cache" => paths.cache.clone(),
+        "instance" => paths.instance_dir(slug.unwrap_or("")),
+        "mods" => paths.instance_mods_dir(slug.unwrap_or("")),
+        "game-dir" => paths.instance_game_dir(slug.unwrap_or("")),
+        _ => paths.root.clone(),
+    }
+}
+
 /// ★ 打开数据目录（供设置页「打开」按钮）。
 ///
 /// **为什么必须走 Rust 命令，而不是前端直接调 `openPath`**（用户报的
@@ -4501,16 +4541,7 @@ pub fn open_data_dir(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let dir = match which.as_deref().unwrap_or("data") {
-        "shared" | "game" => state.paths.shared.clone(),
-        "logs" => state.paths.logs.clone(),
-        "java" => state.paths.java.clone(),
-        "cache" => state.paths.cache.clone(),
-        "instance" => state.paths.instance_dir(slug.as_deref().unwrap_or("")),
-        "mods" => state.paths.instance_mods_dir(slug.as_deref().unwrap_or("")),
-        "game-dir" => state.paths.instance_game_dir(slug.as_deref().unwrap_or("")),
-        _ => state.paths.root.clone(),
-    };
+    let dir = resolve_open_dir(&state.paths, which.as_deref(), slug.as_deref());
     std::fs::create_dir_all(&dir).ok();
     use tauri_plugin_opener::OpenerExt;
     app.opener()
@@ -6166,5 +6197,62 @@ mod wire_tests {
         assert!(err.contains(".json"), "报错要点明缺的是版本描述：{err}");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /*
+     * ---------- ★★ C-2：`open_data_dir` 的每个分支指向哪里 ----------
+     *
+     * 用户报：「'mods 目录'按钮打开的是实例根目录」——
+     * 按钮写着 mods、title 写着 `game\mods`，点下去开的是实例根目录。
+     * 前端那一处传错了参数（已改成 `'mods'`），而**后端这一半**也要能被钉住：
+     * 这条命令会真的弹资源管理器，所以把"路径怎么算"抽成纯函数再断言。
+     */
+    fn probe_paths(tag: &str) -> crate::platform::AppPaths {
+        let base = std::env::temp_dir().join(format!("ieml-opendir-{tag}-{}", std::process::id()));
+        crate::platform::AppPaths {
+            root: base.join("root"),
+            own_root: base.join("own"),
+            shared: base.join("root").join(".minecraft"),
+            instances: base.join("own").join("instances"),
+            java: base.join("own").join("java"),
+            cache: base.join("own").join("cache"),
+            logs: base.join("own").join("logs"),
+        }
+    }
+
+    #[test]
+    fn open_dir_mods_points_at_the_mods_dir_not_the_instance_dir() {
+        let p = probe_paths("mods");
+        let mods = resolve_open_dir(&p, Some("mods"), Some("s1"));
+        assert_eq!(mods, p.instance_game_dir("s1").join("mods"));
+        assert_ne!(mods, p.instance_dir("s1"), "★ 不许再开成实例根目录");
+        assert!(
+            mods.starts_with(&p.instances),
+            "mods 目录必须落在实例目录下：{}",
+            mods.display()
+        );
+        // 与前端按钮的 title（`game\mods`）逐段对齐
+        assert!(mods.ends_with(std::path::Path::new("game").join("mods")));
+    }
+
+    #[test]
+    fn open_dir_other_branches_are_distinct_and_sane() {
+        let p = probe_paths("branches");
+        let inst = resolve_open_dir(&p, Some("instance"), Some("s1"));
+        let game = resolve_open_dir(&p, Some("game-dir"), Some("s1"));
+        let mods = resolve_open_dir(&p, Some("mods"), Some("s1"));
+        // 三者互不相同（这正是 C-2 的关键：instance ≠ mods）
+        assert_ne!(inst, game);
+        assert_ne!(inst, mods);
+        assert_ne!(game, mods);
+        assert_eq!(game, inst.join("game"));
+        // 其余分支各归各位
+        assert_eq!(resolve_open_dir(&p, Some("logs"), None), p.logs);
+        assert_eq!(resolve_open_dir(&p, Some("java"), None), p.java);
+        assert_eq!(resolve_open_dir(&p, Some("cache"), None), p.cache);
+        assert_eq!(resolve_open_dir(&p, Some("shared"), None), p.shared);
+        // 认不出的（含 None）= 数据根目录
+        assert_eq!(resolve_open_dir(&p, Some("what"), None), p.root);
+        assert_eq!(resolve_open_dir(&p, None, None), p.root);
     }
 }

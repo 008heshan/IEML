@@ -51,6 +51,8 @@ import { useRealApi } from '../hooks/useRealApi';
 import { useDeclaredJava } from '../hooks/useJavaRequirement.ts';
 // ★ 字段映射只有一份（`toEngineInput`），带上加载器版本 —— 见它的说明
 import { toEngineInput } from '../domain/java-requirement.ts';
+// ★ C-26：取消不是故障 —— 判据只有一处（见 `domain/cancel.ts` 的说明）
+import { isCancellation } from '../domain/cancel.ts';
 import type { ManifestRow, OptifineVersion } from '../bridge/tauri';
 import {
   loaderCatalog,
@@ -977,7 +979,15 @@ export function InstallComposer({
           'warning',
           '附加组件没能装全',
           `${addonErrors.join('\n')}\n\n游戏本体已经装好了，可以直接启动 —— ` +
-            `附加组件可以稍后在「下载」页对这个版本重试。`,
+            /*
+             * ★★ 2026-09-24（C-19 修复）：这里原来写「可以稍后在「下载」页对这个版本重试」——
+             *   **那个入口不存在**（我核对过：附加组件的安装只在 `InstallComposer` 里、
+             *   也就是"安装游戏"这一步，实例设置页没有附加组件那一栏）。
+             *   现在说的是**真的能走的那条路**：再走一次「安装游戏」并勾上它 ——
+             *   游戏文件是共享的，不会重复下载。
+             */
+            `附加组件这次没装上。想再试一次：回「下载」页重新走一遍「安装游戏」并勾上它 ` +
+            `（游戏文件是共享的，不会重复下载）。`,
         );
       }
 
@@ -996,7 +1006,13 @@ export function InstallComposer({
 
       onInstalled?.(inst);
     } catch (e) {
-      toast('err', '安装失败', e instanceof Error ? e.message : String(e));
+      /* ★★ C-26：用户自己取消 → 说"已取消"，不报成红色「安装失败」（判据在 domain/cancel.ts） */
+      const why = e instanceof Error ? e.message : String(e);
+      if (isCancellation(why)) {
+        toast('info', '已取消安装', '已经下载的文件保留着，下次会从断点继续。');
+      } else {
+        toast('err', '安装失败', why);
+      }
     } finally {
       setInstalling(false);
     }

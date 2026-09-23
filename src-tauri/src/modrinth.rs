@@ -494,6 +494,11 @@ impl MrpackIndex {
     ///
     /// 判定只看**末段文件名**（清单里的路径就是最终落盘路径
     /// `mods/<文件名>`），并且必须落在 `mods/` 下。
+    ///
+    /// ★★ 2026-09-24（C-6 修复）：识别哪些发布名**不再是本地的一张名单** ——
+    ///   改用 `domain::mods::api_library_from_filename`（唯一那一份判据）。
+    ///   原来这里四个前缀、`commands_real::check_api_library` 另有一张表，
+    ///   两套判据在同一件事上打架（详见那个函数的文档注释）。
     pub fn has_fabric_api(&self) -> bool {
         self.files.iter().any(|f| {
             let lower = f.path.to_ascii_lowercase();
@@ -504,13 +509,7 @@ impl MrpackIndex {
             if !name.ends_with(".jar") {
                 return false;
             }
-            const PREFIXES: [&str; 4] = [
-                "fabric-api",         // Fabric API 官方发布名
-                "quilted-fabric-api", // 旧发布名 / 部分镜像改名
-                "qfapi",              // Quilt 现在的发布名：qfapi-7.7.0_…
-                "qsl",                // Quilt Standard Libraries 单独发布时
-            ];
-            PREFIXES.iter().any(|p| name.starts_with(p))
+            crate::domain::mods::api_library_from_filename(name).is_some()
         })
     }
 }

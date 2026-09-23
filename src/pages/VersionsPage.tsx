@@ -294,10 +294,18 @@ export function VersionsPage() {
     });
   }, [state.instances, filter, query]);
 
-  const installedCount = useMemo(
-    () => state.versions.filter((v) => v.installed).length,
-    [state.versions],
-  );
+  /*
+   * ★★ 2026-09-24（C-4 修复）：这里原来算的是
+   *   `state.versions.filter(v => v.installed).length`，而 `state.versions`
+   *   是**内置的 MC_PROFILES 那 10 个版本**，`installed` 只表示
+   *   "有个实例用了这个 mcVersion" —— **根本不读盘**。
+   *   真机后果：装 1.21.4（不在那 10 个里）能正常启动，
+   *   版本列表底部却挂着「这些版本还没有游戏文件」—— 一句假警报。
+   *   现在只认**磁盘事实**：`instanceHealth()` 逐个实例查版本文件在不在
+   *   （见上面那段 effect），当**这一页列出来的行**在盘上都没有版本文件时才提示。
+   *   ★ 判据只有一个来源：删掉 `installedCount`，不再用那张静态表。
+   */
+  const allRowsMissing = rows.length > 0 && rows.every((r) => missingVersionIds.includes(r.id));
 
   /** 这个 MC 版本在盘上装了哪些加载器（读盘结果，空的 = 没有或没读到） */
   const diskLoadersOf = (mcVersion: string): InstalledLoader[] =>
@@ -894,8 +902,10 @@ export function VersionsPage() {
 
         ★ 但"还没有游戏文件"必须留：它说明这些版本**现在起不来**，
           属于用户需要马上知道的事（不是概念解释）。
+        ★★ 2026-09-24（C-4）：它的判据改成**读盘结果**（`allRowsMissing`），
+          不再用那张内置版本表 —— 见上面 `allRowsMissing` 的说明。
       */}
-      {installedCount === 0 ? (
+      {allRowsMissing ? (
         <Note tone="warning" icon={<IconAlert />} title="这些版本还没有游戏文件">
           起不来。去「下载」页装一份，或点进版本后用「检查并补齐文件」补上。
         </Note>

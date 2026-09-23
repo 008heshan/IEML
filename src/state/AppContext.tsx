@@ -200,8 +200,9 @@ interface AppContextValue {  state: AppState;
   /** 二级页面正在编辑的实例 */
   open: Instance | null;
   setLaunchTarget: (id: string | null) => void;
-  /** ★★ C5：进资源的**独立安装页**（`kind` 决定装到哪个目录） */
-  openResource: (hit: unknown, kind: string) => void;
+  /** ★★ C5：进资源的**独立安装页**（`kind` 决定装到哪个目录）；
+   *  `source` 是这一批结果来自哪个源（安装页要如实写「来自 …」，见 C-18） */
+  openResource: (hit: unknown, kind: string, source?: string) => void;
   /** ★★ C5：从安装页返回下载页 */
   closeResource: () => void;
   createInstance: (inst: Instance) => Promise<void>;
@@ -478,8 +479,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
             detail: {
               kind: 'err',
               title: '读不到版本列表',
-              message: `${why} —— 这一页现在是空的，但**磁盘上的记录没有被清掉**。修好后重启即可。`,
-              sticky: true,
+              /*
+               * ★★ 2026-09-24（C-22 修复）：这里原来写的是 `message:` ——
+               *   而监听方（本文件 `onToast`）读的是 `d.desc`：
+               *   ```ts
+               *   const d = (e as CustomEvent<{ kind; title; desc? }>).detail;
+               *   ... desc: d.desc
+               *   ```
+               *   于是这句「磁盘上的记录没有被清掉」**从来没有显示过** ——
+               *   用户只看到一句光秃秃的「读不到版本列表」，最容易的反应就是
+               *   "我的版本没了"（而那正是这条提示要防的误解）。
+               */
+              desc: `${why} —— 这一页现在是空的，但磁盘上的记录没有被清掉。修好后重启即可。`,
             },
           }),
         );
@@ -1007,8 +1018,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
    *   `hit` 与 `kind` 一起放进 state —— 切页之后列表组件会卸载，
    *   目标必须活在页面之外（与 `setLaunchTarget` 上面那条教训同一个道理）。
    */
-  const openResource = useCallback((hit: unknown, kind: string) => {
-    dispatch({ type: 'resource/open', hit, kind });
+  const openResource = useCallback((hit: unknown, kind: string, source?: string) => {
+    dispatch({ type: 'resource/open', hit, kind, source });
     dispatch({ type: 'nav', page: 'resource' });
   }, []);
 
