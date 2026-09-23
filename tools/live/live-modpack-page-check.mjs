@@ -111,14 +111,25 @@ const view = await ev(`(() => ({
   '版本条数': document.querySelectorAll('.res-version').length,
   '有名称输入': !!document.querySelector('.res-detail-name-field input'),
   '有返回': [...document.querySelectorAll('button')].some((b) => /返回整合包列表/.test(b.textContent || '')),
+  /* ★ 2026-09-23 用户：「太多安装按钮了…改成点击这个直接安装（PCL 同款），全都要改」
+     → 那一排按钮没了，改为统计**可点的版本行** */
+  '可点的版本行': document.querySelectorAll('.res-version[role="button"]').length,
   '安装按钮数': [...document.querySelectorAll('button')].filter((b) => /安装这个版本|确认并开始安装/.test(b.textContent || '')).length,
 }))()`);
 console.log('  安装页：' + JSON.stringify(view, null, 1));
 check('★ 点卡片后**列表让位**（卡片数为 0）', view?.列表卡片数 === 0, String(view?.列表卡片数));
 check('★ 出现整合包**信息卡**', view?.有信息卡 === true, String(view?.标题));
 check('★ 有**版本列表**（不是只有最新那个）', (view?.版本条数 ?? 0) > 1, `${view?.版本条数} 条`);
-check('  有实例名称输入', view?.有名称输入 === true);
-check('  有安装按钮', (view?.安装按钮数 ?? 0) >= 1, String(view?.安装按钮数));
+check(
+  '★ 没有"实例名称 + 确认并开始安装"那一排（用户要求去掉，与资源页统一）',
+  view?.有名称输入 === false,
+  String(view?.有名称输入),
+);
+check(
+  '★ 版本行整行可点（PCL 同款：点哪一行装哪一行，没有一排按钮）',
+  (view?.可点的版本行 ?? 0) >= 1 && (view?.安装按钮数 ?? -1) === 0,
+  `可点行 ${view?.可点的版本行} / 按钮 ${view?.安装按钮数}`,
+);
 check('★ 有「返回整合包列表」', view?.有返回 === true);
 
 /* ★★ 用户这一条点名的两样：**版本分类**与**版本推荐** */

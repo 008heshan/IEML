@@ -3002,3 +3002,56 @@
 .res-detail-actions {
   align-items: flex-end;
 }
+
+/* ============================================================================
+   ★★ 资源版本行：**整行可点即安装**（2026-09-23，用户给 PCL 截图：
+   「太多安装按钮了，乱繁，改成点击这个直接安装（PCL 同款），全都要改」）
+
+   去掉每行那个按钮之后，这一行自己要像"能点的东西"：
+   悬停有底色、鼠标变手型、键盘可达（role=button + tabIndex 在 JSX 里给）。
+   装不了的那一行（作者禁止第三方分发）**不给手型、也不高亮**，并保留原因文字。
+   ============================================================================ */
+.res-version.clickable {
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.res-version.clickable:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+.res-version.clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.res-version.blocked {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+.res-version.busy {
+  cursor: progress;
+}
+/* 右边那个"这行能点"的提示图标：平时淡，悬停时亮起来 */
+.res-version-go {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  border-radius: var(--radius-sm);
+  color: var(--text-tertiary);
+  opacity: 0.5;
+  transition: opacity var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease);
+}
+.res-version-go svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+}
+.res-version.clickable:hover .res-version-go {
+  opacity: 1;
+  color: var(--accent);
+  background: var(--accent-subtle);
+}

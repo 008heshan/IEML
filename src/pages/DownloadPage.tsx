@@ -680,26 +680,15 @@ function ModpackTab({
             </div>
           </div>
 
-          <div className="res-detail-actions">
-            <label className="res-detail-name-field">
-              <span className="dim">实例名称</span>
-              <input
-                ref={installNameRef}
-                className="input"
-                value={name}
-                aria-label="实例名称"
-                onChange={(e) => setName(e.target.value)}
-              />
-            </label>
-            <Button
-              variant="primary"
-              loading={installing}
-              disabled={!isDesktop || !targetVersions?.length}
-              onClick={() => void install()}
-            >
-              确认并开始安装
-            </Button>
-          </div>
+          {/*
+            ★★ 2026-09-23 用户（两张截图对比）：「**为啥这俩设计的不一样啊，我喜欢 mod 这样的**」——
+              整合包这一页原来在信息卡里塞了一排「实例名称 + 确认并开始安装」，
+              而资源安装页（Mod / 资源包 / 光影 / 数据包）是**干净的卡片 + 每一行一个
+              「安装这个版本」**。用户要的是后者。
+              所以这里**去掉那排**：点某个版本的「安装这个版本」就直接装，
+              实例名默认用整合包名（点卡片时已经写进 name，装完还能在版本列表里改名）。
+            ★ 两个页面从此**同一个设计**：卡片只负责"这是什么"，动作都在版本行上。
+          */}
         </div>
 
         <div className="dim" style={{ margin: 'var(--space-3) 0' }}>
