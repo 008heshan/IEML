@@ -61,6 +61,12 @@ const RESOURCE_DIR: Record<ResourceKindName, string> = {
   resourcepack: 'resourcepacks',
   shader: 'shaderpacks',
   datapack: 'datapacks',
+  /*
+   * ★★ 2026-09-23：整合包**不装进目录**（它的安装是"建一个实例"）——
+   *   这里给空串，与后端 `ResourceKind::install_dir()` **同口径**。
+   *   两边不一致的话，界面会显示一个根本不存在的目录。
+   */
+  modpack: '',
 };
 
 export function DownloadPage() {
@@ -396,6 +402,12 @@ function ModpackTab({
   const [mcFilter, setMcFilter] = useState('');
   const [loaderFilter, setLoaderFilter] = useState('');
   /*
+   * ★★ 2026-09-23：整合包的**来源**（Modrinth / CurseForge）。
+   *   用户：「PCL 的整合包可以用 curseforge 啊」—— 它本来就是一个来源选项，
+   *   资源搜索那条路（`resourceSearch`）早就支持两个源。
+   */
+  const [packSource, setPackSource] = useState<'modrinth' | 'curseforge'>('modrinth');
+  /*
    * 版本选项：**玩家自己装着的版本 + 内置正式版表**（新到旧）。
    * ★ 为什么不去拉线上清单：那个下拉只是"筛整合包"，为它等一次网络往返不值；
    *   而整合包绝大多数集中在正式版上。玩家装了什么，就一定在选项里。
@@ -430,11 +442,27 @@ function ModpackTab({
        *   于是整合包永远只有前 20 个，翻不动。现在按页取，总数用上游的
        *   `total_hits`（自己数出来的总数没有意义，也不是"全部"）。
        */
-      const r = await api.modrinth.search({
+      /*
+       * ★★ 2026-09-23（用户：「PCL 的整合包可以用 curseforge 啊」→「curseforge 那个继续」）：
+       *   改走**资源搜索**那条路（`resourceSearch`）—— 它本来就有 Modrinth / CurseForge
+       *   两个源，后端这一轮也给 `ResourceKind` 补上了 `modpack`。
+       *   ★ 不再用 `modrinth.search`：那条路只认 Modrinth，正是"来源只有一个"的根源。
+       *
+       * ★★ 同时发现并修了一个**真的 bug**：C3 那轮我以为给这里加了
+       *   `mcVersion` / `loader` 两个参数，**实际上没加成** ——
+       *   所以"选 26.2"只改了标签、**查询没带筛选**。
+       *   （当时的判据只断言了"标签变了 + 列表重新加载"，没断言"结果真的变了"，
+       *     所以它没有抓住。这次断言补硬：筛完的**结果集必须不同**。）
+       */
+      const r = await api.modrinth.resourceSearch({
+        kind: 'modpack',
         query: query || '',
-        projectType: 'modpack',
+        mcVersion: mcFilter || undefined,
+        loader: loaderFilter || undefined,
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
+        // ★ 来源由用户选（Modrinth / CurseForge）—— 见上面那段说明
+        source: packSource,
       });
       setTotal(r.total_hits ?? 0);
       setPacks(
@@ -455,7 +483,7 @@ function ModpackTab({
     } finally {
       setLoading(false);
     }
-  }, [api, query, page, mcFilter, loaderFilter]);
+  }, [api, query, page, mcFilter, loaderFilter, packSource]);
 
   useEffect(() => {
     void load();
@@ -823,6 +851,23 @@ function ModpackTab({
             />
           </div>
         </div>
+        {/*
+          ★★ 2026-09-23（用户：「**PCL 的整合包可以用 curseforge 啊**」）：
+            来源是**用户可选的** —— 与资源页一样放一排分段控件，
+            位置也照资源页（筛选右边、排序前面）。
+            ★ 后端这一轮给 `ResourceKind` 补了 `modpack`，CurseForge 的 classId=4471，
+              所以这一排**不是摆设**：切过去真的查 CF 的整合包。
+        */}
+        <Segmented
+          label="来源"
+          size="sm"
+          value={packSource}
+          onChange={setPackSource}
+          options={[
+            { value: 'modrinth', label: 'Modrinth' },
+            { value: 'curseforge', label: 'CurseForge' },
+          ]}
+        />
         <Segmented
           label="排序"
           size="sm"

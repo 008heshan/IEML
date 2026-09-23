@@ -62,15 +62,24 @@ pub enum ResourceKind {
     Shader,
     /// 数据包（改配方 / 结构 / 进度；装到存档或世界的 `datapacks/`）
     Datapack,
+    /*
+     * ★★ 2026-09-23（用户：「**PCL 的整合包可以用 curseforge 啊**」）：
+     *   整合包也是一种"可搜索的资源"，但它与上面四种有**根本差别** ——
+     *   上面四种的安装是"把一个文件放进某个目录"，
+     *   整合包的安装是"**建一个实例**"（读清单 → 装加载器 → 拉 Mod）。
+     *   所以它进得了**搜索**，但进不了**装文件那条路**（见 `install_dir`）。
+     */
+    Modpack,
 }
 
 impl ResourceKind {
     /// 界面上按这个顺序列选项卡（先 Mod —— 最常用）
-    pub const ALL: [ResourceKind; 4] = [
+    pub const ALL: [ResourceKind; 5] = [
         ResourceKind::Mod,
         ResourceKind::ResourcePack,
         ResourceKind::Shader,
         ResourceKind::Datapack,
+        ResourceKind::Modpack,
     ];
 
     /// 内部键名（与前端 `ResourceKind` 一一对应）
@@ -80,6 +89,7 @@ impl ResourceKind {
             ResourceKind::ResourcePack => "resourcepack",
             ResourceKind::Shader => "shader",
             ResourceKind::Datapack => "datapack",
+            ResourceKind::Modpack => "modpack",
         }
     }
 
@@ -90,6 +100,7 @@ impl ResourceKind {
             ResourceKind::ResourcePack => "资源包",
             ResourceKind::Shader => "光影",
             ResourceKind::Datapack => "数据包",
+            ResourceKind::Modpack => "整合包",
         }
     }
 
@@ -101,6 +112,8 @@ impl ResourceKind {
             ResourceKind::Mod | ResourceKind::Datapack => "mod",
             ResourceKind::ResourcePack => "resourcepack",
             ResourceKind::Shader => "shader",
+            // ★ Modrinth 本来就有 `modpack` 这个 project_type
+            ResourceKind::Modpack => "modpack",
         }
     }
 
@@ -110,6 +123,7 @@ impl ResourceKind {
     pub fn extra_category(self) -> Option<&'static str> {
         match self {
             ResourceKind::Datapack => Some("datapack"),
+            // ★ 整合包在 Modrinth 有自己的 project_type，不需要额外分类 facet
             _ => None,
         }
     }
@@ -124,6 +138,12 @@ impl ResourceKind {
             //   放在实例根下是"给用户自己拖进世界"的暂存位。
             //   这一点必须对用户说清（界面上有提示），不能假装装完就生效。
             ResourceKind::Datapack => "datapacks",
+            /*
+             * ★★ 整合包**没有**"装进哪个目录"这回事 —— 它的安装是**建实例**。
+             *   这里返回空串，让"装文件"那条路**明确拒绝**它，
+             *   而不是往一个不存在的目录里塞东西（那会是一个安静的错）。
+             */
+            ResourceKind::Modpack => "",
         }
     }
 
@@ -138,6 +158,8 @@ impl ResourceKind {
             ResourceKind::ResourcePack => &[".zip", ".jar"],
             ResourceKind::Shader => &[".zip", ".jar"],
             ResourceKind::Datapack => &[".zip", ".jar"],
+            // 整合包是 .mrpack（Modrinth）/ .zip（CurseForge）
+            ResourceKind::Modpack => &[".mrpack", ".zip"],
         }
     }
 
@@ -151,7 +173,8 @@ impl ResourceKind {
     ///   带错了会让结果集偏窄甚至为空 —— 而用户会以为"没有这个资源"。
     ///   （这个仓库已经因为"把查不到说成没有"栽过一次，见 `LoaderList.status`。）
     pub fn needs_loader_filter(self) -> bool {
-        matches!(self, ResourceKind::Mod)
+        // ★ 整合包也要挑加载器（Fabric 的包装进 Forge 的实例没意义）
+        matches!(self, ResourceKind::Mod | ResourceKind::Modpack)
     }
 
     /// 这一类资源**装完要不要提示用户**（有额外动作才能生效）。
@@ -165,6 +188,10 @@ impl ResourceKind {
             ),
             ResourceKind::Shader => Some(
                 "光影包需要 Iris 或 OptiFine 才能生效 —— 原版游戏里看不到它。",
+            ),
+            ResourceKind::Modpack => Some(
+                "整合包装完会**新建一个版本**（不是塞进当前版本）—— 版本、加载器、Mod 清单\
+                 都由包里的清单文件定死，装完到「版本列表」里就能看到它。",
             ),
             _ => None,
         }
@@ -315,17 +342,36 @@ mod tests {
         assert_eq!(parse_kind(""), None);
     }
 
-    /// 四种资源都要在 `all_kinds()` 里（界面的选项卡就是它）
+    /// 五种资源都要在 `all_kinds()` 里（界面的选项卡就是它）
     #[test]
     fn all_kinds_covers_everything() {
         let list = all_kinds();
-        assert_eq!(list.len(), 4);
+        // ★ 2026-09-23：加了整合包 → 4 变 5（判据跟着需求变）
+        assert_eq!(list.len(), 5);
         let keys: Vec<&str> = list.iter().map(|k| k.key.as_str()).collect();
-        assert_eq!(keys, vec!["mod", "resourcepack", "shader", "datapack"]);
-        // 数据包与光影有"装完还要做什么"的提示，Mod/资源包没有
+        assert_eq!(
+            keys,
+            vec!["mod", "resourcepack", "shader", "datapack", "modpack"]
+        );
+        // 数据包 / 光影 / 整合包有"装完还要做什么"的提示，Mod/资源包没有
         let by_key = |k: &str| list.iter().find(|x| x.key == k).unwrap();
         assert!(by_key("datapack").install_note.is_some());
         assert!(by_key("shader").install_note.is_some());
         assert!(by_key("mod").install_note.is_none());
+        /*
+         * ★★ 整合包的判据（2026-09-23）：
+         *   · 有自己的 project_type（Modrinth）与 classId（CurseForge 4471）；
+         *   · **install_dir 是空串** —— 它不装进目录，而是"建一个实例"。
+         *     这一条是**故意**的：让"装文件"那条路明确拒绝它，
+         *     而不是往一个不存在的目录里塞东西。
+         */
+        assert!(by_key("modpack").install_note.is_some());
+        assert_eq!(
+            ResourceKind::Modpack.install_dir(),
+            "",
+            "整合包不装进目录（它的安装是建实例）"
+        );
+        assert_eq!(ResourceKind::Modpack.modrinth_project_type(), "modpack");
+        assert_eq!(crate::net::curseforge::class_id(ResourceKind::Modpack), 4471);
     }
 }
