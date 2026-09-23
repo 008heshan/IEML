@@ -314,6 +314,34 @@ function isSnapshot(id: string): boolean {
   return !FINAL_RELEASE_RE.test(id);
 }
 
+/*
+ * ★★ 2026-09-23（用户第 6 条：「选择游戏版本的筛选，给愚人节版本新增一个筛选项：**愚人节**」）
+ *
+ *   愚人节版本的**已知名单**。
+ *
+ *   ★ 为什么不用"第 14 周"这种规律：真机版本清单里有一个 `26w14a`，
+ *     它是**普通快照**（那一年的第 14 周不是 4 月 1 日那周）——
+ *     光看周数会把它误判成愚人节版本。所以用白名单：
+ *     **宁可漏一个，不可错一个**（错了会让用户在"愚人节"这一档里看到普通快照）。
+ *   ★ Mojang 以后再加，往这个 Set 里补一个即可（改一处）。
+ */
+const APRIL_FOOLS = new Set([
+  '15w14a', // 2015 · 分享石头
+  '1.RV-Pre1', // 2016 · 潮流更新
+  '3D Shareware v1.34', // 2019 · 3D 共享软件
+  '20w14infinite', // 2020 · 无限维度（清单里也可能写成 20w14∞）
+  '20w14∞',
+  '22w13oneblockatatime', // 2022 · 一个方块
+  '23w13a_or_b', // 2023 · 投票更新
+  '24w14potato', // 2024 · 毒土豆
+  '25w14craftmine', // 2025 · 合成挖矿
+]);
+
+/** 这个版本 id 是不是愚人节版本（安装游戏那一页的"愚人节"档用它筛） */
+export function isAprilFoolsVersion(id: string): boolean {
+  return APRIL_FOOLS.has(id.trim());
+}
+
 /** 已知的全部 MC 版本 id（按发布时间倒序由 source 层提供，这里只列本地表） */
 export function knownVersions(): string[] {
   return Object.keys(MC_PROFILES);
