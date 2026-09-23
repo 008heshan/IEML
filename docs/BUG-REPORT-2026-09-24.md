@@ -27,7 +27,8 @@
 | C-18「来自 Modrinth」写死 | **【真机】确认**：来源选 CurseForge 的包，安装页仍然写「来自 Modrinth」 |
 | A-1 三处「启动」按钮 | 上轮已【真机】；本轮再确认：行菜单里确实有「启动」，而那一页 `ieml:launch-request` 监听器 = **0** |
 | **A-3「已永久删除」但没删** | **【真机】确认**（第 3 轮，用沙盒做的）：① 弹出「已永久删除」② 记录消失 ③ `instances/<slug>/` 还在磁盘上 —— 三条判据同时成立 |
-| A-2 / B-1 / C-2 | **仍是【代码】级**，原因见文末「本轮没能真机复现的条目」——需要真的启动游戏 / 真的更新一个 Mod / 会弹出资源管理器窗口，**我没有擅自动** |
+| **A-2 OptiFine 勾了也白勾** | **【真机】确认**（第 4 轮）：沙盒里两条只差 `addons` 的记录，命令行**逐字相同**且不含 OptiFine/tweakClass；两次确实选中了不同实例 |
+| B-1 / C-2 | **仍是【代码】级**，原因见文末「本轮没能真机复现的条目」——需要真的更新一个 Mod / 会弹出资源管理器窗口 |
 
 ★★ 本轮发现的一个**通用手法**（写下来给后面用）：启动器支持
 `IEML_DATA_DIR`（游戏根目录）与 `IEML_OWN_DIR`（启动器自己的目录）两个环境变量，
@@ -117,17 +118,29 @@ A-3 就是这么验的（`tools/live/probe-bug-repro-4.mjs`）。
 
 ---
 
-### A-2　纯原版实例的 OptiFine / LiteLoader：装了、报"已装好"，启动时**完全不用**【代码】
+### A-2　纯原版实例的 OptiFine / LiteLoader：装了、报"已装好"，启动时**完全不用**【真机（沙盒）+ 代码】
 
 **现象**：勾高清修复 → 弹「OptiFine 已装好」→ 启动进游戏，OptiFine 没生效；
 而版本列表 / 概览 / 启动页仍然挂着「OptiFine」角标。
 
-**判据（代码）**：
-* `LaunchRequest`（`commands_real.rs:2815-2845`）字段里**没有 addons** ——
-  附加组件根本没传到启动侧；
-* `resolve_loader_version_id`（`:3130-3139`）：`loader_kind` 为空（纯原版）时
-  **直接 `return Some(mc_version)`** → 读的是 `versions/<mc>/<mc>.json`（原版 JSON），
-  而 OptiFine 的产物在 `versions/<mc>-OptiFine_*/`；
+**真机复现**（`tools/live/probe-bug-repro-6.mjs`，全程在 `%TEMP%` 沙盒里）：
+在沙盒里建**两条只差 `addons` 的实例记录**（同 mc 1.12.2、同加载器、一个无附加组件、
+一个 `addons: [optifine]`），游戏文件用**目录联接**只读借用真实那份，
+然后用启动页的「预览命令」分别看两条记录的命令行 ——
+`preview_launch` 与 `launch_minecraft` 走的是**同一个** `prepare_spec`，所以预览一样就等于启动一样。
+
+```
+两次选中的实例（页头）：A="探针·无附加组件"  B="探针·带OptiFine"
+两次确实选中了不同实例：是
+两条记录的命令行（抹掉实例名后）逐字相同：是
+命令行里出现 OptiFine / tweakClass：否
+★★ 实例记录里的 OptiFine 对启动规格没有任何影响
+```
+
+**代码侧的机制**（三处对得上）：
+* `LaunchRequest`（`commands_real.rs:2815-2845`）字段里**没有 addons** —— 附加组件根本没传到启动侧；
+* `resolve_loader_version_id`（`:3130-3139`）：`loader_kind` 为空时 **直接 `return Some(mc_version)`**
+  → 读的是 `versions/<mc>/<mc>.json`（原版 JSON），而 OptiFine 的产物在 `versions/<mc>-OptiFine_*/`；
 * 启动闸（`:3455-3466`）只把 OptiFine 从"冒犯项"里**排除**（注释写着"纯原版 + OptiFine 是合法用法"），
   但**没有任何代码去用它**。
 
@@ -328,6 +341,7 @@ Modrinth 每次的 `filename` 通常带版本号 → 旧 jar 留着 → **同一
 | `tools/live/probe-bug-repro-5.mjs` | 删除流程 + 每个 CDP 事件带时间戳（用来对上"到底弹没弹框"） |
 | `tools/live/probe-confirm-acl.mjs` | `confirm()` 的返回值/耗时（A-0 的判据，真实配置下跑） |
 | `tools/live/probe-native-dialogs.mjs` | `confirm` / `alert` / `prompt` 三者的行为对照 |
+| `tools/live/probe-bug-repro-6.mjs` | **沙盒里对比"只差 addons 的两条记录"的启动命令行**（A-2：OptiFine 勾了也白勾） |
 
 跑法：`node tools/live/<脚本>.mjs ["<exe>"]`（默认用 `src-tauri/target/release/ieml.exe`，
 可以传桌面那份 exe）。
@@ -338,9 +352,8 @@ Modrinth 每次的 `filename` 通常带版本号 → 旧 jar 留着 → **同一
 
 | 条目 | 要复现需要什么 | 我为什么没做 |
 |---|---|---|
-| A-2 OptiFine 装好但启动不用 | 装一个带 OptiFine 的实例（勾上 → 真的跑 OptiFine 安装器）**再启动游戏** | 会真的下载 + 打补丁 + 拉起游戏；这台机器上现有的 3 个实例都没记录 OptiFine，磁盘上也没有 `1.12.2-OptiFine_*`（只有 `1.16.5-OptiFine_HD_U_G8`，没有实例用它）。**要不要做，等你点头**（沙盒里也做得成，但要把整个游戏下进沙盒，几百 MB） |
-| B-1 Mod 更新不删旧 jar | 装一个 Mod，等它有新版本，点「更新」 | 会真的往实例 mods/ 里写文件；`install_mod` 只有 `create_dir_all` + `download_one`（我逐行看过，没有任何 remove/rename）。★ 现在**可以放进沙盒做**了，只是要挑一个"有更新可用"的 Mod —— 需要你点头 |
-| C-2「mods 目录」按钮 | 点一下，看资源管理器打开的是哪个目录 | 会在你桌面上弹出窗口。代码侧 5 个 `openDir(` 调用点我都核对过：这一处传的是 `'instance'`，而 `'mods'` 那个分支另有其用 |
+| B-1 Mod 更新不删旧 jar | 装一个 Mod，等它有新版本，点「更新」 | 会真的往实例 mods/ 里写文件；`install_mod` 只有 `create_dir_all` + `download_one`（我逐行看过，没有任何 remove/rename）。★ 现在**可以放进沙盒做**了（同一个 Mod 装两个不同版本 → 看 mods/ 里是不是两个 jar），只差"挑一个 Mod + 跑两遍安装流程"，下一轮做 |
+| C-2「mods 目录」按钮 | 点一下，看资源管理器打开的是哪个目录 | 会在你桌面上弹出窗口。代码侧 5 个 `openDir(` 调用点我都核对过：这一处传的是 `'instance'`，而 `'mods'` 那个分支另有其用。★ 要做也能做（沙盒里点一次，再关掉那个窗口），下一轮视情况做 |
 
 ★ 顺带一条**探针自己的坑**（写下来免得误导）：
 第 2 轮的 CF 探针里，输入搜索词后我**立刻**去读卡片数，读到的还是上一批结果
