@@ -70,7 +70,8 @@ const RESOURCE_DIR: Record<ResourceKindName, string> = {
 };
 
 export function DownloadPage() {
-  const { state, go, toast, setDownloadTab, setDownloadTarget } = useApp();
+  /* ★ 2026-09-23：「装到」选择器已删 → setDownloadTarget 没有调用方了（不留未用变量） */
+  const { state, go, toast, setDownloadTab } = useApp();
   const { isDesktop } = useRealApi();
   const tab = state.downloadTab;
 
@@ -142,6 +143,19 @@ export function DownloadPage() {
       : null;
     if (forced) return forced;
 
+    /*
+     * ★★ 2026-09-23 用户（第 2 条）：「我想要下载资源时，**直接放入主页选中的版本**，
+     *   不需要在下载页再选」。
+     *
+     *   所以这里排在"下载页记住的那个"**之前**：主页选中的那个版本就是"我现在要玩的"，
+     *   资源当然装给它。★ 上面那个 `downloadTargetId` 仍然优先 —— 那是**别的页面明确指定**的
+     *   （比如从版本列表点「安装 Mod」），比"主页当前选中"更具体。
+     */
+    const homePicked = state.lastInstanceId
+      ? state.instances.find((i) => i.id === state.lastInstanceId)
+      : null;
+    if (homePicked) return homePicked;
+
     const picked = rememberedTargetId
       ? state.instances.find((i) => i.id === rememberedTargetId)
       : null;
@@ -150,7 +164,7 @@ export function DownloadPage() {
       (b.lastPlayedAt ?? '').localeCompare(a.lastPlayedAt ?? ''),
     );
     return byTime[0] ?? null;
-  }, [state.instances, state.downloadTargetId, rememberedTargetId]);
+  }, [state.instances, state.downloadTargetId, state.lastInstanceId, rememberedTargetId]);
 
   /*
    * ★ 记住玩家选的版本（下次打开还是它，不用再选一次）—— 见上面 targetId 的说明。
@@ -272,42 +286,16 @@ export function DownloadPage() {
                   这个再正常不过的念头，在这一页根本表达不出来。
               */}
               <div className="res-target">
-                <span className="res-target-k">装到</span>
-                <CustomSelect
-                  value={target?.id ?? ''}
-                  /*
-                   * ★ 手动改选也写**同一个字段**（不是只写本地 state）——
-                   *   否则"跳过来 → 又改选"会有两个值打架。见 target 的 useMemo。
-                   */
-                  onChange={setDownloadTarget}
-                  ariaLabel="装到哪个版本"
-                  /*
-                   * ★★ **原版能不能装，要看资源种类**（用户 2026-09-16：
-                   *   "资源包和数据包原版可以安装，所以得让这俩能选择原版"）。
-                   *
-                   *   上一轮我一刀切把原版全过滤掉了 —— 那是**过度的**：
-                   *     · **Mod**：纯原版不加载 `mods/` → 装进去必然不生效 → 不给选；
-                   *     · **光影**：要有 Iris / OptiFine 这类前置（都靠加载器）→ 不给选；
-                   *     · **资源包 / 数据包**：原版**本来就能用** → **必须给选**，
-                   *       否则玩家想给原版换个材质包都做不到。
-                   *   （这条与 Rust 侧 `ResourceKind::install_dir` 是同一张表的两个侧面：
-                   *     那边决定"装到哪个目录"，这边决定"哪个目录对原版有意义"。）
-                   */
-                  options={state.instances
-                    .filter(
-                      (i) =>
-                        !(resourceTab.kind === 'mod' || resourceTab.kind === 'shader') ||
-                        i.loader !== null,
-                    )
-                    .map((i) => ({
-                      value: i.id,
-                      label: `${i.config.name}（${i.mcVersion}${i.loader ? ` + ${i.loader.kind}` : ' · 原版'}）`,
-                    }))}
-                />
+                {/*
+                  ★★ 2026-09-23 用户（截图 + 「**这个就不需要了**」）：
+                    把「装到」这个**选择器**去掉了 —— 下载资源时**直接用主页选中的那个版本**，
+                    不需要在下载页再选一次（`target` 的优先级链里已加 `lastInstanceId`）。
+                  ★ 下面那句"装到「X」的 mods 目录"**留着**：它不是控件，
+                    而是回答"文件到底落到哪个目录"（用户 2026-09-16 提过"不知道下到哪里去了"）。
+                */}
                 {/*
                   ★★ **说清"装到哪去"**（用户 2026-09-16：
                     "下载页下载资源，没选版本也能下载，但不知道下到哪里去了"）。
-                  下拉里只有实例名，玩家仍然不知道文件落在哪个目录 ——
                   这一行把**实例 + 目录**都写出来；没有可用实例时直接说清"装不了"，
                   而不是让他点完才发现不知道去哪了。
                 */}
