@@ -167,31 +167,53 @@ export function DownloadPage() {
 
   const resourceTab = RESOURCE_TABS.find((r) => r.tab === tab) ?? null;
 
+  /*
+   * ★★ 2026-09-23 用户（两张截图对比）：「**mod 页面会进入自己的专属页，是一个全屏页，
+   *   为什么整合包的还会显示**（下载页的头和页签）？」
+   *
+   *   原因：Mod / 资源包 / 光影 / 数据包走的是**独立路由**（`state.page === 'resource'`），
+   *   整屏替换内容区；而整合包的安装页是"下载页内的切换视图" ——
+   *   所以下载页的**页头与页签还留在上面**。
+   *
+   *   用户要的是**看起来一样**：进入整合包安装页时，把页头与页签一起收起来。
+   *   ★ 这里只改"显示什么"，不动安装流程（那一份实现仍然只有一处）。
+   */
+  const [inModpackInstall, setInModpackInstall] = useState(false);
+
+  /* 切到别的页签时要把"正在安装页"重置，否则回来会只剩一个安装视图 */
+  useEffect(() => {
+    if (tab !== 'modpack') setInModpackInstall(false);
+  }, [tab]);
+
   return (
     <div className="page-fill">
-      <div className="page-head">
-        <div>
-          <h1 className="page-title">下载</h1>
-          <p className="page-desc">游戏 · 整合包 · Mod · 资源包 · 光影 · 数据包</p>
-        </div>
-        {!isDesktop ? <Chip tone="warning">浏览器演示模式 —— 真实下载要桌面版</Chip> : null}
-      </div>
+      {inModpackInstall ? null : (
+        <>
+          <div className="page-head">
+            <div>
+              <h1 className="page-title">下载</h1>
+              <p className="page-desc">游戏 · 整合包 · Mod · 资源包 · 光影 · 数据包</p>
+            </div>
+            {!isDesktop ? <Chip tone="warning">浏览器演示模式 —— 真实下载要桌面版</Chip> : null}
+          </div>
 
-      <div className="tabs" role="tablist" aria-label="下载内容">
-        {tabs.map((t) => (
-          <button
-            key={t.key}
-            type="button"
-            role="tab"
-            aria-selected={tab === t.key}
-            className={`tab${tab === t.key ? ' on' : ''}`}
-            onClick={() => setDownloadTab(t.key)}
-          >
-            {t.icon}
-            <span>{t.label}</span>
-          </button>
-        ))}
-      </div>
+          <div className="tabs" role="tablist" aria-label="下载内容">
+            {tabs.map((t) => (
+              <button
+                key={t.key}
+                type="button"
+                role="tab"
+                aria-selected={tab === t.key}
+                className={`tab${tab === t.key ? ' on' : ''}`}
+                onClick={() => setDownloadTab(t.key)}
+              >
+                {t.icon}
+                <span>{t.label}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
 
       {tab === 'game' ? (
         <InstallComposer
@@ -203,7 +225,12 @@ export function DownloadPage() {
           }}
         />
       ) : tab === 'modpack' ? (
-        <ModpackTab go={go} toast={toast} isDesktop={isDesktop} />
+        <ModpackTab
+          go={go}
+          toast={toast}
+          isDesktop={isDesktop}
+          onInstallViewChange={setInModpackInstall}
+        />
       ) : resourceTab ? (
         <>
           {/*
@@ -344,10 +371,17 @@ function ModpackTab({
   go,
   toast,
   isDesktop,
+  onInstallViewChange,
 }: {
   go: (p: 'launch' | 'versions' | 'download' | 'settings') => void;
   toast: (k: 'ok' | 'err' | 'info' | 'warning', t: string, d?: string) => void;
   isDesktop: boolean;
+  /**
+   * ★★ 2026-09-23（用户：「mod 页面会进入自己的专属页，是一个全屏页，**为什么整合包的还会显示**」）：
+   *   进了整合包安装页要通知外层把**下载页的页头与页签**收起来 —— 这样它和
+   *   Mod 那条路（独立路由整屏替换）**看起来完全一样**。
+   */
+  onInstallViewChange?: (inInstall: boolean) => void;
 }) {
   const { api } = useRealApi();
   // ★ 整合包安装完要真的建实例 —— 以前这里没有 createInstance，装上也没人登记
@@ -474,6 +508,9 @@ function ModpackTab({
    *     安装实现**一行都不用动**，仍然只有一份。
    */
   const [installTarget, setInstallTarget] = useState<PackCard | null>(null);
+  useEffect(() => {
+    onInstallViewChange?.(installTarget !== null);
+  }, [installTarget, onInstallViewChange]);
   const [targetVersions, setTargetVersions] = useState<ModrinthVersion[] | null>(null);
   /** 页面里点了「安装这个版本」时选中的那一个（null = 用最新那个） */
   const [pickedVersion, setPickedVersion] = useState<ModrinthVersion | null>(null);
