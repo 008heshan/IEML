@@ -32,6 +32,7 @@ import {
   formatDuration,
   getLoaderCapabilities,
   getProfile,
+  isAprilFoolsVersion,
   isSnapshotVersion,
   knownVersions,
   resolveJavaRequirement,
@@ -128,7 +129,7 @@ function fromOnlineBases(bases: OnlineBases): LoaderQueryMap {
 /** 版本从「先看这些」开始 —— 都是模组生态最厚的版本，省得用户在 900 个版本里翻 */
 const POPULAR_VERSIONS = ['1.21.1', '1.20.1', '1.19.2', '1.18.2', '1.16.5', '1.12.2'];
 
-type Channel = 'release' | 'snapshot' | 'all';
+type Channel = 'release' | 'snapshot' | 'all' | 'fools';
 
 /**
  * **最终发布版**的版本号形状：只有 `x.y` / `x.y.z` 两种。
@@ -997,7 +998,14 @@ export function InstallComposer({
       if (q && !r.id.toLowerCase().includes(q.toLowerCase())) return false;
       const finalRelease = r.release_type === 'release' && FINAL_RELEASE_RE.test(r.id);
       if (channel === 'release') return finalRelease;
-      if (channel === 'snapshot') return !finalRelease;
+      /*
+       * ★★ 2026-09-23（用户第 6 条：愚人节单独一档）。
+       *   ★ 顺序很重要：愚人节版本**也**是快照（`24w14potato` 不是正式版），
+       *     所以它必须在 `snapshot` 这一档**之前**判 ——
+       *   否则"快照"里会混着愚人节版本，而"愚人节"永远轮不到。
+       */
+      if (channel === 'fools') return isAprilFoolsVersion(r.id);
+      if (channel === 'snapshot') return !finalRelease && !isAprilFoolsVersion(r.id);
       return true;
     });
   }, [rows, query, channel]);
@@ -1043,6 +1051,8 @@ export function InstallComposer({
                 options={[
                   { value: 'release', label: '正式版' },
                   { value: 'snapshot', label: '快照' },
+                  // ★★ 2026-09-23（用户第 6 条）：愚人节单独一档
+                  { value: 'fools', label: '愚人节' },
                   { value: 'all', label: '全部' },
                 ]}
               />
