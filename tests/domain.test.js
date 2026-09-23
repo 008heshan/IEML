@@ -316,9 +316,19 @@ test('自动安装的东西必须出现在 warnings 里', () => {
   assert.ok(v.warnings.some((w) => /Fabric API/.test(w)));
 });
 
-test('Quilt 自动补 Quilted Fabric API 而不是 Fabric API', () => {
+/*
+ * ★★ 2026-09-24（B-3 修复）：这条测试原来断言的是**相反**的结论
+ *   （`autoApis[0].kind === 'quilted-fabric-api'`），而 Rust 那边的
+ *   `quilt_gets_no_api_library` 断言"什么都不装" —— 两条测试互相钉着相反的结论。
+ *   按用户 2026-09-15 的决定「不给 Quilt 装 API 了」，TS 这一侧改过来。
+ */
+test('Quilt 不自动装任何 API（用户 2026-09-15 的决定，两侧一致）', () => {
   const v = validateCombination({ mcVersion: '1.20.1', base: 'quilt', addons: [] });
-  assert.equal(v.autoApis[0].kind, 'quilted-fabric-api');
+  assert.equal(v.autoApis.length, 0, 'Quilt 不该自动装 API：' + JSON.stringify(v.autoApis));
+  assert.ok(
+    !v.warnings.some((w) => /Quilted Fabric API/.test(w)),
+    '也不该在警告里承诺会自动装 QFAPI：' + JSON.stringify(v.warnings),
+  );
 });
 
 /* ====================== 26.x 这一代（用户报的 bug） ====================== */

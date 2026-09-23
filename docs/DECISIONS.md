@@ -6742,3 +6742,101 @@ memorySource/javaMode`）。而**实例清单的读写都要过 Rust**（`save_i
 
 ★ 一条可复用的判据写法：**"不再往老位置写"要用老位置的 mtime 证明**，
   而不是"新位置有文件了" —— 后者在"两边都写"的情况下同样成立。
+
+### 六十六、修复批（五）：**B-2 / B-3 / B-4 —— 界面说的和做的不一致**（2026-09-24）
+
+这三条是同一类缺陷：**界面对用户说的那句话，与程序真实的行为不一样**。
+分成三类：说假话（B-2）、承诺不该做的事（B-3）、把真行为说反了（B-4）。
+
+#### 66.1　B-2：断网点「检查更新」→ 关于页写「已是最新版本」
+
+`AboutPage.tsx` 那条三元链只处理 `unsupported / available / ready / checking` 四种状态，
+**其余全部落到「已是最新版本」**。而 `useLauncherUpdate` 的 phase 有 **9 种**：
+
+```
+idle（还没查过） checking uptodate available downloading ready installing unsupported error
+```
+
+也就是说：`error`（断网 / 404 / 签名失败）、`idle`、`downloading`、`installing`
+**都会被说成"已是最新版本"**。而 `state.error` 里那句人话（`describeUpdateError` 翻的
+中文原因）**没有任何地方显示** —— `UpdateChip` 在 error 时直接 `return null`。
+用户断网点一下，界面告诉他一个假事实，而真实原因一直躺在内存里。
+
+**修法**：把"状态 → 人话"的映射搬进 `domain/update-copy.ts`（**只有这一处**）：
+
+* **只有 `uptodate` 才允许说「已是最新版本」**（全仓库唯一一句）；
+* `error` 必须**把原因说出来**，并且那一行标红（`.about-line-err`，用主题的 danger 色）；
+* 认不出的状态**如实报出它的名字**（`更新状态：xxx`）—— 宁可难看，也不许说假话。
+
+**为什么搬进 domain**：放页面里就没法被单测钉住（`.tsx` 不能直接 import 进 node 测试），
+而这条映射恰恰是"用户看到的结论"。现在 `tests/update-copy.test.mjs` 钉着它，
+并且**已经进了 `tools/verify.mjs` 门禁**（第 22 项：更新状态文案）。
+
+★ 顺带抓到第二个问题（真机复验时抓的）：`describeUpdateError` 那张词表
+**漏了 reqwest 最外层那句** `error sending request for url (…)` ——
+上面几条（connect / network / socket / dns / timeout）一个都不含它。
+于是断网的用户看到的是一句**纯英文**。这条函数也一并搬进 domain 并补上实测串。
+
+真机证据（`tools/live/probe-b2-fixed.mjs`，debug exe）：
+
+```
+① 刚进关于页："还没检查过更新"（标红=false）        ← 以前这里是「已是最新版本」
+② 点过「检查更新」："已是最新版本"                    ← 这台机器网络通，确实是最新
+③ 把 HTTPS_PROXY 指到死端口再跑：
+   "检查更新失败：error sending request for url (https://cnb.cool/…/latest.json)"（标红=true）
+```
+
+★ 也就是说：**"失败"那一支是真机验到的**（逼出来的），而且正是它暴露了英文文案问题。
+
+#### 66.2　B-3：Quilt 又自动装 QFAPI 了 —— 两侧规则不一致
+
+用户 2026-09-15 的原话是「**不给 Quilt 装 API 了**」。
+Rust 的 `domain::loader_caps::api_for_base` 当时就改成了 `return vec![]`，
+测试也改成了"Quilt 什么都不自动装"，注释里还写着"**规则仍只有一处**"。
+
+**但 TS 那一侧没改**（`src/domain/loader-caps.ts:709` 仍是
+`base === 'quilt' ? 'quilted-fabric-api' : 'fabric-api'`），而**界面读的正是 TS 这一侧**：
+安装页选 1.20.1 + Quilt 会写「将自动安装 Quilted Fabric API 7.4.0+0.92.2」，
+点下去真的会往 `mods/` 里塞一个用户明确不要的包（QFAPI 已内含 Fabric API，
+与 Fabric 侧的判定还会打架）。两条测试当时互相钉着**相反**的结论。
+
+**修法**：TS 侧改成 `if (base !== 'fabric') return []`，注释里写明依据（用户决定 + Rust 侧）。
+`apiLibrariesFor` 仍然把两个包都列出来 —— 那是"这个版本**可能**需要的 API 包"能力表，
+不是"我会替你装什么"，两件事不能混。`tests/domain.test.js` 那条断言**反过来**，
+并加一条"警告里也不许承诺会自动装 QFAPI"。
+
+真机证据（`probe-bug-repro-1.mjs` ② 段，debug exe）：
+
+```
+点了版本行 "1.20.1" → 点了 Quilt {found:true, disabled:false}
+blocks: [{模组加载器四选一}, {附加组件 OptiFine 清单来自在线}]     ← 「将自动安装」整块没了
+底栏: "1.20.1 · Quilt 0.31.0-beta.4 · 约下载 47 MB … 安装 Minecraft 1.20.1 + Quilt 0.31.0-beta.4"
+```
+
+#### 66.3　B-4：服务器端口写坏时，界面说的和启动器做的**相反**
+
+界面（`server-address.ts`）原来写：
+
+> 端口「abc」不是数字。**地址会原样传给游戏，不会自动改成默认端口**。
+
+真实行为（`game/launch_args.rs::parse_server_address` + `build_command`）：
+端口解析失败 → `port: None` → **只传 `--server <主机名>`**，端口由游戏用默认 25565。
+两句都是假的（既没有"原样传"，也没有"不会改成默认端口"）。
+用户以为会报错，实际可能连到**另一个服务器**上 —— 而这句提示本来正是为了防这件事。
+
+**修法**：两处端口错误（非数字 / 超范围）都改成说清真实行为：
+「这个端口会被丢掉，启动器只把主机名「host」传给游戏（--server host），
+端口由游戏用默认的 25565。想连指定端口，请把端口写成数字（例如 host:25565）。」
+
+真机证据（`probe-server-hint.mjs`，debug exe，逐字）：
+
+```
+警告行原文："端口「abc」不是数字 —— 这个端口会被丢掉，启动器只把主机名「1.2.3.4」
+            传给游戏（--server 1.2.3.4），端口由游戏用默认的 25565。想连指定端口，
+            请把端口写成数字（例如 1.2.3.4:25565）。只用主机名 1.2.3.4"
+全页含"原样传给游戏": false      全页含"端口会被丢掉": true
+```
+
+★ 测试也跟着改（`tests/server-address.test.mjs`）：新断言是
+「端口会被丢掉」+「25565」+「写成数字」，并**显式断言那句话不许再出现**
+（`不许再说"原样传给游戏"（那是假的）`）。

@@ -22,6 +22,13 @@ import { RichText } from '../ui/RichText';
 import { IconInfo, IconShield, IconDrive, IconRefresh, IconBox } from '../ui/Icons';
 import { useApp } from '../state/AppContext';
 import { APP_VERSION } from '../domain/version-info';
+/*
+ * ★★ 2026-09-24（B-2 修复）：这句"更新状态 → 人话"的映射原来写在这一页里，
+ *   而且是一条**会撒谎**的三元链（只认 4 种状态，其余全说"已是最新版本"）。
+ *   现在映射搬进 `domain/update-copy.ts` —— 那里有单测钉着它
+ *   （`tests/update-copy.test.mjs`），页面只负责显示。
+ */
+import { describeUpdate, isUpdateProblem } from '../domain/update-copy';
 
 const REPO = 'https://github.com/Heshan001/IEML';
 
@@ -57,16 +64,8 @@ export function AboutPage() {
         <Card>
           <CardTitle icon={<IconRefresh />}>启动器更新</CardTitle>
           <div className="about-center">
-            <div className="about-line">
-              {upd.phase === 'unsupported'
-                ? '演示模式下没有更新能力'
-                : upd.phase === 'available'
-                  ? `有新版本 ${upd.version}，正在后台下载`
-                  : upd.phase === 'ready'
-                    ? `新版本 ${upd.version} 已经下好了`
-                    : upd.phase === 'checking'
-                      ? '正在检查…'
-                      : '已是最新版本'}
+            <div className={`about-line${isUpdateProblem(upd.phase) ? ' about-line-err' : ''}`}>
+              {describeUpdate(upd)}
             </div>
             <Button
               variant={upd.phase === 'ready' ? 'primary' : 'secondary'}

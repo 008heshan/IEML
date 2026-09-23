@@ -126,8 +126,19 @@ export function parseServerAddress(raw: string): ServerAddress {
       host,
       port: null,
       changed,
-      // 明确说出"我们没有替你改地址"，否则用户会以为端口已经没用了
-      error: `端口「${portText}」不是数字。地址会原样传给游戏，不会自动改成默认端口。`,
+      /*
+       * ★★ 2026-09-24（B-4 修复）：这句话原来写的是
+       *   「地址会原样传给游戏，不会自动改成默认端口」—— **与真实行为相反**。
+       *   真实行为（`game/launch_args.rs::parse_server_address` + `build_command`）：
+       *   端口解析失败 → `port: None` → **只传 `--server <主机名>`**，
+       *   端口交给游戏用默认的 25565。
+       *   于是用户以为"会报错/会原样传"，实际可能连到**另一个服务器**上 ——
+       *   而这句话本来正是为了防这件事。
+       */
+      error:
+        `端口「${portText}」不是数字 —— 这个端口会被丢掉，启动器只把主机名「${host}」` +
+        `传给游戏（--server ${host}），端口由游戏用默认的 25565。` +
+        `想连指定端口，请把端口写成数字（例如 ${host}:25565）。`,
     };
   }
   const port = Number(portText);
@@ -137,7 +148,10 @@ export function parseServerAddress(raw: string): ServerAddress {
       host,
       port: null,
       changed,
-      error: `端口 ${port} 超出范围（1–65535）。地址会原样传给游戏。`,
+      // 同上：超范围的端口会被丢掉，游戏会用默认 25565
+      error:
+        `端口 ${port} 超出范围（1–65535）—— 它会被丢掉，启动器只把主机名「${host}」` +
+        `传给游戏，端口用默认的 25565。`,
     };
   }
   return {

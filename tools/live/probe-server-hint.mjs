@@ -104,7 +104,14 @@ if (found?.ok) {
     return {
       '输入的值': el.value,
       '这一行里的提示': (row?.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 220),
+      /* ★ 真正的警告行在输入框下面（「.srv-hint」），不在 field-row 里
+         ★ 这段注释在**模板字符串内部** —— 里面绝对不许出现反引号：
+           它会提前结束字符串，而且剩下的部分**仍然是合法 JS**，
+           「node --check」查不出来、只有真跑一遍才会炸（这个坑栽过多次）。 */
+      '警告行原文': (document.querySelector('.srv-hint')?.textContent || '').replace(/\\s+/g, ' ').trim(),
+      /* ★ B-4 修复后：那句"原样传给游戏"是假的，页面上不该再出现 */
       '全页含"原样传给游戏"': /原样传给游戏/.test(document.body.innerText || ''),
+      '全页含"端口会被丢掉"': /端口会被丢掉/.test(document.body.innerText || ''),
       '全页含"默认端口"': /默认端口/.test(document.body.innerText || ''),
     };
   })()`);

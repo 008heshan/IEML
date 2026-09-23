@@ -58,7 +58,15 @@ test('★ 端口写坏时只丢端口，不替用户换目标服务器', () => {
   assert.equal(r.host, 'mc.example.com');
   assert.equal(r.port, null, '不能猜一个端口塞进去');
   assert.ok(r.error, '必须报错说明，不能静默');
-  assert.match(r.error, /原样传给游戏/, '要说清"我们没替你改地址"');
+  /*
+   * ★★ 2026-09-24（B-4 修复）：这句话原来断言的是「原样传给游戏」——
+   *   而真实行为是**端口被丢掉、游戏用默认 25565**（`--server host`，没有 `--port`）。
+   *   现在断言的是**真实行为**：说清端口被丢掉 + 游戏会用默认端口 + 怎么改对。
+   */
+  assert.match(r.error, /端口会被丢掉/, '要说清端口真的被丢掉了');
+  assert.match(r.error, /25565/, '要说清游戏会用默认端口');
+  assert.match(r.error, /写成数字/, '要给一条出路');
+  assert.ok(!/原样传给游戏/.test(r.error), '不许再说"原样传给游戏"（那是假的）');
   // 提示语气必须是"警告"而不是"正常"
   assert.equal(serverAddressHint('mc.example.com:abc').tone, 'warn');
 });
@@ -68,6 +76,7 @@ test('端口越界（>65535 或 0）也被识别出来', () => {
     const r = parseServerAddress(bad);
     assert.equal(r.port, null, `${bad} 的端口不合法`);
     assert.ok(r.error, `${bad} 应当有错误说明`);
+    assert.match(r.error, /25565/, `${bad} 的错误说明要说清会用默认端口`);
   }
 });
 

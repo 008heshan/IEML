@@ -38,6 +38,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DownloadEvent, Update } from '@tauri-apps/plugin-updater';
 import { isTauri } from '../bridge';
+/*
+ * ★★ 2026-09-24：`describeUpdateError` 住在 `domain/update-copy.ts` ——
+ *   放这个文件里没法被单测钉住（它依赖 React 与 Tauri 桥），
+ *   而它恰恰决定"用户看到的失败原因"，必须有测试守着。
+ *   真机复验时抓到它漏了 reqwest 最外层那句 `error sending request for url (…)`：
+ *   断网的用户看到的是一句纯英文。见 `tests/update-copy.test.mjs`。
+ */
+import { describeUpdateError } from '../domain/update-copy';
 
 export type UpdatePhase =
   | 'idle' // 还没查过
@@ -197,21 +205,4 @@ export function useLauncherUpdate() {
   }, [checkNow]);
 
   return { state, checkNow, download, install };
-}
-
-/**
- * 把更新失败翻成人能看懂的话。
- *
- * ★ 为什么值得单独写：更新失败最常见的原因是**网络**（这台机器的国际出口
- *   有 12–18% 丢包），而插件抛出来的原始信息是英文的 reqwest 报错，
- *   直接甩给用户等于没说。至少要让人知道"是网络问题、可以再试"。
- */
-function describeUpdateError(e: unknown): string {
-  const raw = e instanceof Error ? e.message : String(e);
-  if (/timeout|timed out|超时/i.test(raw)) return '检查更新超时，可能是网络不通。稍后再试。';
-  if (/dns|resolve|getaddrinfo|ENOTFOUND/i.test(raw)) return '域名解析失败，检查一下网络或 DNS。';
-  if (/connect|network|unreachable|ECONN|socket/i.test(raw)) return '连不上更新服务器。检查网络后重试。';
-  if (/signature|verify|public key/i.test(raw)) return '更新包签名校验失败，已拒绝安装。请联系开发者。';
-  if (/404|not found/i.test(raw)) return '更新服务器上没有这个版本的清单（404）。可能刚发布还没同步好。';
-  return raw;
 }
