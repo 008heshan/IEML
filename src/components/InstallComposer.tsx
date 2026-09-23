@@ -1998,7 +1998,7 @@ export function InstallComposer({
 
         {/*
           ★ 底部动作条 = **装之前最后一次确认**：
-            版本 / 加载器 / 体积 / Java / 耗时一句话说完，右边两个按钮。
+            版本 / 加载器 / 体积 / Java / 耗时一句话说完，右边**一个**按钮。
             （原来那套「这次会装什么」的表格删掉了 —— 它列的六项里，
               版本与加载器现在就在屏幕上，重复列一遍只是增加一屏字。）
         */}
@@ -2010,9 +2010,13 @@ export function InstallComposer({
             <b className="mono">{formatDuration(estimate.seconds)}</b>
           </span>
           <div className="spacer" />
-          <Button variant="ghost" onClick={() => setStep('version')}>
-            <IconChevronRight className="gw-back" /> 换一个版本
-          </Button>
+          {/*
+            ★★ 2026-09-23 夜（用户看着这一页问：「**两个返回按键？**」）：
+              这里原来还有一个「← 换一个版本」，而页头左上角已经有一个「← 返回」——
+              **两处一模一样的作用**（都是回版本清单），只是措辞不同。
+              按本项目的规矩（同一个动作不该有两个入口），**删掉这一个**，
+              保留页头那个标准位置的回退（与 Mod 的安装页一致）。
+          */}
           <Button
             variant="primary"
             loading={installing}

@@ -285,12 +285,22 @@ const loaderPage = await ev(`(() => {
   const foot = full?.querySelector('.cw-foot');
   const install = foot ? [...foot.querySelectorAll('button')].find((b) => /^安装/.test((b.textContent || '').trim())) : null;
   const back = head ? [...head.querySelectorAll('button')].find((b) => /返回/.test(b.textContent || '')) : null;
+  /*
+   * ★★ 用户 2026-09-23 夜看着这一页问：「**两个返回按键？**」——
+   *   页头一个「← 返回」、底部动作条一个「← 换一个版本」，作用完全一样。
+   *   判据：整页里"回退类"按钮**只能有一个**（同一个动作不该有两个入口）。
+   */
+  const backTexts = [...document.querySelectorAll('.gw-full button')]
+    .map((b) => (b.textContent || '').replace(/\\s+/g, ' ').trim())
+    .filter((t) => /返回|换一个版本|回退|上一步/.test(t));
   const opts = [...document.querySelectorAll('.base-opt')].map((b) => (b.querySelector('.b-name')?.textContent || '').trim());
   const nameInput = document.querySelector('.gw-full input.input');
   return {
     'title': (head?.querySelector('.page-title')?.textContent || '').trim(),
     'desc': (head?.querySelector('.page-desc')?.textContent || '').replace(/\\s+/g, ' ').trim(),
     'hasBack': !!back,
+    'backCount': backTexts.length,
+    'backTexts': backTexts,
     'downloadHeadGone': !document.querySelector('.page-head .page-title') || (document.querySelector('.page-title')?.textContent || '').trim() === '模组加载器',
     'tabsGone': document.querySelectorAll('.tabs .tab').length === 0,
     'loaders': opts,
@@ -328,6 +338,11 @@ console.log('  模组加载器页：' + JSON.stringify(loaderPage));
 check('★ D2 自己的页头：标题「模组加载器」', loaderPage?.title === '模组加载器', String(loaderPage?.title));
 check('★ D3 页头写着"装到哪个版本"', (loaderPage?.desc ?? '').includes(picked), String(loaderPage?.desc));
 check('★ D4 有「← 返回」', loaderPage?.hasBack === true);
+check(
+  '★ D4b 整页**只有一个**回退入口（用户：「两个返回按键？」）',
+  loaderPage?.backCount === 1,
+  `回退类按钮 ${loaderPage?.backCount} 个：${JSON.stringify(loaderPage?.backTexts)}`,
+);
 check('★ D5 下载页的页头与页签**都收起来了**（整屏）', loaderPage?.tabsGone === true && loaderPage?.downloadHeadGone === true, `页签数=${loaderPage?.tabsGone}`);
 check('★ D6 有加载器选项（含"无 · 纯原版"）', (loaderPage?.loaders ?? []).length >= 2 && (loaderPage?.loaders ?? []).some((x) => /纯原版/.test(x)), JSON.stringify(loaderPage?.loaders));
 check('★ D7 有版本名称输入框且已填好', (loaderPage?.nameValue ?? '').length > 0, String(loaderPage?.nameValue));
