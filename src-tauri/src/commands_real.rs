@@ -4531,6 +4531,54 @@ pub fn list_data_roots(state: State<'_, AppState>) -> Vec<crate::platform::Known
     crate::platform::list_known_roots(&state.paths.root)
 }
 
+/// 一个实例的"健康"状况（只读，不改任何东西）。
+#[derive(serde::Serialize)]
+pub struct InstanceHealth {
+    /// 实例 id（前端用它对上条目）
+    pub id: String,
+    /// 它引用的**版本文件**已经不在了（`versions/<id>/` 找不到）
+    pub version_missing: bool,
+}
+
+/// 查一遍"哪些实例的版本文件已经不在磁盘上了"。
+///
+/// ★★ 2026-09-23（用户第 3 条：「资源管理器里删除版本，启动器不会同步删除」）：
+///   判据是**版本文件还在不在**，不是"实例目录在不在" ——
+///   后者是**懒建**的（`remove_instance` 里就写着"目录本来就不在，不算错误"），
+///   拿它当判据会把所有实例都判成已删除（我上一轮就是这么错的，已回退）。
+///
+/// ★ 这条命令**只读**：不删条目、不改清单。失联的实例由用户自己决定是移除还是修好 ——
+///   他可能只是临时把版本目录搬走（换盘 / 备份），自动删条目是在替他做决定。
+/// ★ 版本 id 的解析与**启动时同一套**（`resolve_loader_version_id` + `find_version_json`），
+///   不在这里另写一份"怎么找版本"的规则 —— 否则会出现
+///   "健康检查说没事、一点启动却说找不到版本"。
+#[tauri::command]
+pub fn instance_health(state: State<'_, AppState>) -> Vec<InstanceHealth> {
+    let path = state.paths.root.join("instances.json");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let Ok(store) = serde_json::from_str::<crate::commands::InstanceStore>(&text) else {
+        return Vec::new();
+    };
+    let shared = &state.paths.shared;
+    store
+        .instances
+        .into_iter()
+        .map(|i| {
+            let kind = i.loader.as_ref().map(|l| l.kind.as_str());
+            let ver = i.loader.as_ref().map(|l| l.version.as_str());
+            let vid = resolve_loader_version_id(shared, &i.mc_version, kind, ver)
+                .unwrap_or_else(|| i.mc_version.clone());
+            let found = find_version_json(shared, &vid, &i.mc_version, kind).is_some();
+            InstanceHealth {
+                id: i.id,
+                version_missing: !found,
+            }
+        })
+        .collect()
+}
+
 /// **删除一个游戏根目录**（连目录一起删）—— 用户在图二那一页要求的能力。
 ///
 /// ## 这不是"从列表移除"，是**真删磁盘**

@@ -101,6 +101,39 @@ export function VersionsPage() {
   const { api } = useRealApi();
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
+  /**
+   * ★★ 2026-09-23（用户第 3 条：「**资源管理器里删除版本，启动器不会同步删除**」）：
+   *
+   *   哪些实例的**版本文件**已经不在磁盘上了（`versions/<id>/` 找不到）。
+   *
+   *   ★ 判据是**版本文件**，不是"实例目录" —— 后者是懒建的，
+   *     上一轮我拿它当判据，结果把**所有**实例都判成已删除（已回退）。
+   *   ★ 这里**只提示、不删条目**：用户可能只是临时把版本目录搬走，
+   *     自动删条目等于替他做决定。
+   *   ★ 刷新时机：进这一页时查一次 + **窗口重获焦点时**再查一次
+   *     （用户删目录是在资源管理器里做的，回到启动器那一刻最该重查）。
+   */
+  const [missingVersionIds, setMissingVersionIds] = useState<string[]>([]);
+  useEffect(() => {
+    if (!api) return;
+    let alive = true;
+    const check = () => {
+      void api.launcher
+        .instanceHealth()
+        .then((list) => {
+          if (alive) setMissingVersionIds(list.filter((x) => x.version_missing).map((x) => x.id));
+        })
+        .catch(() => {
+          /* 查不到就当作"都健康"—— 别因为这个提示把页面搞成红色 */
+        });
+    };
+    check();
+    window.addEventListener('focus', check);
+    return () => {
+      alive = false;
+      window.removeEventListener('focus', check);
+    };
+  }, [api]);
   const [menuFor, setMenuFor] = useState<string | null>(null);
   /**
    * 菜单的锚点（打开那一刻，按钮的屏幕坐标）。
@@ -784,6 +817,20 @@ export function VersionsPage() {
           );
         })}
       </div>
+
+      {/*
+        ★★ 2026-09-23（用户第 3 条）：「**资源管理器里删除版本，启动器不会同步删除**」。
+        这里把"版本文件已经不在磁盘上"的实情**如实说出来**（而不是等用户点启动才报错），
+        并且**只提示、不替他删条目** —— 他可能只是把版本目录临时搬走。
+      */}
+      {missingVersionIds.length > 0 ? (
+        <Note tone="warning" icon={<IconAlert />} title="有版本的磁盘文件已经不在了">
+          下面有 <b>{missingVersionIds.length}</b> 个版本引用的游戏文件（
+          <span className="mono">.minecraft/versions/…</span>）在磁盘上找不到了 ——
+          多半是你在资源管理器里删掉或移走了它们。点「启动」会报"找不到版本文件"。 想清理掉这些条目，
+          用每行右边的「⋯ → 删除」；如果只是临时搬走，把它搬回来即可（这里会自动恢复正常）。
+        </Note>
+      ) : null}
 
       {rows.length === 0 ? (
         <EmptyState

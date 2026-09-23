@@ -1230,6 +1230,8 @@ export const launcher = {
    *     任何一道过不去都会带**原因**拒绝 —— 界面直接把那句话显示出来。
    */
   deleteDataRoot: (path: string) => call<number>('delete_data_root', { path }),
+  /** 查哪些实例的版本文件已不在磁盘上（只读，不删条目） */
+  instanceHealth: () => call<Array<{ id: string; version_missing: boolean }>>('instance_health'),
 };
 
 /**
