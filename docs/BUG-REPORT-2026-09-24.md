@@ -28,7 +28,12 @@
 | A-1 三处「启动」按钮 | 上轮已【真机】；本轮再确认：行菜单里确实有「启动」，而那一页 `ieml:launch-request` 监听器 = **0** |
 | **A-3「已永久删除」但没删** | **【真机】确认**（第 3 轮，用沙盒做的）：① 弹出「已永久删除」② 记录消失 ③ `instances/<slug>/` 还在磁盘上 —— 三条判据同时成立 |
 | **A-2 OptiFine 勾了也白勾** | **【真机】确认**（第 4 轮）：沙盒里两条只差 `addons` 的记录，命令行**逐字相同**且不含 OptiFine/tweakClass；两次确实选中了不同实例 |
-| B-1 / C-2 | **仍是【代码】级**，原因见文末「本轮没能真机复现的条目」——需要真的更新一个 Mod / 会弹出资源管理器窗口 |
+| **B-1 Mod 更新不删旧 jar** | **【真机】确认**（第 5 轮，机制级）：沙盒里给一个实例连装 Sodium 的两个版本 → mods/ 里**两个 jar 并存**，两次都报「已装好」 |
+| **C-3「把 .jar 拖进窗口」** | **【真机】确认**：`window` / `document` / `body` 上的拖放事件监听器**各为 0**（window 上其它事件共 21 个）⇒ 那句话没有实现 |
+| **C-4「这些版本还没有游戏文件」假警报** | **【真机】确认**：沙盒实例是 26.3、`D:\IEML\.minecraft\versions\26.3` **确实存在**，版本列表底部照样写着「这些版本还没有游戏文件 起不来」 |
+| **C-6 前置包判定两套名单** | **【真机】确认**：Quilt 实例的 mods/ 里放着 `fabric-api-0.92.2+1.20.1.jar` → 页面报「**缺 Quilted Fabric API**（判据是找 qsl 对应的 jar）」+「一键补装」，而 `modrinth.rs` 认为 `fabric-api` 就算有 ⇒ 两套判据不一致，且这条提示会引导用户再装一个 API 实现 |
+| **C-7 侧栏「最近玩过」** | **【真机】确认**：有实例时 `.side-recent` 也是 **0 个**（侧栏只有导航与账号）—— 与"没有任何代码写 `lastPlayedAt`"对上 |
+| C-2「mods 目录」按钮 | 仍是【代码】：5 个 `openDir(` 调用点都核对过（这一处传 `'instance'`）——**没有真机点**，因为会弹资源管理器窗口 |
 
 ★★ 本轮发现的一个**通用手法**（写下来给后面用）：启动器支持
 `IEML_DATA_DIR`（游戏根目录）与 `IEML_OWN_DIR`（启动器自己的目录）两个环境变量，
@@ -399,6 +404,25 @@ Modrinth 每次的 `filename` 通常带版本号 → 旧 jar 留着 → **同一
    · 根因：tauri-plugin-dialog-2.7.3/src/init-iife.js 把 window.confirm 换成 async 包装；
      而该版本 permissions/default.toml 的 default 集是 ["allow-message","allow-save","allow-open"]
      —— 没有 allow-confirm，应用也只授了 dialog:default
+
+⑦ A-2（沙盒 + 目录联接 + 两条只差 addons 的记录）：
+   两次选中的实例（页头）：A="探针·无附加组件"  B="探针·带OptiFine"
+   两条记录的命令行（抹掉实例名后）逐字相同：是；命令行里 OptiFine / tweakClass：否
+
+⑧ B-1（沙盒里连装 Sodium 两个版本）：
+   装第 1 次后 mods/ = ["sodium-neoforge-0.9.3-alpha.1+mc26.3.jar"]
+   装第 2 次后 mods/ = ["sodium-fabric-0.9.3-alpha.1+mc26.3.jar", "sodium-neoforge-0.9.3-alpha.1+mc26.3.jar"]
+   两次提示都是「已装好 Sodium … → <路径>」  ⇒ 旧文件没有被删
+
+⑨ C-3 / C-4 / C-6 / C-7（同一条探针，沙盒 + 目录联接）：
+   C-3 window/document/body 上的 drop|dragover|dragenter 监听器 = 0（window 其它事件 21 个）
+   C-4 实例 26.3 + 磁盘上 versions/26.3 存在 → 仍显示「这些版本还没有游戏文件 起不来」
+   C-6 Quilt 实例 + mods/fabric-api-0.92.2+1.20.1.jar →
+       「缺 Quilted Fabric API —— 依赖它的 Mod 会加载失败」+「一键补装」
+   C-7 有实例时 .side-recent = 0
+   ★ 附带一条**探针自身的现象**（不是缺陷）：我那个假 jar 不是合法 zip，
+     所以 Mod 列表显示「共 0 个 Mod」，而"缺 API"的判据只看文件名 —— 两处对同一个目录的看法不同。
+     真 jar 不会这样，所以这条不算缺陷，只是提醒判据口径不同。
 ```
 
 ---
