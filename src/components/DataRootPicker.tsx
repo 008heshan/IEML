@@ -153,6 +153,15 @@ export function DataRootPicker({ open, onClose, current, toast, onChanged }: Dat
       message:
         `要删除这个游戏根目录吗？\n\n${path}\n\n` +
         '注意：**连目录里的文件一起删**（版本 / 存档 / Mod 都在里面），删完不可恢复。\n' +
+        /*
+         * ★★ 2026-09-24（A-4）：这段"不会连累什么"的话必须写出来。
+         *   以前 `instances.json` / `prefs.json` 就住在这个目录里 ——
+         *   删根目录 = **实例清单与全部设置一起没**，而两道确认里一个字都没提。
+         *   现在它们（连同 ms_client_id.txt / cf_api_key.txt）住在启动器自己的
+         *   数据目录里（Windows 是 %APPDATA%\IEML），删这个根目录不会碰到它们。
+         */
+        '**不会**动到：启动器的实例清单、设置、登录用的 client_id、CurseForge Key\n' +
+        '—— 它们住在启动器自己的数据目录（Windows 上是 %APPDATA%\\IEML），不在这个目录里。\n' +
         '如果只想让它从这张列表里消失，请点「移除」。',
     });
     if (!ok1) return;

@@ -468,16 +468,19 @@ pub struct InstanceStore {
     pub active_id: Option<String>,
 }
 
+/// ★★ A-4（2026-09-24）：清单文件住在**启动器自己的家**（`own_root`），
+///   不再写在游戏根目录里 —— 用户在「候选盘」那页删掉游戏根目录时，
+///   实例清单与全部设置不会再跟着一起没（老位置那份由 `platform::adopt_records` 收养）。
 fn instances_file(state: &AppState) -> std::path::PathBuf {
-    state.paths.root.join("instances.json")
+    state.paths.instances_file()
 }
 
 #[tauri::command]
 pub fn list_instances(state: State<'_, AppState>) -> Result<InstanceStore, String> {
-    let path = instances_file(&state);
-    if !path.is_file() {
+    // 读：优先 own_root，那儿没有才回退到游戏根目录的老位置（老用户升级上来的那一份）
+    let Some(path) = state.paths.own_file_for_read("instances.json") else {
         return Ok(InstanceStore::default());
-    }
+    };
     let text = std::fs::read_to_string(&path).map_err(|e| format!("读取实例列表失败：{e}"))?;
     /*
      * ★★ 2026-09-23：**回退**（第 3 条"删目录要同步"的第一版实现有严重错误）
@@ -501,7 +504,9 @@ pub fn list_instances(state: State<'_, AppState>) -> Result<InstanceStore, Strin
 
 #[tauri::command]
 pub fn save_instances(state: State<'_, AppState>, store: InstanceStore) -> Result<(), String> {
-    state.paths.ensure().map_err(|e| format!("无法创建数据目录：{e}"))?;
+    /* ★ A-4：写到**启动器自己的家**（`own_root`），不再写游戏根目录 */
+    std::fs::create_dir_all(&state.paths.own_root)
+        .map_err(|e| format!("无法创建数据目录（{}）：{e}", state.paths.own_root.display()))?;
     let path = instances_file(&state);
     let text = serde_json::to_string_pretty(&store).map_err(|e| format!("序列化失败：{e}"))?;
     // 先写临时文件再改名，避免写到一半断电导致列表损坏
@@ -512,8 +517,9 @@ pub fn save_instances(state: State<'_, AppState>, store: InstanceStore) -> Resul
 
 /* ====================== 全局偏好持久化 ====================== */
 
+/// ★★ A-4（2026-09-24）：与 `instances_file` 同理 —— 全局偏好也住在 `own_root`。
 fn prefs_file(state: &AppState) -> std::path::PathBuf {
-    state.paths.root.join("prefs.json")
+    state.paths.prefs_file()
 }
 
 /// 读全局偏好（主题 / 下载源 / 并发数 / 窗口尺寸 / 离线用户名 / 账号 uuid …）。
@@ -527,10 +533,10 @@ fn prefs_file(state: &AppState) -> std::path::PathBuf {
 /// 后端不该因为前端多了/少了一个字段就整体失败（那会连带把登录也弄丢）。
 #[tauri::command]
 pub fn load_prefs(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let path = prefs_file(&state);
-    if !path.is_file() {
+    // 读：优先 own_root，那儿没有才回退到游戏根目录的老位置（A-4）
+    let Some(path) = state.paths.own_file_for_read("prefs.json") else {
         return Ok(serde_json::json!({}));
-    }
+    };
     let text = std::fs::read_to_string(&path).map_err(|e| format!("读取设置失败：{e}"))?;
     match serde_json::from_str::<serde_json::Value>(&text) {
         Ok(v) => Ok(v),
@@ -550,7 +556,9 @@ pub fn load_prefs(state: State<'_, AppState>) -> Result<serde_json::Value, Strin
 /// 写全局偏好（原子写：先临时文件再改名，断电不会写坏）。
 #[tauri::command]
 pub fn save_prefs(state: State<'_, AppState>, prefs: serde_json::Value) -> Result<(), String> {
-    state.paths.ensure().map_err(|e| format!("无法创建数据目录：{e}"))?;
+    /* ★ A-4：写到**启动器自己的家**（`own_root`），不再写游戏根目录 */
+    std::fs::create_dir_all(&state.paths.own_root)
+        .map_err(|e| format!("无法创建数据目录（{}）：{e}", state.paths.own_root.display()))?;
     let path = prefs_file(&state);
     let text = serde_json::to_string_pretty(&prefs).map_err(|e| format!("序列化失败：{e}"))?;
     let tmp = path.with_extension("json.tmp");

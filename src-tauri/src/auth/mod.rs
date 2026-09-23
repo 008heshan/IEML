@@ -81,7 +81,13 @@ pub fn set_client_id(id: &str) {
     }
 }
 
-/// client_id 存在哪 —— 与 `instances.json` / `prefs.json` 同级。
+/// client_id 存在哪 —— 与 `instances.json` / `prefs.json` 同级，
+/// 也就是**启动器自己的家**（`own_root`，`%APPDATA%\IEML`）。
+///
+/// ★★ A-4（2026-09-24）：与那两个 JSON 一起搬出**游戏根目录** ——
+///   以前它在 `paths.root` 下，用户删掉那个游戏根目录时它会跟着没，
+///   而它是"填过一次就该长期有效"的东西。老位置那份由
+///   `platform::adopt_records` 在启动时收养（只复制、不删源）。
 ///
 /// ★ 为什么要落盘：用户在设置页填一次就该长期有效。
 ///   不存的话"每次启动都要重填"—— 那比不做还烦人。
@@ -91,12 +97,16 @@ pub fn set_client_id(id: &str) {
 ///   而 client_id 是后端启动时就要用的（早于前端加载偏好）。
 ///   放一起会出现"前端用旧值覆盖掉刚写的 id"这种竞态。
 pub fn client_id_file(paths: &crate::platform::AppPaths) -> std::path::PathBuf {
-    paths.root.join("ms_client_id.txt")
+    paths.own_file("ms_client_id.txt")
 }
 
 /// 启动时读一次（lib.rs 里调用）。
 pub fn load_client_id_from_disk(paths: &crate::platform::AppPaths) {
-    if let Ok(text) = std::fs::read_to_string(client_id_file(paths)) {
+    // 读：优先 own_root，那儿没有才回退到游戏根目录的老位置（A-4）
+    let Some(store) = paths.own_file_for_read("ms_client_id.txt") else {
+        return;
+    };
+    if let Ok(text) = std::fs::read_to_string(store) {
         let first = text.lines().next().unwrap_or("").trim().to_string();
         if first.is_empty() {
             return;
@@ -187,6 +197,13 @@ pub fn save_client_id(paths: &crate::platform::AppPaths, id: &str) -> Result<()>
     let trimmed = id.trim().to_string();
     if trimmed.is_empty() {
         let _ = std::fs::remove_file(client_id_file(paths));
+        /*
+         * ★ A-4：老位置（游戏根目录）那份也一起删掉。
+         *   不删的话，下一次启动 `adopt_records` 会把刚被清掉的 id 又收养回来 ——
+         *   用户会觉得"清空没用"。（这里删的是**用户刚刚要求清掉**的东西，
+         *   与"只复制、绝不删源"那条规矩不冲突：那条规矩管的是**自动**搬运。）
+         */
+        let _ = std::fs::remove_file(paths.legacy_record_file("ms_client_id.txt"));
         set_client_id("");
         return Ok(());
     }
