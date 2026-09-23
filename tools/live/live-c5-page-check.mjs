@@ -125,7 +125,15 @@ console.log('  安装页：' + JSON.stringify(pageState, null, 1));
 check('★ 进了**独立页面**（有资源信息卡）', pageState?.有信息卡 === true);
 check('★ 页面标题是「安装资源」', pageState?.标题 === '安装资源', String(pageState?.标题));
 check('  信息卡有名称与图标', !!pageState?.名称 && pageState?.图标 === true, String(pageState?.名称));
-check('  三个动作都在（Modrinth / MC 百科 / 复制名称）', (pageState?.动作数 ?? 0) >= 3, String(pageState?.动作数));
+/*
+ * ★★ 需求变了，判据跟着变：用户（截图）说那排「转到 Modrinth / 转到 MC 百科 / 复制名称」
+ *   **不要**（"这个太像 PCL 了"）。所以这里反过来断言"它不在"。
+ */
+check(
+  '★ 那排外链按钮已删除（用户："这个不要"）',
+  (pageState?.动作数 ?? -1) === 0,
+  String(pageState?.动作数),
+);
 check('★ 版本列表**带着分组**（复用同一份实现）', (pageState?.分组数 ?? 0) >= 2, `${pageState?.分组数} 组`);
 check('  版本行有内容', (pageState?.版本行数 ?? 0) > 0, `${pageState?.版本行数} 行`);
 check('★ 不再有卡片内联展开（那正是要换掉的）', pageState?.遗留内联展开 === 0, String(pageState?.遗留内联展开));

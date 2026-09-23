@@ -12,7 +12,7 @@
  */
 import { useEffect, useState } from 'react';
 import { Button, Chip, EmptyState, Note, Spinner } from '../ui';
-import { IconChevronRight, IconSearch } from '../ui/Icons';
+import { IconChevronRight } from '../ui/Icons';
 import { VersionPicker } from '../components/ResourceBrowser';
 import { useRealApi } from '../hooks/useRealApi';
 import { useApp } from '../state/AppContext';
@@ -93,28 +93,9 @@ export function ResourceInstallPage() {
     }
   };
 
-  /*
-   * ★ 复制名称 / 转到外部页面：PCL 详情页那两个动作的等价物 ——
-   *   用户求助时最常要贴的就是资源名与链接。
-   */
-  const copyName = async () => {
-    if (!hit) return;
-    try {
-      await navigator.clipboard.writeText(hit.title);
-      toast('ok', '已复制名称', hit.title);
-    } catch {
-      toast('info', '名称', hit.title);
-    }
-  };
+;
 
-  const openExternal = async (url: string, label: string) => {
-    try {
-      const { openUrl } = await import('@tauri-apps/plugin-opener');
-      await openUrl(url);
-    } catch {
-      toast('info', label, url);
-    }
-  };
+;
 
   if (!hit) {
     return (
@@ -173,35 +154,14 @@ export function ResourceInstallPage() {
             </div>
           </div>
 
-          <div className="res-detail-actions">
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() =>
-                void openExternal(
-                  'https://modrinth.com/project/' + (hit.slug || hit.project_id),
-                  'Modrinth 页面',
-                )
-              }
-            >
-              <IconSearch /> 转到 Modrinth
-            </Button>
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() =>
-                void openExternal(
-                  'https://search.mcmod.cn/s?key=' + encodeURIComponent(hit.title),
-                  'MC 百科',
-                )
-              }
-            >
-              转到 MC 百科
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => void copyName()}>
-              复制名称
-            </Button>
-          </div>
+          {/*
+            ★★ 2026-09-23 用户（截图）：「资源单开的那一页的**这个不要**，这个太像 PCL 了」——
+              原来这里有三个动作：转到 Modrinth / 转到 MC 百科 / 复制名称。
+              **整排删掉**：这一页的职责就是"挑版本、装它"，不是当外链中转站；
+              而且照抄 PCL 的按钮组也不是我们想要的观感。
+              ★ 一并删掉它们用到的 `copyName` / `openExternal` 两个函数与
+                `IconSearch` 导入 —— 留着就是死代码。
+          */}
         </div>
 
         {/* ---------- ② 版本列表（与列表页同一份实现） ---------- */}
