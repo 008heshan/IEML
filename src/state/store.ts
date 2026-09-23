@@ -100,24 +100,35 @@ export type PageId =
   | 'changelog'
   | 'about'
   /** ★★ 2026-09-23（C5）：资源的**独立安装页** —— 点「安装」从这里进，不再内联展开 */
-  | 'resource';
+  | 'resource'
+  /**
+   * ★★ 2026-09-23（用户第 4 条）：「**安装游戏我也要单开一页，以解放视觉繁乱**」。
+   *
+   *   在此之前「安装游戏」是下载页的第一个页签，它自己又是一个左右两栏的
+   *   组合安装器（版本清单 + 加载器 + 附加组件 + 名称 + 摘要）——
+   *   塞在"页头 + 一排页签"下面，一屏里同时有**两层**导航和**十几个**控件。
+   *
+   *   现在它是自己的一页：进来只有一件事（选版本），选完再去第二步。
+   */
+  | 'install';
 
 /** 二级页面（进入某个版本之后） */
 export type SubPageId = 'overview' | 'setup' | 'mods' | 'logs';
 
 /**
  * 下载页的页签
- * ★ 原来的「游戏版本」「加载器」两个页签已合并成一个「安装游戏」页 ——
- *   选版本与选加载器本来就该在**同一页**完成（用户在那一页里同时做这两个选择），
- *   拆成两个页签会导致加载器页签不知道要装到哪个版本上。
- *
- * ★★ 0.1.0-beta.1 扩成六个（用户要求）：Mod / 资源包 / 光影 / 数据包
+ * ★ 0.1.0-beta.1 扩成六个（用户要求）：Mod / 资源包 / 光影 / 数据包
  *   **一字排开**，而且每一格都是"能装什么"的资源中心。
  *   旧的 `mods` 那一格列的是"每个版本各装了什么 Mod"（**已有**的东西）——
  *   玩家点「下载」想要的是"有什么能装"，所以它被替换掉，
  *   "本机装了什么"回到 Mod 管理页（那一页本来就是干这个的）。
+ *
+ * ★★ 2026-09-23（用户第 4 条）：`'game'`（安装游戏）**从这个联合类型里删掉了** ——
+ *   它搬去自己的页面（`PageId` 里的 `'install'`）。删而不是留着不用，
+ *   是为了让"下载页里有安装游戏"这件事**在类型层面就不可能**：
+ *   留着它，将来任何一处 `setDownloadTab('game')` 都会编译通过并落到无人渲染的页签上。
  */
-export type DownloadTab = 'game' | 'modpack' | 'mod' | 'resourcepack' | 'shader' | 'datapack';
+export type DownloadTab = 'modpack' | 'mod' | 'resourcepack' | 'shader' | 'datapack';
 
 export interface AppState {
   /* --- 导航 --- */
@@ -252,7 +263,8 @@ export const initialState: AppState = {
   resourceTarget: null as { hit: unknown; kind: string } | null,
   openInstanceId: null,
   subPage: 'overview',
-  downloadTab: 'game',
+  /* ★ 2026-09-23：安装游戏搬去独立页 → 下载页的默认页签改成整合包（内容最重的那一格） */
+  downloadTab: 'modpack',
   downloadTargetId: null,
 
   theme: DEFAULT_THEME,

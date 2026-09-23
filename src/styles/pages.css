@@ -1547,6 +1547,265 @@
   min-width: 0;
 }
 
+/* ============================ 安装游戏（整页两步向导） ============================
+ * ★★ 2026-09-23（用户第 4 条）：「安装游戏我也要单开一页，以解放视觉繁乱……
+ *   默认页面：游戏版本选择。单开一页选择模组加载器，UI 排版你来设计，要好看实用」。
+ *
+ * 排版判据（沿用 ADR-054：动作抬出来 · 一行说状态 · 让宽度还回来）：
+ *   ① 一屏只回答一个问题 —— 最上面那排是"现在在第几步"，中间是"这一步要选的东西"，
+ *      右边一栏固定放"选完之后的结论 + 唯一的下一步按钮"（按钮永远在同一处，不用找）。
+ *   ② 步骤条上把**已经选好的值**写出来（`26.3` / `Fabric 0.19.5`）——
+ *      第 2 步于是不用再重复"装在哪个版本上"，用户也不用回头确认。
+ *   ③ 窗口窄了右栏就收到下面去，绝不把版本清单挤成一条缝。
+ */
+.gw {
+  margin-top: var(--space-3);
+  gap: var(--space-3);
+}
+
+/* —— 步骤条 —— */
+.gw-steps {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  flex: 0 0 auto;
+}
+.gw-step-li {
+  min-width: 0;
+}
+.gw-step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+.gw-step:hover:not(:disabled):not(.on) {
+  background: var(--bg-hover);
+}
+.gw-step:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.gw-step.on {
+  border-color: var(--accent-border);
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+.gw-step-no {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
+  background: var(--bg-raised);
+  font-size: var(--text-xs);
+  font-style: normal;
+  font-weight: 600;
+}
+.gw-step.on .gw-step-no {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--bg-base);
+}
+/* 走完的那一步打勾（不是"灰掉"—— 灰会让人以为它不能点回去） */
+.gw-step.done .gw-step-no {
+  border-color: var(--success);
+  background: var(--success-subtle);
+  color: var(--success);
+}
+.gw-step-no svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.gw-step-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.gw-step-label {
+  font-size: var(--text-base);
+  font-weight: 600;
+}
+.gw-step-value {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+.gw-step.on .gw-step-value {
+  color: var(--accent);
+  opacity: 0.85;
+}
+.gw-step-line {
+  flex: 0 0 28px;
+  height: 1px;
+  background: var(--border-default);
+}
+
+/* —— 两步共用的骨架：左边选 / 右边确认 ——
+ * ★★ 选择器必须写成 `.cw-shell-page .gw-body`（两个类），不能只写 `.gw-body`：
+ *   上面那条 `.cw-shell-page .cw-body { grid-template-columns: 300px minmax(0,1fr) }`
+ *   是**两个类**的选择器 —— 单类的 `.gw-body` 特异性更低，**根本盖不住它**。
+ *   真机实测过：写单类时右栏看着"在右边"（因为 300px + 1fr 也是左右两栏），
+ *   但清单只有 300px 宽、窄窗口也不会降级成上下排 —— 一个只在截图里才看得出来的错。
+ */
+.cw-shell-page .gw-body {
+  grid-template-columns: minmax(0, 1fr) 336px;
+}
+.gw-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.gw-pad {
+  padding: var(--space-5) var(--space-5) var(--space-4);
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+.gw-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding: var(--space-5) var(--space-4) var(--space-4);
+  border-left: 1px solid var(--border-subtle);
+  /*
+   * ★ 比左边稍暗一档（`--bg-base` vs 容器的 `--bg-surface`）：
+   *   右栏是"结论区"，不是又一个可选区域 —— 靠底色把这件事说清楚，
+   *   比再加一条分割线或一个小标题都省地方。
+   */
+  background: var(--bg-base);
+  overflow-y: auto;
+  min-height: 0;
+}
+.gw-side .cw-notes {
+  padding: 0;
+}
+/* 右栏里的块之间靠 `gap` 排，不再叠 `.wz-block` 自带的分隔线 */
+.gw-side .wz-block + .wz-block {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+/* 选中的版本（第 1 步右栏） */
+.gw-pick {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.gw-pick-body {
+  min-width: 0;
+}
+.gw-pick-id {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.gw-pick-sub {
+  margin-top: 2px;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+/* 「字段名 / 值」两列表：一眼扫完，不做卡片墙 */
+.gw-facts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-4) 0 0;
+}
+.gw-facts > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.gw-facts dt {
+  flex: 0 0 auto;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+.gw-facts dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  text-align: right;
+}
+
+/* 动作区：两个按钮同宽撑满右栏（"上一步"与"安装"都不会变成小角落） */
+.gw-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-5);
+  flex-wrap: wrap;
+}
+.gw-actions .btn {
+  flex: 1 1 auto;
+  justify-content: center;
+}
+.gw-back {
+  transform: rotate(180deg);
+}
+.gw-note {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  color: var(--text-tertiary);
+}
+
+/* 版本清单 / 加载器区在整页里是主角：内边距跟着放大，别挤在 232px 弹窗的尺度里 */
+.gw-col .cw-left-tip {
+  margin: 0 var(--space-4) var(--space-3);
+}
+.gw-col .cw-left-tools {
+  padding: var(--space-3) var(--space-4) var(--space-3);
+}
+.gw-col .cw-list {
+  padding: 0 var(--space-4) var(--space-4);
+}
+
+@media (max-width: 1080px) {
+  /* ★ 同样要两个类（见上面 `.cw-shell-page .gw-body` 的说明） */
+  .cw-shell-page .gw-body {
+    grid-template-columns: minmax(0, 1fr);
+    /* 上：清单占满剩下的高度（内部自己滚）；下：结论区按内容高 */
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+  .gw-side {
+    border-left: none;
+    border-top: 1px solid var(--border-subtle);
+  }
+  .gw-steps {
+    flex-wrap: wrap;
+  }
+}
+
 /* ============================ 崩溃 / 日志正文 ============================ */
 .crash-reason {
   display: flex;

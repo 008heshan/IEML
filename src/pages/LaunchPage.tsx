@@ -28,7 +28,6 @@ import {
   IconAlert,
   IconBox,
   IconCpu,
-  IconDownload,
   IconDrive,
   IconFolder,
   IconGear,
@@ -289,11 +288,12 @@ export function LaunchPage() {
         <EmptyState
           icon={<IconBox />}
           title="还没有可启动的版本"
-          desc="先去下载一份游戏，装好后它会出现在「版本列表」里。也可以用整合包一键装好一整套。"
+          desc="先去装一份游戏，装好后它会出现在「版本列表」里。也可以用整合包一键装好一整套。"
           actions={
             <>
-              <Button variant="primary" onClick={() => go('download')}>
-                <IconDownload /> 去下载游戏
+              {/* ★ 2026-09-23（用户第 4 条）：安装游戏是自己的一页了，不再是下载页的页签 */}
+              <Button variant="primary" onClick={() => go('install')}>
+                <IconBox /> 去安装游戏
               </Button>
               <Button
                 variant="secondary"
