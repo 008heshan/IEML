@@ -236,10 +236,18 @@ pub struct AddonOption {
 
 /// 实例运行时配置
 ///
-/// ★ 字段名必须与前端 `InstanceConfig`（`src/domain/types.ts`）一致 ——
-///   前端多带的那些字段（`javaRange` / `windowTitle` / `jvmArgs` …）这里
-///   收不到也无所谓：**反序列化时多余字段会被忽略**，
-///   但**缺失字段会直接报错**（就是 `missing field memory_mb` 那个 bug）。
+/// ★★ 2026-09-24（A-5，真机复现）：下面这些字段**必须一个不少**。
+///
+///   以前这里只声明了 6 个字段，注释还写着"前端多带的那些字段收不到也无所谓"——
+///   **那句话是错的**：serde 反序列化时确实会忽略多余字段，但
+///   **写回时它按这个结构体序列化**，于是前端那 7 个字段在**每一次存盘**时被丢掉。
+///   而实例清单的读写都要过 Rust（`save_instances` / `list_instances`），
+///   加上 `AppContext` 读到列表后 250ms 会回写一遍 ——
+///   真机实测：**启动 4 秒后** `instances.json` 的 config 从 13 个键变成 6 个，
+///   「启动后自动进入服务器」因此**从来没生效过**（预览命令里连 `--server` 都没有）。
+///
+///   ★ 判据：`instance_config_round_trips_every_frontend_field`（下面的测试）。
+///     以后前端再加字段，这里必须同步加，否则就是同一个缺陷的第二次。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstanceConfig {
@@ -250,6 +258,44 @@ pub struct InstanceConfig {
     pub memory_mb: u64,
     pub memory_source: String,
     pub java_mode: String,
+
+    /* ---------- 下面这些**前端会写**，缺了就是丢数据（全部给默认值，老文件也能读） ---------- */
+    /// `javaMode === 'range'` 时的闭区间（与前端 `JavaRange` 同形）
+    #[serde(default)]
+    pub java_range: Option<JavaRange>,
+    /// `javaMode === 'path'` 时指定的 java 可执行文件
+    #[serde(default)]
+    pub java_path: Option<String>,
+    /// 窗口标题覆盖（None = 跟随全局）
+    #[serde(default)]
+    pub window_title: Option<String>,
+    /// 启动后自动进入的服务器地址
+    #[serde(default)]
+    pub join_server: Option<String>,
+    /// 自定义信息覆盖
+    #[serde(default)]
+    pub custom_info: Option<String>,
+    /// 实例级 JVM 参数覆盖
+    #[serde(default)]
+    pub jvm_args: Option<String>,
+    /// 实例级游戏参数覆盖
+    #[serde(default)]
+    pub game_args: Option<String>,
+}
+
+/// Java 版本区间（与前端 `src/domain/types.ts` 的 `JavaRange` **逐字段对齐**）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JavaRange {
+    #[serde(default)]
+    pub min: Option<u32>,
+    /// 是否含等号（前端总是会给，这里给默认值只是为了老文件能读）
+    #[serde(default)]
+    pub min_inclusive: bool,
+    #[serde(default)]
+    pub max: Option<u32>,
+    #[serde(default)]
+    pub max_inclusive: bool,
 }
 
 /// 一个实例
@@ -393,5 +439,53 @@ mod wire_format {
         for k in ["mcVersion", "baseLoaders", "apiLibraries", "javaMajor"] {
             assert!(v.get(k).is_some(), "前端要读 {k}，实际给了 {v}");
         }
+    }
+
+    /// ★★ A-5 的判据：**前端写的每一个字段，存盘往返之后都必须还在**。
+    ///
+    ///   这条测试就是为那次真机事故写的：`instances.json` 里 config 有 13 个键，
+    ///   而 Rust 这份结构体只有 6 个 —— 存盘一次就丢 7 个，
+    ///   「启动后自动进入服务器」因此从来没生效过。
+    ///   ★ 以后前端 `InstanceConfig` 加字段，这里就要加一行（测试会先红）。
+    #[test]
+    fn instance_config_round_trips_every_frontend_field() {
+        let raw = r#"{
+            "name": "探针",
+            "slug": "probe",
+            "isolation": "auto",
+            "memoryMb": 4096,
+            "memorySource": "auto",
+            "javaMode": "range",
+            "javaRange": { "min": 17, "minInclusive": true, "max": 21, "maxInclusive": true },
+            "javaPath": "C:\\Java\\bin\\java.exe",
+            "windowTitle": "我的标题",
+            "joinServer": "1.2.3.4:25565",
+            "customInfo": "自定义",
+            "jvmArgs": "-XX:+UseG1GC",
+            "gameArgs": "--demo"
+        }"#;
+        let cfg: InstanceConfig = serde_json::from_str(raw).expect("应当能读进来");
+        let back = serde_json::to_value(&cfg).unwrap();
+        for k in [
+            "javaRange",
+            "javaPath",
+            "windowTitle",
+            "joinServer",
+            "customInfo",
+            "jvmArgs",
+            "gameArgs",
+        ] {
+            assert!(
+                back.get(k).map(|v| !v.is_null()).unwrap_or(false),
+                "存盘之后丢了字段 {k} —— 这正是 A-5（实例设置存不进磁盘）的形态，实际：{back}"
+            );
+        }
+        let r = back.get("javaRange").unwrap();
+        assert_eq!(r.get("min").and_then(|v| v.as_u64()), Some(17));
+        assert_eq!(r.get("maxInclusive").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            back.get("joinServer").and_then(|v| v.as_str()),
+            Some("1.2.3.4:25565")
+        );
     }
 }
