@@ -101,7 +101,8 @@ console.log('菜单几何：' + JSON.stringify(geo, null, 1));
 check('★ 菜单**向上展开**（底边在按钮上沿之上）', geo && geo.在按钮上方 === true, JSON.stringify(geo?.菜单) + ' vs ' + JSON.stringify(geo?.按钮));
 check('  菜单完整落在视口内（不会顶出屏幕）', geo && geo.在视口内 === true);
 
-const want = ['修改皮肤', '刷新皮肤', '保存皮肤文件', '修改披风', '刷新披风列表', '使用 CDKEY 兑换奖励'];
+/* ★ 2026-09-23 用户把这排里的一项删了（"这个不要"）—— 判据跟着反向 */
+const want = ['修改皮肤', '刷新皮肤', '保存皮肤文件', '修改披风', '刷新披风列表'];
 for (const w of want) {
   check(`  图二那项在：${w}`, Array.isArray(geo?.项) && geo.项.some((x) => x.includes(w)), JSON.stringify(geo?.项));
 }
@@ -111,6 +112,12 @@ check(
   JSON.stringify(geo?.项),
 );
 check('  有离线/正版切换', Array.isArray(geo?.项) && geo.项.some((x) => /离线模式|切回正版/.test(x)));
+/* ★★ 用户（截图）：「使用 CDKEY 兑换奖励 —— 这个不要」→ 断言它**不在** */
+check(
+  '★ 「使用 CDKEY 兑换奖励」已删除（用户要求）',
+  Array.isArray(geo?.项) && !geo.项.some((x) => /CDKEY/i.test(x)),
+  JSON.stringify(geo?.项),
+);
 
 /* ---------- ③ 附属文字要少 ---------- */
 const texty = await ev(`(() => {

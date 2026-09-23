@@ -152,15 +152,25 @@ const themeColor = async (theme) => {
   await ev(`document.documentElement.setAttribute('data-theme', '${theme}')`);
   await sleep(400);
   /*
-   * ★ 量的是 backgroundImage 而不是 backgroundColor：
-   *   按钮用的是 `linear-gradient(...)`（背景图），
-   *   `backgroundColor` 本来就是 rgba(0,0,0,0) —— 第一版量错属性，报了个假红。
+   * ★★ 2026-09-23：**必须一起量 background-color** ——
+   *   这个玻璃按钮的主题色在 backgroundColor 里（那层 --accent-veil 会被
+   *   序列化成背景色），而 backgroundImage 是两层共用的白色高光渐变。
+   *   第一版只比 img，于是"明明跟着变了"却报红（又是判据量错属性）。
+   *   ★ 注释里**不能出现反引号** —— 它在模板串里会把外层截断（我今天栽过一次）。
    */
   return ev(`(() => {
     const b = document.querySelector('.launch-btn');
     if (!b) return null;
     const cs = getComputedStyle(b);
-    return { img: cs.backgroundImage, shadow: cs.boxShadow.slice(0, 80), accent: cs.getPropertyValue('--accent').trim() };
+    return {
+      img: cs.backgroundImage,
+      /* 必须一起量 background-color：这个玻璃按钮的主题色在那里，
+         而 backgroundImage 是两层共用的白色高光渐变（只比 img 会假红）。
+         ★ 注释里不要出现反引号 —— 模板串里会把外层截断。 */
+      bgColor: cs.backgroundColor,
+      shadow: cs.boxShadow.slice(0, 80),
+      accent: cs.getPropertyValue('--accent').trim(),
+    };
   })()`);
 };
 const c1 = await themeColor('dark');
@@ -168,8 +178,8 @@ const c2 = await themeColor('jiuhong');
 console.log(`  玄夜 ${JSON.stringify(c1)}\n  酒红 ${JSON.stringify(c2)}`);
 check(
   '★ F3 换主题按钮底色/发光跟着变',
-  c1 && c2 && c1.img !== c2.img && c1.shadow !== c2.shadow,
-  `${c1?.accent} vs ${c2?.accent}`,
+  c1 && c2 && c1.bgColor !== c2.bgColor && c1.shadow !== c2.shadow,
+  `底色 ${c1?.bgColor} vs ${c2?.bgColor}；主色 ${c1?.accent} vs ${c2?.accent}`,
 );
 
 /* ---------- C1/C2：下载页 ---------- */

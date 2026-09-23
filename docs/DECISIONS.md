@@ -5719,3 +5719,27 @@ anim=toastOut  transform=matrix(…, 219.4, 0)  right=1377
   留着就是死代码（这个仓库的规矩：删掉，别留）。
 ★ 判据也跟着反过来：`live-c5-page-check` 原来断言"三个动作 ≥ 3"，
   现在断言"**它们不存在**（= 0）"——**需求变了，判据必须反向**。
+### 四十二、披风列表 404 —— **接口地址是我编的**（2026-09-23）
+
+用户截图：`取披风列表失败（HTTP 404 Not Found）：{"path":"/minecraft/profile/capes","error":"NOT_FOUND"}`。
+
+真相：**`GET /minecraft/profile/capes` 这个地址不存在** —— 是我上一轮凭印象写的。
+* 披风列表要从 **`GET /minecraft/profile`** 拿：它的响应里同时带 `skins[]` 与 `capes[]`，
+  每件披风有 `state`（`ACTIVE` / `INACTIVE`）、`url`、`alias`（名字）；
+* `PUT /minecraft/profile/capes/active`（换披风）与 `DELETE .../active`（取消）**是对的** ——
+  官方文档里就是它们，所以**只改了"取列表"这一处**，没有把两个一起改坏；
+* "哪件在穿"现在由**每件自己的 `state`** 决定（不再去猜一个不存在的 activeCape 字段）。
+
+#### ★ 一个**差点写进注释的错误结论**（值得单独记）
+
+我第一版的验证方式是"不带 token 各打一次"：当时 `/minecraft/profile` 回 401、
+另一个回空 → 我写下"**401 证明它存在、404 证明不存在**"。
+**重跑同一个命令，两个地址都回 401**（网关先拦鉴权，路径对不对它根本不告诉你）——
+所以那个判据**分辨不了**，我那句结论是错的，已在代码注释里改正。
+
+这件事的教训：**"我试了一下"不等于"这个试法有效"** ——
+要问一句"这个观察**能**区分两种假设吗"。真正权威的证据是两条：
+① 用户的应用**带着有效 token** 收到 404 + body 里明写 `"path":"/minecraft/profile/capes"`；
+② 官方文档在"换披风"那页说 cape ID 要 "use the new View your profile information endpoint"。
+
+（来源：[Change your enabled cape — Mojang API 文档](https://mojang-api-docs.gapple.pw/needs-auth/change-cape)）
