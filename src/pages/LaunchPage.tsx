@@ -84,21 +84,14 @@ export function LaunchPage() {
     return () => clearInterval(t);
   }, [isRunning]);
 
-  /* 二级页按「启动这个版本」时，回到启动页 */
-  useEffect(() => {
-    const onLaunchRequest = (e: Event) => {
-      const id = (e as CustomEvent<string>).detail;
-      setLaunchTarget(id);
-      go('launch');
-      // 下一帧触发启动（等 state 更新）
-      setTimeout(() => {
-        const btn = document.getElementById('ieml-launch-btn');
-        btn?.click();
-      }, 120);
-    };
-    window.addEventListener('ieml:launch-request', onLaunchRequest);
-    return () => window.removeEventListener('ieml:launch-request', onLaunchRequest);
-  }, [go, setLaunchTarget]);
+  /*
+   * ★★ 2026-09-24（A-1 修复）：这里的 `ieml:launch-request` 监听器**搬走了** ——
+   *   搬到 `AppShell`（常驻层）。原因：它原先只在本页挂载时注册，
+   *   而版本列表行 / 概览页 / 实例侧栏那三个「启动」按钮都在 `versions` 页里
+   *   dispatch 这个事件 —— 于是**点了什么都不发生**（真机判据：
+   *   那一页 `getEventListeners(window)['ieml:launch-request'].length === 0`）。
+   *   ★ 这里**不要再加回来**：两处都监听会启动两次。
+   */
 
   const req = useMemo<LaunchRequest | null>(() => {
     if (!target) return null;
