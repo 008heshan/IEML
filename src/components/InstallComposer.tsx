@@ -23,7 +23,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Chip, CustomSelect, Note, SearchBox, Segmented, Skeleton, Spinner } from '../ui';
 import { defaultInstanceName } from '../state/instance-name';
 import { useApp } from '../state/AppContext';
-import { IconAlert, IconCheck, IconChevronDown, IconInfo, IconPlus, IconRefresh } from '../ui/Icons';
+import { IconAlert, IconCheck, IconChevronDown, IconChevronRight, IconInfo, IconPlus, IconRefresh } from '../ui/Icons';
 import {
   BASE_LOADER_NAME,
   ADDON_DESC,
@@ -1022,730 +1022,1027 @@ export function InstallComposer({
     (q): q is { status: 'error'; message: string } => q.status === 'error',
   );
 
-  return (
-    <div className={`cw-shell cw-shell-${variant}`}>
-      <div className="cw-body">
-        {/* ============ 左栏：真实版本清单 ============ */}
-        <div className="cw-left">
-          <div className="cw-left-head">1 · 选择游戏版本</div>
+  /**
+   * ★★ 2026-09-23（用户第 4 条）：整页形态的**两步向导**当前在哪一步。
+   *
+   *   `'version'`（默认）→ 选游戏版本；`'loader'` → 选模组加载器。
+   *
+   * ★ 为什么不是"两个页签"：页签是**并列**的关系，而这两步是**先后**关系
+   *   （先有版本，才知道有哪些加载器可用）。步骤条也是这个意思 ——
+   *   第 2 步在没选版本之前是灰的，页签做不到这件事。
+   * ★ 弹窗形态（`variant === 'modal'`）不看这个值：弹窗里一屏选完，
+   *   没有"下一页"可翻（modal 分支在下面直接 return）。
+   */
+  const [step, setStep] = useState<'version' | 'loader'>('version');
 
-          {!api ? (
-            <div className="cw-left-tip">
-              <IconAlert /> 演示模式只有内置 {rows.length} 个版本，桌面版拉 900+ 个
-            </div>
-          ) : null}
-
-          <div className="cw-left-tools">
-            <SearchBox
-              label="搜索游戏版本"
-              placeholder="搜索版本号，如 1.20.1"
-              value={query}
-              onChange={setQuery}
-            />
-            <div className="row row-wrap" style={{ gap: 'var(--space-2)' }}>
-              <Segmented
-                label="渠道"
-                size="sm"
-                value={channel}
-                onChange={setChannel}
-                options={[
-                  { value: 'release', label: '正式版' },
-                  { value: 'snapshot', label: '快照' },
-                  // ★★ 2026-09-23（用户第 6 条）：愚人节单独一档
-                  { value: 'fools', label: '愚人节' },
-                  { value: 'all', label: '全部' },
-                ]}
-              />
-            </div>
-            {/*
-              ★★ 2026-09-23 用户：「**下载页的这个（图五），才是把这个选择源的按钮删了**」
-                —— 上一轮我理解反了：把设置页那个选择器删了、把这个留下了。
-                这里不再给选择：源由后端自动决定（官方优先、慢或失败换镜像，见 Rust parse_source）。
-            */}
-          </div>
-
-          {/*
-            ★★ 2026-09-23 用户（图五）：「**推荐版本也删掉**」——
-              这里原来有一排"常用版本" chips（1.21.1 / 1.20.1 / …），
-              它其实就是在替用户推荐版本。删掉。
-              版本照样能选：左边那份**完整清单**（900+ 个，带搜索与正式/快照分档）才是入口。
-            ★ 注意 `POPULAR_VERSIONS` 这个常量在下面 `rows` 的排序里还用到，所以别删常量。
-          */}
-
-          {/*
-            ★★ `key={channel|query}`：**换筛选时整列表重建**（2026-09-15，用户复现出来的）。
-
-            现象（真机复现，读 DOM）：点「快照」→「正式版」之后，分段控件的高亮**跟着走**，
-            但列表里**同时留着上一次的分组**（`26.2-rc-2(15 个)` 和 `26.2(1 个)` 并列），
-            再点「全部」/「正式版」/「快照」就**再也不变了**。
-
-            根因：分组用的 key 是 `g.fam.key` —— **世代键**。而 `26.2-rc-2` 与 `26.2`
-            的世代键**是同一个**（都是 `26.2`），于是两次渲染的分组 key 一一相同，
-            React 按 key 复用节点，旧分组没有被清掉 → 看起来就是"列表卡住"。
-
-            修法：key 里带上筛选条件。代价是换筛选时重建这棵子树（几十个节点，肉眼无感），
-            换来的是"看到的永远等于筛出来的"。
-          */}
-          <div className="cw-list" role="listbox" aria-label="选择游戏版本" key={`${channel}|${query}`}>
-            {manifestLoading ? (
-              <div style={{ padding: 'var(--space-2)' }}>
-                <Skeleton rows={8} height={40} />
-              </div>
-            ) : manifestError ? (
-              <div style={{ padding: 'var(--space-2)' }}>
-                <Note
-                  tone="danger"
-                  icon={<IconAlert />}
-                  title="拉取版本清单失败"
-                  actions={
-                    <Button size="sm" variant="secondary" onClick={() => void loadManifest()}>
-                      <IconRefresh /> 重试
-                    </Button>
-                  }
-                >
-                  {manifestError}
-                </Note>
-              </div>
-            ) : filtered.length === 0 ? (
-              <div className="empty-note" style={{ padding: 'var(--space-3)' }}>
-                {rows.length === 0 ? '还没有拿到版本清单' : `没有匹配「${query}」的版本`}
-              </div>
-            ) : (
-              /*
-               * ★★ 分组显示（0.1.0-beta.1，用户要求"不要展开后看到版本们
-               *   一堆堆在一起"）：按世代切开，每组一个标题行，标题带那个
-               *   世代的方块图标。清单顺序**保持上游给的新→旧**，分组只负责
-               *   "切开"，不自己造一份顺序。
-               */
-              groupByFamily(filtered.slice(0, 200), (v) => v.id).map((g) => {
-                const holdsSelected = g.rows.some((r) => r.id === mcVersion);
-                const folded = foldOverride[g.fam.key] ?? !(holdsSelected || searching);
-                return (
-                /*
-                 * ★ 分组 key 也要**唯一**：`g.fam.key` 是世代键，
-                 *   而 `26.2` 与 `26.2-rc-2` 的世代键相同 —— 只用它会让
-                 *   两个不同筛选结果里的分组"撞 key"（上面那段注释记的就是这个坑）。
-                 */
-                <div key={`${channel}|${g.fam.key}|${g.rows[0]?.id ?? ''}`} className="wz-group">
-                  {/*
-                    ★★ 标题行可点 = 折叠这一世代（用户建议："做一个版本折叠功能"）。
-                      清单 900+ 个版本铺开是一堵墙；默认只展开含当前选中版本的那组，
-                      搜索时全部展开（搜了看不到结果最气人）。
-                  */}
-                  <button
-                    type="button"
-                    className="ver-group ver-group-btn"
-                    aria-expanded={!folded}
-                    onClick={() => setFoldOverride((o) => ({ ...o, [g.fam.key]: !folded }))}
-                  >
-                    <IconChevronDown className={`fold-caret${folded ? ' folded' : ''}`} />
-                    <VersionIcon version={g.rows[0]?.id ?? ''} size={18} title={g.fam.label} />
-                    <span>{g.fam.label}</span>
-                    {/*
-                      ★ 2026-09-16 用户（看图）："后面的这个详细版本就不用了，去掉即可"。
-                        这里曾经在收起时列出组内的版本号（beta.21 加的 `.ver-group-ids`，
-                        最多 4 个 + "…等 N 个"）—— 用户看过后不要了：
-                        收起状态只留**世代号 + 个数**，别再往回加。
-                    */}
-                    <span className="ver-group-line" />
-                    <span className="dim">{g.rows.length} 个</span>
-                  </button>
-                  {folded ? null : g.rows.map((v) => (
-                    <button
-                      key={v.id}
-                      type="button"
-                      role="option"
-                      aria-selected={v.id === mcVersion}
-                      className={`wz-item${v.id === mcVersion ? ' on' : ''}`}
-                      onClick={() => {
-                        setMcVersion(v.id);
-                        // ★ 切版本必须同时清掉加载器选择：留着上一个版本选好的 Forge
-                        //   会让"这个版本没有 Forge"和"已经选了 Forge"同时成立，
-                        //   界面自相矛盾（用户报的串台 bug 就是从这来的）。
-                        setBase(null);
-                        setBaseVersion('');
-                        setAddons([]);
-                      }}
-                    >
-                      <VersionIcon version={v.id} size={30} />
-                      <span className="wz-item-body">
-                        <span className="wz-item-name mono">{v.id}</span>
-                        <span className="wz-item-sub">
-                          {v.released_at ? v.released_at.slice(0, 10) : ''}
-                          {/*
-                            ★★ **"盘上有"与"有版本在用"必须分开说**（用户报的 bug）。
-
-                            原话：「版本列表删除有模组加载器的版本之后，下载列表的
-                            对应版本有模组加载器的版本，**还显示已装**」。
-
-                            因为两张表读的是两个不同的东西：版本列表读
-                            `instances.json`，这一页直接扫 `shared/versions/`。
-                            删实例只删 `instances/{slug}/`，**共享的游戏文件**
-                            （`shared/versions/`、`libraries/`）故意留着 ——
-                            别的实例可能还在用。于是这里照旧扫到那个加载器目录。
-
-                            两句话都对，但只写"已装"就是在骗人：
-                            它让人以为那个版本能用，而其实没有任何版本在用它。
-
-                            现在分三种写法：
-                              · 有实例在用          → 「已装 Forge 47.4.23」
-                              · 盘上有、没实例在用   → 「盘上有 Forge 47.4.23（暂无版本在用）」
-                              · 都没有              → 什么都不写
-                          */}
-                          {v.loaders && v.loaders.length > 0
-                            ? ` · ${
-                                v.in_use === false ? '盘上有 ' : '已装 '
-                              }` +
-                              v.loaders
-                                .map((l) => (l.version ? `${l.name} ${l.version}` : l.name))
-                                .join(' + ') +
-                              (v.in_use === false ? '（暂无版本在用）' : '')
-                            : v.installed
-                              ? v.in_use === false
-                                ? ' · 盘上有原版（暂无版本在用）'
-                                : ' · 已装原版'
-                              : ''}
-                        </span>
-                      </span>
-                      {latest === v.id ? <Chip tone="success">最新</Chip> : null}
-                    </button>
-                  ))}
-                </div>
-                );
-              })
-            )}
-            {filtered.length > 200 ? (
-              <div className="empty-note" style={{ padding: 'var(--space-2)' }}>
-                还有 {filtered.length - 200} 个没显示，用搜索框缩小范围
-              </div>
-            ) : null}
-          </div>
+  /* ====================== 渲染 ======================
+   *
+   * ★★ 2026-09-23（用户第 4 条）：「安装游戏我也要单开一页，以解放视觉繁乱……
+   *   默认页面：游戏版本选择。单开一页选择模组加载器」。
+   *
+   *   于是**同一份逻辑**现在有两种排布：
+   *     · `modal` —— 「创建版本」弹窗，仍然左右两栏（弹窗里没有"下一页"，一屏选完最省事）；
+   *     · `page`  —— 「安装游戏」整页，**两步向导**：① 选版本 → ② 选加载器。
+   *   零件（版本清单 / 加载器 / 名称 / 校验结论 / 底部按钮）在下面各写**一次**，
+   *   两种排布只是把它们摆进不同的容器 —— 规则、文案、判据都不会漂移。
+   */
+  /** ① 版本清单的正文（演示模式提示 + 搜索与筛选 + 分组列表） */
+  const versionPaneBody = (
+    <>
+      {!api ? (
+        <div className="cw-left-tip">
+          <IconAlert /> 演示模式只有内置 {rows.length} 个版本，桌面版拉 900+ 个
         </div>
+      ) : null}
 
-        {/* ============ 右栏：加载器（三层） ============ */}
-        <div className="cw-right">
-          <div className="cw-right-body">
-            <section className="wz-block" style={{ marginTop: 0, paddingTop: 0, borderTop: 'none' }}>
-              <div className="wz-block-title">
-                2 · 模组加载器
-                <span className="wz-block-hint">
-                  四选一{loadersLoading ? ' · 正在查在线清单…' : ''}
-                </span>
-              </div>
+      <div className="cw-left-tools">
+        <SearchBox
+          label="搜索游戏版本"
+          placeholder="搜索版本号，如 1.20.1"
+          value={query}
+          onChange={setQuery}
+        />
+        <div className="row row-wrap" style={{ gap: 'var(--space-2)' }}>
+          <Segmented
+            label="渠道"
+            size="sm"
+            value={channel}
+            onChange={setChannel}
+            options={[
+              { value: 'release', label: '正式版' },
+              { value: 'snapshot', label: '快照' },
+              // ★★ 2026-09-23（用户第 6 条）：愚人节单独一档
+              { value: 'fools', label: '愚人节' },
+              { value: 'all', label: '全部' },
+            ]}
+          />
+        </div>
+        {/*
+          ★★ 2026-09-23 用户：「**下载页的这个（图五），才是把这个选择源的按钮删了**」
+            —— 上一轮我理解反了：把设置页那个选择器删了、把这个留下了。
+            这里不再给选择：源由后端自动决定（官方优先、慢或失败换镜像，见 Rust parse_source）。
+        */}
+      </div>
 
+      {/*
+        ★★ 2026-09-23 用户（图五）：「**推荐版本也删掉**」——
+          这里原来有一排"常用版本" chips（1.21.1 / 1.20.1 / …），
+          它其实就是在替用户推荐版本。删掉。
+          版本照样能选：左边那份**完整清单**（900+ 个，带搜索与正式/快照分档）才是入口。
+        ★ 注意 `POPULAR_VERSIONS` 这个常量在下面 `rows` 的排序里还用到，所以别删常量。
+      */}
+
+      {/*
+        ★★ `key={channel|query}`：**换筛选时整列表重建**（2026-09-15，用户复现出来的）。
+
+        现象（真机复现，读 DOM）：点「快照」→「正式版」之后，分段控件的高亮**跟着走**，
+        但列表里**同时留着上一次的分组**（`26.2-rc-2(15 个)` 和 `26.2(1 个)` 并列），
+        再点「全部」/「正式版」/「快照」就**再也不变了**。
+
+        根因：分组用的 key 是 `g.fam.key` —— **世代键**。而 `26.2-rc-2` 与 `26.2`
+        的世代键**是同一个**（都是 `26.2`），于是两次渲染的分组 key 一一相同，
+        React 按 key 复用节点，旧分组没有被清掉 → 看起来就是"列表卡住"。
+
+        修法：key 里带上筛选条件。代价是换筛选时重建这棵子树（几十个节点，肉眼无感），
+        换来的是"看到的永远等于筛出来的"。
+      */}
+      <div className="cw-list" role="listbox" aria-label="选择游戏版本" key={`${channel}|${query}`}>
+        {manifestLoading ? (
+          <div style={{ padding: 'var(--space-2)' }}>
+            <Skeleton rows={8} height={40} />
+          </div>
+        ) : manifestError ? (
+          <div style={{ padding: 'var(--space-2)' }}>
+            <Note
+              tone="danger"
+              icon={<IconAlert />}
+              title="拉取版本清单失败"
+              actions={
+                <Button size="sm" variant="secondary" onClick={() => void loadManifest()}>
+                  <IconRefresh /> 重试
+                </Button>
+              }
+            >
+              {manifestError}
+            </Note>
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="empty-note" style={{ padding: 'var(--space-3)' }}>
+            {rows.length === 0 ? '还没有拿到版本清单' : `没有匹配「${query}」的版本`}
+          </div>
+        ) : (
+          /*
+           * ★★ 分组显示（0.1.0-beta.1，用户要求"不要展开后看到版本们
+           *   一堆堆在一起"）：按世代切开，每组一个标题行，标题带那个
+           *   世代的方块图标。清单顺序**保持上游给的新→旧**，分组只负责
+           *   "切开"，不自己造一份顺序。
+           */
+          groupByFamily(filtered.slice(0, 200), (v) => v.id).map((g) => {
+            const holdsSelected = g.rows.some((r) => r.id === mcVersion);
+            const folded = foldOverride[g.fam.key] ?? !(holdsSelected || searching);
+            return (
+            /*
+             * ★ 分组 key 也要**唯一**：`g.fam.key` 是世代键，
+             *   而 `26.2` 与 `26.2-rc-2` 的世代键相同 —— 只用它会让
+             *   两个不同筛选结果里的分组"撞 key"（上面那段注释记的就是这个坑）。
+             */
+            <div key={`${channel}|${g.fam.key}|${g.rows[0]?.id ?? ''}`} className="wz-group">
               {/*
-                ★★ 「已装 xxx」这一段**已经删掉**（用户明确要求）。
-
-                  原话：「下载页的版本的模组加载器已装xxx那个提示不要了」。
-
-                  它本来想说"实时监测盘上装了什么"，但同时带来三个问题：
-                    · 这一页的职责是**装新的**，不是汇报旧状态；
-                    · 「盘上有」≠「有版本在用」（删掉实例后共享文件会被故意
-                      留下），这个区别在这一页怎么措辞都容易被读成"可以直接玩"；
-                    · 它占掉右栏最显眼的位置，把"选哪个加载器"挤下去了。
+                ★★ 标题行可点 = 折叠这一世代（用户建议："做一个版本折叠功能"）。
+                  清单 900+ 个版本铺开是一堵墙；默认只展开含当前选中版本的那组，
+                  搜索时全部展开（搜了看不到结果最气人）。
               */}
-
-              {/*
-                ★ 查不到清单时**必须说清是"没查到"而不是"没有"**，并给重试。
-                  老实现把这两种情况混成一个空数组，界面于是把 Forge 置灰、
-                  写"没有 Forge 版本"—— 那是启动器在说谎（用户报的 bug）。
-              */}
-              {failedKinds.length > 0 ? (
-                <Note
-                  tone="warning"
-                  icon={<IconAlert />}
-                  title="有加载器的版本清单没查到"
-                  actions={
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      loading={loadersLoading}
-                      onClick={() => void loadLoaderQueries(mcVersion, true)}
-                    >
-                      <IconRefresh /> 重新查询
-                    </Button>
-                  }
-                >
-                  {failedKinds.map((k) => BASE_LOADER_NAME[k]).join('、')} 的在线清单这次没拉到
-                  {firstError ? `（${firstError.message}）` : ''}。
-                  <b>这不代表这个版本没有它</b> —— 上面这几项暂时不能选，重试一次通常就好。
-                </Note>
-              ) : null}
-
-              <div className="base-list">
-                {baseOptions.map((o) => {
-                  const opt = o.value === '' ? null : caps.baseLoaders.find((b) => b.kind === o.value);
-                  const q = o.value === '' ? null : queries[o.value];
-                  /*
-                   * ★ 只有**确认**（查询成功且列表非空）才允许选。
-                   *   查询失败 → 置灰 + 说明"没查到，可重试"，
-                   *   **绝不**显示成"这个版本没有它"。
-                   */
-                  const liveOk = q?.status === 'ok' && (q?.versions.length ?? 0) > 0;
-                  const loading = q?.status === 'loading';
-                  /*
-                   * ★★ 2026-09-17（用户："与其这样，直接不让选不就好了"）。
-                   *
-                   *   用户看到的：1.7.10 上 Fabric **点得动、能选中**，选完下面
-                   *   才弹一句「当前组合不可用」。既然我们的结论就是"不能用"，
-                   *   就不该让它选得上 —— 让用户先选、再被拒绝，等于把我们自己的
-                   *   判断变成他的一次操作失误。
-                   *
-                   *   **为什么上一轮那道闸没生效**：`disabled` 原来只看
-                   *   `liveOk`（在线清单非空），**完全没读 `opt.available`**。
-                   *   Fabric 加载器在 1.7.10 上确实有 253 个构建 ——
-                   *   于是"在线清单非空 → 点得动"，而能力表早就判它不可用了。
-                   *
-                   *   ★ 两者必须分开看：`liveOk` 说的是"清单到没到"，
-                   *     `available` 说的是"我们判它能不能用"。只有后者为假时，
-                   *     才该说"这个版本没有它"。
-                   */
-                  const blockedByCapability = liveOk && opt != null && !opt.available;
-                  const disabled = o.value === '' ? false : blockedByCapability || !liveOk;
-                  const selected = (o.value === '' && base === null) || o.value === base;
-                  const reason =
-                    o.value === ''
-                      ? undefined
-                      : loading
-                        ? '正在查询在线清单…'
-                        : q?.status === 'error'
-                          ? `没查到 ${o.label} 的版本清单（${q.message}）—— 这不等于是没有，可以点上面「重新查询」`
-                          : blockedByCapability
-                            ? (opt?.unavailableReason ?? `${o.label} 不支持 ${mcVersion}`)
-                            : (opt?.unavailableReason ?? `${o.label} 没有 ${mcVersion} 的版本`);
-                  /*
-                   * ★★ 一行短状态（0.1.0-beta.1，用户要求）。
-                   *
-                   *   原文是整句告警，四个加载器各铺两三行，右栏全是字。
-                   *   现在分三种，**一字不差地对应三种真实状态**：
-                   *     loading → 转圈（"正在查"，不是"没有"）
-                   *     error   → 「查不到」（≠ 没有；整句仍挂在 title 上）
-                   *     确认没有 → 「无」
-                   *   把长句删掉换成"无"是可以的；把"查不到"说成"无"不行 ——
-                   *   那正是 ADR-050 记着的那类假话。
-                   */
-                  const shortReason = loading ? null : q?.status === 'error' ? '查不到' : '无';
-                  return (
-                    <div key={o.value || 'none'} className="base-item">
-                      <button
-                        type="button"
-                        className={`base-opt${selected ? ' on' : ''}${disabled ? ' dis' : ''}`}
-                        aria-pressed={selected}
-                        disabled={disabled}
-                        /*
-                         * ★★ 2026-09-16 用户："鼠标停在选项上时同一句仍在 title 里，
-                         *   这个也不要，大伙都知道是什么"。
-                         *
-                         *   所以 title **只在不可用时给理由**（那是"为什么点不了"，
-                         *   必须留着），可点时一律不给 —— 加载器的名字本身就说清了，
-                         *   再挂一句"老牌加载器，Mod 数量最多"是在教用户常识。
-                         */
-                        title={disabled ? reason : undefined}
-                        onClick={() => {
-                          setBase(o.value === '' ? null : o.value);
-                          setAddons([]);
-                        }}
-                      >
-                        <span className="radio" aria-hidden="true" />
-                        <span className="b-info">
-                          <span className="b-name">{o.label}</span>
-                          {/*
-                            ★★ 2026-09-16 用户："图三这个副标题提示，可以去掉"。
-                              原来选中/不可用时会在这里多铺一行说明
-                              （"老牌加载器，Mod 数量最多…"）—— 删掉。
-                              **没有丢信息**：鼠标停在这个选项上时，
-                              同一句说明仍然在 `title` 里（上面那个 title 属性）。
-                          */}
-                          {disabled && reason ? (
-                            <span className="b-reason" title={reason}>
-                              {shortReason === null ? (
-                                <Spinner label="正在查在线清单…" />
-                              ) : (
-                                <>
-                                  <IconAlert /> {shortReason}
-                                </>
-                              )}
-                            </span>
-                          ) : null}
-                        </span>
-                      </button>
-
-                      {selected && opt && availableBaseVersions.length > 0 ? (
-                        <div className="loader-detail">
-                          <label htmlFor={`bv-${o.value}`}>{o.label} 版本</label>
-                          {/*
-                            ★★ 2026-09-22（用户：「模组加载器选择版本时，这个展开栏**没统一风格**」）：
-                              原生 `<select>` 的下拉列表由**操作系统**画（图五那张白底黑字的
-                              方框就是它）—— 在深色玻璃界面里出戏，也不跟主题走。
-                              换成应用自己的 `CustomSelect`（与「要启动的版本」同款）。
-                          */}
-                          <CustomSelect
-                            value={baseVersion}
-                            onChange={setBaseVersion}
-                            ariaLabel={`${o.label} 版本`}
-                            options={availableBaseVersions.map((ver) => ({ value: ver, label: ver }))}
-                          />
-                          <Chip tone="success">在线清单 · {availableBaseVersions.length} 个版本</Chip>
-                        </div>
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/*
-                ★ 0.1.0-beta.1：删掉「不装加载器也能玩 —— 想加光影的话，OptiFine
-                  会对原版 jar 打补丁安装」。用户明确要求去掉 ——
-                  选了「无 · 纯原版」的人知道自己在干什么，不用再劝一遍；
-                  选中那一行自己的说明已经写清了它是什么。
-              */}
-            </section>
-
-            <section className="wz-block">
-              <div className="wz-block-title">
-                附加组件
-                {/* ★ 2026-09-16 用户（截图）：删掉"可叠加 · 受加载器兼容性约束" */}
-                {optifineReal && optifineReal.length > 0 ? (
-                  <span className="wz-block-hint">OptiFine 清单来自在线</span>
-                ) : null}
-              </div>
-              <div className="addon-grid">
-                {caps.addons.map((a) => {
-                  const bridge = verdict.autoBridges.find((b) => b.after === a.kind);
-                  const selected = addons.includes(a.kind);
-                  const removed = verdict.removed.find((r) => r.kind === a.kind);
-                  /*
-                   * ★ OptiFine 的可用性以**在线清单**为准（静态表只作离线兜底）。
-                   *   实测静态表里那句"1.20.5 起不再支持"是错的：1.20.6 有预览版、
-                   *   1.21.1 有正式版。所以这里有在线数据就用在线数据，没有才退回表。
-                   *
-                   * ★★ 2026-09-14：这里原来**只看在线清单，完全没看 `implemented`**。
-                   *   而 IEML 并没有 OptiFine 的安装实现（见
-                   *   `ADDON_INSTALL_IMPLEMENTED`）。于是：
-                   *     · 在线清单查到了 → `disabled = false` → 按钮**点得动**、
-                   *       勾得上、点安装、报告成功 —— 磁盘上什么都没多；
-                   *     · 清单没查到（或上一个版本的残留状态）→ 灰掉、点不动。
-                   *   用户看到的"显示有高清修复，实际上点击后不让选"，
-                   *   就是这个开关一半能点一半不能点造成的。
-                   *
-                   *   现在的判据是**三件事的与**：上游有 + 我们做了 + 版本清单拿到了。
-                   *   任何一条不成立都必须灰掉，并说清**是哪一条**不成立。
-                   */
-                  const isOf = a.kind === 'optifine';
-                  const online = isOf ? optifine : null;
-                  const ofVersionsKnown =
-                    !!online && online.status === 'ok' && online.versions.length > 0;
-                  /*
-                   * ★★ 「与当前加载器不兼容」必须**直接不让选**（用户 2026-09-15）：
-                   *   「既然 Fabric 和高清修复不兼容，为什么还要选了再警告，
-                   *     而不是直接不让选来的实在」。
-                   *
-                   *   原来 `verdict.removed`（组合校验的结论）只被用来**画一个红角标**，
-                   *   开关本身照旧点得动 —— 于是用户可以"勾上它、再读一句它不行"。
-                   *   现在把 `removed` 也算进 `disabled`：结论只有一个，界面照它执行。
-                   *   理由仍然显示（灰掉 + 说明为什么），不让选但**不瞒着**。
-                   */
-                  /*
-                   * ★★ **不管选没选，都先问一次"这个组件跟当前组合兼容吗"**
-                   *   （2026-09-15，用户："选了 Fabric 之后还能点，还是能点，
-                   *     就不能黑了，然后显示不兼容吗"）。
-                   *
-                   *   以前 `disabled` 只看 `verdict.removed` —— 而 `removed` 里
-                   *   **只有已经勾上的组件**（`validateCombination` 是遍历选中项算的）。
-                   *   于是没勾的高清修复永远"点得动"：用户点上去，它才变成
-                   *   "不兼容"、才被禁用、安装按钮才被拦 —— 正是用户说的
-                   *   "选了才知道不行"。
-                   *
-                   *   现在用 `addonCompatibility`（**同一个判据**，只是提前问）：
-                   *   不兼容的**从一开始就是灰的**，并把理由显示出来。
-                   */
-                  const compat = addonCompatibility(
-                    mcVersion,
-                    base,
-                    a.kind,
-                    {
-                      baseVersion: baseVersion || undefined,
-                      addonVersion: isOf ? optifineFirst?.version : undefined,
-                    },
-                    // 与 `validateCombination` 拿到的是**同一个** online（判据只有一份）
-                    online as never,
-                  );
-                  const blockedReason = compat.ok ? null : (compat.reason ?? '与当前组合不兼容');
-                  const disabled = !a.implemented
-                    ? true
-                    : !!removed || !!blockedReason
-                      ? true
-                      : isOf && online
-                        ? !ofVersionsKnown
-                        : !a.available;
-                  const reason = !a.implemented
-                    ? (a.unavailableReason ??
-                      // ★ 不可达的分支（两个附加组件都实装了），但留着是**故意的**：
-                      //   万一将来新增一个没做安装的组件，这里必须仍然说真话，
-                      //   而不是显示一个点得动却什么也不做的开关。
-                      `${a.name} 的安装 IEML 还没做 —— 可以先用别的启动器装好，再用 IEML 启动`)
-                    /*
-                     * ★★ **"与当前组合不兼容"排在最前面**（2026-09-15）：
-                     *   灰掉一个选项必须同时说清为什么 —— 否则用户只会觉得
-                     *   "这个功能坏了"。而且它比"清单没查到"更确定：
-                     *   前者是**怎么都装不了**，后者只是这次没问到。
-                     */
-                    : blockedReason
-                      ? blockedReason
-                      : isOf && online
-                        ? online.status === 'loading'
-                          ? '正在查询 OptiFine 版本清单…'
-                          : online.status === 'error'
-                            ? `没查到 OptiFine 的版本清单（${online.message}）—— 这不等于没有，可以点上面「重新查询」`
-                            : online.versions.length === 0
-                              ? `OptiFine 确实没有发布 ${mcVersion} 的版本`
-                              : undefined
-                        : a.unavailableReason;
-                  /*
-                   * ★★ 短状态（0.1.0-beta.1，用户对着截图说"这个下面的提示，
-                   *   还有诸如此类的提示可以直接简写一个'无'，所有人就知道啥意思了"）。
-                   *
-                   *   三种状态三种写法，一个都不许混：
-                   *     正在查 → 转圈（Windows 开机那种），因为这时**还不知道**
-                   *     没查到 → 「查不到」（网络/上游问题，长句留在 title 里）
-                   *     确认没有 → 「无」
-                   */
-                  const addonLoading = isOf && online?.status === 'loading';
-                  const shortReason = addonLoading
-                    ? null
-                    /*
-                     * ★★ **不兼容要单独一档**（2026-09-15）：
-                     *   以前所有"灰掉的"都显示「无」—— 于是"这个组合装不了"
-                     *   和"上游确实没有"看起来一模一样。用户看不出是**我们的限制**
-                     *   还是**上游没有**，而这两件事的下一步动作完全不同。
-                     */
-                    : blockedReason
-                      ? '不兼容'
-                      : isOf && online?.status === 'error'
-                        ? '查不到'
-                        : isOf && online?.status === 'ok' && online.versions.length === 0
-                          ? '无'
-                          : disabled
-                            ? '无'
-                            : null;
-                  return (
-                    <button
-                      key={a.kind}
-                      type="button"
-                      className={`addon-opt${selected ? ' on' : ''}${disabled || removed ? ' dis' : ''}`}
-                      aria-pressed={selected}
-                      /*
-                       * ★★ **已选中的永远可以取消勾选**，即使它现在被判成不兼容。
-                       *   否则就会出现"点不掉它 + 安装按钮被拦"的死局
-                       *   （用户报的那一屏）。不让**选**是对的；让人**取消不掉**是错的。
-                       */
-                      disabled={disabled && !selected}
-                      title={disabled ? reason : undefined}
-                      onClick={() =>
-                        setAddons((prev) =>
-                          prev.includes(a.kind)
-                            ? prev.filter((x) => x !== a.kind)
-                            : [...prev, a.kind],
-                        )
-                      }
-                    >
-                      <span className="checkbox" aria-hidden="true">
-                        {selected ? <IconCheck /> : null}
-                      </span>
-                      <span className="a-info">
-                        <span className="a-name">
-                          {a.name}
-                          {isOf && online?.status === 'ok' && online.versions.length > 0 ? (
-                            <Chip tone="neutral">{online.versions.length} 个版本</Chip>
-                          ) : null}
-                          {/*
-                            ★ "上游有、但我们还没做"要**单独标出来**。
-                              只写一句"不可用"，用户会以为这个组件不存在，
-                              于是放弃；真相是"它在，是我们没实现"——
-                              这条信息决定他是等待还是换个启动器装。
-                          */}
-                          {a.exists && a.implemented === false ? (
-                            <Chip tone="warning">没做安装</Chip>
-                          ) : null}
-                          {/*
-                            ★★ **和当前加载器不兼容** → 明确标出来（用户要求）。
-                              只写一句原因容易被当成"说明文字"划过去；
-                              一个红角标才让人一眼看到"这个组合有问题"。
-                            ★ 2026-09-15：`blockedReason` 也要标 —— 那是**没勾上**
-                              但已经判定不兼容的（勾都没勾就更需要角标，否则用户
-                              只会觉得"这个选项怎么点不动"）。
-                          */}
-                          {removed || blockedReason ? (
-                            <Chip tone="danger">与当前加载器不兼容</Chip>
-                          ) : null}
-                        </span>
-                        <span className="a-desc">{ADDON_DESC[a.kind]}</span>
-                        {/* 在线清单的第一项就是最新版 —— 直接把"会装哪个"写出来 */}
-                        {isOf && online?.status === 'ok' && optifineFirst ? (
-                          <span className="a-note info">
-                            <IconInfo /> 最新：{optifineFirst.version}
-                            {optifineFirst.preview ? '（预览版，非正式版）' : ''}
-                            {optifineFirst.required_forge
-                              ? ` · 需要 Forge ${optifineFirst.required_forge}`
-                              : ''}
-                          </span>
-                        ) : null}
-                        {disabled && reason ? (
-                          <span className="a-note bad" title={reason}>
-                            {shortReason === null ? (
-                              <Spinner label="正在查版本清单…" />
-                            ) : (
-                              <>
-                                <IconAlert /> {shortReason}
-                              </>
-                            )}
-                          </span>
-                        ) : null}
-                        {/*
-                          ★ 不兼容的理由**要照常显示**（以前这里是 `!disabled && removed`）：
-                            现在 `removed` 会让这一项直接 `disabled`，如果还按老条件写，
-                            用户就会看到一个灰掉、又完全不说为什么的开关 ——
-                            "不让选"和"说清为什么"是两件事，都要做。
-                        */}
-                        {removed ? (
-                          <span className="a-note bad">
-                            <IconAlert /> {removed.reason}
-                          </span>
-                        ) : null}
-                        {!disabled && !removed && bridge ? (
-                          <span className="a-note info">
-                            <IconInfo /> 需要桥接包{' '}
-                            {bridge.kind === 'optifabric' ? 'OptiFabric' : 'OptiFabric Origins'}
-                            {bridge.kind === 'optifabric' ? '（会自动装）' : '（需手动下载）'}
-                          </span>
-                        ) : null}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-
-              {/*
-                ★ 选中 OptiFine 之后**让它自己选版本**（以前完全不可选，
-                  用户只能装静态表里那几个手抄的版本号）。
-                  预览版带「预览版」标注：用户有权知道它不是正式版。
-              */}
-              {addons.includes('optifine') && optifineReal && optifineReal.length > 0 ? (
-                <div className="loader-detail">
-                  <label htmlFor="of-ver">OptiFine 版本</label>
-                  {/* ★ 同上一处：原生 select → CustomSelect（用户："这个展开栏没统一风格"） */}
-                  <CustomSelect
-                    value={addonVersions.optifine ?? optifineReal[0]?.version ?? ''}
-                    onChange={(v) => setAddonVersions((p) => ({ ...p, optifine: v }))}
-                    ariaLabel="OptiFine 版本"
-                    options={optifineReal.map((v) => ({
-                      value: v.version,
-                      label: `${v.version}${v.preview ? '（预览版）' : ''}`,
-                    }))}
-                  />
-                  <Chip tone="success">在线清单 · {optifineReal.length} 个版本</Chip>
-                </div>
-              ) : null}
-            </section>
-
-            {/*
-              ★ 没有 API 包可装时**整块不渲染**。
-                以前这里永远显示一个虚线空框写着"当前配置无需额外 API 包"——
-                用户没问 API 包，也不需要知道"没有"这件事。
-            */}
-            {verdict.autoApis.length > 0 ? (
-              <section className="wz-block">
-                <div className="wz-block-title">
-                  将自动安装
-                  <span className="wz-block-hint">API 前置包 · 由加载器决定</span>
-                </div>
-                <div className="api-list">
-                  {verdict.autoApis.map((lib) => (
-                    <div key={lib.kind} className="api-item">
-                      <span className="api-name">{lib.name}</span>
-                      <span className="api-ver mono">{lib.version}</span>
-                      <span className="api-desc" title={lib.description}>
-                        {lib.description}
-                      </span>
-                      <span className="api-size mono">{formatBytes(lib.bytes)}</span>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            ) : null}
-
-            <section className="wz-block">
-              <div className="wz-block-title">
-                版本名称
-                <span className="wz-block-hint">之后可以在设置里改</span>
-              </div>
-              <input
-                className="input"
-                value={name}
-                aria-label="版本名称"
-                placeholder="给这个版本起个名字"
-                onChange={(e) => {
-                  setName(e.target.value);
-                  setNameTouched(true);
-                }}
-                onFocus={(e) => e.currentTarget.select()}
-              />
-              {nameTouched && name !== suggestedName ? (
+              <button
+                type="button"
+                className="ver-group ver-group-btn"
+                aria-expanded={!folded}
+                onClick={() => setFoldOverride((o) => ({ ...o, [g.fam.key]: !folded }))}
+              >
+                <IconChevronDown className={`fold-caret${folded ? ' folded' : ''}`} />
+                <VersionIcon version={g.rows[0]?.id ?? ''} size={18} title={g.fam.label} />
+                <span>{g.fam.label}</span>
+                {/*
+                  ★ 2026-09-16 用户（看图）："后面的这个详细版本就不用了，去掉即可"。
+                    这里曾经在收起时列出组内的版本号（beta.21 加的 `.ver-group-ids`，
+                    最多 4 个 + "…等 N 个"）—— 用户看过后不要了：
+                    收起状态只留**世代号 + 个数**，别再往回加。
+                */}
+                <span className="ver-group-line" />
+                <span className="dim">{g.rows.length} 个</span>
+              </button>
+              {folded ? null : g.rows.map((v) => (
                 <button
+                  key={v.id}
                   type="button"
-                  className="wz-reset-name"
+                  role="option"
+                  aria-selected={v.id === mcVersion}
+                  className={`wz-item${v.id === mcVersion ? ' on' : ''}`}
                   onClick={() => {
-                    setName(suggestedName);
-                    setNameTouched(false);
+                    setMcVersion(v.id);
+                    // ★ 切版本必须同时清掉加载器选择：留着上一个版本选好的 Forge
+                    //   会让"这个版本没有 Forge"和"已经选了 Forge"同时成立，
+                    //   界面自相矛盾（用户报的串台 bug 就是从这来的）。
+                    setBase(null);
+                    setBaseVersion('');
+                    setAddons([]);
                   }}
                 >
-                  改回建议名称「{suggestedName}」
+                  <VersionIcon version={v.id} size={30} />
+                  <span className="wz-item-body">
+                    <span className="wz-item-name mono">{v.id}</span>
+                    <span className="wz-item-sub">
+                      {v.released_at ? v.released_at.slice(0, 10) : ''}
+                      {/*
+                        ★★ **"盘上有"与"有版本在用"必须分开说**（用户报的 bug）。
+
+                        原话：「版本列表删除有模组加载器的版本之后，下载列表的
+                        对应版本有模组加载器的版本，**还显示已装**」。
+
+                        因为两张表读的是两个不同的东西：版本列表读
+                        `instances.json`，这一页直接扫 `shared/versions/`。
+                        删实例只删 `instances/{slug}/`，**共享的游戏文件**
+                        （`shared/versions/`、`libraries/`）故意留着 ——
+                        别的实例可能还在用。于是这里照旧扫到那个加载器目录。
+
+                        两句话都对，但只写"已装"就是在骗人：
+                        它让人以为那个版本能用，而其实没有任何版本在用它。
+
+                        现在分三种写法：
+                          · 有实例在用          → 「已装 Forge 47.4.23」
+                          · 盘上有、没实例在用   → 「盘上有 Forge 47.4.23（暂无版本在用）」
+                          · 都没有              → 什么都不写
+                      */}
+                      {v.loaders && v.loaders.length > 0
+                        ? ` · ${
+                            v.in_use === false ? '盘上有 ' : '已装 '
+                          }` +
+                          v.loaders
+                            .map((l) => (l.version ? `${l.name} ${l.version}` : l.name))
+                            .join(' + ') +
+                          (v.in_use === false ? '（暂无版本在用）' : '')
+                        : v.installed
+                          ? v.in_use === false
+                            ? ' · 盘上有原版（暂无版本在用）'
+                            : ' · 已装原版'
+                          : ''}
+                    </span>
+                  </span>
+                  {latest === v.id ? <Chip tone="success">最新</Chip> : null}
                 </button>
-              ) : null}
-            </section>
+              ))}
+            </div>
+            );
+          })
+        )}
+        {filtered.length > 200 ? (
+          <div className="empty-note" style={{ padding: 'var(--space-2)' }}>
+            还有 {filtered.length - 200} 个没显示，用搜索框缩小范围
           </div>
+        ) : null}
+      </div>
+    </>
+  );
 
-          <div className="cw-notes">
-            {verdict.errors.length > 0 ? (
-              <Note tone="danger" title="当前组合不可用">
-                {verdict.errors.join('；')}
-              </Note>
-            ) : verdict.warnings.length > 0 ? (
-              <Note tone="info" title="安装前请确认">
-                <ul className="note-list">
-                  {verdict.warnings.map((w, i) => (
-                    <li key={i}>{w}</li>
-                  ))}
-                </ul>
-              </Note>
-            ) : null}
+  /** ② 加载器 / 附加组件 / 自动安装的 API 包 */
+  const loaderPaneBody = (
+    <>
+      <section className="wz-block" style={{ marginTop: 0, paddingTop: 0, borderTop: 'none' }}>
+        <div className="wz-block-title">
+          {/*
+            ★ 整页向导里**不写「2 ·」** —— 上面那排步骤条已经写着"第 2 步"了，
+              同一句话写两遍就是 ADR-054 说的"繁"；弹窗里没有步骤条，所以留着。
+          */}
+          {variant === 'modal' ? '2 · 模组加载器' : '模组加载器'}
+          <span className="wz-block-hint">
+            四选一{loadersLoading ? ' · 正在查在线清单…' : ''}
+          </span>
+        </div>
 
-          </div>
+        {/*
+          ★★ 「已装 xxx」这一段**已经删掉**（用户明确要求）。
 
-          {/* ============ 底部常驻摘要 + 唯一的按钮 ============ */}
-          <div className="cw-foot">
-            <span className="dim">
-              约下载 <b className="mono">{formatBytes(estimate.download)}</b> · 可复用{' '}
-              {formatBytes(estimate.cached)} · Java <b className="mono">{javaReq.major}</b>
-              {hasJava ? <Chip tone="success">已就绪</Chip> : <Chip tone="warning">未安装</Chip>} ·
-              预计 <b className="mono">{formatDuration(estimate.seconds)}</b>
-            </span>
-            <div className="spacer" />
-            {onCancel ? (
-              <Button variant="ghost" onClick={onCancel}>
-                取消
+            原话：「下载页的版本的模组加载器已装xxx那个提示不要了」。
+
+            它本来想说"实时监测盘上装了什么"，但同时带来三个问题：
+              · 这一页的职责是**装新的**，不是汇报旧状态；
+              · 「盘上有」≠「有版本在用」（删掉实例后共享文件会被故意
+                留下），这个区别在这一页怎么措辞都容易被读成"可以直接玩"；
+              · 它占掉右栏最显眼的位置，把"选哪个加载器"挤下去了。
+        */}
+
+        {/*
+          ★ 查不到清单时**必须说清是"没查到"而不是"没有"**，并给重试。
+            老实现把这两种情况混成一个空数组，界面于是把 Forge 置灰、
+            写"没有 Forge 版本"—— 那是启动器在说谎（用户报的 bug）。
+        */}
+        {failedKinds.length > 0 ? (
+          <Note
+            tone="warning"
+            icon={<IconAlert />}
+            title="有加载器的版本清单没查到"
+            actions={
+              <Button
+                size="sm"
+                variant="secondary"
+                loading={loadersLoading}
+                onClick={() => void loadLoaderQueries(mcVersion, true)}
+              >
+                <IconRefresh /> 重新查询
               </Button>
-            ) : null}
-            <Button
-              variant="primary"
-              loading={installing}
-              disabled={!verdict.valid || !mcVersion}
-              onClick={() => void handleInstall()}
-            >
-              <IconPlus /> 安装 {name || suggestedName}
-            </Button>
+            }
+          >
+            {failedKinds.map((k) => BASE_LOADER_NAME[k]).join('、')} 的在线清单这次没拉到
+            {firstError ? `（${firstError.message}）` : ''}。
+            <b>这不代表这个版本没有它</b> —— 上面这几项暂时不能选，重试一次通常就好。
+          </Note>
+        ) : null}
+
+        <div className="base-list">
+          {baseOptions.map((o) => {
+            const opt = o.value === '' ? null : caps.baseLoaders.find((b) => b.kind === o.value);
+            const q = o.value === '' ? null : queries[o.value];
+            /*
+             * ★ 只有**确认**（查询成功且列表非空）才允许选。
+             *   查询失败 → 置灰 + 说明"没查到，可重试"，
+             *   **绝不**显示成"这个版本没有它"。
+             */
+            const liveOk = q?.status === 'ok' && (q?.versions.length ?? 0) > 0;
+            const loading = q?.status === 'loading';
+            /*
+             * ★★ 2026-09-17（用户："与其这样，直接不让选不就好了"）。
+             *
+             *   用户看到的：1.7.10 上 Fabric **点得动、能选中**，选完下面
+             *   才弹一句「当前组合不可用」。既然我们的结论就是"不能用"，
+             *   就不该让它选得上 —— 让用户先选、再被拒绝，等于把我们自己的
+             *   判断变成他的一次操作失误。
+             *
+             *   **为什么上一轮那道闸没生效**：`disabled` 原来只看
+             *   `liveOk`（在线清单非空），**完全没读 `opt.available`**。
+             *   Fabric 加载器在 1.7.10 上确实有 253 个构建 ——
+             *   于是"在线清单非空 → 点得动"，而能力表早就判它不可用了。
+             *
+             *   ★ 两者必须分开看：`liveOk` 说的是"清单到没到"，
+             *     `available` 说的是"我们判它能不能用"。只有后者为假时，
+             *     才该说"这个版本没有它"。
+             */
+            const blockedByCapability = liveOk && opt != null && !opt.available;
+            const disabled = o.value === '' ? false : blockedByCapability || !liveOk;
+            const selected = (o.value === '' && base === null) || o.value === base;
+            const reason =
+              o.value === ''
+                ? undefined
+                : loading
+                  ? '正在查询在线清单…'
+                  : q?.status === 'error'
+                    ? `没查到 ${o.label} 的版本清单（${q.message}）—— 这不等于是没有，可以点上面「重新查询」`
+                    : blockedByCapability
+                      ? (opt?.unavailableReason ?? `${o.label} 不支持 ${mcVersion}`)
+                      : (opt?.unavailableReason ?? `${o.label} 没有 ${mcVersion} 的版本`);
+            /*
+             * ★★ 一行短状态（0.1.0-beta.1，用户要求）。
+             *
+             *   原文是整句告警，四个加载器各铺两三行，右栏全是字。
+             *   现在分三种，**一字不差地对应三种真实状态**：
+             *     loading → 转圈（"正在查"，不是"没有"）
+             *     error   → 「查不到」（≠ 没有；整句仍挂在 title 上）
+             *     确认没有 → 「无」
+             *   把长句删掉换成"无"是可以的；把"查不到"说成"无"不行 ——
+             *   那正是 ADR-050 记着的那类假话。
+             */
+            const shortReason = loading ? null : q?.status === 'error' ? '查不到' : '无';
+            return (
+              <div key={o.value || 'none'} className="base-item">
+                <button
+                  type="button"
+                  className={`base-opt${selected ? ' on' : ''}${disabled ? ' dis' : ''}`}
+                  aria-pressed={selected}
+                  disabled={disabled}
+                  /*
+                   * ★★ 2026-09-16 用户："鼠标停在选项上时同一句仍在 title 里，
+                   *   这个也不要，大伙都知道是什么"。
+                   *
+                   *   所以 title **只在不可用时给理由**（那是"为什么点不了"，
+                   *   必须留着），可点时一律不给 —— 加载器的名字本身就说清了，
+                   *   再挂一句"老牌加载器，Mod 数量最多"是在教用户常识。
+                   */
+                  title={disabled ? reason : undefined}
+                  onClick={() => {
+                    setBase(o.value === '' ? null : o.value);
+                    setAddons([]);
+                  }}
+                >
+                  <span className="radio" aria-hidden="true" />
+                  <span className="b-info">
+                    <span className="b-name">{o.label}</span>
+                    {/*
+                      ★★ 2026-09-16 用户："图三这个副标题提示，可以去掉"。
+                        原来选中/不可用时会在这里多铺一行说明
+                        （"老牌加载器，Mod 数量最多…"）—— 删掉。
+                        **没有丢信息**：鼠标停在这个选项上时，
+                        同一句说明仍然在 `title` 里（上面那个 title 属性）。
+                    */}
+                    {disabled && reason ? (
+                      <span className="b-reason" title={reason}>
+                        {shortReason === null ? (
+                          <Spinner label="正在查在线清单…" />
+                        ) : (
+                          <>
+                            <IconAlert /> {shortReason}
+                          </>
+                        )}
+                      </span>
+                    ) : null}
+                  </span>
+                </button>
+
+                {selected && opt && availableBaseVersions.length > 0 ? (
+                  <div className="loader-detail">
+                    <label htmlFor={`bv-${o.value}`}>{o.label} 版本</label>
+                    {/*
+                      ★★ 2026-09-22（用户：「模组加载器选择版本时，这个展开栏**没统一风格**」）：
+                        原生 `<select>` 的下拉列表由**操作系统**画（图五那张白底黑字的
+                        方框就是它）—— 在深色玻璃界面里出戏，也不跟主题走。
+                        换成应用自己的 `CustomSelect`（与「要启动的版本」同款）。
+                    */}
+                    <CustomSelect
+                      value={baseVersion}
+                      onChange={setBaseVersion}
+                      ariaLabel={`${o.label} 版本`}
+                      options={availableBaseVersions.map((ver) => ({ value: ver, label: ver }))}
+                    />
+                    <Chip tone="success">在线清单 · {availableBaseVersions.length} 个版本</Chip>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+
+        {/*
+          ★ 0.1.0-beta.1：删掉「不装加载器也能玩 —— 想加光影的话，OptiFine
+            会对原版 jar 打补丁安装」。用户明确要求去掉 ——
+            选了「无 · 纯原版」的人知道自己在干什么，不用再劝一遍；
+            选中那一行自己的说明已经写清了它是什么。
+        */}
+      </section>
+
+      <section className="wz-block">
+        <div className="wz-block-title">
+          附加组件
+          {/* ★ 2026-09-16 用户（截图）：删掉"可叠加 · 受加载器兼容性约束" */}
+          {optifineReal && optifineReal.length > 0 ? (
+            <span className="wz-block-hint">OptiFine 清单来自在线</span>
+          ) : null}
+        </div>
+        <div className="addon-grid">
+          {caps.addons.map((a) => {
+            const bridge = verdict.autoBridges.find((b) => b.after === a.kind);
+            const selected = addons.includes(a.kind);
+            const removed = verdict.removed.find((r) => r.kind === a.kind);
+            /*
+             * ★ OptiFine 的可用性以**在线清单**为准（静态表只作离线兜底）。
+             *   实测静态表里那句"1.20.5 起不再支持"是错的：1.20.6 有预览版、
+             *   1.21.1 有正式版。所以这里有在线数据就用在线数据，没有才退回表。
+             *
+             * ★★ 2026-09-14：这里原来**只看在线清单，完全没看 `implemented`**。
+             *   而 IEML 并没有 OptiFine 的安装实现（见
+             *   `ADDON_INSTALL_IMPLEMENTED`）。于是：
+             *     · 在线清单查到了 → `disabled = false` → 按钮**点得动**、
+             *       勾得上、点安装、报告成功 —— 磁盘上什么都没多；
+             *     · 清单没查到（或上一个版本的残留状态）→ 灰掉、点不动。
+             *   用户看到的"显示有高清修复，实际上点击后不让选"，
+             *   就是这个开关一半能点一半不能点造成的。
+             *
+             *   现在的判据是**三件事的与**：上游有 + 我们做了 + 版本清单拿到了。
+             *   任何一条不成立都必须灰掉，并说清**是哪一条**不成立。
+             */
+            const isOf = a.kind === 'optifine';
+            const online = isOf ? optifine : null;
+            const ofVersionsKnown =
+              !!online && online.status === 'ok' && online.versions.length > 0;
+            /*
+             * ★★ 「与当前加载器不兼容」必须**直接不让选**（用户 2026-09-15）：
+             *   「既然 Fabric 和高清修复不兼容，为什么还要选了再警告，
+             *     而不是直接不让选来的实在」。
+             *
+             *   原来 `verdict.removed`（组合校验的结论）只被用来**画一个红角标**，
+             *   开关本身照旧点得动 —— 于是用户可以"勾上它、再读一句它不行"。
+             *   现在把 `removed` 也算进 `disabled`：结论只有一个，界面照它执行。
+             *   理由仍然显示（灰掉 + 说明为什么），不让选但**不瞒着**。
+             */
+            /*
+             * ★★ **不管选没选，都先问一次"这个组件跟当前组合兼容吗"**
+             *   （2026-09-15，用户："选了 Fabric 之后还能点，还是能点，
+             *     就不能黑了，然后显示不兼容吗"）。
+             *
+             *   以前 `disabled` 只看 `verdict.removed` —— 而 `removed` 里
+             *   **只有已经勾上的组件**（`validateCombination` 是遍历选中项算的）。
+             *   于是没勾的高清修复永远"点得动"：用户点上去，它才变成
+             *   "不兼容"、才被禁用、安装按钮才被拦 —— 正是用户说的
+             *   "选了才知道不行"。
+             *
+             *   现在用 `addonCompatibility`（**同一个判据**，只是提前问）：
+             *   不兼容的**从一开始就是灰的**，并把理由显示出来。
+             */
+            const compat = addonCompatibility(
+              mcVersion,
+              base,
+              a.kind,
+              {
+                baseVersion: baseVersion || undefined,
+                addonVersion: isOf ? optifineFirst?.version : undefined,
+              },
+              // 与 `validateCombination` 拿到的是**同一个** online（判据只有一份）
+              online as never,
+            );
+            const blockedReason = compat.ok ? null : (compat.reason ?? '与当前组合不兼容');
+            const disabled = !a.implemented
+              ? true
+              : !!removed || !!blockedReason
+                ? true
+                : isOf && online
+                  ? !ofVersionsKnown
+                  : !a.available;
+            const reason = !a.implemented
+              ? (a.unavailableReason ??
+                // ★ 不可达的分支（两个附加组件都实装了），但留着是**故意的**：
+                //   万一将来新增一个没做安装的组件，这里必须仍然说真话，
+                //   而不是显示一个点得动却什么也不做的开关。
+                `${a.name} 的安装 IEML 还没做 —— 可以先用别的启动器装好，再用 IEML 启动`)
+              /*
+               * ★★ **"与当前组合不兼容"排在最前面**（2026-09-15）：
+               *   灰掉一个选项必须同时说清为什么 —— 否则用户只会觉得
+               *   "这个功能坏了"。而且它比"清单没查到"更确定：
+               *   前者是**怎么都装不了**，后者只是这次没问到。
+               */
+              : blockedReason
+                ? blockedReason
+                : isOf && online
+                  ? online.status === 'loading'
+                    ? '正在查询 OptiFine 版本清单…'
+                    : online.status === 'error'
+                      ? `没查到 OptiFine 的版本清单（${online.message}）—— 这不等于没有，可以点上面「重新查询」`
+                      : online.versions.length === 0
+                        ? `OptiFine 确实没有发布 ${mcVersion} 的版本`
+                        : undefined
+                  : a.unavailableReason;
+            /*
+             * ★★ 短状态（0.1.0-beta.1，用户对着截图说"这个下面的提示，
+             *   还有诸如此类的提示可以直接简写一个'无'，所有人就知道啥意思了"）。
+             *
+             *   三种状态三种写法，一个都不许混：
+             *     正在查 → 转圈（Windows 开机那种），因为这时**还不知道**
+             *     没查到 → 「查不到」（网络/上游问题，长句留在 title 里）
+             *     确认没有 → 「无」
+             */
+            const addonLoading = isOf && online?.status === 'loading';
+            const shortReason = addonLoading
+              ? null
+              /*
+               * ★★ **不兼容要单独一档**（2026-09-15）：
+               *   以前所有"灰掉的"都显示「无」—— 于是"这个组合装不了"
+               *   和"上游确实没有"看起来一模一样。用户看不出是**我们的限制**
+               *   还是**上游没有**，而这两件事的下一步动作完全不同。
+               */
+              : blockedReason
+                ? '不兼容'
+                : isOf && online?.status === 'error'
+                  ? '查不到'
+                  : isOf && online?.status === 'ok' && online.versions.length === 0
+                    ? '无'
+                    : disabled
+                      ? '无'
+                      : null;
+            return (
+              <button
+                key={a.kind}
+                type="button"
+                className={`addon-opt${selected ? ' on' : ''}${disabled || removed ? ' dis' : ''}`}
+                aria-pressed={selected}
+                /*
+                 * ★★ **已选中的永远可以取消勾选**，即使它现在被判成不兼容。
+                 *   否则就会出现"点不掉它 + 安装按钮被拦"的死局
+                 *   （用户报的那一屏）。不让**选**是对的；让人**取消不掉**是错的。
+                 */
+                disabled={disabled && !selected}
+                title={disabled ? reason : undefined}
+                onClick={() =>
+                  setAddons((prev) =>
+                    prev.includes(a.kind)
+                      ? prev.filter((x) => x !== a.kind)
+                      : [...prev, a.kind],
+                  )
+                }
+              >
+                <span className="checkbox" aria-hidden="true">
+                  {selected ? <IconCheck /> : null}
+                </span>
+                <span className="a-info">
+                  <span className="a-name">
+                    {a.name}
+                    {isOf && online?.status === 'ok' && online.versions.length > 0 ? (
+                      <Chip tone="neutral">{online.versions.length} 个版本</Chip>
+                    ) : null}
+                    {/*
+                      ★ "上游有、但我们还没做"要**单独标出来**。
+                        只写一句"不可用"，用户会以为这个组件不存在，
+                        于是放弃；真相是"它在，是我们没实现"——
+                        这条信息决定他是等待还是换个启动器装。
+                    */}
+                    {a.exists && a.implemented === false ? (
+                      <Chip tone="warning">没做安装</Chip>
+                    ) : null}
+                    {/*
+                      ★★ **和当前加载器不兼容** → 明确标出来（用户要求）。
+                        只写一句原因容易被当成"说明文字"划过去；
+                        一个红角标才让人一眼看到"这个组合有问题"。
+                      ★ 2026-09-15：`blockedReason` 也要标 —— 那是**没勾上**
+                        但已经判定不兼容的（勾都没勾就更需要角标，否则用户
+                        只会觉得"这个选项怎么点不动"）。
+                    */}
+                    {removed || blockedReason ? (
+                      <Chip tone="danger">与当前加载器不兼容</Chip>
+                    ) : null}
+                  </span>
+                  <span className="a-desc">{ADDON_DESC[a.kind]}</span>
+                  {/* 在线清单的第一项就是最新版 —— 直接把"会装哪个"写出来 */}
+                  {isOf && online?.status === 'ok' && optifineFirst ? (
+                    <span className="a-note info">
+                      <IconInfo /> 最新：{optifineFirst.version}
+                      {optifineFirst.preview ? '（预览版，非正式版）' : ''}
+                      {optifineFirst.required_forge
+                        ? ` · 需要 Forge ${optifineFirst.required_forge}`
+                        : ''}
+                    </span>
+                  ) : null}
+                  {disabled && reason ? (
+                    <span className="a-note bad" title={reason}>
+                      {shortReason === null ? (
+                        <Spinner label="正在查版本清单…" />
+                      ) : (
+                        <>
+                          <IconAlert /> {shortReason}
+                        </>
+                      )}
+                    </span>
+                  ) : null}
+                  {/*
+                    ★ 不兼容的理由**要照常显示**（以前这里是 `!disabled && removed`）：
+                      现在 `removed` 会让这一项直接 `disabled`，如果还按老条件写，
+                      用户就会看到一个灰掉、又完全不说为什么的开关 ——
+                      "不让选"和"说清为什么"是两件事，都要做。
+                  */}
+                  {removed ? (
+                    <span className="a-note bad">
+                      <IconAlert /> {removed.reason}
+                    </span>
+                  ) : null}
+                  {!disabled && !removed && bridge ? (
+                    <span className="a-note info">
+                      <IconInfo /> 需要桥接包{' '}
+                      {bridge.kind === 'optifabric' ? 'OptiFabric' : 'OptiFabric Origins'}
+                      {bridge.kind === 'optifabric' ? '（会自动装）' : '（需手动下载）'}
+                    </span>
+                  ) : null}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/*
+          ★ 选中 OptiFine 之后**让它自己选版本**（以前完全不可选，
+            用户只能装静态表里那几个手抄的版本号）。
+            预览版带「预览版」标注：用户有权知道它不是正式版。
+        */}
+        {addons.includes('optifine') && optifineReal && optifineReal.length > 0 ? (
+          <div className="loader-detail">
+            <label htmlFor="of-ver">OptiFine 版本</label>
+            {/* ★ 同上一处：原生 select → CustomSelect（用户："这个展开栏没统一风格"） */}
+            <CustomSelect
+              value={addonVersions.optifine ?? optifineReal[0]?.version ?? ''}
+              onChange={(v) => setAddonVersions((p) => ({ ...p, optifine: v }))}
+              ariaLabel="OptiFine 版本"
+              options={optifineReal.map((v) => ({
+                value: v.version,
+                label: `${v.version}${v.preview ? '（预览版）' : ''}`,
+              }))}
+            />
+            <Chip tone="success">在线清单 · {optifineReal.length} 个版本</Chip>
+          </div>
+        ) : null}
+      </section>
+
+      {/*
+        ★ 没有 API 包可装时**整块不渲染**。
+          以前这里永远显示一个虚线空框写着"当前配置无需额外 API 包"——
+          用户没问 API 包，也不需要知道"没有"这件事。
+      */}
+      {verdict.autoApis.length > 0 ? (
+        <section className="wz-block">
+          <div className="wz-block-title">
+            将自动安装
+            <span className="wz-block-hint">API 前置包 · 由加载器决定</span>
+          </div>
+          <div className="api-list">
+            {verdict.autoApis.map((lib) => (
+              <div key={lib.kind} className="api-item">
+                <span className="api-name">{lib.name}</span>
+                <span className="api-ver mono">{lib.version}</span>
+                <span className="api-desc" title={lib.description}>
+                  {lib.description}
+                </span>
+                <span className="api-size mono">{formatBytes(lib.bytes)}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+    </>
+  );
+
+  /** ③ 版本名称 */
+  const nameBlock = (
+    <section className="wz-block">
+      <div className="wz-block-title">
+        版本名称
+        <span className="wz-block-hint">之后可以在设置里改</span>
+      </div>
+      <input
+        className="input"
+        value={name}
+        aria-label="版本名称"
+        placeholder="给这个版本起个名字"
+        onChange={(e) => {
+          setName(e.target.value);
+          setNameTouched(true);
+        }}
+        onFocus={(e) => e.currentTarget.select()}
+      />
+      {nameTouched && name !== suggestedName ? (
+        <button
+          type="button"
+          className="wz-reset-name"
+          onClick={() => {
+            setName(suggestedName);
+            setNameTouched(false);
+          }}
+        >
+          改回建议名称「{suggestedName}」
+        </button>
+      ) : null}
+    </section>
+  );
+
+  /** ④ 组合校验的结论（错误红条 / 警告蓝条） */
+  const notesBlock = (
+    <div className="cw-notes">
+      {verdict.errors.length > 0 ? (
+        <Note tone="danger" title="当前组合不可用">
+          {verdict.errors.join('；')}
+        </Note>
+      ) : verdict.warnings.length > 0 ? (
+        <Note tone="info" title="安装前请确认">
+          <ul className="note-list">
+            {verdict.warnings.map((w, i) => (
+              <li key={i}>{w}</li>
+            ))}
+          </ul>
+        </Note>
+      ) : null}
+
+    </div>
+  );
+
+  /** ⑤ 底部常驻摘要 + 唯一的按钮（弹窗形态用） */
+  const footBar = (
+    <div className="cw-foot">
+      <span className="dim">
+        约下载 <b className="mono">{formatBytes(estimate.download)}</b> · 可复用{' '}
+        {formatBytes(estimate.cached)} · Java <b className="mono">{javaReq.major}</b>
+        {hasJava ? <Chip tone="success">已就绪</Chip> : <Chip tone="warning">未安装</Chip>} ·
+        预计 <b className="mono">{formatDuration(estimate.seconds)}</b>
+      </span>
+      <div className="spacer" />
+      {onCancel ? (
+        <Button variant="ghost" onClick={onCancel}>
+          取消
+        </Button>
+      ) : null}
+      <Button
+        variant="primary"
+        loading={installing}
+        disabled={!verdict.valid || !mcVersion}
+        onClick={() => void handleInstall()}
+      >
+        <IconPlus /> 安装 {name || suggestedName}
+      </Button>
+    </div>
+  );
+
+  /** 选中的那个版本在清单里的记录（用它说清"盘上有没有"） */
+  const pickedRow = rows.find((r) => r.id === mcVersion) ?? null;
+  /**
+   * 版本的渠道名 —— 三种写法对应三种**真实**的东西。
+   * ★ 判据与上面 `filtered` 里那一套**同源**（`release_type` + `FINAL_RELEASE_RE`
+   *   + `isAprilFoolsVersion`）：正式版要两个条件都满足，愚人节要在快照之前判。
+   */
+  const pickedChannel =
+    pickedRow && pickedRow.release_type === 'release' && FINAL_RELEASE_RE.test(pickedRow.id)
+      ? '正式版'
+      : isAprilFoolsVersion(mcVersion)
+        ? '愚人节版本'
+        : '快照 / 预发布';
+  /** 加载器那一步的一行摘要（步骤条上写"这一步选了什么"） */
+  const loaderSummary =
+    base === null
+      ? '无 · 纯原版'
+      : `${BASE_LOADER_NAME[base]} ${baseVersion || availableBaseVersions[0] || ''}` +
+        (addons.length > 0 ? ` + ${addons.length} 个附加组件` : '');
+  /** 两步共用的「要下载 / Java」那一小段结论 */
+  /*
+   * ★★ 真机实测抓到的：`declaredJava`（Mojang 在版本 JSON 里声明的那个数）
+   *   是**异步**取回来的。26.3 声明的是 25，而取回来之前按版本号基线算是 21 ——
+   *   于是"第 1 步显示 21、翻到第 2 步变成 25"，同一个界面里两个数。
+   *   两个数都不是编的，但**把一个还没核对的数当成结论**就是在骗人。
+   *   所以没核对完时明确写「正在核对」—— 数字照给（它是最好的现有估计），
+   *   但一眼就能看出它还会变。
+   */
+  const javaPending = mcVersion !== '' && declaredJava === undefined;
+  const javaLine = (
+    <>
+      <span className="mono">{javaReq.major}</span>
+      {javaPending ? (
+        <Chip tone="neutral">正在核对</Chip>
+      ) : hasJava ? (
+        <Chip tone="success">已就绪</Chip>
+      ) : (
+        <Chip tone="warning">未安装</Chip>
+      )}
+    </>
+  );
+
+  /* ------------------------------------------------------------------
+   * 弹窗形态：与改动**逐字一致**（左栏选版本 / 右栏选加载器 + 名称 + 底部按钮）
+   * ------------------------------------------------------------------ */
+  if (variant === 'modal') {
+    return (
+      <div className="cw-shell cw-shell-modal">
+        <div className="cw-body">
+          {/* ============ 左栏：真实版本清单 ============ */}
+          <div className="cw-left">
+            <div className="cw-left-head">1 · 选择游戏版本</div>
+            {versionPaneBody}
+          </div>
+
+          {/* ============ 右栏：加载器（三层） ============ */}
+          <div className="cw-right">
+            <div className="cw-right-body">
+              {loaderPaneBody}
+              {nameBlock}
+            </div>
+            {notesBlock}
+            {footBar}
           </div>
         </div>
+      </div>
+    );
+  }
+
+  /* ------------------------------------------------------------------
+   * 整页形态：两步向导
+   * ------------------------------------------------------------------ */
+  return (
+    <div className="cw-shell cw-shell-page gw">
+      {/*
+        ★ 步骤条同时是**导航**与**状态**：
+          已经选好的值（版本号 / 加载器）直接写在标签下面 ——
+          这样"我在装什么"这件事永远在屏幕上，不用回头翻。
+      */}
+      <ol className="gw-steps" aria-label="安装步骤">
+        <li className="gw-step-li">
+          <button
+            type="button"
+            className={'gw-step' + (step === 'version' ? ' on' : ' done')}
+            aria-current={step === 'version' ? 'step' : undefined}
+            onClick={() => setStep('version')}
+          >
+            <em className="gw-step-no">{step === 'version' ? '1' : <IconCheck />}</em>
+            <span className="gw-step-text">
+              <span className="gw-step-label">选择游戏版本</span>
+              <span className="gw-step-value mono">{mcVersion || '还没选'}</span>
+            </span>
+          </button>
+        </li>
+        <li className="gw-step-line" aria-hidden="true" />
+        <li className="gw-step-li">
+          <button
+            type="button"
+            className={'gw-step' + (step === 'loader' ? ' on' : '')}
+            aria-current={step === 'loader' ? 'step' : undefined}
+            disabled={!mcVersion}
+            onClick={() => setStep('loader')}
+          >
+            <em className="gw-step-no">2</em>
+            <span className="gw-step-text">
+              <span className="gw-step-label">选择模组加载器</span>
+              <span className="gw-step-value">{loaderSummary}</span>
+            </span>
+          </button>
+        </li>
+      </ol>
+
+      <div className="cw-body gw-body">
+        {/* ============ 左边：这一步要做的选择 ============ */}
+        <div className="gw-col">
+          {step === 'version' ? versionPaneBody : <div className="gw-pad">{loaderPaneBody}</div>}
+        </div>
+
+        {/* ============ 右边：这一步的结论 + 下一步 ============ */}
+        <aside className="gw-side">
+          {step === 'version' ? (
+            /*
+             * 第 1 步的右栏不重复清单里已有的信息，只回答三件事：
+             *   你选中的是哪个 · 盘上现在有没有 · 下一步去哪。
+             *
+             * ★★ 但**清单还没到**的时候（真机实测：桌面版冷启动要几秒）右栏
+             *   绝不能装作"已经选好了"—— 那时 `mcVersion` 还是空串，
+             *   下面那三行会拿空版本去算，于是显示「还没选 / Java 8 / 220 MB」，
+             *   三个都是**编出来的**（Java 8 是"空版本号"走的兜底值）。
+             *   所以这一个分支单独写：只说"正在拉清单"，并把下一步按钮明确禁用。
+             */
+            mcVersion ? (
+            <section className="wz-block">
+              <div className="wz-block-title">
+                选中的版本
+                <span className="wz-block-hint">点左边任意一行可以换</span>
+              </div>
+              <div className="gw-pick">
+                <VersionIcon version={mcVersion} size={44} />
+                <div className="gw-pick-body">
+                  <div className="gw-pick-id mono">{mcVersion}</div>
+                  <div className="gw-pick-sub">
+                    {pickedChannel}
+                    {pickedRow?.released_at ? ' · ' + pickedRow.released_at.slice(0, 10) : ''}
+                  </div>
+                </div>
+              </div>
+              <dl className="gw-facts">
+                <div>
+                  <dt>盘上</dt>
+                  <dd>
+                    {pickedRow?.installed
+                      ? pickedRow.in_use === false
+                        ? '有游戏文件（暂无版本在用）'
+                        : '有游戏文件'
+                      : '还没有 —— 装的时候要下载'}
+                  </dd>
+                </div>
+                <div>
+                  <dt>需要的 Java</dt>
+                  <dd>{javaLine}</dd>
+                </div>
+                <div>
+                  <dt>原版体积</dt>
+                  <dd className="mono">约 {formatBytes(estimateVanillaBytes(mcVersion))}</dd>
+                </div>
+              </dl>
+              <div className="gw-actions">
+                <Button variant="primary" onClick={() => setStep('loader')}>
+                  下一步：选模组加载器 <IconChevronRight />
+                </Button>
+              </div>
+              <p className="gw-note">
+                不装模组加载器也行 —— 下一步直接点「安装」就是纯原版。
+              </p>
+            </section>
+            ) : (
+            <section className="wz-block">
+              <div className="wz-block-title">选中的版本</div>
+              <div className="gw-pick">
+                <VersionIcon version="" size={44} />
+                <div className="gw-pick-body">
+                  <div className="gw-pick-id">
+                    {manifestError ? '没拿到版本清单' : '正在拉取版本清单…'}
+                  </div>
+                  <div className="gw-pick-sub">
+                    {manifestError
+                      ? '左边的列表里有「重试」，拉到之后会自动选中最新正式版'
+                      : '拉到之后会自动选中最新正式版'}
+                  </div>
+                </div>
+              </div>
+              <div className="gw-actions">
+                <Button variant="primary" disabled>
+                  下一步：选模组加载器 <IconChevronRight />
+                </Button>
+              </div>
+              <p className="gw-note">左边的清单还没到，现在选不了 —— 不用你做什么，稍等一下。</p>
+            </section>
+            )
+          ) : (
+            <>
+              {nameBlock}
+              {/*
+                ★ 「这次会装什么」= 装之前最后一次确认。
+                  它的每一项都来自上面那些选择的**实际值**（不是另算一遍），
+                  所以这里显示的与真正会发生的必然是同一件事。
+              */}
+              <section className="wz-block">
+                <div className="wz-block-title">
+                  这次会装什么
+                  <span className="wz-block-hint">确认一下再开始</span>
+                </div>
+                <dl className="gw-facts">
+                  <div>
+                    <dt>游戏版本</dt>
+                    <dd className="mono">{mcVersion}</dd>
+                  </div>
+                  <div>
+                    <dt>模组加载器</dt>
+                    <dd>{loaderSummary}</dd>
+                  </div>
+                  {verdict.autoApis.length > 0 ? (
+                    <div>
+                      <dt>自动安装</dt>
+                      <dd>{verdict.autoApis.map((l) => l.name).join(' + ')}</dd>
+                    </div>
+                  ) : null}
+                  <div>
+                    <dt>要下载</dt>
+                    <dd className="mono">{formatBytes(estimate.download)}</dd>
+                  </div>
+                  <div>
+                    <dt>可复用</dt>
+                    <dd className="mono">{formatBytes(estimate.cached)}</dd>
+                  </div>
+                  <div>
+                    <dt>需要的 Java</dt>
+                    <dd>{javaLine}</dd>
+                  </div>
+                  <div>
+                    <dt>预计耗时</dt>
+                    <dd className="mono">{formatDuration(estimate.seconds)}</dd>
+                  </div>
+                </dl>
+                {notesBlock}
+                <div className="gw-actions">
+                  <Button variant="ghost" onClick={() => setStep('version')}>
+                    <IconChevronRight className="gw-back" /> 上一步
+                  </Button>
+                  <Button
+                    variant="primary"
+                    loading={installing}
+                    disabled={!verdict.valid || !mcVersion}
+                    onClick={() => void handleInstall()}
+                  >
+                    <IconPlus /> 安装 {name || suggestedName}
+                  </Button>
+                </div>
+              </section>
+            </>
+          )}
+        </aside>
       </div>
     </div>
   );

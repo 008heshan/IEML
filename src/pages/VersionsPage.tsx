@@ -21,7 +21,6 @@ import { IconCopy, IconPencil, IconTrash } from '../ui/Icons';
 import {
   IconAlert,
   IconBox,
-  IconDownload,
   IconFolder,
   IconInfo,
   IconMore,
@@ -358,8 +357,9 @@ export function VersionsPage() {
           desc="装一份游戏就会出现在这里 —— 装好后双击某个版本，就能进入它的设置、Mod 与日志。"
           actions={
             <>
-              <Button variant="primary" onClick={() => go('download')}>
-                <IconDownload /> 下载游戏
+              {/* ★ 2026-09-23（用户第 4 条）：安装游戏是自己的一页了，不再是下载页的页签 */}
+              <Button variant="primary" onClick={() => go('install')}>
+                <IconBox /> 安装游戏
               </Button>
               <Button
                 variant="secondary"
@@ -396,7 +396,7 @@ export function VersionsPage() {
               <IconRefresh /> 重新探测
             </Button>
           ) : null}
-          <Button variant="primary" size="sm" onClick={() => go('download')}>
+          <Button variant="primary" size="sm" onClick={() => go('install')}>
             <IconPlus /> 新装一个
           </Button>
         </div>

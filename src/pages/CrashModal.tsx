@@ -156,25 +156,30 @@ export function CrashModal() {
               toast(
                 'err',
                 `缺 ${r.missing_count} 个文件`,
-                `例如：${r.missing.slice(0, 3).join('、')}。去「下载」页重新装一次这个版本，缺的文件会自动补上（已下好的会跳过）。`,
+                `例如：${r.missing.slice(0, 3).join('、')}。去「安装游戏」页重新装一次这个版本，缺的文件会自动补上（已下好的会跳过）。`,
               );
             }
             return;
           }
           case 'reinstall-game': {
-            go('download');
-            toast('info', '去重新下载', `在「下载」页选 ${target.mcVersion} 再装一次即可；已下载的文件会跳过。`);
+            /*
+             * ★ 2026-09-23：「安装游戏」已经是**自己的一页**（用户第 4 条），
+             *   所以这里（以及下面的重装加载器）去的是 `install`，不是 `download`。
+             *   文案与去向必须是同一件事 —— 否则用户按提示去下载页，那里只有资源。
+             */
+            go('install');
+            toast('info', '去重新安装', `在「安装游戏」页选 ${target.mcVersion} 再装一次即可；已下载的文件会跳过。`);
             close();
             return;
           }
           case 'reinstall-loader': {
-            go('download');
+            go('install');
             toast(
               'info',
               '去重装加载器',
               target.loader
-                ? `在「下载」页选 ${target.mcVersion} + ${target.loader.kind}，重装一次加载器。`
-                : '在「下载」页给这个版本叠一个加载器。',
+                ? `在「安装游戏」页选 ${target.mcVersion} + ${target.loader.kind}，重装一次加载器。`
+                : '在「安装游戏」页给这个版本叠一个加载器。',
             );
             close();
             return;

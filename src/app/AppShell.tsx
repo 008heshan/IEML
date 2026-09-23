@@ -18,7 +18,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../state/AppContext';
 import type { PageId, SubPageId } from '../state/store';
 import { Button, Chip, Modal, ToastRegion } from '../ui';
-import { IconChevronRight, IconDownload, IconGear, IconGrid, IconHome, IconLayers, IconPlay, IconPuzzle, IconStop, IconTerminal, IconInfo } from '../ui/Icons';
+import { IconBox, IconChevronRight, IconDownload, IconGear, IconGrid, IconHome, IconLayers, IconPlay, IconPuzzle, IconStop, IconTerminal, IconInfo } from '../ui/Icons';
 import { VersionIcon } from '../components/VersionIcon';
 import { UpdateChip } from '../components/UpdateChip';
 import { LaunchPage } from '../pages/LaunchPage';
@@ -28,6 +28,7 @@ import { SettingsPage } from '../pages/SettingsPage';
 import { ChangelogPage } from '../pages/ChangelogPage';
 import { AboutPage } from '../pages/AboutPage';
 import { ResourceInstallPage } from '../pages/ResourceInstallPage';
+import { InstallGamePage } from '../pages/InstallGamePage';
 import { InstanceOverview } from '../pages/InstanceOverview';
 import { InstanceSetup } from '../pages/InstanceSetup';
 import { ModsPanel } from '../pages/ModsPanel';
@@ -50,6 +51,12 @@ interface NavEntry {
 const PRIMARY_NAV: NavEntry[] = [
   { id: 'launch', label: '启动', icon: IconPlay },
   { id: 'versions', label: '版本列表', icon: IconLayers },
+  /*
+   * ★★ 2026-09-23（用户第 4 条）：「安装游戏**单开一页**」。
+   *   位置放在「下载」**前面**：先有游戏版本，才谈得上往里装资源 ——
+   *   这一页也是新用户第一个要点的东西（「下载」那六格是装完版本之后的事）。
+   */
+  { id: 'install', label: '安装游戏', icon: IconBox },
   { id: 'download', label: '下载', icon: IconDownload },
   { id: 'settings', label: '设置', icon: IconGear },
 ];
@@ -610,6 +617,8 @@ export function App() {
               <VersionsPage />
             ))}
           {state.page === 'download' && <DownloadPage />}
+          {/* ★ 2026-09-23（用户第 4 条）：安装游戏是**自己的一页**，不再是下载页的页签 */}
+          {state.page === 'install' && <InstallGamePage />}
           {state.page === 'settings' && <SettingsPage />}
           {state.page === 'changelog' && <ChangelogPage />}
           {state.page === 'about' && <AboutPage />}
