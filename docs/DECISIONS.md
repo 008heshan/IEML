@@ -6577,3 +6577,46 @@ find_version_json(shared, &vid, &i.mcVersion, kind).is_some()
 
 ★ 这条探针我自己先踩了个坑：**忘了传 exe 参数**，于是验的是旧的 release 版，
 四条判据全红。**验修复一定要指名"验的是哪个产物"** —— 已记进 MEMORY。
+
+---
+
+### 六十三、修复批（二）：**A-5 实例级的 7 个设置存不进磁盘**（2026-09-24）
+
+#### 63.1　根因：Rust 那份 `InstanceConfig` 比前端少 7 个字段
+
+前端 `InstanceConfig` 有 13 个字段，Rust 只有 6 个（`name/slug/isolation/memoryMb/
+memorySource/javaMode`）。而**实例清单的读写都要过 Rust**（`save_instances` /
+`list_instances`）—— serde 反序列化时忽略多余字段没问题，**但写回时按 Rust 这份结构体序列化**，
+于是前端那 7 个字段在**每一次存盘**时被丢掉：
+
+`javaRange` · `javaPath` · `windowTitle` · `joinServer` · `customInfo` · `jvmArgs` · `gameArgs`
+
+再加上 `AppContext` 读到列表后 250ms 会回写一遍 —— 真机实测：
+**启动 4 秒后** `instances.json` 的 config 从 **13 个键变成 6 个**。
+
+★ 更值得记的是：那段注释里原本写着"前端多带的那些字段收不到也无所谓" ——
+**作者想过这件事，但结论正好反了**（只想到"读得进来"，没想到"写得回去"）。
+这类"想了但想反了"的注释比没有注释更危险。
+
+#### 63.2　修法
+
+给 Rust 的 `InstanceConfig` 补齐 7 个字段（全部 `#[serde(default)]`，老文件照样能读），
+并新增一个同形的 `JavaRange` 结构体（`min/minInclusive/max/maxInclusive` 逐字段对齐前端）。
+
+★ **判据**（`src-tauri/src/domain/types.rs` 的新测试）：
+`instance_config_round_trips_every_frontend_field` —— 拿一份 13 字段的 JSON 读进来、
+再序列化出去，逐个断言 7 个字段**都还在**。
+以后前端再加字段，这条测试先红。
+
+#### 63.3　真机验收（`probe-bug-repro-13.mjs`，沙盒 + 目录联接）
+
+```
+启动前：键 13 个，mtime=18:12:36
+启动后：键 13 个，mtime=18:12:41      ← 那次自动回写照样发生了，但**字段一个没丢**
+预览：含 --server：是   含 --demo：是   含 UseG1GC：是   server 段「--server 1.2.3.4」
+```
+
+★ **这一批顺带把 B-4 也验成了真机**：那条实例的地址是 `1.2.3.4:abc`（端口写坏），
+预览里是 **`--server 1.2.3.4` 而没有任何 `--port`** ⇒ 启动器**确实把端口丢掉了**，
+游戏会连默认的 25565 —— 与界面上那句「地址会原样传给游戏，不会自动改成默认端口」相反。
+（B-4 的**文案**还没改，在下一批。）
