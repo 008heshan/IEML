@@ -2962,6 +2962,14 @@ tbody tr.clickable:focus-visible {
   color: var(--text-primary);
   word-break: break-all;
 }
+/*
+ * ★★ 2026-09-24（B-2）：更新检查**失败**时那句话要说得出、也要看得见。
+ *   以前这一格无论什么状态都可能写「已是最新版本」（见 AboutPage 的说明），
+ *   所以从来没有过"失败"的样子。现在用主题里的 danger 色标出来。
+ */
+.about-line-err {
+  color: var(--danger);
+}
 /* 声明 / 隐私 / 第三方：条目式，左对齐更好读（居中的长段落反而难扫） */
 .about-list {
   margin: var(--space-2) 0 0;

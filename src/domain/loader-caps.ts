@@ -15,7 +15,6 @@
 import type {
   AddonKind,
   AddonOption,
-  ApiLibKind,
   ApiLibraryOption,
   BaseLoaderKind,
   BridgeKind,
@@ -698,16 +697,27 @@ export function apiLibrariesFor(mcVersion: string): ApiLibraryOption[] {
 
 /**
  * 某个基础加载器该自动装哪个 API 包。
- * ★ 只返回**一个** —— Fabric → Fabric API；Quilt → QFAPI；其余 → 无。
+ * ★ 只返回**一个** —— Fabric → Fabric API；**其余（含 Quilt）→ 无**。
+ *
+ * ★★ 2026-09-24（B-3 修复）：Quilt 原来返回 Quilted Fabric API（QFAPI）。
+ *   但用户 2026-09-15 明确说过「**不给 Quilt 装 API 了**」，
+ *   Rust 的 `domain::loader_caps::api_for_base` 当时就改成了 `return vec![]` ——
+ *   **只有 TS 这一侧没跟着改**，而界面读的正是这一侧：
+ *   安装页选 1.20.1 + Quilt 会写「将自动安装 Quilted Fabric API 7.4.0+0.92.2」，
+ *   点下去真的会往 mods/ 里塞一个用户明确不要的包
+ *   （QFAPI 已内含 Fabric API，与 Fabric 侧的判定还会打架）。
+ *
+ *   现在两侧一致：**只有 Fabric 自动装**。Quilt 缺前置时由 Mod 管理页如实报出来，
+ *   装不装由玩家自己决定。
+ *   ★ `apiLibrariesFor` 仍然把两个包都列出来 —— 那是"这个版本**可能**需要的 API 包"
+ *     能力表，不是"我会替你装什么"。两件事不能混。
  */
 export function apiForBase(
   base: BaseLoaderKind | null,
   mcVersion: string,
 ): ApiLibraryOption[] {
-  if (base !== 'fabric' && base !== 'quilt') return [];
-  const all = apiLibrariesFor(mcVersion);
-  const want: ApiLibKind = base === 'quilt' ? 'quilted-fabric-api' : 'fabric-api';
-  const found = all.find((l) => l.kind === want);
+  if (base !== 'fabric') return [];
+  const found = apiLibrariesFor(mcVersion).find((l) => l.kind === 'fabric-api');
   return found ? [found] : [];
 }
 
