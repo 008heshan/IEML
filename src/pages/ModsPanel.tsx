@@ -752,9 +752,15 @@ export function ModsPanel() {
                 toast('info', '演示模式', '桌面版才能打开目录');
                 return;
               }
+              /*
+               * ★★ 2026-09-24（C-2 修复）：这里原来传的是 `'instance'` ——
+               *   按钮写着「mods 目录」、title 写着「打开这个实例的 mods 目录（game\mods）」，
+               *   点下去打开的却是**实例根目录**。Rust 有 `"mods"` 分支（崩溃弹窗用的就是它），
+               *   所以传对参数就行。★ 按钮说的和做的不一样，用户会以为 Mod 装错了地方。
+               */
               void api.launcher
-                .openDir('instance', active.config.slug)
-                .then((dir) => toast('ok', '已打开实例目录', `mods 子目录：${dir}\\game\\mods`))
+                .openDir('mods', active.config.slug)
+                .then((dir) => toast('ok', '已打开 mods 目录', dir))
                 .catch((e) =>
                   toast('err', '打不开目录', e instanceof Error ? e.message : String(e)),
                 );
@@ -911,7 +917,16 @@ export function ModsPanel() {
               desc={
                 active.loader === null
                   ? '纯原版实例不能加载 Mod。如果需要装 Mod，请先在实例设置里给它加上一个加载器。'
-                  : '可以点右上角「添加 Mod」浏览，也可以把 .jar 文件直接拖进窗口。'
+                  : /*
+                     * ★★ 2026-09-24（C-3 修复）：这句话原来还有后半句
+                     *   「也可以把 .jar 文件直接拖进窗口。」—— **拖放根本没有实现**：
+                     *   `onDrop/onDragOver/dataTransfer` 在 `src` 里 0 命中，
+                     *   而 `tauri.conf.json` 是 `dragDropEnabled: true`（原生拖放被接管，
+                     *   没有 JS 监听就等于什么都不做）。承诺一个做不到的动作，
+                     *   比不说更糟 —— 用户会以为是自己拖的方式不对。
+                     *   现在改成指向**真的存在**的那条路：左边那个「mods 目录」按钮。
+                     */
+                    '可以点右上角「添加 Mod」浏览；从别处下的 .jar，用左边「mods 目录」按钮打开目录后放进去。'
               }
               actions={
                 active.loader === null ? (

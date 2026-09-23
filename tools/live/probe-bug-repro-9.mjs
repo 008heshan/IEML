@@ -135,6 +135,9 @@ console.log('=== C-3 拖放 ===\n  ' + JSON.stringify(drag));
 const recent = await ev(`(() => ({
   '有实例行': document.querySelectorAll('.ver-item, .side-inst').length,
   '最近玩过块': document.querySelectorAll('.side-recent').length,
+  /* ★ C-7 修复后的判据：这个块**整块删掉**了（它依赖一个永远为 null 的字段）——
+     所以不但不该有元素，连标题文字都不该出现 */
+  '侧栏含"最近玩过"': /最近玩过/.test(document.querySelector('.sidebar')?.innerText || ''),
   '侧栏文本': (document.querySelector('.sidebar')?.innerText || '').replace(/\\s+/g, ' ').slice(0, 160),
 }))()`);
 console.log('\n=== C-7 最近玩过 ===\n  ' + JSON.stringify(recent));

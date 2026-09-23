@@ -6840,3 +6840,120 @@ blocks: [{模组加载器四选一}, {附加组件 OptiFine 清单来自在线}]
 ★ 测试也跟着改（`tests/server-address.test.mjs`）：新断言是
 「端口会被丢掉」+「25565」+「写成数字」，并**显式断言那句话不许再出现**
 （`不许再说"原样传给游戏"（那是假的）`）。
+
+### 六十七、修复批（六）：**C 组 + 几条廉价低项**（2026-09-24）
+
+这一批是"界面上的承诺/判断与事实不符"的收尾，一条一条都很小，但都属于同一类：
+**界面说的那件事，要么没有实现、要么判据是假的。**
+
+#### 67.1　C-2「mods 目录」按钮打开的是**实例根目录**
+
+按钮写着「mods 目录」、`title` 写着「打开这个实例的 mods 目录（game\mods）」，
+而实参是 `openDir('instance', slug)` —— **点下去开的是实例根目录**。
+Rust 侧的 `"mods"` 分支一直是好的（崩溃弹窗用的就是它）。
+
+修法：前端改传 `'mods'`；并把 Rust 那条命令里"路径怎么算"抽成**纯函数**
+`resolve_open_dir()` —— 因为"打开目录"会真的弹资源管理器，
+只有把路径计算与打开动作分开，**每个分支才可能被单测钉住**。
+新增两条测试：`open_dir_mods_points_at_the_mods_dir_not_the_instance_dir`（断言
+`mods ≠ instance`）与 `open_dir_other_branches_are_distinct_and_sane`。
+
+#### 67.2　C-3「也可以把 .jar 文件直接拖进窗口」——**拖放根本没实现**
+
+`onDrop/onDragOver/dataTransfer` 在 `src` 里 **0 命中**，而 `tauri.conf.json` 是
+`dragDropEnabled: true`（原生拖放被接管，没有 JS 监听就等于什么都不做）。
+**承诺一个做不到的动作，比不说更糟**：用户会以为是自己拖的方式不对。
+
+修法：把这句话删掉，改成指向**真的存在**的那条路：
+「可以点右上角「添加 Mod」浏览；从别处下的 .jar，用左边「mods 目录」按钮打开目录后放进去。」
+真机判据：前端产物里 `拖进窗口` **0 命中**（`dist/assets/*.js`），
+拖放事件监听器仍然是 0（这条留着做**反证**：界面不再承诺它）。
+
+★ 这里刻意**没有**去实现拖放：那是新功能，不在"修已报告的缺陷"范围内；
+真要做，应当单独立项（还要处理"拖进来的 jar 放到哪个实例"这个问题）。
+
+#### 67.3　C-4「这些版本还没有游戏文件」是**假警报**
+
+判据是 `state.versions.filter(v => v.installed).length === 0`，
+而 `state.versions` 是**内置的 10 个版本**（`MC_PROFILES`）、`installed` 只表示
+"有个实例用了这个 mcVersion" —— **根本不读盘**。
+真机后果：装 1.21.4 能正常跑，版本列表底部却挂着「这些版本还没有游戏文件」。
+
+修法：改成**只认磁盘事实** —— 复用 `instanceHealth()`（Rust 逐实例查版本文件），
+当**这一页列出来的行**在盘上都没有版本文件时才提示（`allRowsMissing`）。
+`installedCount` 那个 useMemo 直接删掉：**判据不许有两个来源**。
+
+真机判据（`probe-bug-repro-9.mjs`，沙盒 + 目录联接借真实 `versions/26.3`）：
+```
+行数=1   含"还没有游戏文件"=false   含"起不来"=false
+文本尾："版本列表 1 个版本 … 探针·Quilt 实例 26.3 Quilt 0.23.0 4 GB"
+```
+
+#### 67.4　C-6 Fabric API 前置包判定有**两套文件名名单**
+
+| 位置 | 名单 | 匹配 |
+|---|---|---|
+| `commands_real::check_api_library` | `qfapi`/`quilted-fabric-api`/`qsl` · `fabric-api`/`fabric_api` | `contains` |
+| `modrinth::MrpackIndex::has_fabric_api` | 四个前缀的并集 | `starts_with` |
+
+两套判据在同一件事上给出不同答案。真机后果：Quilt 实例的 `mods/` 里放着
+`fabric-api-0.92.2+1.20.1.jar`（Quilt 用户很常见的放法）时，Mod 管理页报
+「**缺 Quilted Fabric API**」+ 一键补装 —— 而整合包那边认为已经有 API 了。
+**用户被引导去装第二个 API 实现**（QFAPI 已内含 Fabric API），
+而 `modrinth.rs` 的注释里恰好警告过这件事。
+
+修法：识别逻辑收成**一处** —— `domain::mods::api_library_from_filename()`
+（返回 `"fabric-api"` / `"quilted-fabric-api"`），两个调用点都改用它；
+`check_api_library` 另加一个 `foundKind` 字段，界面对 Quilt 实例能说清
+"你装的是 Fabric API 本体，它已经够用，不必再装一份"。
+判据放宽成"**只要有一个 API 实现就算有**"是有意的：真正该提醒的是"一个都没有"。
+
+★ 诚实记一笔误差：`fabric-api-extra-1.0.jar` 这类**同前缀**的包会被认成 Fabric API
+（前缀匹配的固有限制，两个旧实现同样如此）。宁可多认（少一次误报"缺前置"）也不漏认 ——
+这条误差写在 `api_library_from_filename` 的文档注释与测试里。
+
+真机判据（同上一条探针）：
+```
+Quilt 实例 + fabric-api-0.92.2+1.20.1.jar：
+  含"缺 Quilted Fabric API"=false   含"一键补装"=false
+```
+
+#### 67.5　C-7 侧栏「最近玩过」**永不出现**
+
+它按 `lastPlayedAt` 排序，而那个字段**全仓库没有写入方**：
+2026-09-16 用户说「'从未启动'相关的记录时间的功能，删掉，这没有用」之后，
+`AppContext` 就**不再写**它（字段只是留在类型里不动）。
+
+★ 所以修法是**删掉那个块**（连同 `.side-recent*` / `.sri-*` 样式），
+而不是"重新开始写 lastPlayedAt" —— 后者等于把用户明确删掉的功能又加回来。
+侧栏那三个直达动作是真的，保留。
+
+真机判据：`.side-recent` = 0 且侧栏文本里没有「最近玩过」。
+
+#### 67.6　几条廉价低项（一起修掉）
+
+| 条目 | 原来 | 现在 |
+|---|---|---|
+| C-16 | 设置页 title 写「换一个游戏根目录（**候选盘会列出来**）」—— `list_data_volumes` 这个命令根本不存在 | 「会列出你用过的那些目录」（`list_known_roots`，真的存在） |
+| C-17 | 安装页把 `installNote` **写死 null** → "还有一步"整条通路永不触发（数据包要放进世界、光影要 Iris） | 从后端 `resource_kinds` 的 `install_note` **取**（说明文字后端早就有，不在前端再写一份） |
+| C-18 | 资源安装页写死「来自 Modrinth」；整合包那页也是 | 跟着来源走（`resourceTarget.source` / `packSource`） |
+| C-19 | 「附加组件可以稍后在**「下载」页**对这个版本重试」—— 那个入口不存在 | 说真的能走的路：重走一遍「安装游戏」并勾上它（游戏文件是共享的，不会重复下载） |
+| C-22 | 派发用 `detail.message`，监听方读 `d.desc` → 「磁盘上的记录没有被清掉」**从未显示过** | 改成 `desc`（这正是"用户以为版本没了"最需要看到的那句话） |
+| C-26 | 用户自己点取消 → 弹红色「**安装失败**：任务被取消」 | 判据收进 `domain/cancel.ts`（`isCancellation`），两个调用点共用；取消 = 「已取消安装，已下载的文件保留」 |
+
+★ C-19 的教训值得单独记：我第一次改的时候把"重试入口"写成了
+「版本列表 → 打开这个版本的设置页 → 附加组件那一栏」—— **那也是编的**：
+实例设置页根本没有附加组件那一栏（附加组件的安装只在 `InstallComposer`、
+也就是"安装游戏"这一步）。**改文案时同样要去核对真实入口**，
+否则只是把一句假话换成了另一句假话。
+
+#### 67.7　真机验收小结（`probe-bug-repro-9.mjs`，debug exe，一次跑完四条）
+
+```
+C-3  window/document/body 上的拖放事件：{} / [] / []      ← 界面也不再承诺拖放
+C-7  .side-recent = 0，侧栏文本无「最近玩过」
+C-4  行数=1，含"还没有游戏文件"=false（磁盘上真有 versions/26.3）
+C-6  Quilt 实例 + fabric-api jar：含"缺 Quilted Fabric API"=false、含"一键补装"=false
+```
+
+Rust 侧：`cargo test --lib` **453 通过 / 0 失败**（含 C-2 两条、C-6 两条新测试）。

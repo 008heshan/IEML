@@ -19,7 +19,7 @@ import { useApp } from '../state/AppContext';
 import type { PageId, SubPageId } from '../state/store';
 import { Button, Chip, Modal, ToastRegion } from '../ui';
 import { IconChevronRight, IconDownload, IconGear, IconGrid, IconHome, IconLayers, IconPlay, IconPuzzle, IconStop, IconTerminal, IconInfo } from '../ui/Icons';
-import { VersionIcon } from '../components/VersionIcon';
+/* ★ C-7：`VersionIcon` 的 import 随「最近玩过」一起删（那个块是它唯一的用处） */
 import { UpdateChip } from '../components/UpdateChip';
 import { LaunchPage } from '../pages/LaunchPage';
 import { VersionsPage } from '../pages/VersionsPage';
@@ -74,7 +74,7 @@ function isLong(text: string): boolean {
 }
 
 export function App() {
-  const { state, go, dismissToast, closeVersion, setSubPage, open, openVersion, setLaunchTarget } =
+  const { state, go, dismissToast, closeVersion, setSubPage, open, setLaunchTarget } =
     useApp();
   const [stopping, setStopping] = useState(false);
   /** 顶栏的账号弹窗（正版登录入口） */
@@ -131,15 +131,17 @@ export function App() {
     window.dispatchEvent(new CustomEvent('ieml:toast', { detail: { kind, title, desc } }));
   }
 
-  /** 最近玩过的两个版本（侧栏"最近玩过"用，真的按时间排） */
-  const recent = useMemo(
-    () =>
-      state.instances
-        .filter((i) => i.lastPlayedAt)
-        .sort((a, b) => (b.lastPlayedAt ?? '').localeCompare(a.lastPlayedAt ?? ''))
-        .slice(0, 2),
-    [state.instances],
-  );
+  /*
+   * ★★ 2026-09-24（C-7 修复）：这里原来有个「最近玩过」块 ——
+   *   它按 `lastPlayedAt` 排序取最近两个版本，而那个字段**全仓库没有写入方**：
+   *   `AppContext` 在 2026-09-16 按用户要求「'从未启动'相关的记录时间的功能，删掉」
+   *   **停止写**它（新建/复制/整合包建实例一律写 null），字段只是留在类型里不动。
+   *   于是那个块**永远不会渲染**：一段死代码 + 一份假承诺（注释里写着"点一下直接进它"）。
+   *
+   *   ★ 修法是**删掉它**，而不是"重新开始写 lastPlayedAt" ——
+   *     那等于把用户明确删掉的功能又加回来。
+   *   ★ 侧栏下半部分那三个直达动作（打开数据目录 / 全部版本 / 关于）是真的，保留。
+   */
 
   /*
    * ★★ 2026-09-22：这里原来有个 `openDataDir()`（侧栏「数据目录」按钮用它打开资源管理器）。
@@ -522,34 +524,11 @@ export function App() {
                   可以想想加什么"）。
 
                 这里放的都是**真东西**，不是装饰：
-                  · 「最近玩过」—— 最近两个版本，点一下直接进它（省掉
-                    "版本列表 → 找 → 双击"三步）
                   · 三个直达动作 —— 打开数据目录 / 全部版本 / 关于
                 一个版本都没有时整块不渲染（不留空标题）。
+                ★★ 2026-09-24（C-7）：原来这里还有个「最近玩过」，
+                  它依赖一个**永远为 null** 的字段（见上面那段说明）→ 已删。
               */}
-              {recent.length > 0 ? (
-                <div className="side-recent">
-                  <div className="side-recent-title">最近玩过</div>
-                  {recent.map((i) => (
-                    <button
-                      key={i.id}
-                      type="button"
-                      className="side-recent-item"
-                      title={`打开「${i.config.name}」`}
-                      onClick={() => openVersion(i.id)}
-                    >
-                      <VersionIcon version={i.mcVersion} size={24} />
-                      <span className="sri-main">
-                        <span className="sri-name truncate">{i.config.name}</span>
-                        <span className="sri-sub mono">
-                          {i.mcVersion}
-                          {i.loader ? ` · ${i.loader.kind}` : ''}
-                        </span>
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              ) : null}
 
               {/*
                 ★★ 2026-09-22 用户：「左侧栏的数据目录改成更新日志…关于与设置，改成关于，

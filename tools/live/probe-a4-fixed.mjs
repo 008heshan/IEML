@@ -10,6 +10,13 @@
  *   ③ ★ 用户视角的决定性一条：**把整个游戏根目录删掉**（模拟"在候选盘那页删掉这个根"），
  *      重启启动器后**实例清单与设置都还在**（以前会一起没）
  *   ④ 全程没有碰到真实的 `%APPDATA%\IEML` 与 `D:\IEML`（沙盒靠 IEML_DATA_DIR/IEML_OWN_DIR 隔离）
+ *
+ * ★★ 2026-09-24 补：**只设 IEML_DATA_DIR / IEML_OWN_DIR 还不够** ——
+ *   启动时的"数据根目录补齐"（`migrate_data_root`）会拿**真实**的
+ *   `%APPDATA%\IEML` 当源，把里面的 `instances.json` / `prefs.json` / 目录
+ *   往新根目录**复制一份**。实测：一个空沙盒启动后，界面里出现了真实那 3 个实例。
+ *   （不丢数据：它只复制、从不覆盖目标已有的内容，所以有种子实例时不会盖掉。）
+ *   要真的隔离，必须把 `APPDATA` 也指到沙盒里 —— `dirs_data_dir()` 读的就是它。
  * 用法：node tools/live/probe-a4-fixed.mjs "<exe>"
  */
 import { spawn } from 'node:child_process';
@@ -22,6 +29,8 @@ const T = process.env.TEMP ?? '.';
 const ROOT = path.join(T, 'ieml-a4-root');
 const OWN = path.join(T, 'ieml-a4-own');
 const PROFILE = path.join(T, 'ieml-a4-prof');
+/* ★ 让"老位置"（%APPDATA%\IEML）也落在沙盒里，否则启动时的补齐会把真实数据复制进来 */
+const FAKE_APPDATA = path.join(T, 'ieml-a4-appdata');
 if (!existsSync(EXE)) {
   console.error('找不到：' + EXE);
   process.exit(2);
@@ -66,10 +75,11 @@ const clean = async (d) => {
     }
   }
 };
-for (const d of [ROOT, OWN, PROFILE]) {
+for (const d of [ROOT, OWN, PROFILE, FAKE_APPDATA]) {
   await dropLinks(d);
   await clean(d);
 }
+mkdirSync(path.join(FAKE_APPDATA, 'IEML'), { recursive: true });
 
 /* ---------- 造一个"老用户"的沙盒：数据全在**游戏根目录**里（0.1.0-rc.1 的布局） ---------- */
 const inst = (id, name, slug) => ({
@@ -110,6 +120,8 @@ const startApp = async () => {
   spawn(EXE, [], {
     env: {
       ...process.env,
+      /* ★ 见文件头：APPDATA 也要指进沙盒，否则启动时的"补齐"会把真实数据复制进来 */
+      APPDATA: FAKE_APPDATA,
       IEML_DATA_DIR: ROOT,
       IEML_OWN_DIR: OWN,
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT}`,
