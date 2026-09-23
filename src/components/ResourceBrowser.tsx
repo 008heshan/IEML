@@ -268,8 +268,43 @@ export function VersionPicker({
               {g.items.map((v) => {
                 const file = v.files.find((f) => f.primary) ?? v.files[0];
                 const blocked = !!file && !file.url;
+                const busy = installing === v.id;
                 return (
-                  <div key={v.id} className="res-version">
+                  /*
+                   * ★★ 2026-09-23 用户（PCL 截图 + 「**太多安装按钮了，乱繁，改成点击这个直接安装
+                   *   （PCL 同款），全都要改**」）：
+                   *
+                   *   原来每一行右边都挂一个「安装这个版本」按钮 —— 几十行就是几十个按钮，
+                   *   视觉上很吵。PCL 的做法是**整行可点**：点哪一行就装哪一行。
+                   *
+                   *   所以这里把行本身变成"按钮"：
+                   *     · role="button" + tabIndex + 回车/空格都能触发（键盘用户同样可用）；
+                   *     · aria-label 说清"安装哪个版本"（读屏需要）；
+                   *     · 装不了的那一行（作者禁止第三方分发）**不可点**，并保留原因文字。
+                   */
+                  <div
+                    key={v.id}
+                    className={
+                      'res-version' +
+                      (blocked ? ' blocked' : ' clickable') +
+                      (busy ? ' busy' : '')
+                    }
+                    role={blocked ? undefined : 'button'}
+                    tabIndex={blocked ? undefined : 0}
+                    aria-label={blocked ? undefined : `安装 ${v.version_number || v.name}`}
+                    aria-disabled={blocked || undefined}
+                    onClick={() => {
+                      if (blocked || busy) return;
+                      onPick(v);
+                    }}
+                    onKeyDown={(e) => {
+                      if (blocked || busy) return;
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        onPick(v);
+                      }
+                    }}
+                  >
                     <div className="res-version-main">
                       <div className="res-version-name">
                         <span className="mono">{v.version_number || v.name}</span>
@@ -290,17 +325,20 @@ export function VersionPicker({
                         {file ? <span className="dim mono">{humanBytes(file.size)}</span> : null}
                       </div>
                     </div>
+                    {/*
+                      右边不再放按钮 —— 只留"状态"：
+                        · 装不了：说明原因（不可点）
+                        · 正在装：转圈
+                        · 其它：一个淡淡的下载图标（提示"这行能点"）
+                    */}
                     {blocked ? (
                       <Chip tone="warning">作者不允许第三方下载</Chip>
+                    ) : busy ? (
+                      <Spinner />
                     ) : (
-                      <Button
-                        size="sm"
-                        variant="primary"
-                        loading={installing === v.id}
-                        onClick={() => onPick(v)}
-                      >
-                        <IconDownload /> 安装这个版本
-                      </Button>
+                      <span className="res-version-go" aria-hidden="true">
+                        <IconDownload />
+                      </span>
                     )}
                   </div>
                 );
