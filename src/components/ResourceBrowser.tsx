@@ -599,8 +599,24 @@ export function ResourceCenterBody({
     async (opts: { k: ResourceKindName; q: string; src: ResourceSourceName; offset: number; append: boolean }) => {
       if (!api) return;
       const mine = ++seq.current;
-      if (opts.append) setLoadingMore(true);
-      else setLoading(true);
+      if (opts.append) {
+        setLoadingMore(true);
+      } else {
+        setLoading(true);
+        /*
+         * ★★ 2026-09-23 用户（截图）：「在比如 mod 页里，mod 加载出图片后，**切到资源包，
+         *   会继承到资源包**，其余那几个也是」——
+         *
+         *   原来的写法是"先把 loading 打开、等新结果回来再替换"，
+         *   于是**旧结果整段时间还挂在屏幕上**（连着上一页的封面图），
+         *   看起来就是"资源包页里显示的是 Mod"。
+         *
+         *   改成：**换条件重搜时立刻清空**（`append=false` 就是"换条件"），
+         *   让骨架屏接上 —— 用户看到的永远是"正在加载"，不是"上一页的内容"。
+         *   ★ 只有 `append=true`（加载更多）才保留已有结果，那是它的语义。
+         */
+        setHits([]);
+      }
       setError(null);
       try {
         const r = await api.modrinth.resourceSearch({
