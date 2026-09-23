@@ -12,6 +12,21 @@
 
 ---
 
+## 第 2 轮（2026-09-24）：把【代码】级的条目尽量升级成【真机】
+
+这一轮专门补真机证据，结果如下（原始输出见文末「第 2 轮证据」）：
+
+| 条目 | 升级结果 |
+|---|---|
+| B-3 Quilt 自动装 QFAPI | **【真机】确认**：1.20.1 + Quilt 那一页写着「将自动安装 **Quilted Fabric API 7.4.0+0.92.2**」，并有一条"安装前请确认"的提示，安装按钮可点 |
+| C-1 CurseForge 那一半 | **【真机】确认**（比原判断更准，见下方改写） |
+| C-12「把查不到说成没有」 | **【真机】确认**：CF 来源的包直接显示「上游没有给它发布任何文件」 |
+| C-18「来自 Modrinth」写死 | **【真机】确认**：来源选 CurseForge 的包，安装页仍然写「来自 Modrinth」 |
+| A-1 三处「启动」按钮 | 上轮已【真机】；本轮再确认：行菜单里确实有「启动」，而那一页 `ieml:launch-request` 监听器 = **0** |
+| A-2 / A-3 / B-1 / C-2 | **仍是【代码】级**，原因见文末「本轮没能真机复现的条目」——需要真的启动游戏 / 让回收站失败 / 真的更新一个 Mod，**我没有擅自动** |
+
+---
+
 ## 一、严重（用户会直接撞上，且界面上说的与事实相反）
 
 ### A-1　三处「启动」按钮点了什么都不发生【真机】
@@ -131,14 +146,21 @@ Modrinth 每次的 `filename` 通常带版本号 → 旧 jar 留着 → **同一
 （`UpdateChip` 在 `error` 时直接 `return null`）。
 → 用户断网点「检查更新」，界面告诉他一个**假事实**。
 
-### B-3　Quilt 自动装 QFAPI：违背用户 2026-09-15 的明确决定【代码】
+### B-3　Quilt 自动装 QFAPI：违背用户 2026-09-15 的明确决定【真机 + 代码】
 
 * 用户决定（`CHANGELOG.md:2470` 原话）：「**不给 Quilt 装 API 了**」→
   Rust `api_for_base` 对 Quilt `return vec![]`，测试改成 `quilt_gets_no_api_library`，
   还写着「**规则仍只有一处**」。
 * 而**活的那一侧**（TS）仍是：`loader-caps.ts:709` `base === 'quilt' ? 'quilted-fabric-api' : 'fabric-api'`
   → `combination.ts` 放进 `autoApis` → `InstallComposer.tsx:899-902` **真的调
-  `install_api_library(..., 'quilt')`**，界面上还写着「将自动安装 Quilted Fabric API 7.4.0+0.92.2」。
+  `install_api_library(..., 'quilt')`**。
+* **【真机】（第 2 轮）**：安装页选 `1.20.1` → 点 Quilt 之后，页面上出现
+
+  > **将自动安装** — Quilted Fabric API `7.4.0+0.92.2`｜已内含 Fabric API，同时支持 Fabric 与 Quilt Mod｜3 MB
+  > 「安装前请确认：将自动安装 Quilted Fabric API 7.4.0+0.92.2（已内含 Fabric API，同时支持 Fabric 与 Quilt Mod）」
+
+  底栏是「1.20.1 · Quilt 0.23.0 · 约下载 47 MB …」，安装按钮可点 —— 也就是说
+  **点下去真的会装这个用户明确不要的包**。
 * 两条测试互相钉着相反的结论（TS `tests/domain.test.js` 断言 QFAPI；Rust 断言空）。
 
 **影响**：建一个 Quilt 实例会往 mods/ 里多塞一个用户明确不要的 QFAPI。
@@ -160,7 +182,7 @@ Modrinth 每次的 `filename` 通常带版本号 → 旧 jar 留着 → **同一
 
 | # | 现象 | 判据 | 等级 |
 |---|---|---|---|
-| C-1 | CurseForge 那一半是假的：切到 CF 搜得到，点进去**装不了** | 两处仍走 `api.modrinth.versions(...)`（`DownloadPage.tsx:559-562`、`ResourceInstallPage.tsx:48`），而 CF 命中的 `project_id` 是 CF 数字 id；整合包还多一层 `mrpack_inspect` 只认 `modrinth.index.json`。后端已有 source-aware 的 `resource_versions`，这两条路没用它 | 【代码】 |
+| C-1 | CurseForge 那一半是**假的**：搜是 CF 的数据，版本/安装走的是 **Modrinth** 的接口 | **【真机】**（第 2 轮）：选一个 CF 独有的包（RLCraft）→ 安装页「来自 Modrinth」+「这个整合包没有可下载的版本 / 上游没有给它发布任何文件」；两边都有的包（Fabulously Optimized）能出 472 个版本 —— 那是 Modrinth 的版本，不是 CF 的。页面自己还写着「包里的 **modrinth.index.json** 定死」。代码侧：两处仍走 `api.modrinth.versions(...)`（`DownloadPage.tsx:559-562`、`ResourceInstallPage.tsx:48`），CF 命中的 `project_id` 是 CF 数字 id；后端已有 source-aware 的 `resource_versions` 没用它 |
 | C-2 | 「mods 目录」按钮打开的是**实例根目录** | 标签/title 写「打开这个实例的 mods 目录（game\mods）」，实参却是 `openDir('instance', slug)`；Rust 有 `"mods"` 分支且 `CrashModal` 用的就是它 | 【代码】 |
 | C-3 | 「也可以把 .jar 文件直接拖进窗口。」——**没有任何拖放实现** | `onDrop/onDragOver/dataTransfer/onDragDropEvent` 在 `src` 里 **0 命中**，而 `tauri.conf.json` 是 `dragDropEnabled: true`（原生拖放被接管，没 JS 监听就等于什么都不做） | 【代码】 |
 | C-4 | 版本列表底部「这些版本还没有游戏文件 / 起不来」是**假警报** | 判据是 `MC_PROFILES` 那 10 个内置版本的静态表 ∩ 实例的 mcVersion，**不读盘**；装 1.21.4 能跑，列表仍挂着这句 | 【代码】 |
@@ -220,6 +242,48 @@ Modrinth 每次的 `filename` 通常带版本号 → 旧 jar 留着 → **同一
 | `tools/live/probe-pages-sweep.mjs` | 逐页巡检：异常 / 可疑文案 / 压扁元素 / 破图 / 越界 |
 | `tools/live/probe-server-hint.mjs` | 端口写坏时页面到底怎么说（B-4） |
 | `tools/live/probe-loader-page-boxes.mjs` | 某一页每块的几何（可视高度 vs 内容高度） |
+| `tools/live/probe-bug-repro-1.mjs` | ① 启动预览命令行 ② Quilt 的「将自动安装」 |
+| `tools/live/probe-bug-repro-2.mjs` | 整合包切 CurseForge 之后点开一张卡 |
+| `tools/live/probe-bug-repro-3.mjs` | CF 独有包 vs 两边都有的包（C-1 的判据） |
 
 跑法：`node tools/live/<脚本>.mjs ["<exe>"]`（默认用 `src-tauri/target/release/ieml.exe`，
 可以传桌面那份 exe）。
+
+---
+
+## 七、本轮**没能**真机复现的条目（连同原因，不装样子）
+
+| 条目 | 要复现需要什么 | 我为什么没做 |
+|---|---|---|
+| A-2 OptiFine 装好但启动不用 | 装一个带 OptiFine 的实例（勾上 → 真的跑 OptiFine 安装器）**再启动游戏** | 会真的下载 + 打补丁 + 拉起游戏；这台机器上现有的 3 个实例都没记录 OptiFine，磁盘上也没有 `1.12.2-OptiFine_*`（只有 `1.16.5-OptiFine_HD_U_G8`，没有实例用它）。**要不要做，等你点头** |
+| A-3「已永久删除」但没删 | 让**回收站不可用**（磁盘没有回收站 / 文件太大 / 路径超长），才会走到那条重试分支 | 本机回收站正常，构造失败会真的删掉实例数据；代码那两行（记录先删、`if (!inst) return 0`、调用方无条件报成功）是确定性的 |
+| B-1 Mod 更新不删旧 jar | 装一个 Mod，等它有新版本，点「更新」 | 会真的往实例 mods/ 里写文件；`install_mod` 只有 `create_dir_all` + `download_one`（我逐行看过，没有任何 remove/rename） |
+| C-2「mods 目录」按钮 | 点一下，看资源管理器打开的是哪个目录 | 会在你桌面上弹出窗口。代码侧 5 个 `openDir(` 调用点我都核对过：这一处传的是 `'instance'`，而 `'mods'` 那个分支另有其用 |
+
+★ 顺带一条**探针自己的坑**（写下来免得误导）：
+第 2 轮的 CF 探针里，输入搜索词后我**立刻**去读卡片数，读到的还是上一批结果
+（所以"RLCraft 的搜索结果第一张是 ATM10"是我读早了，**不是**产品的"搜索滞后"缺陷）。
+要判"结果真的换了"，得像 `live-c3` 那样断言**结果集内容变了**，不能只断言"有卡片"。
+
+---
+
+## 八、第 2 轮证据（原始输出要点）
+
+```
+① 启动页「预览命令」（preview_launch 与 launch_minecraft 走同一个 prepare_spec）
+   → 命令行里出现：-Djava.library.path=C:\Users\Administrator\AppData\Roaming\IEML\instances\vanilla-1122\natives
+     （实例目录在 own_root —— 与 A-4 的"两处分裂"一致）
+   磁盘上 1.12.2 的版本目录：1.12.2 / 1.12.2-forge-14.23.5.2864 / 1.12.2-LiteLoader（没有 OptiFine）
+
+② 安装页 1.20.1 + Quilt →「将自动安装 Quilted Fabric API 7.4.0+0.92.2」+ 安装按钮可点   ← B-3
+
+③ 整合包 · 来源 = CurseForge
+   · 列表 20 张卡，标注「数据来自 CurseForge」
+   · 点开 Fabulously Optimized → 出 472 个版本，但页面写「来自 Modrinth」
+   · 点开 RLCraft（CF 独有）→ 「这个整合包没有可下载的版本：上游没有给它发布任何文件」
+   · 点开 All the Mods 10 → 同上
+   ← C-1 / C-12 / C-18
+
+④ 版本列表页：ieml:launch-request 监听器 = 0；启动页 = 1；手动派发无任何反应；
+   行菜单项 = ["打开设置","启动","重命名","创建副本","打开目录","删除"]；java 进程数 = 0   ← A-1
+```
