@@ -42,7 +42,7 @@ interface CrashContext {
 }
 
 export function CrashModal() {
-  const { state, go, toast, updateConfig } = useApp();
+  const { state, go, goDownloadTab, toast, updateConfig } = useApp();
   const { api } = useRealApi();
   const [ctx, setCtx] = useState<CrashContext | null>(null);
   const [showRaw, setShowRaw] = useState(false);
@@ -163,23 +163,27 @@ export function CrashModal() {
           }
           case 'reinstall-game': {
             /*
-             * ★ 2026-09-23：「安装游戏」已经是**自己的一页**（用户第 4 条），
-             *   所以这里（以及下面的重装加载器）去的是 `install`，不是 `download`。
-             *   文案与去向必须是同一件事 —— 否则用户按提示去下载页，那里只有资源。
+             * ★ 2026-09-23 晚：安装游戏**并回下载页的第一个页签**了，
+             *   所以这里是"去下载页并切到那一格"（`goDownloadTab('game')`）——
+             *   一次派发到位，不存在"先跳页再发事件"那种会被丢掉的时序。
              */
-            go('install');
-            toast('info', '去重新安装', `在「安装游戏」页选 ${target.mcVersion} 再装一次即可；已下载的文件会跳过。`);
+            goDownloadTab('game');
+            toast(
+              'info',
+              '去重新安装',
+              `在「下载」页的「安装游戏」里选 ${target.mcVersion} 再装一次即可；已下载的文件会跳过。`,
+            );
             close();
             return;
           }
           case 'reinstall-loader': {
-            go('install');
+            goDownloadTab('game');
             toast(
               'info',
               '去重装加载器',
               target.loader
-                ? `在「安装游戏」页选 ${target.mcVersion} + ${target.loader.kind}，重装一次加载器。`
-                : '在「安装游戏」页给这个版本叠一个加载器。',
+                ? `在「下载」页的「安装游戏」里选 ${target.mcVersion} + ${target.loader.kind}，重装一次加载器。`
+                : '在「下载」页的「安装游戏」里给这个版本叠一个加载器。',
             );
             close();
             return;

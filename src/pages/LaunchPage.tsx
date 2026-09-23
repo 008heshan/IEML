@@ -291,8 +291,8 @@ export function LaunchPage() {
           desc="先去装一份游戏，装好后它会出现在「版本列表」里。也可以用整合包一键装好一整套。"
           actions={
             <>
-              {/* ★ 2026-09-23（用户第 4 条）：安装游戏是自己的一页了，不再是下载页的页签 */}
-              <Button variant="primary" onClick={() => go('install')}>
+              {/* ★ 2026-09-23 晚：安装游戏并回下载页第一格 → 一次派发到位（跳页 + 选页签） */}
+              <Button variant="primary" onClick={() => goDownloadTab('game')}>
                 <IconBox /> 去安装游戏
               </Button>
               <Button

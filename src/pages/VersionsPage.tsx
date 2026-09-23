@@ -95,7 +95,7 @@ function menuLayout(anchor: DOMRect, height: number): MenuPos {
 }
 
 export function VersionsPage() {
-  const { state, go, goDownloadTab, goDownloadFor, openVersion, toast, removeInstance, duplicateInstance, renameInstance } =
+  const { state, goDownloadTab, goDownloadFor, openVersion, toast, removeInstance, duplicateInstance, renameInstance } =
     useApp();
   const { api } = useRealApi();
   const [filter, setFilter] = useState<Filter>('all');
@@ -357,8 +357,8 @@ export function VersionsPage() {
           desc="装一份游戏就会出现在这里 —— 装好后双击某个版本，就能进入它的设置、Mod 与日志。"
           actions={
             <>
-              {/* ★ 2026-09-23（用户第 4 条）：安装游戏是自己的一页了，不再是下载页的页签 */}
-              <Button variant="primary" onClick={() => go('install')}>
+              {/* ★ 2026-09-23 晚：安装游戏并回下载页第一格 → 跳页 + 选页签一次派发到位 */}
+              <Button variant="primary" onClick={() => goDownloadTab('game')}>
                 <IconBox /> 安装游戏
               </Button>
               <Button
@@ -396,7 +396,7 @@ export function VersionsPage() {
               <IconRefresh /> 重新探测
             </Button>
           ) : null}
-          <Button variant="primary" size="sm" onClick={() => go('install')}>
+          <Button variant="primary" size="sm" onClick={() => goDownloadTab('game')}>
             <IconPlus /> 新装一个
           </Button>
         </div>
