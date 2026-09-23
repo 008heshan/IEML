@@ -17,12 +17,12 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../state/AppContext';
-import { Button, Chip, CustomSelect, EmptyState, Note, SearchBox, Segmented, Spinner } from '../ui';
-import { IconAlert, IconBox, IconChevronRight, IconDownload, IconLayers, IconPuzzle, IconRefresh, IconImage, IconGrid, IconPackage } from '../ui/Icons';
+import { Button, Chip, CustomSelect, EmptyState, Note, Segmented, Spinner } from '../ui';
+import { IconAlert, IconBox, IconChevronRight, IconDownload, IconLayers, IconPuzzle, IconRefresh, IconImage, IconGrid, IconPackage, IconSearch } from '../ui/Icons';
 import { useRealApi } from '../hooks/useRealApi';
 import type { DownloadTab } from '../state/store';
 import { InstallComposer } from '../components/InstallComposer';
-import { ResourceCenterBody } from '../components/ResourceBrowser';
+import { ResourceCenterBody, VersionPicker } from '../components/ResourceBrowser';
 import { autoMemory, compareVersion, isSnapshotVersion, knownVersions } from '../domain';
 import type { Instance } from '../domain';
 import type { ModrinthVersion, ResourceKindName } from '../bridge/tauri';
@@ -704,7 +704,7 @@ function ModpackTab({
 
         <div className="dim" style={{ margin: 'var(--space-3) 0' }}>
           版本、加载器、Mod 清单都由包里的 <span className="mono">modrinth.index.json</span> 定死 ——
-          下面列出这个整合包发布的版本，**从最新往下**。
+          下面按**游戏版本**分类列出它发布的版本。
         </div>
 
         {targetVersions === null ? <Spinner label="正在取版本列表…" /> : null}
@@ -714,54 +714,47 @@ function ModpackTab({
           </Note>
         ) : null}
         {targetVersions && targetVersions.length > 0 ? (
-          <div className="res-versions">
-            <div className="res-versions-head">
-              <span>
-                <b>{installTarget.name}</b> 的全部版本（{targetVersions.length} 个）
-              </span>
-            </div>
-            <div className="res-version-list">
-              {targetVersions.map((v) => {
-                const f = v.files.find((x) => x.primary) ?? v.files[0];
-                return (
-                  <div key={v.id} className="res-version">
-                    <div className="res-version-main">
-                      <div className="res-version-name">
-                        <span className="mono">{v.version_number || v.name}</span>
-                        {v.version_type !== 'release' ? <Chip tone="info">{v.version_type}</Chip> : null}
-                      </div>
-                      <div className="res-version-meta">
-                        {v.game_versions.length > 0 ? (
-                          <span className="dim">MC {v.game_versions.slice(0, 6).join(' / ')}</span>
-                        ) : null}
-                        {v.loaders.length > 0 ? <span className="dim">{v.loaders.join(' / ')}</span> : null}
-                      </div>
-                    </div>
-                    {/*
-                      ★ 选一个版本 = 装它（装的是**这个**版本，不是"最新那个"）。
-                        这一条是用户点名要的："点安装时单独建页面" —— 挑版本这件事
-                        原来根本没有余地（内联面板只装最新的那个）。
-                    */}
-                    <Button
-                      size="sm"
-                      variant="primary"
-                      loading={installing}
-                      disabled={!isDesktop || !f?.url}
-                      onClick={() => {
-                        setSelected(installTarget);
-                        setName(name || installTarget.name);
-                        // 让 install() 用这个版本：先落进 state，再触发
-                        setPickedVersion(v);
-                        window.setTimeout(() => void install(), 0);
-                      }}
-                    >
-                      <IconDownload /> 安装这个版本
-                    </Button>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+          /*
+           * ★★ 2026-09-23 用户：「整合包资源单开的一页也要**版本分类**和**版本推荐**」——
+           *   交给 `VersionPicker`（与资源安装页**同一份实现**）：
+           *     版本分类 = 顶部 MC 版本 chips + 按大版本折叠分组；
+           *     版本推荐 = 最新那个**正式版**挂一个「推荐」标记。
+           *   ★ 为什么推荐"最新正式版"而不是"最新"：整合包的 beta/alpha 常常是
+           *     作者试水用的，把测试版推给玩家是帮倒忙。
+           */
+          <VersionPicker
+            hit={{
+              project_id: installTarget.id,
+              slug: installTarget.id,
+              title: installTarget.name,
+              description: installTarget.summary ?? '',
+              author: installTarget.author ?? '',
+              downloads: 0,
+              icon_url: installTarget.icon ?? null,
+              categories: [],
+              /*
+               * ★ ModrinthHit 还要求这两个字段；整合包卡片上没有它们，给空值即可
+               *   （VersionPicker 只用 title / project_id / icon_url —— 见它的 props 说明）。
+               */
+              project_type: 'modpack',
+              versions: [],
+            }}
+            versions={targetVersions}
+            loading={false}
+            error={null}
+            installing={installing ? installTarget.id : null}
+            recommend={
+              (targetVersions.find((v) => v.version_type === 'release') ?? targetVersions[0])?.id
+            }
+            onPick={(v) => {
+              // ★ 点哪个装哪个：先把选中的版本落进 state，再触发同一份 install()
+              setSelected(installTarget);
+              setPickedVersion(v);
+              setName(name || installTarget.name);
+              window.setTimeout(() => void install(), 0);
+            }}
+            onRetry={() => setTargetVersions(null)}
+          />
         ) : null}
       </div>
     );
@@ -769,40 +762,41 @@ function ModpackTab({
 
   return (
     <div style={{ marginTop: 'var(--space-4)' }}>
-      <div className="row row-wrap" style={{ marginBottom: 'var(--space-3)' }}>
-        <div style={{ flex: 1, maxWidth: 320 }}>
-          <SearchBox
-            label="搜索整合包"
-            placeholder="搜索整合包名称 / 作者 / 标签"
-            value={query}
-            onChange={setQuery}
-          />
+      {/*
+        ★★ 2026-09-23 用户（截图）：「**整合包页做成这样的排版**」——
+          照资源页那套：
+            第一行：右边一排筛选（`不限版本` + `不限加载器`）+ 排序（整合包没有第二个源，
+                    所以那个位置放排序，而不是摆一个点不动的 CurseForge）
+            第二行：搜索框 + 「搜索」按钮
+      */}
+      <div className="res-bar">
+        <div className="spacer" />
+        <div className="res-filters">
+          <div className="res-filter">
+            <CustomSelect
+              className={mcFilter ? '' : 'is-unset'}
+              value={mcFilter}
+              onChange={setMcFilter}
+              ariaLabel="整合包 MC 版本"
+              options={[
+                { value: '', label: '不限版本' },
+                ...packVersionOptions.map((v) => ({ value: v, label: v })),
+              ]}
+            />
+          </div>
+          <div className="res-filter">
+            <CustomSelect
+              className={loaderFilter ? '' : 'is-unset'}
+              value={loaderFilter}
+              onChange={setLoaderFilter}
+              ariaLabel="整合包加载器"
+              options={[
+                { value: '', label: '不限加载器' },
+                ...PACK_LOADERS.map((l) => ({ value: l.value, label: l.label })),
+              ]}
+            />
+          </div>
         </div>
-        {/*
-          ★★ 2026-09-23（C3，用户：「整合包也要图三这个」）：
-            图三那排是 `不限版本` + `不限加载器` + 源选择。
-            前两个在这里落地（后端 search 已经支持 mcVersion / loader 两个 facet）。
-            ★ 源那一项**先不摆**：整合包现在只有 Modrinth 一家能搜，
-              摆一个点不动的 CurseForge 违背"不给不可用的控件"这条规矩。
-        */}
-        <CustomSelect
-          value={mcFilter}
-          onChange={setMcFilter}
-          ariaLabel="整合包 MC 版本"
-          options={[
-            { value: '', label: '不限版本' },
-            ...packVersionOptions.map((v) => ({ value: v, label: v })),
-          ]}
-        />
-        <CustomSelect
-          value={loaderFilter}
-          onChange={setLoaderFilter}
-          ariaLabel="整合包加载器"
-          options={[
-            { value: '', label: '不限加载器' },
-            ...PACK_LOADERS.map((l) => ({ value: l.value, label: l.label })),
-          ]}
-        />
         <Segmented
           label="排序"
           size="sm"
@@ -814,8 +808,30 @@ function ModpackTab({
             { value: 'downloads', label: '最多下载' },
           ]}
         />
-        <div style={{ flex: 1 }} />
-        <span className="dim">数据来自 Modrinth</span>
+      </div>
+
+      <div className="res-search">
+        <label className="res-search-box">
+          <IconSearch />
+          <input
+            className="input"
+            type="search"
+            aria-label="搜索整合包"
+            placeholder="搜索整合包名称 / 作者 / 标签"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void load();
+            }}
+          />
+        </label>
+        <Button variant="primary" size="sm" onClick={() => void load()}>
+          搜索
+        </Button>
+      </div>
+
+      <div className="dim" style={{ marginTop: 'var(--space-2)' }}>
+        数据来自 Modrinth
       </div>
 
       {error ? (

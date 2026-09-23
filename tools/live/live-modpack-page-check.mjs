@@ -83,16 +83,26 @@ await sleep(1200);
 
 /* 等整合包卡片 */
 let cards = 0;
-for (let i = 0; i < 40; i += 1) {
+for (let i = 0; i < 80; i += 1) {
   cards = await ev(`document.querySelectorAll('.pack-card:not(.pack-card-sk)').length`);
   if (cards > 0) break;
   await sleep(500);
+  if (i % 10 === 9) console.log(`    等卡片… ${((i + 1) * 0.5).toFixed(0)}s`);
 }
 console.log('  整合包卡片：' + cards);
 check('  有整合包卡片', cards > 0, `${cards} 张`);
 
 await ev(`document.querySelector('.pack-card:not(.pack-card-sk)')?.click()`);
-await sleep(3500);
+/* 等版本列表真的渲染出来（分组标题是最可靠的信号） */
+let groups = 0;
+for (let i = 0; i < 60; i += 1) {
+  groups = await ev(`document.querySelectorAll('.res-vgroup-head').length`);
+  if (groups > 0) break;
+  await sleep(500);
+  if (i % 10 === 9) console.log(`    等版本列表… ${((i + 1) * 0.5).toFixed(0)}s`);
+}
+console.log('  版本分组已到：' + groups);
+await sleep(400);
 
 const view = await ev(`(() => ({
   '列表卡片数': document.querySelectorAll('.pack-card').length,
@@ -110,6 +120,30 @@ check('★ 有**版本列表**（不是只有最新那个）', (view?.版本条�
 check('  有实例名称输入', view?.有名称输入 === true);
 check('  有安装按钮', (view?.安装按钮数 ?? 0) >= 1, String(view?.安装按钮数));
 check('★ 有「返回整合包列表」', view?.有返回 === true);
+
+/* ★★ 用户这一条点名的两样：**版本分类**与**版本推荐** */
+const cls = await ev(`(() => ({
+  '版本chips': document.querySelectorAll('.res-vchips .chip').length,
+  '分组数': document.querySelectorAll('.res-vgroup-head').length,
+  '推荐数': [...document.querySelectorAll('.res-version-name .chip')].filter((c) => /推荐/.test(c.textContent || '')).length,
+}))()`);
+console.log('  分类与推荐：' + JSON.stringify(cls));
+check('★ 版本分类：有 MC 版本 chips', (cls?.版本chips ?? 0) >= 2, `${cls?.版本chips} 个 chips`);
+check('★ 版本分类：按大版本分组', (cls?.分组数 ?? 0) >= 2, `${cls?.分组数} 组`);
+check('★ 版本推荐：有一行带「推荐」标记', (cls?.推荐数 ?? 0) >= 1, `${cls?.推荐数} 个`);
+
+/* 整合包页签的排版（用户给了截图：筛选在右上、搜索框在下一行带按钮） */
+await ev(`[...document.querySelectorAll('button')].find((b) => /返回整合包列表/.test(b.textContent || ''))?.click()`);
+await sleep(1400);
+const bar = await ev(`(() => ({
+  '有筛选条': !!document.querySelector('.res-bar'),
+  '筛选下拉数': document.querySelectorAll('.res-bar .res-filter').length,
+  '有搜索行': !!document.querySelector('.res-search'),
+  '有搜索按钮': [...document.querySelectorAll('.res-search button')].some((b) => /搜索/.test(b.textContent || '')),
+}))()`);
+console.log('  整合包页签排版：' + JSON.stringify(bar));
+check('★ 排版照资源页：筛选条在右上', (bar?.筛选下拉数 ?? 0) === 2, JSON.stringify(bar));
+check('★ 搜索框下一行、带「搜索」按钮', bar?.有搜索行 === true && bar?.有搜索按钮 === true, JSON.stringify(bar));
 
 const shot = await send('Page.captureScreenshot', { format: 'png' });
 if (shot.result?.data) writeFileSync(path.join(OUT, '整合包安装页.png'), Buffer.from(shot.result.data, 'base64'));

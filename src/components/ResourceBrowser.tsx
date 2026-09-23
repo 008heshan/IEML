@@ -37,7 +37,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Chip, CustomSelect, Modal, Note, Segmented, Spinner } from '../ui';
 import { IconChevronRight, IconDownload, IconRefresh, IconSearch } from '../ui/Icons';
-import { useVersionGroups } from './resource-groups';
+import { groupKeyOf, useVersionGroups } from './resource-groups';
 import { useRealApi } from '../hooks/useRealApi';
 import { useApp } from '../state/AppContext';
 import { BASE_LOADER_NAME, compareVersion, isSnapshotVersion, knownVersions } from '../domain';
@@ -144,6 +144,7 @@ export function VersionPicker({
   installing,
   onPick,
   onRetry,
+  recommend,
 }: {
   hit: ModrinthHit;
   versions: ModrinthVersion[] | null;
@@ -152,6 +153,17 @@ export function VersionPicker({
   installing: string | null;
   onPick: (v: ModrinthVersion) => void;
   onRetry: () => void;
+  /**
+   * ★★ 2026-09-23（用户：「整合包资源单开的一页也要版本分类和**版本推荐**」）：
+   *   传一个版本 id 进来，那一行会多一个「推荐」标记。
+   *
+   *   ★ 为什么是"传 id"而不是"页面自己挑一个"：**挑哪个算推荐是页面的事**
+   *     （整合包页按"最新正式版"推；别的页面不传就是不推）。
+   *     `VersionPicker` 只负责画 —— 这样它仍然是同一份实现，不是两套规则。
+   *   ★ 为什么默认不推：用户之前明确说过"推荐版本也不要了"（那是游戏版本安装页）——
+   *     所以这里**只有明确要求的地方才显示**，不是全局加回来。
+   */
+  recommend?: string;
 }) {
   if (loading) {
     return (
@@ -188,7 +200,12 @@ export function VersionPicker({
    * ★★ 2026-09-23（C4）：按 MC 版本分组 + 折叠 + 顶部 chips 筛选。
    *   分组逻辑在 `resource-groups.ts`（纯函数，好测）。
    */
-  const { groups, shown, only, setOnly, isOpen, toggle } = useVersionGroups(versions, compareVersion);
+  /*
+   * ★ 推荐版本所在的组要**自动展开** —— 否则推荐落在折叠组里，用户看不到它
+   *   （真机实测：分类对、推荐数 0，就是这个原因）。
+   */
+  const recommendGroupKey = recommend ? groupKeyOf({ id: recommend, game_versions: versions.find((x) => x.id === recommend)?.game_versions ?? [] }, compareVersion) : null;
+  const { groups, shown, only, setOnly, isOpen, toggle } = useVersionGroups(versions, compareVersion, recommendGroupKey);
 
   return (
     <div className="res-versions">
@@ -256,6 +273,8 @@ export function VersionPicker({
                     <div className="res-version-main">
                       <div className="res-version-name">
                         <span className="mono">{v.version_number || v.name}</span>
+                        {/* ★ 推荐标记：只有调用方明确给了 recommend 才出现（见 props 的说明） */}
+                        {recommend === v.id ? <Chip tone="success">推荐</Chip> : null}
                         {v.version_type !== 'release' ? (
                           <Chip tone={v.version_type === 'beta' ? 'info' : 'warning'}>
                             {v.version_type === 'beta' ? '测试版' : '抢先版'}
