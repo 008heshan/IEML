@@ -137,6 +137,19 @@ check(
   JSON.stringify(canCollapse),
 );
 
+/* ★★ 用户：「mod 页面会进入自己的专属页，是一个全屏页，为什么整合包的还会显示」——
+   判据：进了整合包安装页之后，下载页的**页头与页签必须消失**（整屏） */
+const full = await ev(`(() => ({
+  '有页头': !!document.querySelector('.page-title'),
+  '页头文字': document.querySelector('.page-title')?.textContent?.trim() ?? null,
+  '有页签': !!document.querySelector('.tabs'),
+  '有信息卡': !!document.querySelector('.res-detail'),
+  '有返回': [...document.querySelectorAll('button')].some((b) => /返回整合包列表/.test(b.textContent || '')),
+}))()`);
+console.log('  整屏检查：' + JSON.stringify(full));
+check('★ 安装页是**整屏**（下载页的页头与页签都收起来了）', full?.有页头 === false && full?.有页签 === false, JSON.stringify(full));
+check('  安装页自身还在（信息卡 + 返回）', full?.有信息卡 === true && full?.有返回 === true, JSON.stringify(full));
+
 const shot = await send('Page.captureScreenshot', { format: 'png' });
 if (shot.result?.data) writeFileSync(path.join(OUT, '整合包安装页.png'), Buffer.from(shot.result.data, 'base64'));
 
