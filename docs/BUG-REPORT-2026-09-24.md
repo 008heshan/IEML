@@ -12,23 +12,87 @@
 
 ---
 
-## 第 2 轮（2026-09-24）：把【代码】级的条目尽量升级成【真机】
+## 第 2–3 轮（2026-09-24）：把【代码】级的条目尽量升级成【真机】
 
-这一轮专门补真机证据，结果如下（原始输出见文末「第 2 轮证据」）：
+这一轮专门补真机证据，结果如下（原始输出见文末「第 2 / 3 轮证据」）。
+★ 第 3 轮最大的收获是 **A-0**：为了验 A-3 而做的沙盒删除，顺手炸出了
+"全应用确认框都是摆设"这一条 —— 它比原来那份清单里任何一条都严重。
 
 | 条目 | 升级结果 |
 |---|---|
+| **A-0 所有确认框都是摆设（第 3 轮新增，最严重）** | **【真机】+【根因】确认**：`confirm()` 返回 Promise（0ms）、await 后被 ACL 拒绝、守卫写法恒放行；14 处受影响，含"删游戏根目录"的两道确认 |
 | B-3 Quilt 自动装 QFAPI | **【真机】确认**：1.20.1 + Quilt 那一页写着「将自动安装 **Quilted Fabric API 7.4.0+0.92.2**」，并有一条"安装前请确认"的提示，安装按钮可点 |
 | C-1 CurseForge 那一半 | **【真机】确认**（比原判断更准，见下方改写） |
 | C-12「把查不到说成没有」 | **【真机】确认**：CF 来源的包直接显示「上游没有给它发布任何文件」 |
 | C-18「来自 Modrinth」写死 | **【真机】确认**：来源选 CurseForge 的包，安装页仍然写「来自 Modrinth」 |
 | A-1 三处「启动」按钮 | 上轮已【真机】；本轮再确认：行菜单里确实有「启动」，而那一页 `ieml:launch-request` 监听器 = **0** |
-| A-2 / A-3 / B-1 / C-2 | **仍是【代码】级**，原因见文末「本轮没能真机复现的条目」——需要真的启动游戏 / 让回收站失败 / 真的更新一个 Mod，**我没有擅自动** |
+| **A-3「已永久删除」但没删** | **【真机】确认**（第 3 轮，用沙盒做的）：① 弹出「已永久删除」② 记录消失 ③ `instances/<slug>/` 还在磁盘上 —— 三条判据同时成立 |
+| A-2 / B-1 / C-2 | **仍是【代码】级**，原因见文末「本轮没能真机复现的条目」——需要真的启动游戏 / 真的更新一个 Mod / 会弹出资源管理器窗口，**我没有擅自动** |
+
+★★ 本轮发现的一个**通用手法**（写下来给后面用）：启动器支持
+`IEML_DATA_DIR`（游戏根目录）与 `IEML_OWN_DIR`（启动器自己的目录）两个环境变量，
+**两个都指到 `%TEMP%` 下的沙盒就能把整个启动器关起来跑** ——
+于是"删实例""删根目录"这种**破坏性流程可以在完全不碰用户数据的前提下真机复现**。
+A-3 就是这么验的（`tools/live/probe-bug-repro-4.mjs`）。
 
 ---
 
 ## 一、严重（用户会直接撞上，且界面上说的与事实相反）
 
+### A-0　★★ **全应用的"确认框"都是摆设**（14 处，一个都不会问、也不会拦）【真机 + 根因已定位】
+
+**现象**：删实例 / 删游戏根目录（两道确认）/ 清缓存 / 删 Mod …… 所有"确定要删除吗？"
+**一个框都不弹，点了就直接删**。
+
+**根因（三段，逐段都有证据）**：
+
+1. `tauri-plugin-dialog` 在窗口创建时注入了一段脚本（`tauri-plugin-dialog-2.7.3/src/init-iife.js`）：
+
+   ```js
+   window.confirm = async function (i) { return await n("plugin:dialog|confirm", { message: i.toString() }) };
+   window.alert   = function (i) { n("plugin:dialog|message", { message: i.toString() }) };   // 不 await，同样不阻塞
+   ```
+
+   → `window.confirm()` **永远返回一个 Promise**，不是布尔。
+2. 前端 14 处全部按**同步**写法用它：`if (!confirm(msg)) return;` ——
+   `!Promise` 恒为 `false` ⇒ **守卫永远放行**（"点了取消"这件事在语法上就不可能发生）。
+3. 而 `plugin:dialog|confirm` 这条命令**没被授权**：
+   * 本机 `tauri-plugin-dialog-2.7.3/permissions/default.toml`：`permissions = ["allow-message", "allow-save", "allow-open"]`
+     —— **没有 `allow-confirm`**；
+   * 应用只授了 `dialog:default`（`src-tauri/capabilities/default.json`）。
+   ⇒ 那个 Promise 直接以 `Command plugin:dialog|confirm not allowed by ACL` **失败**，框也不会出现。
+
+**真机证据**（真实配置，不设任何沙盒变量）：
+
+| 观察 | 结果 |
+|---|---|
+| `confirm('…')` 的返回值 | `[object Promise]`，耗时 **0ms**（不阻塞） |
+| `await confirm('…')` | `Uncaught (in promise)` —— 被 ACL 拒绝 |
+| 守卫写法 `!confirm('…')` 的结果 | 返回一个 Promise（真值）⇒ **放行** |
+| 沙盒里走完整删除流程 | 两个"确认框" **0 个事件**，记录照样被删、还弹了「已永久删除」 |
+
+**受影响的 14 处**（按危险程度）：
+
+| 位置 | 它本该拦住什么 |
+|---|---|
+| `DataRootPicker.tsx:140` + `:146` | **删掉整个游戏根目录**（两道确认！）—— 而 `instances.json`/`prefs.json` 就住在那里（见 A-4），所以**一次误点 = 实例清单 + 全部设置一起没，且没有任何提示** |
+| `VersionsPage.tsx:768` / `:786` | 删实例（连存档）/ 回收站失败后改永久删除 |
+| `InstanceSetup.tsx:284` / `:300` / `:783` | 同上（实例设置页的三处） |
+| `InstanceOverview.tsx:418` / `:437` | 同上（概览页） |
+| `ModsPanel.tsx:500` / `:507` | 删 Mod（连"永久删除"那条） |
+| `SettingsPage.tsx:531` | 清理缓存（几百上千个文件） |
+| `SettingsPage.tsx:670` / `:688` | 删游戏根目录（设置页那一路） |
+
+**复现**：`node tools/live/probe-confirm-acl.mjs`（只调一次 `confirm`，看返回值与耗时）。
+
+**修法方向**（两条都得做，缺一不可）：
+* 授权：`capabilities/default.json` 加 `dialog:allow-confirm`
+  —— 但这只让**框弹出来**，第 2 条的"同步写法"还在；
+* 调用点：`confirm()` 是 async，必须 `await` 或换成**应用自绘的确认弹窗**
+  （同步 API 才能配 `if (!ok) return;` 这种写法）。★ 换句话说：
+  **光加权限不够 —— 用户点了"取消"仍然会被当成"确定"。**
+
+---
 ### A-1　三处「启动」按钮点了什么都不发生【真机】
 
 **现象**：版本列表行的 `⋯ → 启动`、概览页的「启动」、实例侧栏的「启动这个版本」——
@@ -72,10 +136,11 @@
 
 ---
 
-### A-3　「已永久删除」，磁盘上一个字节都没删【代码】
+### A-3　「已永久删除」，磁盘上一个字节都没删【真机（沙盒）】
 
-**现象**：删实例时回收站不可用 → 按提示确认"永久删除" → 弹「已永久删除」，
-但 `instances/<slug>/` **还在盘上**，而记录已经没了，再没有入口能删它。
+**现象**：删实例时第一次没删成（这里用"文件被独占占用"制造）→ 按提示确认"永久删除"
+→ 弹「已永久删除」，但 `instances/<slug>/` **还在盘上**，而记录已经没了，
+再没有入口能删它。
 
 **判据（代码）**：`AppContext.removeInstance`（`:1062-1068`）：
 
@@ -88,7 +153,21 @@ if (!inst) return 0;                          // ← 第二次调用时 inst 已
 调用方（`VersionsPage.tsx:786-790`）在重试分支里 `.then(() => toast('warning','已永久删除', …))`
 **无条件报成功**（成功分支会按 `bytes > 0` 分两种说法，重试分支没有）。
 
+**真机复现**（`tools/live/probe-bug-repro-4.mjs`，全程在 `%TEMP%` 沙盒里，不碰用户数据）：
+
+```
+沙盒：%TEMP%\ieml-sbx-root + \ieml-sbx-own
+  实例目录里放一个被独占打开的文件（让"移入回收站"必然失败）
+删除前：{"行数":1,"第一行":"IEML 探针实例 1.12.2 原版 2 GB"}
+  ⋯ 菜单：["打开设置","启动","重命名","创建副本","打开目录","删除"]
+  弹出的原生确认框：[]                     ← 注意：一个都没弹（见 A-0）
+删除后：{"行数":0,"提示条":["已永久删除IEML 探针实例"]}
+  磁盘上 instances/probe-bug/ 还在吗：true
+```
+
 **影响**：用户以为删干净了，其实留了一份带存档的目录在磁盘上，且无法从界面清理。
+★ 这条与 A-0 是**叠加**的：那两句"确认"本来就是摆设，所以这条重试路径
+（"回收站不可用 → 改永久删除吗？"）在用户那里是**无声地自动走完**的。
 
 ---
 
@@ -245,6 +324,10 @@ Modrinth 每次的 `filename` 通常带版本号 → 旧 jar 留着 → **同一
 | `tools/live/probe-bug-repro-1.mjs` | ① 启动预览命令行 ② Quilt 的「将自动安装」 |
 | `tools/live/probe-bug-repro-2.mjs` | 整合包切 CurseForge 之后点开一张卡 |
 | `tools/live/probe-bug-repro-3.mjs` | CF 独有包 vs 两边都有的包（C-1 的判据） |
+| `tools/live/probe-bug-repro-4.mjs` | **沙盒里真删一个实例**（A-3：说"已永久删除"、目录还在） |
+| `tools/live/probe-bug-repro-5.mjs` | 删除流程 + 每个 CDP 事件带时间戳（用来对上"到底弹没弹框"） |
+| `tools/live/probe-confirm-acl.mjs` | `confirm()` 的返回值/耗时（A-0 的判据，真实配置下跑） |
+| `tools/live/probe-native-dialogs.mjs` | `confirm` / `alert` / `prompt` 三者的行为对照 |
 
 跑法：`node tools/live/<脚本>.mjs ["<exe>"]`（默认用 `src-tauri/target/release/ieml.exe`，
 可以传桌面那份 exe）。
@@ -255,9 +338,8 @@ Modrinth 每次的 `filename` 通常带版本号 → 旧 jar 留着 → **同一
 
 | 条目 | 要复现需要什么 | 我为什么没做 |
 |---|---|---|
-| A-2 OptiFine 装好但启动不用 | 装一个带 OptiFine 的实例（勾上 → 真的跑 OptiFine 安装器）**再启动游戏** | 会真的下载 + 打补丁 + 拉起游戏；这台机器上现有的 3 个实例都没记录 OptiFine，磁盘上也没有 `1.12.2-OptiFine_*`（只有 `1.16.5-OptiFine_HD_U_G8`，没有实例用它）。**要不要做，等你点头** |
-| A-3「已永久删除」但没删 | 让**回收站不可用**（磁盘没有回收站 / 文件太大 / 路径超长），才会走到那条重试分支 | 本机回收站正常，构造失败会真的删掉实例数据；代码那两行（记录先删、`if (!inst) return 0`、调用方无条件报成功）是确定性的 |
-| B-1 Mod 更新不删旧 jar | 装一个 Mod，等它有新版本，点「更新」 | 会真的往实例 mods/ 里写文件；`install_mod` 只有 `create_dir_all` + `download_one`（我逐行看过，没有任何 remove/rename） |
+| A-2 OptiFine 装好但启动不用 | 装一个带 OptiFine 的实例（勾上 → 真的跑 OptiFine 安装器）**再启动游戏** | 会真的下载 + 打补丁 + 拉起游戏；这台机器上现有的 3 个实例都没记录 OptiFine，磁盘上也没有 `1.12.2-OptiFine_*`（只有 `1.16.5-OptiFine_HD_U_G8`，没有实例用它）。**要不要做，等你点头**（沙盒里也做得成，但要把整个游戏下进沙盒，几百 MB） |
+| B-1 Mod 更新不删旧 jar | 装一个 Mod，等它有新版本，点「更新」 | 会真的往实例 mods/ 里写文件；`install_mod` 只有 `create_dir_all` + `download_one`（我逐行看过，没有任何 remove/rename）。★ 现在**可以放进沙盒做**了，只是要挑一个"有更新可用"的 Mod —— 需要你点头 |
 | C-2「mods 目录」按钮 | 点一下，看资源管理器打开的是哪个目录 | 会在你桌面上弹出窗口。代码侧 5 个 `openDir(` 调用点我都核对过：这一处传的是 `'instance'`，而 `'mods'` 那个分支另有其用 |
 
 ★ 顺带一条**探针自己的坑**（写下来免得误导）：
@@ -267,7 +349,7 @@ Modrinth 每次的 `filename` 通常带版本号 → 旧 jar 留着 → **同一
 
 ---
 
-## 八、第 2 轮证据（原始输出要点）
+## 八、第 2 / 3 轮证据（原始输出要点）
 
 ```
 ① 启动页「预览命令」（preview_launch 与 launch_minecraft 走同一个 prepare_spec）
@@ -286,4 +368,25 @@ Modrinth 每次的 `filename` 通常带版本号 → 旧 jar 留着 → **同一
 
 ④ 版本列表页：ieml:launch-request 监听器 = 0；启动页 = 1；手动派发无任何反应；
    行菜单项 = ["打开设置","启动","重命名","创建副本","打开目录","删除"]；java 进程数 = 0   ← A-1
+
+⑤ 沙盒里删一个探针实例（A-3）：
+   ⋯ → 删除 → 「已永久删除」→ 记录消失 → instances/probe-bug/ **还在磁盘上**
+
+⑥ confirm() 三段证据（A-0）：
+   · 真实配置：返回 [object Promise]，0ms（不阻塞）
+   · await 它：Uncaught (in promise) —— 被 ACL 拒绝
+   · 守卫写法 !confirm(...)：得到真值 ⇒ 放行
+   · 根因：tauri-plugin-dialog-2.7.3/src/init-iife.js 把 window.confirm 换成 async 包装；
+     而该版本 permissions/default.toml 的 default 集是 ["allow-message","allow-save","allow-open"]
+     —— 没有 allow-confirm，应用也只授了 dialog:default
 ```
+
+---
+
+## 九、这轮之后，我建议的修复顺序（等你发话，不擅自改）
+
+1. **A-0**（确认框全是摆设）—— 它是"所有删除动作的最后一道闸"，而且**一行授权 + 14 处调用点**就能修；修完再谈别的删除类缺陷才有意义。
+2. **A-4**（`instances.json`/`prefs.json` 还在游戏根目录）—— 与 A-0 叠加 = 一次误点删掉整个根目录、实例与设置全没；要么把两个 JSON 搬进 `own_root`，要么在"删根目录"的确认里**明确写出会一起删掉什么**。
+3. **A-3**（记录先删、目录没删却说"已永久删除"）—— 顺序改成"先删文件、成功后再删记录"。
+4. **A-1**（三处「启动」按钮是死的）—— 要么把事件监听提到常驻层，要么直接调启动流程。
+5. **B-2 / B-3 / B-4 / C-1**（界面说的和做的不一致）；**A-2**（OptiFine 承诺）要大一些，可以单独一轮。
