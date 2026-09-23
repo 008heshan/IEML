@@ -100,17 +100,7 @@ export type PageId =
   | 'changelog'
   | 'about'
   /** ★★ 2026-09-23（C5）：资源的**独立安装页** —— 点「安装」从这里进，不再内联展开 */
-  | 'resource'
-  /**
-   * ★★ 2026-09-23（用户第 4 条）：「**安装游戏我也要单开一页，以解放视觉繁乱**」。
-   *
-   *   在此之前「安装游戏」是下载页的第一个页签，它自己又是一个左右两栏的
-   *   组合安装器（版本清单 + 加载器 + 附加组件 + 名称 + 摘要）——
-   *   塞在"页头 + 一排页签"下面，一屏里同时有**两层**导航和**十几个**控件。
-   *
-   *   现在它是自己的一页：进来只有一件事（选版本），选完再去第二步。
-   */
-  | 'install';
+  | 'resource';
 
 /** 二级页面（进入某个版本之后） */
 export type SubPageId = 'overview' | 'setup' | 'mods' | 'logs';
@@ -123,12 +113,18 @@ export type SubPageId = 'overview' | 'setup' | 'mods' | 'logs';
  *   玩家点「下载」想要的是"有什么能装"，所以它被替换掉，
  *   "本机装了什么"回到 Mod 管理页（那一页本来就是干这个的）。
  *
- * ★★ 2026-09-23（用户第 4 条）：`'game'`（安装游戏）**从这个联合类型里删掉了** ——
- *   它搬去自己的页面（`PageId` 里的 `'install'`）。删而不是留着不用，
- *   是为了让"下载页里有安装游戏"这件事**在类型层面就不可能**：
- *   留着它，将来任何一处 `setDownloadTab('game')` 都会编译通过并落到无人渲染的页签上。
+ * ★★ 2026-09-23 晚（用户）：「**把安装版本合并到下载里**」——
+ *   「安装游戏」从独立页（`PageId` 里那个 `'install'`）**搬回下载页的第一个页签**。
+ *
+ *   ★ 与当天早些时候那条（"单开一页以解放视觉繁乱"）关系是：**分开的东西要合并，
+ *     但"繁乱"要治**。所以合并回去的不是原来那个一屏两层导航的安装器，而是
+ *     **两步向导**（第 1 步选版本 / 第 2 步选加载器）—— 每一屏仍然只回答一个问题，
+ *     而侧栏少一个和「下载」平级的入口（用户的原话是"合并到下载里"）。
+ *
+ *   ★ 为什么这次把 `'game'` 写回联合类型：它是**真的**又有一个页签在渲染它了
+ *     （上一轮删掉它的理由就是"不许出现没人渲染的页签"）。
  */
-export type DownloadTab = 'modpack' | 'mod' | 'resourcepack' | 'shader' | 'datapack';
+export type DownloadTab = 'game' | 'modpack' | 'mod' | 'resourcepack' | 'shader' | 'datapack';
 
 export interface AppState {
   /* --- 导航 --- */
@@ -263,8 +259,8 @@ export const initialState: AppState = {
   resourceTarget: null as { hit: unknown; kind: string } | null,
   openInstanceId: null,
   subPage: 'overview',
-  /* ★ 2026-09-23：安装游戏搬去独立页 → 下载页的默认页签改成整合包（内容最重的那一格） */
-  downloadTab: 'modpack',
+  /* ★ 2026-09-23 晚：安装游戏合并回下载页 → 默认页签回到第一格「安装游戏」 */
+  downloadTab: 'game',
   downloadTargetId: null,
 
   theme: DEFAULT_THEME,

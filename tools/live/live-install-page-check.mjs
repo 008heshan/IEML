@@ -1,19 +1,25 @@
 /**
- * 真机验证：用户第 4 条 —— 「安装游戏单开一页 + 两步走」
+ * 真机验证：「安装游戏」= 下载页第一格 + 两步向导
  * ------------------------------------------------------------------
- * 用户原话：
- *   「**安装游戏我也要单开一页，以解放视觉繁乱**……默认页面：游戏版本选择。
+ * 这条需求当天变过一次向，脚本按**最终**的那一版断言：
+ *   · 上午（用户第 4 条）：「安装游戏我也要单开一页，以解放视觉繁乱……
  *     单开一页选择模组加载器，UI 排版你来设计，要好看实用」
+ *   · 晚上（用户）：「**把安装版本合并到下载里**；1.转到下载页；2.写"无"」
+ *
+ * 于是最终形态是：**并回下载页的第一个页签**，但**留下两步向导** ——
+ * 合并治的是"侧栏多一个大类"，向导治的是"一屏两层导航 + 十几个控件"。
  *
  * 这一份检查**只断言用户能看到的东西**：
- *   A 侧栏里有「安装游戏」，而且它是**自己的一页**（不是下载页的页签）
- *   B 进来**默认就在"选择游戏版本"**这一步：有搜索框、有渠道筛选、有版本行
- *   C 步骤条上写着两步，第 1 步是选中状态，第 2 步在没选版本之前是灰的
- *   D 右栏是"选中的版本"结论卡 + 唯一的「下一步」（几何：真的在右栏、不是被挤到下面）
- *   E 点「下一步」→ 到第 2 步：加载器选项 / 版本名称 / 「这次会装什么」/ 安装按钮
- *   F 「上一步」能回来，而且**选中的版本还在**（没有因为翻页丢掉选择）
- *   G 下载页**不再有**「安装游戏」这一格（五个页签）
- *   H 弹窗形态（版本列表 → 创建版本）仍然是**一屏两栏**，没有被向导影响
+ *   A 侧栏**没有**「安装游戏」这一格了（合并的信号）
+ *   B 下载页第一格就是「安装游戏」，而且**默认就落在它上面**
+ *   C 进来默认在"选择游戏版本"这一步：有搜索框、有渠道筛选、有版本行
+ *   D 步骤条上写着两步，第 1 步选中，第 2 步在没选版本之前是灰的
+ *   E 右栏是"选中的版本"结论卡 + 唯一的「下一步」（几何：真的在右栏）
+ *   F 点「下一步」→ 第 2 步：加载器 / 版本名称 / 「这次会装什么」/ 安装按钮
+ *   G 「上一步」能回来，选中的版本还在；附加组件的短状态写「无」
+ *   H 别处的入口（版本列表「新装一个」）**转到下载页**并落在「安装游戏」那一格
+ *   I 弹窗形态（派发 `ieml:create`）仍然是一屏两栏，没被向导影响
+ *   J 窄窗口（900px）右栏降级到下面去
  *
  * ★ 每一步都**等界面真的到了**再读（`waitFor`），不靠 sleep 猜。
  */
@@ -123,15 +129,33 @@ for (let i = 0; i < 60; i += 1) {
   await sleep(400);
 }
 
-/* ---------- A：侧栏里有「安装游戏」，它是一页 ---------- */
+/* ---------- A：侧栏里**没有**「安装游戏」（合并的信号） ---------- */
 const nav = await ev(`[...document.querySelectorAll('.nav-item')].map((b) => (b.textContent || '').trim())`);
 console.log('  侧栏：' + JSON.stringify(nav));
-check('★ A1 侧栏有「安装游戏」', (nav ?? []).some((x) => x.includes('安装游戏')), JSON.stringify(nav));
+check('★ A1 侧栏不再有「安装游戏」这一格', !(nav ?? []).some((x) => x.includes('安装游戏')), JSON.stringify(nav));
+check('★ A2 侧栏仍有「下载」', (nav ?? []).some((x) => x.includes('下载')), JSON.stringify(nav));
 
-/* ---------- B/C/D：默认落在第 1 步 ---------- */
-await clickNav('安装游戏');
+/* ---------- B/C/D：下载页第一格就是安装游戏，默认落在它上面 ---------- */
+await clickNav('下载');
+const gotTabs = await waitFor(`!!document.querySelector('.tabs .tab')`, '下载页页签');
+check('★ B1 打开了下载页', gotTabs === true);
+const firstTab = await ev(`(() => {
+  const tabs = [...document.querySelectorAll('.tabs .tab')].map((t) => ({
+    'label': (t.textContent || '').trim(),
+    'on': t.classList.contains('on'),
+    'selected': t.getAttribute('aria-selected'),
+  }));
+  return { 'tabs': tabs };
+})()`);
+console.log('  下载页页签：' + JSON.stringify(firstTab));
+check('★ B2 第一格是「安装游戏」', (firstTab?.tabs?.[0]?.label ?? '') === '安装游戏', JSON.stringify((firstTab?.tabs ?? []).map((t) => t.label)));
+check('★ B3 默认就选中「安装游戏」', firstTab?.tabs?.[0]?.on === true && firstTab?.tabs?.[0]?.selected === 'true', JSON.stringify(firstTab?.tabs?.[0]));
+check('★ B4 一共六格（安装游戏 + 整合包 + Mod + 资源包 + 光影 + 数据包）', (firstTab?.tabs ?? []).length === 6, String((firstTab?.tabs ?? []).length));
+
+/* 万一默认不在那一格（比如上次留在别的页签），显式点一下再继续 */
+await ev(`[...document.querySelectorAll('.tabs .tab')].find((t) => (t.textContent || '').trim() === '安装游戏')?.click()`);
 const gotPage = await waitFor(`!!document.querySelector('.gw')`, '安装游戏向导');
-check('★ B1 打开的是安装游戏向导（.gw）', gotPage === true);
+check('★ C0 安装游戏那一格渲染的是两步向导（.gw）', gotPage === true);
 
 /*
  * ★ 先看**清单还没到**的那几秒（真机冷启动实测要几秒）。
@@ -183,16 +207,16 @@ const step1 = await ev(`(() => {
   };
 })()`);
 console.log('  第 1 步：' + JSON.stringify(step1));
-check('★ B2 页头是「安装游戏」', step1?.title === '安装游戏', String(step1?.title));
-check('★ B3 默认在"选择游戏版本"这一步', step1?.steps?.[0]?.on === true, JSON.stringify(step1?.steps?.[0]));
+check('★ C1 页头仍是「下载」（它是下载页的一格，不是独立页）', step1?.title === '下载', String(step1?.title));
+check('★ C2 默认在"选择游戏版本"这一步', step1?.steps?.[0]?.on === true, JSON.stringify(step1?.steps?.[0]));
 check(
-  '★ B4 有搜索框 + 渠道筛选（正式版/快照/愚人节/全部）',
+  '★ C3 有搜索框 + 渠道筛选（正式版/快照/愚人节/全部）',
   step1?.searchBox === true && /正式版/.test(step1?.channelSeg ?? '') && /愚人节/.test(step1?.channelSeg ?? ''),
   JSON.stringify(step1?.channelSeg),
 );
-check('★ B5b 清单到手后自动选中了最新正式版', /^[0-9]/.test(step1?.steps?.[0]?.value ?? ''), String(step1?.steps?.[0]?.value));
-check('★ C1 步骤条上写着两步', (step1?.steps ?? []).length === 2, JSON.stringify((step1?.steps ?? []).map((s) => s.label)));
-check('★ C2 第 2 步在选好版本之前是灰的', step1?.steps?.[1]?.disabled === true || step1?.steps?.[1]?.on === false, JSON.stringify(step1?.steps?.[1]));
+check('★ C4 清单到手后自动选中了最新正式版', /^[0-9]/.test(step1?.steps?.[0]?.value ?? ''), String(step1?.steps?.[0]?.value));
+check('★ C5 步骤条上写着两步', (step1?.steps ?? []).length === 2, JSON.stringify((step1?.steps ?? []).map((s) => s.label)));
+check('★ C6 第 2 步在选好版本之前是灰的', step1?.steps?.[1]?.disabled === true || step1?.steps?.[1]?.on === false, JSON.stringify(step1?.steps?.[1]));
 
 const side1 = await ev(`(() => {
   const side = document.querySelector('.gw-side');
@@ -290,6 +314,18 @@ const step2 = await ev(`(() => {
     'installEnabled': install ? !install.disabled : null,
     'hasBack': [...side.querySelectorAll('button')].some((b) => /上一步/.test(b.textContent || '')),
     'leftIsLoader': /模组加载器/.test(document.querySelector('.gw-col')?.innerText || ''),
+    /*
+     * ★ 用户第二条：「写「无」」—— 附加组件选不了时，短状态就是「无」；
+     *   那个说错话的红角标（「与当前加载器不兼容」）必须**不存在**了。
+     *   理由仍在 title 里（禁用必须给具体理由，这一条是项目的铁律）。
+     */
+    'addonShort': [...document.querySelectorAll('.addon-opt')].map((b) => ({
+      'name': (b.querySelector('.a-name')?.textContent || '').trim(),
+      'disabled': b.disabled,
+      'note': (b.querySelector('.a-note')?.textContent || '').trim(),
+      'title': (b.getAttribute('title') || '').slice(0, 60),
+      'chips': [...b.querySelectorAll('.a-name .chip')].map((c) => (c.textContent || '').trim()),
+    })),
   };
 })()`);
 console.log('  第 2 步：' + JSON.stringify(step2));
@@ -300,6 +336,28 @@ check('★ E5 有「这次会装什么」的确认清单', /这次会装什么/.
 check('★ E6 只有一个安装按钮、且可点', /^安装/.test(step2?.install ?? '') && step2?.installEnabled === true, String(step2?.install));
 check('★ E7 第 2 步能回上一步', step2?.hasBack === true);
 check('★ E8 步骤条第 1 步写着选中的版本（翻页后不丢）', (step2?.steps?.[0]?.value ?? '') === before, `步骤条=${step2?.steps?.[0]?.value} 之前=${before}`);
+
+/* ---------- 用户第二条：附加组件的短状态写「无」 ---------- */
+console.log('  附加组件：' + JSON.stringify(step2?.addonShort));
+{
+  const addons = step2?.addonShort ?? [];
+  const disabledOnes = addons.filter((a) => a.disabled);
+  check(
+    '★ G1 选不了的附加组件：短状态写「无」',
+    disabledOnes.length > 0 && disabledOnes.every((a) => a.note.includes('无') || a.note.includes('查不到')),
+    JSON.stringify(disabledOnes.map((a) => [a.name, a.note])),
+  );
+  check(
+    '★ G2 那个说错话的红角标「与当前加载器不兼容」没有了',
+    addons.every((a) => !a.chips.some((c) => /不兼容/.test(c))),
+    JSON.stringify(addons.map((a) => a.chips)),
+  );
+  check(
+    '★ G3 理由没丢（仍在悬停提示里）',
+    disabledOnes.length === 0 || disabledOnes.some((a) => a.title.length > 4),
+    JSON.stringify(disabledOnes.map((a) => a.title)),
+  );
+}
 {
   const s = await send('Page.captureScreenshot', { format: 'png' });
   if (s.result?.data) writeFileSync(path.join(OUT, '第2步-选择模组加载器.png'), Buffer.from(s.result.data, 'base64'));
@@ -317,19 +375,33 @@ console.log('  回到第 1 步：' + JSON.stringify(back));
 check('★ F1 回到第 1 步，选中的版本还在', back?.picked === before, `${back?.picked} vs ${before}`);
 check('★ F2 清单里那一行仍然是选中态', back?.selected === 1, `选中 ${back?.selected} 行`);
 
-/* ---------- G：下载页没有「安装游戏」页签 ---------- */
-await clickNav('下载');
+/* ---------- H：别处的入口「转到下载页」并落在安装游戏那一格 ---------- */
+await clickNav('版本列表');
 await sleep(1800);
-const dl = await ev(`(() => {
-  const tabs = [...document.querySelectorAll('.tabs .tab')].map((t) => (t.textContent || '').trim());
-  return { 'tabs': tabs, 'hasInstall': tabs.some((t) => t.includes('安装游戏')), 'hasComposer': !!document.querySelector('.cw-shell') };
+const entry = await ev(`(() => {
+  const b = [...document.querySelectorAll('button')].find((x) => /新装一个/.test(x.textContent || ''));
+  b?.click();
+  return (b?.textContent || '').trim();
 })()`);
-console.log('  下载页页签：' + JSON.stringify(dl));
-check('★ G1 下载页不再有「安装游戏」这一格', dl?.hasInstall === false, JSON.stringify(dl?.tabs));
-check('★ G2 下载页有整合包 / Mod / 资源包 / 光影 / 数据包', (dl?.tabs ?? []).length === 5, JSON.stringify(dl?.tabs));
-check('★ G3 下载页里没有安装器（安装游戏已搬走）', dl?.hasComposer === false);
+await sleep(1800);
+const landed = await ev(`(() => {
+  const tabs = [...document.querySelectorAll('.tabs .tab')].map((t) => ({
+    'label': (t.textContent || '').trim(),
+    'on': t.classList.contains('on'),
+  }));
+  return {
+    'page': (document.querySelector('.page-title')?.textContent || '').trim(),
+    'tabs': tabs,
+    'onTab': (tabs.find((t) => t.on)?.label ?? ''),
+    'hasWizard': !!document.querySelector('.gw'),
+  };
+})()`);
+console.log(`  版本列表「${entry}」→ ` + JSON.stringify(landed));
+check('★ H1 「新装一个」把人送到**下载页**', landed?.page === '下载', String(landed?.page));
+check('★ H2 而且落在「安装游戏」那一格（不用再自己找）', landed?.onTab === '安装游戏', String(landed?.onTab));
+check('★ H3 落地的就是两步向导', landed?.hasWizard === true);
 
-/* ---------- H：弹窗形态没被牵连 ----------
+/* ---------- I：弹窗形态没被牵连 ----------
  *
  * ★★ 这里**不是**点按钮进去的：`CreateInstanceModal` 唯一的派发点在
  *   `InstanceSetup` 的"一个实例都没有"空状态里，而那要先进一个实例才看得到 ——
@@ -339,7 +411,7 @@ check('★ G3 下载页里没有安装器（安装游戏已搬走）', dl?.hasCo
  */
 await ev(`window.dispatchEvent(new CustomEvent('ieml:create'))`);
 const modalOpen = await waitFor(`!!document.querySelector('.cw-shell-modal')`, '创建版本弹窗');
-check('★ H1 弹窗能打开（派发 ieml:create）', modalOpen === true);
+check('★ I1 弹窗能打开（派发 ieml:create）', modalOpen === true);
 await sleep(800);
 const modal = await ev(`(() => {
   const shell = document.querySelector('.cw-shell-modal');
@@ -362,10 +434,10 @@ const modal = await ev(`(() => {
   };
 })()`);
 console.log('  弹窗：' + JSON.stringify(modal));
-check('★ H2 弹窗仍然是左右两栏（没被向导改掉）', (modal?.rightX ?? 0) > (modal?.leftX ?? 0), `left=${modal?.leftX} right=${modal?.rightX}`);
-check('★ H3 弹窗里**没有**步骤条 / 向导容器', modal?.hasSteps === false && modal?.hasGwClass === false);
-check('★ H4 弹窗底部仍有常驻摘要 + 唯一的按钮', modal?.hasFoot === true && /约下载/.test(modal?.footText ?? ''), String(modal?.footText));
-check('★ H5 弹窗里版本清单与加载器都在（一份实现两处用）', (modal?.loaders ?? []).length >= 2 && modal?.hasName === true, JSON.stringify(modal?.loaders));
+check('★ I2 弹窗仍然是左右两栏（没被向导改掉）', (modal?.rightX ?? 0) > (modal?.leftX ?? 0), `left=${modal?.leftX} right=${modal?.rightX}`);
+check('★ I3 弹窗里**没有**步骤条 / 向导容器', modal?.hasSteps === false && modal?.hasGwClass === false);
+check('★ I4 弹窗底部仍有常驻摘要 + 唯一的按钮', modal?.hasFoot === true && /约下载/.test(modal?.footText ?? ''), String(modal?.footText));
+check('★ I5 弹窗里版本清单与加载器都在（一份实现两处用）', (modal?.loaders ?? []).length >= 2 && modal?.hasName === true, JSON.stringify(modal?.loaders));
 
 const shot = await send('Page.captureScreenshot', { format: 'png' });
 if (shot.result?.data) writeFileSync(path.join(OUT, '弹窗形态.png'), Buffer.from(shot.result.data, 'base64'));

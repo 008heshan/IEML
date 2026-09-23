@@ -1,16 +1,13 @@
 /**
  * 下载页（一级页）
  * ------------------------------------------------------------------
- * 五个页签（0.1.0-rc.1）：
- *   整合包 · Mod · 资源包 · 光影 · 数据包
+ * 六个页签（0.1.0-rc.1）：
+ *   安装游戏 · 整合包 · Mod · 资源包 · 光影 · 数据包
  *
- * ★★ 2026-09-23（用户第 4 条）：「安装游戏」**从这里搬走了**，成了侧栏里
- *   独立的一页（`state.page === 'install'` / `InstallGamePage`）。
- *   原来它是本页第一个页签，而那个页签自己又是一个左右两栏的组合安装器 ——
- *   一屏里同时有"页头 + 一排页签 + 左栏 900 个版本 + 右栏四块"两层导航，
- *   用户的原话是"视觉繁乱"。所以现在：
- *     · 本页只管**给已经装好的版本装资源**；
- *     · 「安装游戏」只管**装一个游戏版本**（两步走，见 `InstallComposer`）。
+ * ★★ 2026-09-23 晚（用户）：「**把安装版本合并到下载里**」——
+ *   「安装游戏」从独立页搬回本页的**第一个页签**（侧栏不再有那一格）。
+ *   搬回来的是**两步向导**（第 1 步选版本 / 第 2 步选加载器，见 `InstallComposer`），
+ *   不是原来那个一屏两层导航的安装器 —— 所以"合回来"没把"繁乱"一起带回来。
  *
  * ★★ 后四格（Mod / 资源包 / 光影 / 数据包）都是**同一个资源中心**
  *   （`ResourceCenterBody`），只是换了个种类。用户的原话是"下载页里的
@@ -20,9 +17,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../state/AppContext';
 import { Button, Chip, CustomSelect, EmptyState, Note, Segmented, Spinner } from '../ui';
-import { IconAlert, IconBox, IconChevronRight, IconLayers, IconPuzzle, IconRefresh, IconImage, IconGrid, IconPackage, IconSearch } from '../ui/Icons';
+import { IconAlert, IconBox, IconChevronRight, IconDownload, IconLayers, IconPuzzle, IconRefresh, IconImage, IconGrid, IconPackage, IconSearch } from '../ui/Icons';
 import { useRealApi } from '../hooks/useRealApi';
 import type { DownloadTab } from '../state/store';
+import { InstallComposer } from '../components/InstallComposer';
 import { ResourceCenterBody, VersionPicker } from '../components/ResourceBrowser';
 import { autoMemory, compareVersion, isSnapshotVersion, knownVersions } from '../domain';
 import type { Instance } from '../domain';
@@ -179,10 +177,12 @@ export function DownloadPage() {
 
   const tabs: Array<{ key: DownloadTab; label: string; icon: React.ReactNode }> = [
     /*
-     * ★★ 2026-09-23（用户第 4 条）：「安装游戏」**整格搬走**，去它自己的一页
-     *   （侧栏「安装游戏」/ `state.page === 'install'`）。
-     *   这里不再留一格里跳到别处的页签 —— 那正是"两层导航"的来源。
+     * ★★ 2026-09-23 晚（用户）：「把安装版本合并到下载里」——
+     *   「安装游戏」回到**第一格**（当天早些时候它被搬去独立页，现在合并回来）。
+     *   ★ 合并回来的是**两步向导**，所以这一格自己只有"选版本 / 选加载器"两屏，
+     *     不再是一屏里塞下版本清单 + 加载器 + 附加组件 + 名称的那种"繁乱"。
      */
+    { key: 'game', label: '安装游戏', icon: <IconDownload /> },
     { key: 'modpack', label: '整合包', icon: <IconPackage /> },
     { key: 'mod', label: 'Mod', icon: <IconPuzzle /> },
     { key: 'resourcepack', label: '资源包', icon: <IconImage /> },
@@ -217,7 +217,7 @@ export function DownloadPage() {
           <div className="page-head">
             <div>
               <h1 className="page-title">下载</h1>
-              <p className="page-desc">整合包 · Mod · 资源包 · 光影 · 数据包（装进已有版本）</p>
+              <p className="page-desc">游戏版本 · 整合包 · Mod · 资源包 · 光影 · 数据包</p>
             </div>
             {!isDesktop ? <Chip tone="warning">浏览器演示模式 —— 真实下载要桌面版</Chip> : null}
           </div>
@@ -240,7 +240,20 @@ export function DownloadPage() {
         </>
       )}
 
-      {tab === 'modpack' ? (
+      {/*
+        ★★ 第一格：安装游戏（两步向导）。
+        ★ 它自己**不带页头** —— 上面那个「下载」页头与这排页签就是它的外壳
+          （独立页那版有一个自己的页头，合并回来时删掉了）。
+      */}
+      {tab === 'game' ? (
+        <InstallComposer
+          variant="page"
+          onInstalled={() => {
+            toast('info', '已加入版本列表', '去「版本列表」双击它就能进设置或启动。');
+            go('versions');
+          }}
+        />
+      ) : tab === 'modpack' ? (
         <ModpackTab
           go={go}
           toast={toast}
@@ -258,8 +271,8 @@ export function DownloadPage() {
               title="还没有任何版本"
               desc="资源要装进某个版本的目录里，所以先在「安装游戏」里装一个版本。"
               actions={
-                /* ★ 2026-09-23：安装游戏已经是**另一页**了（不再是本页的页签） */
-                <Button variant="primary" onClick={() => go('install')}>
+                /* ★ 2026-09-23 晚：安装游戏就是本页第一格 → 切页签即可，不用跳页 */
+                <Button variant="primary" onClick={() => setDownloadTab('game')}>
                   去安装游戏
                 </Button>
               }
