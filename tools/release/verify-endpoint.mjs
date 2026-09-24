@@ -96,8 +96,17 @@ console.log('2) 匿名下载更新包…');
  *     因为它给出的是绿色。
  *
  *   所以：缓存按版本号分文件。换版本 = 自动换文件，不存在复用错的可能。
+ *
+ * ★★ 2026-09-25 **同一个版本号也可能有新内容**（今天真撞上了）：
+ *   改了文案之后用**同一个版本号**重新构建、重新上传（更新日志不写归属那次）——
+ *   缓存名只带版本号 ⇒ 它拿**旧包**去验**新签名**，报出
+ *   「Ed25519 签名验证失败 —— 客户端会拒绝这个更新」，而线上其实完全正常
+ *   （手动下载那份的 sha256 与本地一致、签名也逐字相同）。
+ *   所以缓存键再加上**签名指纹**：签名一变就自动换缓存文件。
+ *   （教训与上面那条一样：**校验工具认错对象**是最坏的失败方式。）
  */
-const CACHE = `tmp/_verify-artifact-${manifest.version}.exe`;
+const sigFp = createHash('sha256').update(String(plat.signature ?? '')).digest('hex').slice(0, 12);
+const CACHE = `tmp/_verify-artifact-${manifest.version}-${sigFp}.exe`;
 if (!existsSync(CACHE) || statSync(CACHE).size === 0) {
   const ares = await fetch(plat.url, { redirect: 'follow' });
   if (!ares.ok) {
