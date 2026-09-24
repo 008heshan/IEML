@@ -9,8 +9,9 @@
  *   * Java 环境改成**可看到路径与占用、可删除**（ADR-013 的硬要求）
  *   * 账号区压实：一个头像行 + 两个按钮
  */
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState } from 'react';
 import { useApp } from '../state/AppContext';
+import { applyMotion } from '../ui/motion';
 import { Button, Card, CardTitle, Chip, Field, Note, Segmented, Switch, CustomSelect } from '../ui';
 import { useConfirm } from '../ui/confirm';
 import {
@@ -70,11 +71,14 @@ export function SettingsPage() {
   const [javaListError, setJavaListError] = useState<string | null>(null);
   /** 低性能损耗模式（本机偏好，存 localStorage；见 main.tsx 的说明） */
   const [lowPerf, setLowPerf] = useState(() => localStorage.getItem('ieml.lowPerf') === '1');
-  /**
-   * 低性能损耗模式**开启前**的动效与视效档位 —— 关掉时还回去。
-   * ★ 只降不还的开关，用户下次就不敢开了（这也是"一键"该有的样子）。
+  /*
+   * ★★ 2026-09-24：这里原来有一个 `lowPerfPrev` ref，用来记住"开低性能损耗模式之前"
+   *   的动效/视效档位，关掉时还回去。它有两个问题，所以删掉了：
+   *     ① 它**只在内存里** —— 重启之后是 null，档位就永远停在降档值；
+   *     ② 为了配合它，开关在开的时候会**写盘**覆盖用户的选择（`vfx.choose` / `setMotion`）。
+   *   现在降档完全走**派生**（`AppContext` 里 `lowPerf` 压过两个档位），
+   *   用户选什么就一直存在盘上，关掉开关自然回到它 —— 也就不需要这个 ref 了。
    */
-  const lowPerfPrev = useRef<{ motion: MotionLevel; vfx: VfxLevel } | null>(null);
   /**
    * 动效档位（本机偏好，存 localStorage；判据在 `ui/motion.ts`）。
    *
@@ -231,40 +235,27 @@ export function SettingsPage() {
                   localStorage.setItem('ieml.lowPerf', v ? '1' : '0');
                   document.documentElement.classList.toggle('low-perf', v);
                   /*
-                   * ★★ 2026-09-22（第五轮）：用户要求「**低性能损耗模式应是一键开启
-                   *   减少动效和弱化视效**」。
+                   * ★★ 2026-09-24 修正（用户报"我的档位被悄悄改了"的根因）：
                    *
-                   *   原来这个开关只关"装饰"（模糊与氛围光晕），动效与视效两档还得
-                   *   自己再点两次 —— 对一个"我这台机器不行，别搞花样"的开关来说，
-                   *   那两步本来就该由它代劳。
+                   *   这里原来在开的时候调 `vfx.choose('weak')` + `setMotion('lite')` ——
+                   *   **两个都会写盘**，把用户自己选的档位永久改成降档值；
+                   *   而"原值"只存在一个内存 ref（`lowPerfPrev`）里，
+                   *   于是**重启之后再也回不来**：关掉开关时 ref 是空的，
+                   *   档位就永远停在「弱化 / 减少」。那与这个开关自己的承诺相反
+                   *   （第五轮的原话是「关掉时**还回用户原来的选择**」）。
                    *
-                   *   ★ 关掉时**还回用户原来的选择**，而不是停在"减少/弱化"：
-                   *     只降不还的开关，用户下次会不敢开它。原值存在 ref 里。
+                   *   现在**一个字节都不写盘**：开关只翻自己（类 + localStorage），
+                   *   降档由**派生**逻辑负责 —— 视效见 `AppContext` 的
+                   *   `vfxDowngradedByLowPerf`，动效见同一个 effect 里的
+                   *   `applyMotion(lowPerf ? 'lite' : readMotion())`。
+                   *   关掉时自然回到用户自己的档位，重启也一样。
                    */
-                  if (v) {
-                    lowPerfPrev.current = { motion, vfx: vfx.want };
-                    setMotion('lite');
-                    setMotionLevel('lite');
-                    vfx.choose('weak');
-                    toast(
-                      'ok',
-                      `已开启低性能损耗模式：动效→${MOTION_LABEL.lite}、视效→${VFX_LABEL.weak}`,
-                    );
-                  } else {
-                    const prev = lowPerfPrev.current;
-                    if (prev) {
-                      setMotion(prev.motion);
-                      setMotionLevel(prev.motion);
-                      vfx.choose(prev.vfx);
-                      lowPerfPrev.current = null;
-                      toast(
-                        'ok',
-                        `已关闭低性能损耗模式：动效→${MOTION_LABEL[prev.motion]}、视效→${VFX_LABEL[prev.vfx]}`,
-                      );
-                    } else {
-                      toast('ok', '已关闭低性能损耗模式');
-                    }
-                  }
+                  toast(
+                    'ok',
+                    v
+                      ? '已开启低性能损耗模式：动效→减少、视效→弱化（关掉即还回你自己的档位）'
+                      : '已关闭低性能损耗模式：动效与视效回到你自己的档位',
+                  );
                 }}
               />
             </div>
@@ -311,9 +302,20 @@ export function SettingsPage() {
                 size="sm"
                 value={motion}
                 onChange={(v) => {
+                  /*
+                   * ★ 用户选的是"我想要哪一档"，写盘 + 施加；但**低性能损耗模式开着时
+                   *   生效的仍是「减少」**（派生规则在 AppContext 那个 effect 里）——
+                   *   所以这里再按开关状态施加一次，免得刚点完就与开关的承诺不一致。
+                   */
                   setMotion(v);
                   setMotionLevel(v);
-                  toast('ok', `动效已设为「${MOTION_LABEL[v]}」`);
+                  if (lowPerf) applyMotion('lite');
+                  toast(
+                    'ok',
+                    lowPerf
+                      ? `已记住你的选择「${MOTION_LABEL[v]}」；低性能损耗模式开着时实际跑「${MOTION_LABEL.lite}」`
+                      : `动效已设为「${MOTION_LABEL[v]}」`,
+                  );
                 }}
                 options={MOTION_LEVELS.map((lv) => ({
                   value: lv,
