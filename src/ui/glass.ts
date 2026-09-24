@@ -569,8 +569,17 @@ export function createGlassController(initial: VfxLevel): GlassController {
    *   ③ CSS 动画（由 .tab-hidden 里的 animation-play-state: paused 承担）。
    *   回前台时原样恢复：重开 rAF、必要时补一次取色。
    */
+  /*
+   * ★★ 2026-09-24（实测：空闲吃单核 77%，最小化后仍有 37%）：
+   *   窗口最小化也算"后台"。WebView2 **不翻** `document.hidden`（真机量到
+   *   `visibilityState` 一直是 visible），所以这个信号由 Rust 侧每秒看一次窗口、
+   *   变了才发事件送过来（见 `lib.rs` setup 里那个 watcher 的说明）。
+   */
+  let minimized = false;
+  let unlistenMin: (() => void) | null = null;
+
   const applyVisibility = () => {
-    const hidden = document.hidden;
+    const hidden = document.hidden || minimized;
     document.documentElement.classList.toggle('tab-hidden', hidden);
     if (hidden) {
       if (raf) {
@@ -583,6 +592,21 @@ export function createGlassController(initial: VfxLevel): GlassController {
     }
   };
   document.addEventListener('visibilitychange', applyVisibility);
+
+  /* 订阅"最小化了 / 恢复了"（浏览器开发模式下没有这个事件，失败就忽略） */
+  void (async () => {
+    try {
+      const { listen } = await import('@tauri-apps/api/event');
+      const un = await listen<boolean>('ieml:window-minimized', (e) => {
+        minimized = e.payload === true;
+        applyVisibility();
+      });
+      if (disposed) un();
+      else unlistenMin = un;
+    } catch {
+      /* 没有 Tauri 事件系统（浏览器演示模式）：当它不存在 */
+    }
+  })();
 
   scan();
   applyLevel(initial);
@@ -611,6 +635,7 @@ export function createGlassController(initial: VfxLevel): GlassController {
       disposed = true;
       if (tintTimer) clearInterval(tintTimer);
       document.removeEventListener('visibilitychange', applyVisibility);
+      if (unlistenMin) unlistenMin();
       themeObserver.disconnect();
       document.documentElement.classList.remove('tab-hidden');
       document.removeEventListener('scroll', onScroll, true);
