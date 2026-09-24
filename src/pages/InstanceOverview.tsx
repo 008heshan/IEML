@@ -13,7 +13,6 @@
  */
 import { useMemo, useState } from 'react';
 import { useApp } from '../state/AppContext';
-import { isInstanceRunning } from '../state/store';
 import { Button, Note } from '../ui';
 import { useConfirm } from '../ui/confirm';
 import {
@@ -23,7 +22,6 @@ import {
   IconCopy,
   IconFolder,
   IconJava,
-  IconPlay,
   IconPuzzle,
   IconRam,
   IconRefresh,
@@ -83,8 +81,11 @@ export function InstanceOverview() {
     return <Note tone="warning">没有选中的版本。</Note>;
   }
 
-  // ★ 多开实例：判据只有一份（`isInstanceRunning`）—— 别的版本在跑不影响这一个
-  const isRunning = isInstanceRunning(state, inst.id);
+  /*
+   * ★ 2026-09-24：「启动 / 停止游戏」按钮按用户要求删掉之后，
+   *   这里的 `isRunning` 与 `isInstanceRunning` 就没有用处了 ——
+   *   一起删掉，不留死变量（判据本身仍在 `domain` 里，别处还要用）。
+   */
   /*
    * ★★ 用**唯一的**入口算"需要 Java 几"，不要在这里再写一遍。
    *
@@ -225,29 +226,14 @@ export function InstanceOverview() {
           </p>
         </div>
         <div className="page-actions">
-          {isRunning ? (
-            <Button
-              variant="danger"
-              onClick={() => {
-                // ★ 多开实例：停的是**这个**版本（不带 id 就等于"随机停一个"）
-                window.dispatchEvent(
-                  new CustomEvent('ieml:stop-request', { detail: { instanceId: inst.id } }),
-                );
-                void api?.launcher.stop(inst.id);
-              }}
-            >
-              停止游戏
-            </Button>
-          ) : (
-            <Button
-              variant="primary"
-              onClick={() =>
-                window.dispatchEvent(new CustomEvent('ieml:launch-request', { detail: inst.id }))
-              }
-            >
-              <IconPlay /> 启动
-            </Button>
-          )}
+          {/*
+            ★★ 2026-09-24（用户截图 +「**这两个启动键都不要**」）：
+              这里原来有一个「启动 / 停止游戏」按钮，被删掉了。
+              同一个动作在界面上有三处入口（版本列表行菜单、这里、侧栏底部），
+              用户明确不要 —— 启动请走「版本列表 → 启动」，或者直接在启动页上按启动。
+              ★ 停止游戏的能力**没有丢**：启动页上有「停止游戏」，
+                主导航侧栏底部那份"正在运行的版本"列表里每个也都能单独停。
+          */}
           {/*
             ★★ 用户报「mod 列表的选项还没做，你虽然做了，但是根本没这个功能键，
                我怎么装 mod 嘛」。
