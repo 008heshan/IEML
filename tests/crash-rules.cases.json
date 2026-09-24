@@ -1,0 +1,77 @@
+{
+  "why": [
+    "崩溃规则表现在有**两份实现**：Rust 的 src-tauri/src/domain/crash.rs（被 judge_crash 用，",
+    "也就是游戏退出时那条 toast 的判据）与 TS 的 src/domain/crash.ts（被崩溃弹窗与日志页用）。",
+    "两份必须同步。它们曾经漂移过：36 条 vs 35 条、12 条 id 起名都不一样",
+    "（TS out-of-memory-heap / Rust oom-heap，等等），而**没有任何判据能发现**。",
+    "所以这个文件是**两边共用的判据表**：同一段日志，两边必须判定出同一个 rule id。",
+    "哪一边改了规则没改另一边，就会有一边的测试红 —— 见 tests/crash-rules.test.mjs（TS）",
+    "与 src-tauri/src/domain/crash.rs 里的 crash_rules_cases_match_both_sides（Rust）。",
+    "★ 加新规则时：这里加一条真实日志片段；如果只有一边能表达它，写进 only 并说明原因。"
+  ],
+  "only": {
+    "mod-classnotfound": "只在 TS：它的正则用了**负向前瞻**（(?!java)），而 Rust 的 regex crate 不支持前瞻。Rust 侧不靠它也能给出原因（judge_crash 会退到 heuristic_guess 从堆栈里挑出可疑的 Mod 包名），所以这里如实允许一边有、一边没有。"
+  },
+  "cases": [
+    {
+      "rule": "java-version-mismatch",
+      "log": "java.lang.UnsupportedClassVersionError: net/minecraft/client/main/Main has been compiled by a more recent version of the Java Runtime (class file version 61.0)"
+    },
+    {
+      "rule": "out-of-memory-heap",
+      "log": "java.lang.OutOfMemoryError: Java heap space\n\tat net.minecraft.client.Minecraft.a(Minecraft.java:1)"
+    },
+    {
+      "rule": "out-of-memory-metaspace",
+      "log": "java.lang.OutOfMemoryError: Metaspace"
+    },
+    {
+      "rule": "gc-overhead",
+      "log": "java.lang.OutOfMemoryError: GC overhead limit exceeded"
+    },
+    {
+      "rule": "mod-mc-mismatch",
+      "log": "Incompatible mod set! Some of your mods are not compatible with this version of Minecraft"
+    },
+    {
+      "rule": "mod-duplicate",
+      "log": "Duplicate mods found: sodium-fabric-0.5.8.jar and sodium-fabric-0.5.8 (1).jar"
+    },
+    {
+      "rule": "mod-crash-mixin",
+      "log": "Mixin apply failed: mixin.sodium.json -> net.minecraft.client.Minecraft"
+    },
+    {
+      "rule": "fabric-api-missing",
+      "log": "Mod 'sodium' requires fabric-api, which is missing!"
+    },
+    {
+      "rule": "auth-offline",
+      "log": "Failed to verify username! [internal error java.net.ConnectException: Connection refused]"
+    },
+    {
+      "rule": "file-corrupt",
+      "log": "java.util.zip.ZipException: invalid LOC header (bad signature)"
+    },
+    {
+      "rule": "missing-file",
+      "log": "java.io.FileNotFoundException: config/example.json (The system cannot find the file specified)"
+    },
+    {
+      "rule": "path-too-long",
+      "log": "The filename or extension is too long"
+    },
+    {
+      "rule": "disk-full",
+      "log": "There is not enough space on the disk"
+    },
+    {
+      "rule": "gpu-driver",
+      "log": "EXCEPTION_ACCESS_VIOLATION (0xc0000005) at pc=0x00007ffb1a2b1234, pid=1234, tid=5678\nC  [nvoglv64.dll+0x1234]"
+    },
+    {
+      "rule": "context-lost",
+      "log": "OpenGL error: GL context lost"
+    }
+  ]
+}

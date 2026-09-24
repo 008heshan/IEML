@@ -10,8 +10,8 @@
  */
 import type { Instance, JavaRuntime, LoaderSelection } from '../domain';
 import { buildInstallPlan, validateCombination } from '../domain';
-import type { Backend, BackendInfo, CrashReport, LaunchResult } from './types.ts';
-import { analyzeCrashLog, redactReport } from '../domain/crash.ts';
+import type { Backend, BackendInfo, LaunchResult } from './types.ts';
+/* ★ 2026-09-24：`analyzeCrashLog`/`redactReport` 的 import 随 `analyzeCrash` 一起删 */
 import { APP_VERSION } from '../domain/version-info.ts';
 
 const LS_KEY = 'ieml.state.v1';
@@ -157,28 +157,6 @@ const DEMO_MODS: Array<{ fileName: string; bytes: number }> = [
   { fileName: 'optifine-old.jar.disabled', bytes: 6_291_456 },
   { fileName: 'sodium-extra-0.5.4.jar.disabled', bytes: 1_572_864 },
 ];
-
-/* ====================== 演示崩溃日志 ====================== */
-
-const DEMO_CRASH = `[13:42:07] [main/INFO]: Loading Minecraft 1.20.4 with Fabric Loader 0.15.7
-[13:42:09] [main/INFO]: Loading 24 mods:
-\t- fabric-api 0.92.2+1.20.4
-\t- iris 1.7.0
-\t- sodium 0.5.11
-\t- bettercombat 1.8.6
-[13:42:15] [main/WARN]: Mod resolution encountered an incompatible mod set!
-[13:42:15] [main/WARN]:  - Mod 'Better Combat' (bettercombat) 1.8.6 requires any version of player-animator, which is missing!
-[13:42:15] [main/ERROR]: Missing or unsupported mandatory dependencies:
-\tMod ID: 'player-animator', Requested by: 'bettercombat', Expected range: '[0.4,)', Actual version: '[MISSING]'
-[13:42:16] [main/ERROR]: Failed to start Minecraft
-java.lang.RuntimeException: Missing or unsupported mandatory dependencies
-\tat net.fabricmc.loader.impl.FormattedException.ofLocalized(FormattedException.java:63)
-\tat net.fabricmc.loader.impl.game.minecraft.MinecraftGameProvider.launch(MinecraftGameProvider.java:511)
-\tat net.fabricmc.loader.impl.launch.knot.Knot.launch(Knot.java:77)
-Caused by: net.fabricmc.loader.impl.FormattedException: Mod resolution encountered an incompatible mod set!
-\t... 12 more
-[13:42:16] [main/INFO]: C:\\\\Users\\\\Administrator\\\\AppData\\\\Roaming\\\\.minecraft
-[13:42:16] [main/INFO]: access_token=eyJhbGciOiJSUzI1NiJ9.abcdefghijklmnop.qrstuvwxyz12345`;
 
 /* ====================== 实现 ====================== */
 
@@ -419,22 +397,6 @@ export function createWebBackend(): Backend {
         bytes: m.bytes,
         mtimeMs: base - i * 86400000,
       }));
-    },
-
-    async analyzeCrash(instanceId): Promise<CrashReport | null> {
-      void instanceId;
-      await sleep(400);
-      const a = analyzeCrashLog(DEMO_CRASH);
-      const red = redactReport(a.raw);
-      return {
-        reason: a.reason,
-        actions: a.actions.map((x) => ({ label: x.label, kind: x.kind })),
-        raw: red.text,
-        matches: a.matches.map((m) => ({
-          pattern: m.rule.id,
-          conclusion: m.rule.conclusion,
-        })),
-      };
     },
   };
 }

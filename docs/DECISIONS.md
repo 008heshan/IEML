@@ -7056,3 +7056,125 @@ B（第二行 15.0.0-alpha.2）→ https://cdn.modrinth.com/data/1KVo5zza/versio
 但用 PowerShell 直连同样超时；两个域名都只解析出 Cloudflare 的 IPv6）。
 所以"真的把整合包装完"这一步在这台机器上走不到底 ——
 C-5 验的是**选择逻辑**（哪一个是证据里的 URL 决定的），不是下载本身。
+
+### 七十、修复批（九）：**C-1 / C-8 / C-9 + 死代码清理**（2026-09-24）
+
+这一批是"发布前把剩下的假话与死代码清掉"。三条缺陷的**共同形状**都是
+**同一件事有两套说法，而界面读的那一套是错的**。
+
+#### 70.1　C-1：CurseForge 的版本列表接上后端已有的 source-aware 接口
+
+后端 `resource_versions`（`commands_real.rs:803`）**早就是**双源的：
+
+```rust
+if wanted == ResourceSource::CurseForge {
+    return crate::net::curseforge::files(&project_id, k, mc_version, loader_for_query, 50).await
+}
+modrinth::project_versions(&project_id, mc_version, loader_for_query).await
+```
+
+而前端有两处**没走它**，直接调 `api.modrinth.versions(...)`（只有 Modrinth 一条路）：
+
+| 位置 | 症状 |
+|---|---|
+| `ResourceInstallPage`（资源安装页） | CF 命中的数字 id 拿去问 Modrinth ⇒ 空列表 ⇒ 界面说"上游没有给它发布任何文件" |
+| `DownloadPage`（整合包安装页） | 同上，且**还有第二个 bug**（见下） |
+
+★ **第二个 bug 是我这次才挖出来的**：整合包卡片把 id 存成了 `h.slug || h.project_id`——
+对 **CurseForge** 来说 `slug` 是字符串（`all-the-mods-10`），而 CF 的文件接口**只认数字 id**
+（`925200`）。于是即使把来源接对了，仍然会拿一个 CF 不认识的标识去查。
+现在统一用 `h.project_id`（两个源都认它）。**"接对了接口"不等于"传对了参数"。**
+
+真机判据（`tools/live/probe-c1-fixed.mjs`，debug exe，沙盒里放一个探针实例）：
+
+```
+① CF 来源的资源安装页：GeckoLib → 5 个版本（NeoForge 5.5.7 / Forge 5.5.7 …，都是 CF 的真实文件名）
+② CF 来源的整合包安装页：All the Mods 10 → 50 个版本
+③ 页面上如实写着「CF 的整合包 IEML 还不能自动安装 …（这一步没有做，不是网络问题）」
+```
+
+（另用直接打 IPC 的对照实验确认后端没问题：CF 的 Mod `388172` 返回 50 个版本、
+CF 的整合包 `925200` 返回 50 个带 URL 的版本；同一 id 走 Modrinth 来源则 404 ——
+证明"来源"确实是关键，而以前界面永远走的是 Modrinth。）
+
+★ **C-1 没有做完的那一半，如实说**：CurseForge 的**整合包还不能自动安装**。
+CF 的包是 `manifest.json` + `files[{projectID,fileID}]`（每个文件要再问一次 CF 才拿到下载地址），
+而 IEML 的自动安装读的是 Modrinth 的 `modrinth.index.json`。
+实现它是一块**新功能**（解析清单 + 逐个解析文件 + 覆盖 overrides/），
+而且这台机器上 `cdn.modrinth.com` 都不通、更没法真机验完 —— 所以这一版**明确拒绝并说清原因**
+（`install()` 里拦住 + 安装页上提前写明），而不是让它报一个"上游没有文件"的假原因。
+
+#### 70.2　C-8：崩溃规则表**两份**（36 vs 35，12 条 id 起名还不一样）
+
+先纠正报告里的一个判断：Rust 那份**不是死路径** —— 它被 `judge_crash` 用着
+（游戏退出那条 toast 的判据），TS 那份被崩溃弹窗与日志页用着。**两份都是活的。**
+
+真实情况：
+
+* 12 条只是**起名不同**：TS `out-of-memory-heap` / Rust `oom-heap`、
+  `mod-crash-mixin` / `mod-mixin`、`antivirus` / `file-locked` …；
+* `mod-classnotfound` 只在 TS（它的正则用了**负向前瞻** `(?!java)`，Rust 的 regex crate 不支持）。
+
+修法（照仓库里 Java 规则表的既有做法）：
+
+1. **Rust 侧 12 条 id 改名**，与 TS 对齐（只动 RULES 表里的 `Rule { id: …`，
+   别的文件里的 `"shader"` / `"network"` 一个都没碰）；
+2. 新增**两边共用的判据表** `tests/crash-rules.cases.json`（15 段真实日志片段 + 期望 rule id），
+   TS 侧 `tests/crash-rules.test.mjs`、Rust 侧 `crash.rs::crash_rules_cases_match_both_sides`
+   读**同一个文件** —— 谁改了规则没改另一边，就有一边红；
+3. 唯一那条"只在一边"的例外必须写进判据表的 `only` 并说明原因（两边都断言它确实只在一侧）；
+4. 进了门禁（`node tools/verify.mjs` 第 24 项「崩溃规则两侧一致」）。
+
+★ **判据表立刻抓出一个真缺陷**：`gpu-driver` 的正则
+`EXCEPTION_ACCESS_VIOLATION.*(nvoglv|atio|ig\d)` —— `.` **不跨行**，
+而真实的 JVM 崩溃日志里驱动名**在下一行**：
+
+```
+# EXCEPTION_ACCESS_VIOLATION (0xc0000005) at pc=…, pid=…, tid=…
+C  [nvoglv64.dll+0x…]
+```
+
+也就是说**这条规则在真机上永远不会命中**（写了等于没写），两份实现都是。
+两侧一起改成 `[\s\S]{0,400}?`（跨行、限定距离），判据表里那条片段由红转绿。
+
+#### 70.3　C-9：同一份代码里两处说法相反（LiteLoader）
+
+`loader_caps::addon_install_implemented(LiteLoader) == true`（2026-09-14 就实装了，
+`net::liteloader` 照 PCL 的 `McDownloadLiteLoaderLoader` 做），
+TS 侧 `combination.ts` 也写着"已经实装、直接放行" ——
+而 **Rust 侧 `combination.rs` 无条件返回「LiteLoader 的自动安装 IEML 还没有做」**，
+界面读的正是这里 ⇒ 用户永远选不了它。
+
+★★ 更值得记的是：那条测试 `unimplemented_addon_is_never_reported_as_installable`
+**钉着这句假话**，而它对"没有 Forge 基座 / Fabric 基座 / 1.16.5"也断言"不能装"——
+**那些断言是碰巧成立的**：分支无条件返回 bad，跟基座是什么毫无关系。
+也就是说旧注释里"上面那些分支已经判完了"是**空话**，那两条真实约束
+（必须 Forge 基座、仅 1.7.10~1.12.2）**从来就没实现过**。
+
+修法：按 TS 侧那套逐条实现两条上游约束 + 最后才过"我们做没做"的闸门；
+测试改成断言**两处说法一致**（`addon_compatibility` 的结论必须跟着
+`addon_install_implemented` 走），而不是钉某一个具体结论。
+
+#### 70.4　死代码清理（都是"0 处调用"的东西）
+
+| 删掉的东西 | 为什么它死了 |
+|---|---|
+| `bridge/tauri.ts` 的 `rust` 对象（6 个方法） | 全仓库 0 处调用 |
+| `Backend.analyzeCrash`（含 `web.ts` / `tauri.ts` 两份实现、`CrashReport` 类型） | 0 处调用；崩溃弹窗走 `domain/crash.ts` 的同步实现 |
+| Rust 命令 `analyze_crash` / `redact_report` | 唯一调用方就是上面那个 `rust` 对象 |
+| Rust `crash::redact_report` + `RedactionEntry`/`RedactionResult` + 对应测试 | 活的脱敏在 TS（日志页与崩溃弹窗用）；两份实现留着只会像 C-8 那样漂移 |
+| `flows/install.ts` 的 `forgetTask` / `showCrashAnalysis` | 0 处调用 |
+| `flows/install.ts` 里 `retryInstall` / `installVersionFromManifest` / `installLoader` 的 `export` | 只在本文件内部用（导出等于伪装成入口） |
+| `pages.css` 的 `.vi-top/.vi-left/.vi-right` 共 20 条 | `VersionIcon` 现在渲染 `<img>`，只用到容器类 `vi vi-<tone>`；那三个面**不存在**了 |
+
+★ 清理时踩了一次自己的坑：删 Rust 命令那一步的锚点取宽了，**把 `InstanceStore` /
+`instances_file` 一起吃掉了**（编译器立刻报 `cannot find type InstanceStore`）。
+已从 HEAD 取回被误删的非命令部分，并在那里留了说明。**批处理的删除一定要用编译器复核。**
+
+#### 70.5　一条**没复现**的低项（不装样子）
+
+报告里那条「更新日志页三处与实现不符（「：原版」写法、并不存在的「皮肤页」、
+设置页那两张卡已删）」—— 我在 `CHANGELOG.md` 与 `ChangelogPage.tsx` 里
+**找不到对应的文字**（当时写报告没留行号），所以**这一条没有动**。
+按仓库规矩「已经发布过的记录不许改写」，真要改也得先在**新的一节**里写更正 ——
+而那需要先定位到具体是哪三句。

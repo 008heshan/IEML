@@ -450,15 +450,15 @@ pub fn scan_mods(
 
 /* ====================== 崩溃分析 ====================== */
 
-#[tauri::command]
-pub fn analyze_crash(log_text: String) -> crash::CrashAnalysis {
-    crash::analyze_crash_log(&log_text)
-}
-
-#[tauri::command]
-pub fn redact_report(text: String) -> crash::RedactionResult {
-    crash::redact_report(&text)
-}
+/*
+ * ★ 2026-09-24（死代码清理）：这里原来有两条命令
+ *   `analyze_crash` / `redact_report`，它们**全仓库 0 处调用**
+ *   （`bridge/tauri.ts` 里那个 `rust` 对象是唯一调用方，也一起删了）。
+ *   活的两条路都在前端：崩溃分析 `src/domain/crash.ts::analyzeCrashLog`（同步、无需 IPC），
+ *   脱敏 `src/domain/crash.ts::redactReport`（日志页与崩溃弹窗用）。
+ *   ★ 留着它们就有两份规则表（Rust 35 条 vs TS 36 条，曾经漂移过 —— 见 C-8），
+ *     所以这里删掉，规则只留一处。
+ */
 
 /* ====================== 实例持久化 ====================== */
 

@@ -237,26 +237,56 @@ pub fn addon_compatibility(
 
         AddonKind::LiteLoader => {
             /*
-             * ★★ **先说"我们没做"，再说兼容性。**
+             * ★★ 2026-09-24（C-9 修复）：这里原来**无条件**返回
+             *   「LiteLoader 的自动安装 IEML 还没有做」——
+             *   而安装**早就做了**（2026-09-14，`net::liteloader`，照 PCL 的
+             *   `McDownloadLiteLoaderLoader`：写一个带 `--tweakClass` 的 `inheritsFrom`
+             *   版本描述 + 下 launchwrapper / asm-all / 本体三个 jar），
+             *   `loader_caps::addon_install_implemented(LiteLoader)` 也一直是 `true`。
+             *   TS 侧（`src/domain/combination.ts:232-267`）写的也是"已经实装、直接放行"。
              *
-             *   这段兼容性判断（要 Forge 作基座、仅 1.7.10~1.12.2）本身是对的，
-             *   但它以前是**唯一**的判断 —— 于是 1.12.2 + Forge + LiteLoader
-             *   被判成"可以装"，用户点下去、界面报成功，
-             *   而 Rust 侧根本没有 LiteLoader 的安装实现（`loader_trace` 只做识别）。
-             *   这就是 ADR-041 那类"做不到却承诺"。
+             *   于是同一件事有**两种相反的说法**，而界面读的是这里 ⇒ 用户永远选不了它。
+             *   更糟的是 `unimplemented_addon_is_never_reported_as_installable` 那条测试
+             *   **钉着这句假话**：它对"没有 Forge 基座 / Fabric 基座 / 1.16.5"也断言 `!ok`,
+             *   而当时那些断言是**碰巧**成立的（分支无条件返回 bad，与基座无关）——
+             *   也就是说旧注释里"上面那些分支已经判完"是**空话**，那两条约束根本没实现。
              *
-             *   现在第一句就把它挡掉，理由说清是**我们没实现**，
-             *   而不是"这个组合不兼容" —— 用户需要知道该怪谁。
-             *   实现了之后（PCL2 的做法：下载 liteloader installer 或直接
-             *   拼 `versions/1.12.2-LiteLoader1.12.2/` 的 json + 库）
-             *   把 `addon_install_implemented` 改成 true，这里自动放行。
+             *   现在按 TS 侧那套逐条实现（两处判据必须一致）：
+             *     ① 必须挂在 **Forge** 之上（纯原版没有 launchwrapper，装不上）；
+             *     ② 只在 1.7.10 ~ 1.12.2 有它；
+             *     ③ 最后才过"我们做没做"这道闸门。
              */
-            // 组合合法（要 Forge 作基座、版本在区间内）→ 唯一的障碍是"我们没实现"。
-            // ★ 顺序说明见上面注释块：先说"我们没做"是为了不让用户白折腾 Forge。
-            return bad(
-                "LiteLoader 的自动安装 IEML 还没有做 —— 现在只能识别已经装好的实例，\
-                 不能帮你装。用别的启动器装好之后，IEML 能正常启动它",
-            );
+            if base.is_none() {
+                return bad("LiteLoader 需要 Forge 作为基座，无法独立安装在原版上");
+            }
+            if base != Some(BaseLoaderKind::Forge) {
+                return bad(format!(
+                    "LiteLoader 需搭配 Forge 使用，不能装在 {} 上",
+                    base.map(|b| b.display_name()).unwrap_or("")
+                ));
+            }
+            if compare_version(mc_version, "1.7.10") == Ordering::Less
+                || compare_version(mc_version, "1.12.2") == Ordering::Greater
+            {
+                return bad(format!(
+                    "LiteLoader 已停止维护，仅支持 1.7.10 ~ 1.12.2，不含 {mc_version}"
+                ));
+            }
+            // 组合合法 → 再过"我们做没做"（与 OptiFine 那条同一个形状）
+            if !loader_caps::addon_install_implemented(AddonKind::LiteLoader) {
+                return not_implemented();
+            }
+            return AddonCompat {
+                ok: true,
+                reason: None,
+                note: Some(
+                    "将把 LiteLoader 装成 Forge 之上的一个附加层（写一个带 --tweakClass 的版本描述，\
+                     并把 launchwrapper / asm-all / 本体三个 jar 下下来）—— 装完在版本列表里能看到它"
+                        .into(),
+                ),
+                bridge: None,
+                bridge_is_manual: false,
+            };
         }
     }
 }
@@ -528,27 +558,48 @@ mod tests {
         assert!(!addon_compatibility("1.14.3", Some(BaseLoaderKind::Forge), AddonKind::OptiFine, None).ok);
     }
 
-    /// ★ 回归：**没实现的组件一律不许判成"可以装"**，理由要说清是"我们没做"。
+    /// ★ 回归：**"没实现的组件"不许判成可以装** —— 而"实现没实现"只有一处判据。
     ///
-    ///   这条测试以前断言 `1.12.2 + Forge + LiteLoader` **可以装** ——
-    ///   而 Rust 侧根本没有 LiteLoader 的安装实现。用户勾上、点安装、
-    ///   界面报成功，磁盘上什么都没发生（ADR-041 那类"做不到却承诺"）。
+    ///   ★★ 2026-09-24（C-9 修复）：这条测试以前断言
+    ///   `1.12.2 + Forge + LiteLoader` **不可以装**，理由写着"LiteLoader 的安装还没实现"。
+    ///   而那句话是**假的**：`net::liteloader` 从 2026-09-14 起就真的会装，
+    ///   `loader_caps::addon_install_implemented(LiteLoader)` 一直是 `true`。
+    ///   于是这条测试**钉着一句假话**，而界面（读 combination）因此永远不给装。
+    ///
+    ///   现在改成断言两边**一致**：`addon_install_implemented` 说能装，
+    ///   `addon_compatibility` 就必须放行；说不能装就必须拦住并说清是"我们没做"。
+    ///   这样这条测试守的是"两处说法一致"，而不是某一个具体结论。
     #[test]
-    fn unimplemented_addon_is_never_reported_as_installable() {
-        let lite = addon_compatibility("1.12.2", Some(BaseLoaderKind::Forge), AddonKind::LiteLoader, None);
-        assert!(
-            !lite.ok,
-            "★ LiteLoader 的安装还没实现 —— 不能判成可以装"
+    fn addon_compatibility_follows_the_implemented_flag() {
+        use crate::domain::loader_caps::addon_install_implemented;
+        let implemented = addon_install_implemented(AddonKind::LiteLoader);
+        let lite =
+            addon_compatibility("1.12.2", Some(BaseLoaderKind::Forge), AddonKind::LiteLoader, None);
+        assert_eq!(
+            lite.ok, implemented,
+            "1.12.2+Forge+LiteLoader：实现标记 = {implemented}，而规则判成 ok = {}（两处说法必须一致）",
+            lite.ok
         );
-        let reason = lite.reason.unwrap_or_default();
+        if implemented {
+            assert!(lite.note.is_some(), "能装就要说清「装成什么样」");
+        } else {
+            let reason = lite.reason.unwrap_or_default();
+            assert!(
+                reason.contains("还没有做"),
+                "没实现时必须点明是我们没做，而不是「这个组合不兼容」：{reason}"
+            );
+        }
+
+        // 上游约束那两条判据**与实现无关**，任何时候都必须拦住
+        assert!(!addon_compatibility("1.12.2", None, AddonKind::LiteLoader, None).ok, "没有 Forge 基座");
         assert!(
-            reason.contains("还没有做"),
-            "理由必须点明是我们没做，而不是「这个组合不兼容」：{reason}"
+            !addon_compatibility("1.12.2", Some(BaseLoaderKind::Fabric), AddonKind::LiteLoader, None).ok,
+            "Fabric 基座上装不了 LiteLoader"
         );
-        // 基座/版本段那两条判断仍然在（实现之后它们就是唯一的判据）
-        assert!(!addon_compatibility("1.12.2", None, AddonKind::LiteLoader, None).ok);
-        assert!(!addon_compatibility("1.12.2", Some(BaseLoaderKind::Fabric), AddonKind::LiteLoader, None).ok);
-        assert!(!addon_compatibility("1.16.5", Some(BaseLoaderKind::Forge), AddonKind::LiteLoader, None).ok);
+        assert!(
+            !addon_compatibility("1.16.5", Some(BaseLoaderKind::Forge), AddonKind::LiteLoader, None).ok,
+            "1.16.5 超出 LiteLoader 的版本区间"
+        );
     }
 
     #[test]

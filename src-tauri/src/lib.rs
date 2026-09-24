@@ -271,8 +271,6 @@ pub fn run() {    /*
             commands::resolve_isolation,
             commands::build_install_plan,
             commands::scan_mods,
-            commands::analyze_crash,
-            commands::redact_report,
             commands::list_instances,
             commands::save_instances,
             /* -------- 全局偏好与实例文件（审计补：以前设置与登录重启就丢） -------- */

@@ -65,7 +65,7 @@ function createTauriBackendLazy(): Backend {
   return new Proxy({} as Backend, handler);
 }
 
-export type { Backend, BackendInfo, CrashReport, LaunchResult, InstallRequest } from './types.ts';
+export type { Backend, BackendInfo, LaunchResult, InstallRequest } from './types.ts';
 
 /**
  * 真实后端 API（仅 Tauri 下可用）

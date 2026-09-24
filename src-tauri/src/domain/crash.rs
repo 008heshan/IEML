@@ -92,11 +92,11 @@ const RULES: &[Rule] = &[
         conclusion: "新版 Java 移除了 LWJGL 依赖的 Unsafe 接口",
         fix: Some(("关闭 LWJGL Unsafe 检查", FixKind::SwitchJava)) },
     // ---------- 内存 ----------
-    Rule { id: "oom-heap", category: CrashCategory::Memory,
+    Rule { id: "out-of-memory-heap", category: CrashCategory::Memory,
         pattern: r"(?i)OutOfMemoryError: Java heap space",
         conclusion: "内存不够用了",
         fix: Some(("把内存调大", FixKind::RaiseMemory)) },
-    Rule { id: "oom-metaspace", category: CrashCategory::Memory,
+    Rule { id: "out-of-memory-metaspace", category: CrashCategory::Memory,
         pattern: r"(?i)OutOfMemoryError: Metaspace",
         conclusion: "Mod 数量太多，类元数据区占满了",
         fix: Some(("把内存调大", FixKind::RaiseMemory)) },
@@ -125,7 +125,7 @@ const RULES: &[Rule] = &[
         pattern: r"(?i)Duplicate mods|DuplicateModsFoundException|found a duplicate mod",
         conclusion: "装了两个同名或同 ID 的 Mod",
         fix: Some(("清理重复 Mod", FixKind::RemoveMod)) },
-    Rule { id: "mod-mixin", category: CrashCategory::Mod,
+    Rule { id: "mod-crash-mixin", category: CrashCategory::Mod,
         pattern: r"(?i)Mixin apply failed|MixinTransformerError|spongepowered\.asm",
         conclusion: "某个 Mod 的注入代码与其他 Mod 冲突",
         fix: Some(("二分法排查 Mod", FixKind::DisableMod)) },
@@ -142,28 +142,35 @@ const RULES: &[Rule] = &[
         conclusion: "OptiFine 与当前加载器组合冲突",
         fix: Some(("关掉 OptiFine", FixKind::DisableOptifine)) },
     // ---------- 加载器 ----------
-    Rule { id: "forge-corrupt", category: CrashCategory::Loader,
+    Rule { id: "forge-install-corrupt", category: CrashCategory::Loader,
         pattern: r"(?i)Failed to find (the )?main class|net\.minecraftforge.*ClassNotFound",
         conclusion: "Forge 没有装完整",
         fix: Some(("重新安装加载器", FixKind::ReinstallLoader)) },
-    Rule { id: "loader-mismatch", category: CrashCategory::Loader,
+    Rule { id: "loader-version-mismatch", category: CrashCategory::Loader,
         pattern: r"(?i)LoaderException|incompatible loader version",
         conclusion: "加载器版本与 Mod 要求的不一致",
         fix: Some(("重新安装加载器", FixKind::ReinstallLoader)) },
-    Rule { id: "mixin-bootstrap", category: CrashCategory::Loader,
+    Rule { id: "mixin-loader", category: CrashCategory::Loader,
         pattern: r"(?i)MixinBootstrap|mixin.{0,20}loader.{0,20}failed",
         conclusion: "Mixin 框架加载失败，通常是加载器装得不完整",
         fix: Some(("重新安装加载器", FixKind::ReinstallLoader)) },
     // ---------- 图形 ----------
     Rule { id: "gpu-driver", category: CrashCategory::Graphics,
-        pattern: r"(?i)EXCEPTION_ACCESS_VIOLATION.*(nvoglv|atio|igd)",
+        /*
+         * ★★ 2026-09-24（C-8）：原来是 `EXCEPTION_ACCESS_VIOLATION.*(nvoglv|atio|igd)` ——
+         *   而 Rust 的 regex 与 JS 一样，`.` **不跨行**；真实崩溃日志里驱动名在下一行
+         *   （`C  [nvoglv64.dll+0x…]`）⇒ 这条规则永远不会命中。
+         *   改成 `[\s\S]{0,400}?`：跨行、但限定距离；与 TS 侧逐字同形
+         *   （判据表见 tests/crash-rules.cases.json）。
+         */
+        pattern: r"(?i)EXCEPTION_ACCESS_VIOLATION[\s\S]{0,400}?(nvoglv|atio|igd)",
         conclusion: "显卡驱动崩溃了",
         fix: Some(("更新显卡驱动", FixKind::None)) },
-    Rule { id: "glfw", category: CrashCategory::Graphics,
+    Rule { id: "glfw-error", category: CrashCategory::Graphics,
         pattern: r"(?i)GLFW error \d+|Failed to create (window|GL context)|Pixel format not accelerated",
         conclusion: "无法创建图形窗口，通常是显卡驱动过旧或缺少 OpenGL 支持",
         fix: Some(("更新显卡驱动", FixKind::None)) },
-    Rule { id: "shader", category: CrashCategory::Graphics,
+    Rule { id: "shader-compile", category: CrashCategory::Graphics,
         pattern: r"(?i)Shader compilation failed|Iris.{0,20}shader.{0,20}error",
         conclusion: "光影包编译失败",
         fix: Some(("换个光影包或关掉光影", FixKind::None)) },
@@ -189,7 +196,7 @@ const RULES: &[Rule] = &[
         pattern: r"(?i)FileNotFoundException|NoSuchFileException|cannot find the file",
         conclusion: "缺少必需的文件",
         fix: Some(("校验并补全文件", FixKind::VerifyFiles)) },
-    Rule { id: "permission", category: CrashCategory::File,
+    Rule { id: "permission-denied", category: CrashCategory::File,
         pattern: r"(?i)AccessDeniedException|Permission denied|拒绝访问",
         conclusion: "没有权限读写游戏目录",
         fix: Some(("把游戏目录换到有权限的位置", FixKind::OpenFolder)) },
@@ -206,15 +213,15 @@ const RULES: &[Rule] = &[
         pattern: r"(?i)URI has an authority component",
         conclusion: "游戏路径里有中文或特殊字符，Java 启动包装器处理不了",
         fix: Some(("把游戏目录改成纯英文路径", FixKind::OpenFolder)) },
-    Rule { id: "file-locked", category: CrashCategory::Environment,
+    Rule { id: "antivirus", category: CrashCategory::Environment,
         pattern: r"(?i)being used by another process",
         conclusion: "文件被其他程序占用（多半是杀毒软件正在扫描）",
         fix: Some(("把游戏目录加入杀毒白名单", FixKind::OpenFolder)) },
-    Rule { id: "network", category: CrashCategory::Environment,
+    Rule { id: "firewall", category: CrashCategory::Environment,
         pattern: r"(?i)Connection refused|ConnectException|UnknownHostException",
         conclusion: "网络连接被拒绝或域名解析失败",
         fix: Some(("检查网络与代理设置", FixKind::None)) },
-    Rule { id: "encoding", category: CrashCategory::Environment,
+    Rule { id: "locale", category: CrashCategory::Environment,
         pattern: r"(?i)UnsupportedEncodingException|MalformedInputException",
         conclusion: "系统编码不是 UTF-8，导致文件读取失败",
         fix: Some(("把游戏目录改成纯英文路径", FixKind::OpenFolder)) },
@@ -627,70 +634,14 @@ pub fn judge_crash(
     }
 }
 
-/* ====================== 脱敏导出（ADR-012） ====================== */
-
-#[derive(Debug, Clone, Serialize)]
-pub struct RedactionEntry {
-    pub what: String,
-    pub count: u32,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct RedactionResult {
-    pub text: String,
-    /// 处理了哪些东西 —— 必须主动告诉用户（DESIGN_SYSTEM 7.14 铁律）
-    pub redacted: Vec<RedactionEntry>,
-}
-
-/// 导出崩溃报告前的脱敏。
-/// ★ 日志里出现自己的正版账号名或 token，用户会介意。
-///   在导出前主动告诉他处理了什么，比事后被质疑要好。
-pub fn redact_report(raw: &str) -> RedactionResult {
-    let rules: [(&str, &str, &str); 6] = [
-        (
-            "微软登录令牌",
-            r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}",
-            "<已隐藏的登录令牌>",
-        ),
-        (
-            "访问令牌",
-            r#"(?i)(access_token|accessToken|refresh_token)(["'\s:=]+)([A-Za-z0-9._-]{8,})"#,
-            "$1$2<已隐藏>",
-        ),
-        (
-            "玩家 UUID",
-            r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
-            "<已隐藏的账号 ID>",
-        ),
-        (
-            "会话密钥",
-            r#"(?i)(session|secret|password)(["'\s:=]+)(\S{6,})"#,
-            "$1$2<已隐藏>",
-        ),
-        ("本机用户名", r"[A-Za-z]:\\Users\\[^\\\s]+", r"C:\Users\<用户名>"),
-        ("IP 地址", r"\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b", "<已隐藏的地址>"),
-    ];
-
-    let mut text = raw.to_string();
-    let mut redacted: Vec<RedactionEntry> = Vec::new();
-
-    for (what, pattern, replacement) in rules {
-        let Ok(re) = Regex::new(pattern) else {
-            continue;
-        };
-        let count = re.find_iter(&text).count() as u32;
-        if count == 0 {
-            continue;
-        }
-        text = re.replace_all(&text, replacement).to_string();
-        redacted.push(RedactionEntry {
-            what: what.to_string(),
-            count,
-        });
-    }
-
-    RedactionResult { text, redacted }
-}
+/*
+ * ★ 2026-09-24（死代码清理）：Rust 侧的 `redact_report` / `RedactionEntry` /
+ *   `RedactionResult` 删掉了。理由：**活的脱敏在 TS 那一侧**
+ *   （`src/domain/crash.ts::redactReport`，被日志页与崩溃弹窗用），
+ *   Rust 这份的**唯一**调用方是 `commands::redact_report` 命令，
+ *   而那个命令全仓库 0 处调用（`bridge/tauri.ts` 的 `rust` 对象也一起删了）。
+ *   两份实现留着只会像崩溃规则表那样慢慢漂移 —— 判据/实现都只留一处。
+ */
 
 #[cfg(test)]
 mod tests {
@@ -742,16 +693,6 @@ mod tests {
         let a = analyze_crash_log(log);
         assert!(a.heuristic);
         assert!(a.reason.contains("com.example"), "{}", a.reason);
-    }
-
-    #[test]
-    fn redaction_hides_secrets_and_reports_them() {
-        let log = "[main/INFO]: access_token=eyJhbGciOiJSUzI1NiJ9.abcdefghijklmnop.qrstuvwxyz12345\n[main/INFO]: C:\\Users\\Administrator\\AppData";
-        let r = redact_report(log);
-        assert!(r.text.contains("<已隐藏的登录令牌>"), "{}", r.text);
-        assert!(r.text.contains("<用户名>"), "{}", r.text);
-        assert!(!r.text.contains("access_token=eyJ"), "{}", r.text);
-        assert!(r.redacted.len() >= 2);
     }
 
     /* ====================== P0-6：崩溃判据 ====================== */
@@ -872,5 +813,75 @@ mod tests {
         let reason = v.reason.unwrap();
         assert!(reason.contains("非零退出码 1"), "{reason}");
         assert!(v.rule_id.is_none(), "没命中规则就不许编一个 id");
+    }
+
+    /*
+     * ====================== ★★ C-8：两侧规则表的一致性 ======================
+     *
+     * 规则有两份实现：这一份（被 `judge_crash` 用，也就是游戏退出那条 toast 的判据）
+     * 与 TS 的 `src/domain/crash.ts`（被崩溃弹窗与日志页用）。
+     *
+     * 它们**曾经漂移而没有任何判据能发现**：36 条 vs 35 条、12 条 id 起名不同
+     * （TS `out-of-memory-heap` / 这边 `oom-heap` …）。
+     *
+     * 现在两边读**同一份判据表** `tests/crash-rules.cases.json`：
+     * 同一段日志必须判出同一个 rule id。哪一边改了规则没改另一边，
+     * 就会有一边的测试红 —— TS 侧那条在 `tests/crash-rules.test.mjs`。
+     */
+    #[derive(serde::Deserialize)]
+    struct CaseFile {
+        cases: Vec<Case>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Case {
+        rule: String,
+        log: String,
+    }
+
+    #[test]
+    fn crash_rules_cases_match_both_sides() {
+        const RAW: &str = include_str!("../../../tests/crash-rules.cases.json");
+        let file: CaseFile = serde_json::from_str(RAW).expect("判据表要能解析");
+        assert!(!file.cases.is_empty(), "判据表不能是空的");
+
+        let mut bad: Vec<String> = Vec::new();
+        for c in &file.cases {
+            let a = analyze_crash_log_with(&c.log, AnalyzeOptions { offline: false });
+            let got: Vec<String> = a
+                .matches
+                .iter()
+                .chain(a.benign_matches.iter())
+                .map(|m| m.rule_id.clone())
+                .collect();
+            if !got.iter().any(|g| g == &c.rule) {
+                bad.push(format!("{} → 实际 [{}]", c.rule, got.join(", ")));
+            }
+        }
+        assert!(
+            bad.is_empty(),
+            "这些日志片段 Rust 侧判错了（说明两份规则表漂移了）：\n    {}",
+            bad.join("\n    ")
+        );
+    }
+
+    /// 判据表里允许"只在一边有"的例外，必须真的只在这边缺/那边有。
+    #[test]
+    fn only_one_side_rules_are_documented() {
+        const RAW: &str = include_str!("../../../tests/crash-rules.cases.json");
+        let v: serde_json::Value = serde_json::from_str(RAW).unwrap();
+        let only = v.get("only").and_then(|o| o.as_object());
+        let ids: Vec<&str> = RULES.iter().map(|r| r.id).collect();
+        if let Some(only) = only {
+            for (id, why) in only {
+                assert!(
+                    !ids.contains(&id.as_str()),
+                    "「{id}」现在两边都有了 —— 请把它从判据表的 only 里删掉"
+                );
+                assert!(
+                    why.as_str().map(|s| s.len() > 10).unwrap_or(false),
+                    "「{id}」的例外必须写清原因"
+                );
+            }
+        }
     }
 }

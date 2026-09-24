@@ -479,7 +479,20 @@ function ModpackTab({
       setTotal(r.total_hits ?? 0);
       setPacks(
         r.hits.map((h) => ({
-          id: h.slug || h.project_id,
+          /*
+           * ★★ 2026-09-24（C-1 修复）：这里原来写的是 `h.slug || h.project_id` ——
+           *   而 **CurseForge 命中的 `slug` 是字符串**（`all-the-mods-10` 这种），
+           *   CF 的文件接口只认**数字 project id**（`925200`）。
+           *   于是安装页拿着 slug 去问版本列表 ⇒ 空列表 ⇒ 界面说
+           *   「这个整合包没有可下载的版本」（把"我们拿错了标识"说成"上游没有"）。
+           *
+           *   `project_id` 对两个源都是**正确的那个标识**：
+           *     · Modrinth：project id 与 slug 都接受（`/v2/project/{id}/version`）；
+           *     · CurseForge：只有数字 id 能用。
+           *   ★ 这不是"界面按来源分支"，而是**只带正确的那一个标识** ——
+           *     来源怎么走仍然由后端决定（见 `resource_versions`）。
+           */
+          id: h.project_id,
           name: h.title,
           author: h.author || '未知作者',
           summary: h.description,
@@ -558,11 +571,18 @@ function ModpackTab({
   useEffect(() => {
     if (!installTarget || !api) return;
     setTargetVersions(null);
+    /*
+     * ★★ 2026-09-24（C-1 修复）：这里原来调 `api.modrinth.versions(installTarget.id)` ——
+     *   于是**来源选了 CurseForge 也照样去问 Modrinth**：CF 的数字 project id
+     *   在 Modrinth 上查出的是别的项目（或者 404），真机表现就是报告里那句
+     *   「来自 Modrinth」+「这个整合包没有可下载的版本」。
+     *   现在走 source-aware 的 `resource_versions`（CF → `curseforge::files`）。
+     */
     void api.modrinth
-      .versions(installTarget.id)
+      .resourceVersions({ kind: 'modpack', projectId: installTarget.id, source: packSource })
       .then(setTargetVersions)
       .catch(() => setTargetVersions([]));
-  }, [installTarget, api]);
+  }, [installTarget, api, packSource]);
 
   /**
    * 装一个整合包。
@@ -589,6 +609,29 @@ function ModpackTab({
     if (!pack) return;
     if (!api) {
       toast('warning', '演示模式', '浏览器里无法真实安装整合包');
+      return;
+    }
+    /*
+     * ★★ 2026-09-24（C-1）：**CurseForge 的整合包还不能自动安装** —— 必须在这里如实拦住。
+     *
+     *   两种包的清单格式不同：
+     *     · Modrinth 的 `.mrpack`  → 里面有 `modrinth.index.json`（`mrpack_inspect` 会读它）；
+     *     · CurseForge 的 `.zip`   → 里面是 `manifest.json` + `files[{projectID,fileID}]`，
+     *       每个文件都要再去问一次 CF 的文件接口才拿得到下载地址。
+     *
+     *   后者**没有实现**（不是网络问题、也不是"上游没发布文件"）。
+     *   以前这一页在 CF 来源下会拿 CF 的数字 id 去问 Modrinth，报出
+     *   「这个整合包没有可下载的版本」—— 一句把"我们没做"说成"上游没有"的假话
+     *   （这个仓库为这类话栽过不止一次）。
+     */
+    if (packSource === 'curseforge') {
+      toast(
+        'warning',
+        'CurseForge 的整合包还不能自动安装',
+        `${pack.name} 在 CurseForge 上。CF 用的是 manifest.json 清单格式，` +
+          `IEML 现在只会装 Modrinth 的 .mrpack —— **这一步没有做**（不是网络问题）。\n` +
+          `想看能装的版本，把上面的来源切回 Modrinth（同一个整合包通常两边都有）。`,
+      );
       return;
     }
     setInstalling(true);
@@ -801,14 +844,33 @@ function ModpackTab({
         </div>
 
         <div className="dim" style={{ margin: 'var(--space-3) 0' }}>
-          版本、加载器、Mod 清单都由包里的 <span className="mono">modrinth.index.json</span> 定死 ——
-          下面按**游戏版本**分类列出它发布的版本。
+          {packSource === 'curseforge' ? (
+            /* ★ C-1：CF 的清单格式不一样，这里**提前说清**，别让用户点下去才知道 */
+            <>
+              下面列的是它在 CurseForge 上发布的版本。★ <b>CF 的整合包 IEML 还不能自动安装</b> ——
+              它用的是 <span className="mono">manifest.json</span>，而自动安装目前只支持 Modrinth 的{' '}
+              <span className="mono">.mrpack</span>（这一步没有做，不是网络问题）。
+              想看能装的版本，把上面的来源切回 Modrinth。
+            </>
+          ) : (
+            <>
+              版本、加载器、Mod 清单都由包里的 <span className="mono">modrinth.index.json</span> 定死 ——
+              下面按**游戏版本**分类列出它发布的版本。
+            </>
+          )}
         </div>
 
         {targetVersions === null ? <Spinner label="正在取版本列表…" /> : null}
         {targetVersions && targetVersions.length === 0 ? (
           <Note tone="warning" title="这个整合包没有可下载的版本">
-            上游没有给它发布任何文件 —— 去 Modrinth 项目页看看作者的说明。
+            {/*
+              ★ C-1：这句话原来是「上游没有给它发布任何文件 —— 去 Modrinth 项目页看看」——
+              而真实原因常常是"我们拿错了接口"（CF 的包去问 Modrinth）。
+              现在来源已经走对了，所以空列表的两种原因要分开说。
+            */}
+            {packSource === 'curseforge'
+              ? 'CurseForge 上没有给它发布可下载的文件（或者作者关掉了第三方分发）。'
+              : '上游没有给它发布任何文件 —— 去 Modrinth 项目页看看作者的说明。'}
           </Note>
         ) : null}
         {targetVersions && targetVersions.length > 0 ? (

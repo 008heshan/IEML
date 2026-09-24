@@ -25,6 +25,11 @@
 | 6 | **B-2 / B-3 / B-4** 界面说的和做的不一致 | ✅ **已修**（3 条：更新状态撒谎 / Quilt 又装 QFAPI / 端口提示说反） | `probe-b2-fixed.mjs`（含把代理指死逼出的失败支）+ `probe-bug-repro-1.mjs` ② 段 + `probe-server-hint.mjs` |
 | 7b | **C-5** 整合包「点哪行装哪行」不成立 | ✅ **已修**（版本当参数传，不再依赖 state 时序） | `probe-c5-fixed.mjs` 差分判据：点 alpha.1 / alpha.2 → 装的是**各自**那个版本 |
 | 7 | **C-2 / C-3 / C-4 / C-6 / C-7** + 廉价低项 | ✅ **已修**（5 条 + C-16/C-17/C-18/C-19/C-22/C-26） | `probe-bug-repro-9.mjs` 一次跑完四条全绿；C-2 有两条 Rust 测试钉着；`cargo test --lib` 453 通过 |
+| 8 | **C-1** CF 的版本列表/安装链路 | ✅ **已修一半**（版本列表真的接上双源了；**CF 整合包的自动安装明确未做**、界面如实拒绝） | `probe-c1-fixed.mjs`：CF Mod 5 个版本 / CF 整合包 50 个版本 / 如实说明 |
+| 8b | **C-8** 崩溃规则表两份（36 vs 35） | ✅ **已修**（12 条 id 对齐 + 两边共用判据表 + 进门禁） | 判据表立刻抓出 `gpu-driver` 正则**不跨行**的真缺陷（两侧都修） |
+| 8c | **C-9** Rust 说 LiteLoader「还没做」 | ✅ **已修**（改按 `addon_install_implemented` 判；顺带把**从来没实现过**的两条上游约束真的实现了） | `cargo test --lib` 454 通过；测试改成断言两处说法一致 |
+| 8d | 死代码与死 CSS | ✅ **已清理**（`rust` 对象 / 2 条 Rust 命令 / Rust 脱敏 / flows 死导出 / `.vi-*` 20 条） | `tsc` + `cargo test` + 门禁 |
+| 8e | 更新日志页三处与实现不符 | ⬜ **未复现**（在 CHANGELOG 与 ChangelogPage 里找不到对应文字；写报告时没留行号） | — |
 
 > 每批的详细记录在 `docs/DECISIONS.md`（从 ADR 六十二 起）。
 

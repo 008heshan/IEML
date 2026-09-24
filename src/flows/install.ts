@@ -237,7 +237,12 @@ export function resumeInstall(id: string): boolean {
  *
  * 返回"是否真的发起了重试"，调用方据此决定提示文案。
  */
-export function retryInstall(id: string): boolean {
+/*
+ * ★ 2026-09-24（死代码清理）：`retryInstall` / `installVersionFromManifest` / `installLoader`
+ *   都**只在本文件内部**被调用（`resumeOrReplay` / `installGame`），
+ *   所以去掉 `export` —— 留着导出的结果是"外面看起来有三个入口，其实谁都不用"。
+ */
+function retryInstall(id: string): boolean {
   const job = pendingJobs.get(id);
   if (!job) return false;
   // 重试 = 清掉暂停/取消标记 + 重新发起（.part 会断点续传）
@@ -277,12 +282,10 @@ export function resumeOrReplay(id: string): boolean {
   return retryInstall(id);
 }
 
-/** 清掉一个任务的内部记录（安装成功/用户移除时调） */
-export function forgetTask(id: string): void {
-  pendingJobs.delete(id);
-  pausedTasks.delete(id);
-  cancelledTasks.delete(id);
-}
+/*
+ * ★ 2026-09-24（死代码清理）：`forgetTask` 删掉了 —— 全仓库 0 处调用
+ *   （连本文件内部都没有）。任务记录的清理在各条流程自己那里做完了。
+ */
 
 /* ====================== 安装入口 ====================== */
 
@@ -292,7 +295,7 @@ export function forgetTask(id: string): void {
  * 返回三种结局之一（`done` / `paused` / `failed`）——
  * **暂停不是失败**，调用方据此决定提示什么（ADR-051）。
  */
-export async function installVersionFromManifest(
+async function installVersionFromManifest(
   mcVersion: string,
   source: 'auto' | 'bmclapi' | 'mojang' = 'auto',
   concurrency = 64,
@@ -505,7 +508,7 @@ export async function installGame(opts: {
 /**
  * 装一个加载器（Fabric / Quilt 走 profile JSON 合并；Forge 系需要跑安装器）。
  */
-export async function installLoader(
+async function installLoader(
   mcVersion: string,
   loaderKind: string,
   loaderVersion: string | null,
@@ -595,10 +598,8 @@ export async function installLoader(
   }
 }
 
-/**
- * 把日志交给崩溃分析并弹出结果。
- * （弹窗由 CrashModal 监听 `ieml:crash` 事件渲染）
+/*
+ * ★ 2026-09-24（死代码清理）：`showCrashAnalysis` 删掉了 —— 全仓库 0 处调用。
+ *   崩溃弹窗真正的触发点是 `AppShell` 监听 `ieml:crash`（游戏异常退出时由
+ *   `AppContext` 派发），而这个导出从来没有调用方。
  */
-export function showCrashAnalysis(logText: string): void {
-  window.dispatchEvent(new CustomEvent('ieml:crash', { detail: { raw: logText } }));
-}
