@@ -14,7 +14,7 @@
  *   是全局、哪一栏属于当前版本。替换后"我现在在哪一层"一目了然。
  */
 import brandIcon from '../assets/brand-icon.png'
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../state/AppContext';
 import type { PageId, SubPageId } from '../state/store';
 import { Button, Chip, Modal, ToastRegion } from '../ui';
@@ -79,6 +79,29 @@ export function App() {
   const [stopping, setStopping] = useState(false);
   /** 顶栏的账号弹窗（正版登录入口） */
   const [accountOpen, setAccountOpen] = useState(false);
+
+  /*
+   * ★★ 2026-09-24（用户：「点击左侧栏切换页面时，不会回到最顶端，而是从上一页面
+   *   继承当时的位置」）：换一屏就把内容区滚回顶部。
+   *
+   *   为什么会继承：`<main className="content">` 是**同一个** DOM 节点 ——
+   *   换页只是把它里面的页面组件换掉，而 `scrollTop` 是那个节点自己的状态，
+   *   浏览器不会替我们归零。所以必须显式做。
+   *
+   *   ★ 用 `useLayoutEffect` 而不是 `useEffect`：后者在浏览器**画完**之后才跑，
+   *     于是新页面会先出现在"上一页那个滚动位置"、下一帧才跳回顶部（肉眼可见的闪）。
+   *     放在 layout 阶段（同一次绘制之前）就没有这一下。
+   *
+   *   ★ 依赖里放的是"当前这一屏的身份"：一级页面 / 打开的版本 / 二级页面 /
+   *     下载页页签 / 资源安装页的目标 —— 任何一个变了都算换了屏。
+   *     （同一屏内的操作，例如版本列表换筛选、设置页改一项，**不该**把用户
+   *      拽回顶部，所以这些不在依赖里。）
+   */
+  const contentRef = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    const el = contentRef.current;
+    if (el) el.scrollTop = 0;
+  }, [state.page, state.openInstanceId, state.subPage, state.downloadTab, state.resourceTarget]);
 
   /*
    * ★★ 2026-09-24（用户）：「**每次进启动器，先进行一次静默检查更新，如果有就弹窗，
@@ -639,7 +662,8 @@ export function App() {
         </aside>
 
         {/* ==================== 内容区 ==================== */}
-        <main className="content">
+        {/* `ref` 是给"换页滚回顶部"那个 effect 用的，见文件上方那段注释 */}
+        <main className="content" ref={contentRef}>
           {state.page === 'launch' && <LaunchPage />}
           {state.page === 'versions' &&
             (open ? (

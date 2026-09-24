@@ -584,8 +584,10 @@ blocks: [{模组加载器四选一}, {附加组件 OptiFine 清单来自在线}]
 | `tools/live/probe-instance-root.mjs` | **真机数据**上对照旧发布版/新构建：实例目录落在 C 盘还是用户挑的游戏盘（8f）；顺带验"实例设置跟不跟着走" |
 | `tools/live/probe-manifest-location.mjs` | 沙盒里 own 那份两条、root 那份一条**且不同**：`instance_health` 读的是哪一份清单（8g） |
 | `tools/live/probe-own-root-move.mjs` | 真实数据上验"启动器自己的家"搬到了哪：记录文件、账本与界面互证、原样存回偏好证明写入落点（8h） |
+| `tools/live/probe-page-scroll-top.mjs` | 换页是否滚回顶部（8i）：长页↔长页的红绿对照 + "同一屏内不重置"的反面 |
 | `tools/live/probe-versions-page-dir.mjs` | 真实数据上按用户原动作走「版本列表 → ⋯ → 打开目录」，读 toast 里的路径并核对资源管理器窗口（8f 的端到端判据） |
 | 8h | **用户要求（非缺陷）**：ABC 全做 —— 删 C 盘残留 + 把启动器自己的家也搬到游戏盘 | ✅ **已做**（`%APPDATA%\IEML` 从 1.11 GB 降到 **2516 字节 / 5 个文件**；家 = `D:\IEML-launcher`） | `tools/live/probe-own-root-move.mjs` 六条判据（含"存回偏好写进新家、C 盘连文件都没有"）+ 删除前逐项核对"目标侧已有"；ADR 七十二 |
+| 8i | **用户报**：点侧栏切换页面时，滚动位置被上一页继承（不回顶部） | ✅ **已修**（`AppShell` 换屏时把 `.content` 滚回 0；`useLayoutEffect` + 只认"屏幕身份"那几个字段） | `tools/live/probe-page-scroll-top.mjs` 红绿对照：坏构建 设置→更新日志 停在 **906**、更新日志→设置停在 **906**；修好后都是 **0**；同一屏内拨开关不被拽回顶部；ADR 七十三 |
 
 跑法：`node tools/live/<脚本>.mjs ["<exe>"]`（默认用 `src-tauri/target/release/ieml.exe`，
 可以传桌面那份 exe）。
