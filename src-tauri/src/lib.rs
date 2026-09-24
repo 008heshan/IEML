@@ -449,10 +449,40 @@ pub fn run() {    /*
          *   探测结论 10 分钟后过期（`probe::PROBE_TTL`），届时自动退回
          *   纯健康分排序 —— 不会拿一次旧结论一直压着。
          */
-        .setup(|_app| {
+        .setup(|app| {
+            use tauri::{Emitter, Manager};
             tauri::async_runtime::spawn(async {
                 net::probe::refresh_global().await;
             });
+            /*
+             * ★★ 2026-09-24（用户截图：任务管理器里 IEML 与 WebView2 分成两摊；顺手量出真问题）：
+             *
+             *   实测（真机、发布版）：空闲时整棵进程树吃掉**单核 77%**
+             *   （WebView2 浏览器进程 52% + GPU 进程 23%），而**最小化之后仍有 37%** ——
+             *   也就是说"用户根本没在看"的时候，那层流动光斑 + 磨砂还在全速重绘。
+             *
+             *   前端本来有一套（`ui/glass.ts` 的 `.tab-hidden`：暂停所有 CSS 动画、
+             *   停掉 GL 的 rAF、挡掉取色定时器），但它只认 `document.hidden` ——
+             *   而 **WebView2 在窗口最小化时不翻这个标志**（真机量到 `visibilityState`
+             *   一直是 `visible`），于是那套从来没被触发过。
+             *
+             *   所以这里从**窗口**这一侧看：每秒查一次 `is_minimized()`，
+             *   状态变了才发一个事件（平时零开销），前端据此把装饰效果停/恢复。
+             */
+            if let Some(win) = app.get_webview_window("main") {
+                std::thread::spawn(move || {
+                    let mut last: Option<bool> = None;
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_millis(800));
+                        let min = win.is_minimized().unwrap_or(false);
+                        if last != Some(min) {
+                            last = Some(min);
+                            let _ = win.emit("ieml:window-minimized", min);
+                            say!("[IEML/glass] 窗口最小化 = {min}（装饰动画据此暂停 / 恢复）");
+                        }
+                    }
+                });
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

@@ -7982,3 +7982,66 @@ invokeOn / clickNav / ps / sleep` + 几个文件小工具（`mtimeOf / newestIn 
 ★ 没做的事（如实记）：`tools/live/` 里那 82 个历史探针没归档也没删除；
 TS 侧的"未使用导出"只做了扫描（`tsc --noUnusedLocals --noUnusedParameters` 是**干净的**），
 没有为了"看起来更干净"去动导出面 —— 那些导出多半是给以后用的接口，删了反而要重写。
+
+### 七十六、任务管理器里的「两个 IEML」与**最小化还在烧 CPU**（2026-09-24）
+
+用户（截图：任务管理器里 `WebView2 管理器 (6)` 一摊、`IEML` 一摊）：
+
+> 当 IEML 运行时，会分开显示，一个本体，一个渲染
+
+#### 76.1　"分开显示"这件事本身：**WebView2 的固有结构，改不了**
+
+WebView2 就是 Chromium：一个宿主进程 + 浏览器进程 + GPU 进程 + 网络/存储/渲染等一堆子进程。
+Windows 任务管理器按 **AppUserModelID** 分组，而 WebView2 子进程的身份是**运行时自己定的**——
+官方那份「WebView2 浏览器旗标」清单里**没有**任何能改子进程身份或分组的旗标
+（[微软文档](https://learn.microsoft.com/zh-tw/Microsoft-edge/webview2/concepts/webview-features-flags)），
+Tauri 那边的两个 issue 也还开着（[Discussions #15522](https://github.com/orgs/tauri-apps/discussions/15522)、
+[tauri#15567](https://github.com/tauri-apps/tauri/issues/15567)）。
+所以"合成一个条目"做不到；能做的只是让**我们自己的**身份/名字正确（当前显示已经是 `IEML`）。
+
+★ 顺带量清楚：真机上这一个窗口 = **13 个进程**（1 个宿主 + 12 个 WebView2）、合计 **562 MB**。
+其中 116 MB / 127 MB 那两个是浏览器与渲染器，86 MB 那个是 GPU —— 都符合 Chromium 的结构。
+
+#### 76.2　但顺手量出一个**真缺陷**：最小化之后还在烧 CPU
+
+| 状态 | 整棵树 CPU（单核百分比） | 合计内存 |
+|---|---|---|
+| 前台空闲（什么都不做） | **77%** | 562 MB |
+| **最小化之后** | **37%** | 561 MB |
+
+用户根本没在看的时候，那层流动光斑 + 磨砂还在全速重绘，而且**内存一点不降**。
+
+**根因**：前端本来有这套机制 —— `ui/glass.ts` 的 `.tab-hidden`（暂停所有 CSS 动画、
+停掉 GL 的 rAF 循环、挡掉取色定时器），CSS 里也写着 `animation-play-state: paused !important`。
+但它只认 `document.hidden`，而 **WebView2 在窗口最小化时并不翻这个标志**：
+
+```
+最小化之后前端看到的：{ hidden: false, state: "visible", hasFocus: false, rootClass: "" }
+```
+
+于是那套从来没被触发过（它只对"页面真的被隐藏"生效）。
+
+**修法**：这个信号从**窗口**这一侧取。
+
+* Rust（`lib.rs` 的 `setup`）：起一个线程，每 800 ms 看一次 `window.is_minimized()`，
+  **状态变了才**发一个 `ieml:window-minimized` 事件（平时零开销，也不占主线程）；
+* 前端（`ui/glass.ts`）：订阅这个事件，把它并进 `applyVisibility` 的判据
+  （`hidden = document.hidden || minimized`）—— 复用它原来那三件事，不另写一套；
+* `dispose()` 里把监听摘掉；浏览器开发模式没有这个事件时静默跳过。
+
+**真机判据**（`tmp/diag-cpu.mjs` 那次量法，30 秒跑完）：
+
+```
+修之前：前台 77% / 最小化 37%
+修之后：前台 33% / 最小化  2%     ← 而且 rootClass = "tab-hidden"（证明暂停真的生效）
+```
+
+★ 前台那 33%（≈ 整机 4%）是"灵韵视效"本身的开销（用户自己选的档位），没有动它 ——
+真要再省，那是"把 aura 做便宜一点"的另一件事（例如降帧或减模糊半径），没做。
+
+#### 76.3　如实记
+
+* 这次改动**没有**进已发布的 rc.4（线上与桌面当时那份是发布过的构建）。
+  用户机器上的桌面/安装版已换成带这个修复的构建，**下一次发版**会把它带进更新通道。
+* 任务管理器里"两个条目"的问题**没有**解决，也不打算"看起来解决"——
+  它是 WebView2 的结构，写清楚比装作能修好更有用。
