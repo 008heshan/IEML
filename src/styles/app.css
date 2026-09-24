@@ -555,64 +555,20 @@
   box-shadow: var(--shadow-card);
   overflow: hidden;
 }
-.list-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  min-height: var(--row-min-h);
-  padding: var(--row-pad-y) var(--row-pad-x);
-  cursor: pointer;
-  transition: background var(--dur-fast);
-}
-.list-row + .list-row {
-  border-top: 1px solid var(--border-subtle);
-}
-.list-row:hover {
-  background: var(--bg-hover);
-}
-.list-row:focus-visible {
-  outline: none;
-  box-shadow: inset 0 0 0 2px var(--accent);
-}
-.list-row.static {
-  cursor: default;
-}
-.list-row.static:hover {
-  background: transparent;
-}
+
+
+
+
+
+
 .list-row.running {
   background: var(--success-subtle);
 }
-.list-main {
-  flex: 1;
-  min-width: 0;
-}
-.list-title {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-}
-.list-title-name {
-  font-size: var(--text-md);
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-.list-sub {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-  margin-top: 2px;
-  font-size: var(--text-sm);
-  color: var(--text-tertiary);
-}
-.list-side {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  flex: 0 0 auto;
-}
+
+
+
+
+
 
 /* 操作条：一屏里"能做的事"集中成一行，而不是散成四张卡片 */
 .toolbar {
@@ -898,29 +854,14 @@
 .upd-chip:disabled {
   cursor: default;
 }
-.acct-chip-dot {
-  width: 7px;
-  height: 7px;
-  flex: 0 0 auto;
-  border-radius: var(--radius-full);
-  background: var(--text-disabled);
-}
+
 /* 已登录正版 → 点变绿：一眼看得出"现在是正版身份" */
 .acct-chip.on .acct-chip-dot {
   background: var(--success);
   box-shadow: 0 0 0 3px var(--success-subtle);
 }
-.acct-chip-text {
-  min-width: 0;
-  font-weight: 600;
-}
-.acct-chip-tag {
-  flex: 0 0 auto;
-  padding: 1px 6px;
-  border-radius: 5px;
-  background: var(--bg-active);
-  color: var(--text-tertiary);
-}
+
+
 .acct-chip.on .acct-chip-tag {
   background: var(--success-subtle);
   color: var(--success);
@@ -1061,36 +1002,11 @@
   border-radius: var(--radius-lg);
   background: var(--bg-raised);
 }
-.acct-id-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-  font-size: var(--text-sm);
-}
-.acct-id-k {
-  color: var(--text-tertiary);
-}
-.acct-id-v {
-  color: var(--text-primary);
-  font-weight: 600;
-}
-.acct-id-note {
-  margin-top: var(--space-2);
-  font-size: var(--text-xs);
-  color: var(--text-tertiary);
-  line-height: 1.65;
-}
-.acct-id-reason {
-  margin-top: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm);
-  background: var(--warning-subtle);
-  font-size: var(--text-xs);
-  color: var(--text-secondary);
-  white-space: pre-wrap;
-  line-height: 1.7;
-}
+
+
+
+
+
 /* 设备码阶段那句"别关掉启动器" */
 .dc-warn {
   display: flex;
@@ -1749,14 +1665,7 @@ select.input {
   color: var(--text-tertiary);
 }
 
-/* ============================ 表格 ============================ */
-.table-wrap {
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  /* ★ overflow:hidden 会让窄窗口下的表格被裁切且无法横向滚动（原稿的问题） */
-  overflow-x: auto;
-  background: var(--bg-surface);
-}
+
 table {
   width: 100%;
   border-collapse: collapse;
