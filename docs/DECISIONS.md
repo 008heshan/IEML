@@ -7591,7 +7591,47 @@ instances: own_root.join("instances"),   // ← instances 跟着 java/cache/logs
 ★ mtime 那条判据**先证明了能红**：把 `merge_instances_by_mtime` 临时改成"目标优先"跑单测 →
 `left: "lang:en_us" / right: "lang:zh_cn"` 如期失败，再改回来。
 
-#### 71.5　如实记三件事
+#### 71.4b　部署之后，按用户的**原动作**再验一遍（2026-09-24 晚）
+
+用户看完上面那份报告后回了一句：「**版本列表读的还是其他盘的目录，而不是我当前选的那个盘的目录**」——
+所以先把"他运行的是哪一份"查清楚：
+
+```
+datadir.txt            D:\IEML              （他选的根目录就是 D 盘，没有便携标记、没有环境变量覆盖）
+正在跑的进程           C:\Users\Administrator\Desktop\IEML.exe
+                       PID 25256，20:50:44 启动，sha256 A8238F38…191B  ← 19:15 的 rc.3 构建
+修复版                 E:\IEML\src-tauri\target\release\ieml.exe
+                       20:22 构建，sha256 3B8FA6CD…DF47            ← 一直没部署到他机器上
+```
+
+也就是说：**他看到的是旧行为，因为修复版根本没到他机器上**（我在上一份报告里写了"未发布"，
+但没意识到他机器上有**两份**启动器，而且两份都是旧构建）：
+
+| 他会怎么启动 | 指向 | 修好之前 |
+|---|---|---|
+| 双击桌面上的 `IEML.exe` | `C:\Users\Administrator\Desktop\IEML.exe` | 19:15 构建（**无**修复） |
+| 桌面 / 开始菜单的 `IEML.lnk` | `%LOCALAPPDATA%\IEML\ieml.exe`（安装版） | 14:09 构建（**无**修复） |
+
+于是把**两处都换成修复版**（sha256 都是 `3B8FA6CD…DF47` ✓ 逐个核对过），
+旧的两份备份在仓库 `tmp/ieml-rc3-desktop.exe.bak` / `tmp/ieml-rc3-installed.exe.bak`。
+
+然后**在部署后的那份 exe 上**跑 `tools/live/probe-versions-page-dir.mjs`（真实数据、真实动作：
+版本列表 → 某一行的 ⋯ →「打开目录」）：
+
+```
+版本列表页的行：["Minecraft 26.2 …","Minecraft 26.2 + Fabric 0.19.5 …","Minecraft 1.12.2 …"]
+toast：[{"已打开实例目录","D:\\IEML\\instances\\vanilla-262"}]
+① 版本列表读到了实例（3 行）✓
+② 「打开目录」的路径在 D:\IEML\instances 下 ✓
+③ 不在 %APPDATA%\IEML\instances 下（老行为才会那样）✓
+④ 那个目录磁盘上真的存在 ✓
+```
+
+★ 独立佐证：探针跑完检查资源管理器窗口，那一个窗口的 `LocationURL` 就是
+`file:///D:/IEML/instances/vanilla-262` —— 命令**真的**把这个 D 盘目录交给了系统，
+不是只有 toast 上写着好看（验完已把那个窗口关掉）。
+
+#### 71.5　如实记四件事
 
 1. **我的探针在 C 盘留下过东西**：旧发布版跑 `preview_launch` 时会**解压 natives**
    （这是它的正常行为，我只是没料到预览也落盘），于是
@@ -7603,4 +7643,8 @@ instances: own_root.join("instances"),   // ← instances 跟着 java/cache/logs
    与游戏盘无关），但用户如果希望"整份启动器数据都不占 C 盘"，那是另一个决定 ——
    需要时再搬，代价是换盘时要跟着搬一次。
 3. 版本号没动、**没有发布**：这一条与上一批（更新按钮 / 更新日志页 / 更新提示）一起
-   进下一次发布。
+   进下一次发布。★ 已部署到他机器上的那两份 exe **版本资源仍是 0.1.0-rc.3** ——
+   因为线上还是旧的 rc.3，启动器自己的"检查更新"不会提示任何东西（版本号相同）。
+   要让它以"新版本"的形式到达其他机器（以及他自己那台在装完 rc.4 之后），得走一次发布。
+4. **我把他的启动器进程关掉过**（部署要替换正在运行的 exe）：探针按老规矩先
+   `Stop-Process ieml`，验完把修复版重新启动起来了。他当时开着的那份是 20:50 启动的旧构建。
