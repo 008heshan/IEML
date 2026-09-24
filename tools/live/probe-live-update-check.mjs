@@ -13,6 +13,13 @@ import path from 'node:path';
 
 const PORT = 9986;
 const EXE = process.argv[2] ?? path.join(process.env.USERPROFILE ?? '.', 'Desktop', 'IEML.exe');
+/*
+ * ★ 期望版本号从 `package.json` 读（不再写死）：发布流程每次都会升版，
+ *   写死的话每发一版这条探针都要改一次 —— 而它恰恰是每次发完都该跑的那条。
+ */
+const EXPECTED_VERSION = JSON.parse(
+  (await import('node:fs')).readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'),
+).version;
 const T = process.env.TEMP ?? '.';
 const ROOT = path.join(T, 'ieml-live-root');
 const OWN = path.join(T, 'ieml-live-own');
@@ -107,7 +114,9 @@ for (let i = 0; i < 40; i += 1) {
 console.log('② 点过「检查更新」之后：' + JSON.stringify(line));
 
 console.log('\n===== 判据 =====');
-console.log(`${shown === '0.1.0-rc.2' ? '✓' : '✗'} ① 自报版本号是 0.1.0-rc.2：${JSON.stringify(shown)}`);
+console.log(
+  `${shown === EXPECTED_VERSION ? '✓' : '✗'} ① 自报版本号 = package.json 的 ${EXPECTED_VERSION}：${JSON.stringify(shown)}`,
+);
 console.log(
   `${line.includes('已是最新版本') ? '✓' : '✗'} ② 端点可达且验签通过（否则这里会是「检查更新失败：…」）：${JSON.stringify(line)}`,
 );
