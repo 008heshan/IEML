@@ -1238,12 +1238,14 @@ fn should_adopt(from: &Path, to: &Path) -> bool {
     if matches!(should_take_record(from, to), Ok(true)) {
         return true;
     }
-    // ★ 源比目标新 → 源才是"当前在用的那份"（见 adopt_records 的说明）
-    let mtime = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
-    match (mtime(from), mtime(to)) {
-        (Some(a), Some(b)) => a > b,
-        _ => false,
-    }
+    /*
+     * ★ 源比目标新 → 源才是"当前在用的那份"（见 `adopt_records` 的说明）。
+     *
+     * ★ 2026-09-24（清理合并）：这里原本把 mtime 比较**又写了一遍** ——
+     *   与 `is_newer` 是同一个判据的两份实现。"哪个更新"这件事只允许有一个来源，
+     *   否则迟早两处对同一个文件给出不同答案。
+     */
+    is_newer(from, to)
 }
 
 /// ★★ 2026-09-24：把**游戏根目录里的启动器目录**收养到 `own_root`。

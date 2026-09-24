@@ -2,93 +2,25 @@
  * 看「更新日志」页渲染出来是什么样（用户要的那个格式到底有没有落地）。
  * ------------------------------------------------------------------
  * 判据（四条）：
- *   ① 页面上能读到五段里出现的那几段（顺序正确、没有空段）
+ *   ① 页面上能读到五段里的那几段（顺序正确、没有空段）
  *   ② 每一条都以所属段落的类别词开头（页面上的文本，不是源码）
  *   ③ 最新一版是 rc.4（版本号 + 今天）
  *   ④ 顺手截一张图，给人眼核对
  *
  * 用法：node tools/live/probe-changelog-format.mjs "<exe>" [截图路径]
  */
-import { spawn } from 'node:child_process';
-import { existsSync, rmSync, writeFileSync } from 'node:fs';
-import path from 'node:path';
+import { existsSync, writeFileSync } from 'node:fs';
+import { clickNav, killIeml, launch, sleep } from './lib/cdp.mjs';
 
-const PORT = 9976;
-const EXE = process.argv[2] ?? path.join('src-tauri', 'target', 'release', 'ieml.exe');
-const SHOT = process.argv[3] ?? path.join('tmp', 'rc4-changelog.png');
-const T = process.env.TEMP ?? '.';
-const PROFILE = path.join(T, 'ieml-changelog-prof');
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const ps = (s) =>
-  new Promise((res) => {
-    const p = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', s], { stdio: ['ignore', 'pipe', 'pipe'] });
-    let o = '';
-    p.stdout.on('data', (d) => (o += d));
-    p.stderr.on('data', (d) => (o += d));
-    p.on('close', () => res(o.trim()));
-  });
+const EXE = process.argv[2] ?? 'src-tauri/target/release/ieml.exe';
+const SHOT = process.argv[3] ?? 'tmp/rc4-changelog.png';
 
-if (!existsSync(EXE)) {
-  console.error('找不到 exe：' + EXE);
-  process.exit(2);
-}
-
-await ps(`Get-Process ieml -ErrorAction SilentlyContinue | Stop-Process -Force`);
-await sleep(1000);
-try {
-  rmSync(PROFILE, { recursive: true, force: true });
-} catch {}
-
-const env = { ...process.env };
-delete env.IEML_DATA_DIR;
-delete env.IEML_OWN_DIR;
-const child = spawn(EXE, [], {
-  env: { ...env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT}`, WEBVIEW2_USER_DATA_FOLDER: PROFILE },
-  stdio: 'ignore',
-});
-let page = null;
-for (let i = 0; i < 75; i += 1) {
-  try {
-    const r = await fetch(`http://127.0.0.1:${PORT}/json/list`);
-    page = (await r.json()).find((t) => t.type === 'page' && t.webSocketDebuggerUrl);
-    if (page) break;
-  } catch {}
-  await sleep(400);
-}
-if (!page) {
-  console.error('连不上 CDP（pid ' + child.pid + '）—— 本次测量无效');
-  process.exit(3);
-}
-const ws = new WebSocket(page.webSocketDebuggerUrl);
-await new Promise((r) => ws.addEventListener('open', r, { once: true }));
-let seq = 0;
-const pend = new Map();
-ws.addEventListener('message', (e) => {
-  const m = JSON.parse(e.data);
-  if (m.id && pend.has(m.id)) {
-    pend.get(m.id)(m);
-    pend.delete(m.id);
-  }
-});
-const send = (method, params) =>
-  new Promise((res) => {
-    const id = ++seq;
-    pend.set(id, res);
-    ws.send(JSON.stringify({ id, method, params }));
-  });
-const ev = async (expr) => {
-  const r = await send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true });
-  if (r.result?.exceptionDetails) return { __err: String(r.result.exceptionDetails.text).slice(0, 300) };
-  return r.result?.result?.value;
-};
-for (let i = 0; i < 75; i += 1) {
-  if ((await ev(`!!document.querySelector('.nav-item')`)) === true) break;
-  await sleep(400);
-}
-await sleep(2000);
+await killIeml();
+const app = await launch({ exe: EXE, tag: 'changelog' });
+const { ev, send } = app;
 
 /* 进「更新日志」页 */
-await ev(`[...document.querySelectorAll('.side-link')].find((x)=>(x.textContent||'').includes('更新日志'))?.click()`);
+await clickNav(ev, '更新日志');
 await sleep(2200);
 
 /* 最新一版（第一条 rel-group 的所属卡片）里的段落与条目 */
@@ -117,18 +49,14 @@ if (Array.isArray(dump?.groups)) {
   }
 }
 
-/* 截图 */
+/* 截图（Page.captureScreenshot 经由公共库的 send） */
 const shot = await send('Page.captureScreenshot', { format: 'png' });
 if (shot?.result?.data) {
   writeFileSync(SHOT, Buffer.from(shot.result.data, 'base64'));
   console.log('\n截图已写：' + SHOT);
 }
 
-await ps(`Get-Process ieml -ErrorAction SilentlyContinue | Stop-Process -Force`);
-await sleep(700);
-try {
-  rmSync(PROFILE, { recursive: true, force: true });
-} catch {}
+await app.close();
 
 /* ---------- 判据 ---------- */
 const ORDER = ['新增了', '修复了', '优化了', '删除了', '修改了'];

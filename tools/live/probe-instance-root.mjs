@@ -4,44 +4,35 @@
  * ------------------------------------------------------------------
  * ★ 这份探针**故意用真实数据**（不设 IEML_DATA_DIR / IEML_OWN_DIR / APPDATA）——
  *   用户报的就是"真机上我的版本被定位到 C 盘"，只有在真机上跑才算验到。
- *   跑之前已经量过：两个方向的迁移/收养在真机上都是 **0 字节**
- *   （C 的 instances ⊂ D 的、D 的 cache/logs 与 C 的逐文件相同、`shared` 在
- *   `.minecraft` 里也有），所以这次启动不会往任何一边搬东西。
+ *   跑之前先量过：两个方向的迁移/收养在真机上都是 **0 字节**，所以这次启动不会乱搬东西。
  *
- * 判据（四条，①②③ 是"同一份数据、两个版本"的对照）：
- *   ① 旧发布版（rc.3，桌面那份）在同一份真机数据上：实例路径落在
- *      `%APPDATA%\IEML\instances` —— **复现用户的报告**（判据能红）
+ * 判据（五条，①②③ 是"同一份数据、两个版本"的对照）：
+ *   ① 旧发布版在同一份真机数据上：实例路径落在 `%APPDATA%\IEML\instances` ——
+ *      **复现用户的报告**（判据能红）
  *   ② 新构建：同一批实例落在用户挑的游戏盘 `D:\IEML\instances`
  *   ③ 老版本给出的路径里，只在 D 盘存在的两个实例（vanilla-262 / vanilla-1122）
- *      **磁盘上并不存在** —— 这就是"定位错了"的实际后果（存档/Mod 都不在那边）；
- *      新版本给出的三个路径**都存在**
- *   ④ 新版本这次启动**没有往游戏根目录里塞启动器文件**：`D:\IEML\cache` 与
- *      `D:\IEML\logs` 在这次运行期间没有任何新文件（旧代码会把 C 盘的 cache
- *      复制进去）
- *   ⑤ 那两天写在老位置的**实例设置**被带到了新家：`fabric-262/game/options.txt`
- *      现在是自己最后玩过的那份（`lang:zh_cn`），被盖掉的那份留在
- *      `options.txt.ieml-bak` 里（判据是 mtime，不是"目标优先"）
+ *      **磁盘上并不存在**；新版本给出的三个**都存在**
+ *   ④ 新版本这次启动**没有往游戏根目录里塞启动器文件**（`D:\IEML\cache` 与 `logs`
+ *      在这次运行期间没有任何新文件）
+ *   ⑤ 那两天写在老位置的**实例设置**被带到了新家（`options.txt` 的 lang=zh_cn）
+ *
+ * ★★ 两个阶段**各用一个端口**：启动器是单实例的，旧进程没清干净时新进程会被挡掉、
+ *    悄悄退出，而探针会连上旧进程的端口 —— 那就把旧构建的答案当成了新构建的
+ *    （第一版就这么假红过一次；公共库 `launch()` 的注释里记着这件事）。
  *
  * 用法：node tools/live/probe-instance-root.mjs "<新构建 exe>" "<旧发布版 exe>"
  */
-import { spawn } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { invokeOn, killIeml, launch, newestIn, readOr, waitNoIeml } from './lib/cdp.mjs';
 
-const PORT = 9971;
-const NEW_EXE = process.argv[2] ?? path.join('src-tauri', 'target', 'debug', 'ieml.exe');
-const OLD_EXE = process.argv[3] ?? path.join(process.env.USERPROFILE ?? 'C:\\Users\\Administrator', 'Desktop', 'IEML.exe');
-const T = process.env.TEMP ?? '.';
-const PROFILE = path.join(T, 'ieml-instroot-prof');
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const ps = (s) =>
-  new Promise((res) => {
-    const p = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', s], { stdio: ['ignore', 'pipe', 'pipe'] });
-    let o = '';
-    p.stdout.on('data', (d) => (o += d));
-    p.stderr.on('data', (d) => (o += d));
-    p.on('close', () => res(o.trim()));
-  });
+const NEW_EXE = process.argv[2] ?? 'src-tauri/target/debug/ieml.exe';
+const OLD_EXE = process.argv[3] ?? path.join(process.env.USERPROFILE ?? '', 'Desktop', 'IEML.exe');
+const APPDATA = process.env.APPDATA ?? '';
+const C_INST = path.join(APPDATA, 'IEML', 'instances');
+const D_ROOT = 'D:\\IEML';
+const D_INST = path.join(D_ROOT, 'instances');
 
 for (const exe of [NEW_EXE, OLD_EXE]) {
   if (!existsSync(exe)) {
@@ -50,103 +41,9 @@ for (const exe of [NEW_EXE, OLD_EXE]) {
   }
 }
 
-const APPDATA = process.env.APPDATA ?? '';
-const C_INST = path.join(APPDATA, 'IEML', 'instances');
-const D_ROOT = 'D:\\IEML';
-const D_INST = path.join(D_ROOT, 'instances');
-
-/* 两个阶段各一个 WebView 用户目录（与"各一个端口"配套，互不干扰） */
-for (const tag of ['old', 'new']) {
-  try {
-    rmSync(PROFILE + '-' + tag, { recursive: true, force: true });
-  } catch {}
-}
-
-/* ---------- 起一个实例（真实数据、真实环境）并接上 CDP ---------- */
-/*
- * ★★ 2026-09-24 修探针自身的一个坑（差点得出假结论）：
- *   原来两个阶段**共用同一个 CDP 端口**（9971）。而启动器是单实例的 ——
- *   如果旧进程没被彻底杀掉（杀完只等 1.2 秒，WebView2 还在退），
- *   第二阶段起的那个新进程会被单实例挡掉、悄悄退出，
- *   而探针照样能连上 9971（那是**旧进程**还在服务）⇒ 于是"新构建"那一栏
- *   量到的其实是旧构建（第一版就撞上了：部署版 exe 的哈希明明是对的，
- *   却报出 C 盘路径、判据 ②③ 假红）。
- *
- *   两处修法：
- *     ① 每个阶段**用不同的端口** —— 阶段 2 的端口只可能由阶段 2 那个进程服务；
- *     ② 起之前**等所有 ieml 进程真的消失**，起之后确认端口确实活了；
- *        连不上就明确报"本次测量无效"，而不是拿上一条连接凑数。
- */
-const waitNoIeml = async (tag) => {
-  for (let i = 0; i < 40; i += 1) {
-    const n = (await ps(`(Get-Process ieml -ErrorAction SilentlyContinue | Measure-Object).Count`)) || '0';
-    if (n.trim() === '0') return true;
-    await sleep(500);
-  }
-  console.error(`[${tag}] 等不到 ieml 退出 —— 本次测量无效（不要让旧进程冒充新进程）`);
-  return false;
-};
-
-const startApp = async (exe, port, tag) => {
-  const env = { ...process.env };
-  /* ★ 必须显式清掉：否则会读到开发机上的沙盒变量（本探针要的正是真实数据） */
-  delete env.IEML_DATA_DIR;
-  delete env.IEML_OWN_DIR;
-  env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = `--remote-debugging-port=${port}`;
-  env.WEBVIEW2_USER_DATA_FOLDER = PROFILE + '-' + tag;
-  const child = spawn(exe, [], { env, stdio: 'ignore' });
-  let page = null;
-  for (let i = 0; i < 75; i += 1) {
-    try {
-      const r = await fetch(`http://127.0.0.1:${port}/json/list`);
-      page = (await r.json()).find((t) => t.type === 'page' && t.webSocketDebuggerUrl);
-      if (page) break;
-    } catch {}
-    await sleep(400);
-  }
-  if (!page) throw new Error(`连不上 CDP（${tag}，端口 ${port}，pid ${child.pid}）—— 本次测量无效`);
-  const ws = new WebSocket(page.webSocketDebuggerUrl);
-  await new Promise((r) => ws.addEventListener('open', r, { once: true }));
-  let seq = 0;
-  const pend = new Map();
-  ws.addEventListener('message', (e) => {
-    const m = JSON.parse(e.data);
-    if (m.id && pend.has(m.id)) {
-      pend.get(m.id)(m);
-      pend.delete(m.id);
-    }
-  });
-  const send = (method, params) =>
-    new Promise((res) => {
-      const id = ++seq;
-      pend.set(id, res);
-      ws.send(JSON.stringify({ id, method, params }));
-    });
-  const ev = async (expr) => {
-    const r = await send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true });
-    if (r.result?.exceptionDetails) return { __err: String(r.result.exceptionDetails.text).slice(0, 300) };
-    return r.result?.result?.value;
-  };
-  for (let i = 0; i < 75; i += 1) {
-    if ((await ev(`!!document.querySelector('.nav-item')`)) === true) break;
-    await sleep(400);
-  }
-  await sleep(2500); // 等界面把实例列表拉起来
-  return { child, ev, ws };
-};
-
-/* ---------- 通过 Tauri 内部 invoke 调后端的路径类命令 ---------- */
-const invoke = (ev, cmd, args) =>
-  ev(
-    `(async () => {
-       try { return { ok: await window.__TAURI_INTERNALS__.invoke(${JSON.stringify(cmd)}, ${JSON.stringify(args)} ) }; }
-       catch (e) { return { err: String(e && e.message ? e.message : e) }; }
-     })()`,
-  );
-
 /** 每个实例：预览启动命令（不启动），取出 --gameDir 与 natives_dir */
 const probePaths = async (ev, label) => {
-  const listed = await invoke(ev, 'list_instances', {});
+  const listed = await invokeOn(ev, 'list_instances', {});
   const insts = listed?.ok?.instances ?? [];
   const out = { label, count: insts.length, rows: [] };
   for (const i of insts) {
@@ -166,16 +63,15 @@ const probePaths = async (ev, label) => {
       window_title: null,
       join_server: null,
     };
-    const r = await invoke(ev, 'preview_launch', { req });
+    const r = await invokeOn(ev, 'preview_launch', { req });
     const p = r?.ok ?? {};
     const m = /--gameDir\s+"?([^"\s]+)"?/.exec(p.command ?? '');
-    const natives = p.natives_dir ?? '';
     const gameDir = m ? m[1] : '';
     out.rows.push({
       实例: i.config?.name ?? i.id,
       slug: req.instance_slug,
       游戏目录: gameDir,
-      资源目录: natives,
+      资源目录: p.natives_dir ?? '',
       游戏目录存在: gameDir ? existsSync(gameDir) : null,
       出错: r?.err ?? null,
     });
@@ -183,68 +79,68 @@ const probePaths = async (ev, label) => {
   return out;
 };
 
-/* ---------- 游戏根目录里的"启动器文件"有没有被写 ---------- */
-const newest = (dir) => {
-  try {
-    let best = 0;
-    for (const e of readdirSync(dir, { withFileTypes: true, recursive: true })) {
-      const full = path.join(e.parentPath ?? dir, e.name);
-      try {
-        const t = statSync(full).mtimeMs;
-        if (t > best) best = t;
-      } catch {}
-    }
-    return best;
-  } catch {
-    return 0;
-  }
-};
 const snapGameRoot = () => ({
-  'D:\\IEML\\cache 最新 mtime': newest(path.join(D_ROOT, 'cache')),
-  'D:\\IEML\\logs 最新 mtime': newest(path.join(D_ROOT, 'logs')),
-  'D:\\IEML 顶层': readdirSync(D_ROOT).join(' '),
-  '%APPDATA%\\IEML\\instances 最新 mtime': newest(C_INST),
+  'D:\\IEML\\cache 最新 mtime': newestIn(path.join(D_ROOT, 'cache')),
+  'D:\\IEML\\logs 最新 mtime': newestIn(path.join(D_ROOT, 'logs')),
+  '%APPDATA%\\IEML\\instances 最新 mtime': newestIn(C_INST),
 });
 
 console.log('新构建：' + NEW_EXE);
 console.log('旧发布版：' + OLD_EXE);
-console.log('datadir.txt：' + (() => {
-  try {
-    return readFileSync(path.join(APPDATA, 'IEML', 'datadir.txt'), 'utf8').trim();
-  } catch (e) {
-    return '(读不到) ' + e.message;
-  }
-})());
-console.log('C 盘实例目录：' + C_INST + ' → ' + (existsSync(C_INST) ? readdirSync(C_INST).join(' ') : '(不存在)'));
-console.log('D 盘实例目录：' + D_INST + ' → ' + (existsSync(D_INST) ? readdirSync(D_INST).join(' ') : '(不存在)'));
+console.log('datadir.txt：' + readOr(path.join(APPDATA, 'IEML', 'datadir.txt')).trim());
+console.log('C 盘实例目录：' + C_INST + ' → ' + (existsSync(C_INST) ? '有' : '(不存在)'));
+console.log('D 盘实例目录：' + D_INST + ' → ' + (existsSync(D_INST) ? '有' : '(不存在)'));
 
-await ps(`Get-Process ieml -ErrorAction SilentlyContinue | Stop-Process -Force`);
-await sleep(900);
-if (!(await waitNoIeml('前置'))) process.exit(4);
+await killIeml();
+if (!(await waitNoIeml())) {
+  console.error('等不到 ieml 退出 —— 本次测量无效（不要让旧进程冒充新进程）');
+  process.exit(4);
+}
 
 const before = snapGameRoot();
 console.log('\n=== 运行前 ===');
 console.log(JSON.stringify(before, null, 2));
 
-/* ---------- ① 旧发布版：应当复现用户的报告 ---------- */
-console.log('\n=== 旧发布版（rc.3，改之前那份）：同一份真机数据 ===');
-const oldRun = await startApp(OLD_EXE, PORT, 'old');
-const oldPaths = await probePaths(oldRun.ev, '旧发布版');
-console.log(JSON.stringify(oldPaths, null, 2));
-const oldHealth = await invoke(oldRun.ev, 'instance_health', {});
-console.log('instance_health：' + JSON.stringify(oldHealth?.ok ?? oldHealth?.err));
-await ps(`Get-Process ieml -ErrorAction SilentlyContinue | Stop-Process -Force`);
-if (!(await waitNoIeml('旧版跑完'))) process.exit(4);
+/*
+ * ★★ 2026-09-24：每个阶段**各起一个进程**（与 probe-manifest-location 同因同治）。
+ *   实测：同一个 Node 进程里"起一个 → 杀掉 → 再起一个"，第二次启动会直接退出
+ *   （`exitCode=0`，日志里只剩一行 glass 设置）；而把该阶段单独跑一遍完全正常。
+ *   判据一个字不改，只把两个阶段放进两个进程里。
+ */
+const phase = (process.argv.find((a) => a.startsWith('--phase=')) ?? '').split('=')[1] ?? '';
 
-/* ---------- ② 新构建：应当落在 D 盘 ---------- */
-console.log('\n=== 新构建（部署到桌面那份）：同一份真机数据 ===');
-const newRun = await startApp(NEW_EXE, PORT + 1, 'new');
-const newPaths = await probePaths(newRun.ev, '新构建');
-console.log(JSON.stringify(newPaths, null, 2));
-const newHealth = await invoke(newRun.ev, 'instance_health', {});
-console.log('instance_health：' + JSON.stringify(newHealth?.ok ?? newHealth?.err));
-await ps(`Get-Process ieml -ErrorAction SilentlyContinue | Stop-Process -Force`);
-await sleep(1200);
+if (phase === 'old' || phase === 'new') {
+  const exe = phase === 'old' ? OLD_EXE : NEW_EXE;
+  console.log(`\n=== ${phase === 'old' ? '旧发布版（改之前那份）' : '新构建（部署到桌面那份）'}：同一份真机数据 ===`);
+  const app = await launch({ exe, tag: 'instroot-' + phase });
+  const paths = await probePaths(app.ev, phase);
+  console.log(JSON.stringify(paths, null, 2));
+  const health = await invokeOn(app.ev, 'instance_health', {});
+  console.log('instance_health：' + JSON.stringify(health?.ok ?? health?.err));
+  await app.close();
+  writeFileSync(path.join(process.env.TEMP ?? '.', `ieml-instroot-${phase}.json`), JSON.stringify({ rows: paths.rows }));
+  process.exit(0);
+}
+
+const { spawnSync } = await import('node:child_process');
+for (const p of ['old', 'new']) {
+  const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url), NEW_EXE, OLD_EXE, `--phase=${p}`], {
+    stdio: 'inherit',
+  });
+  if (r.status !== 0) {
+    console.error(`阶段 ${p} 跑失败（退出码 ${r.status}）—— 本次测量无效`);
+    process.exit(4);
+  }
+}
+const rowsOfPhase = (p) => {
+  try {
+    return JSON.parse(readFileSync(path.join(process.env.TEMP ?? '.', `ieml-instroot-${p}.json`), 'utf8')).rows ?? [];
+  } catch {
+    return [];
+  }
+};
+const oldPaths = { rows: rowsOfPhase('old') };
+const newPaths = { rows: rowsOfPhase('new') };
 
 const after = snapGameRoot();
 console.log('\n=== 运行后 ===');
@@ -261,36 +157,16 @@ const gameRootUntouched =
   after['D:\\IEML\\cache 最新 mtime'] <= before['D:\\IEML\\cache 最新 mtime'] &&
   after['D:\\IEML\\logs 最新 mtime'] <= before['D:\\IEML\\logs 最新 mtime'];
 
-/* ---------- ⑤ 实例设置：老位置那份（最后玩过的）应当赢 ---------- */
-const readOr = (p) => {
-  try {
-    return readFileSync(p, 'utf8');
-  } catch (e) {
-    return '(读不到) ' + e.message;
-  }
-};
+/* ⑤ 实例设置：老位置那份（最后玩过的）应当赢 */
 const optsNew = path.join(D_INST, 'fabric-262', 'game', 'options.txt');
-const bakNew = optsNew + '.ieml-bak';
 const langOf = (t) => (/^lang:(\S+)/m.exec(t) ?? [])[1] ?? '(没有 lang:)';
-const optNew = readOr(optsNew);
-const optBak = existsSync(bakNew) ? readOr(bakNew) : '(没有备份)';
-const settingsKept = langOf(optNew) === 'zh_cn';
+const optBak = readOr(optsNew + '.ieml-bak');
+const settingsKept = langOf(readOr(optsNew)) === 'zh_cn';
 
 console.log('\n===== 判据 =====');
 console.log(`${oldAllC ? '✓' : '✗'} ① 旧发布版把实例定位到 %APPDATA%\\IEML\\instances（复现用户的报告，判据能红）`);
 console.log(`${newAllD ? '✓' : '✗'} ② 新构建把同一批实例定位到 ${D_INST}（用户挑的游戏盘）`);
 console.log(`${newAllDExist ? '✓' : '✗'} ③ 新构建给出的游戏目录**都存在**；旧版给出的缺失实例：${JSON.stringify(oldMissing)}`);
 console.log(`${gameRootUntouched ? '✓' : '✗'} ④ 新构建这次启动没往游戏根目录写启动器文件（cache/logs 无新文件）`);
-console.log(
-  `${settingsKept ? '✓' : '✗'} ⑤ 实例设置跟着走：新家 options.txt 的 lang=${langOf(optNew)}，备份那份 lang=${langOf(optBak)}`,
-);
-console.log(`   instance_health：旧 ${JSON.stringify(oldHealth?.ok?.length ?? oldHealth?.err)} 条 → 新 ${JSON.stringify(newHealth?.ok?.length ?? newHealth?.err)} 条`);
-
-/* 收尾：两个阶段的 WebView 用户目录都不留 */
-for (const tag of ['old', 'new']) {
-  try {
-    rmSync(PROFILE + '-' + tag, { recursive: true, force: true });
-  } catch {}
-}
-const ok = oldAllC && newAllD && newAllDExist && gameRootUntouched && settingsKept;
-process.exit(ok ? 0 : 1);
+console.log(`${settingsKept ? '✓' : '✗'} ⑤ 实例设置跟着走：新家 options.txt 的 lang=${langOf(readOr(optsNew))}，备份那份 lang=${langOf(optBak)}`);
+process.exit(oldAllC && newAllD && newAllDExist && gameRootUntouched && settingsKept ? 0 : 1);

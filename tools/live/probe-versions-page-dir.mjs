@@ -5,97 +5,30 @@
  * 并让资源管理器打开那个目录。这个命令（`open_data_dir`）的路径来自
  * `AppPaths::instance_dir(slug)` —— 也就是本次修复要钉住的那一处。
  *
- * 判据（四条）：
+ * 判据（五条）：
  *   ① 版本列表页真的读到了实例（行数 = 清单里的条数）
- *   ② 点「打开目录」后 toast 里的路径落在**当前选的那个盘**（`D:\IEML\instances\…`）
- *   ③ 该路径**不在**启动器自己的家（`%APPDATA%\IEML\instances\…`）
- *   ④ 该目录**磁盘上真的存在**（老行为给出的两个实例路径是不存在的）
+ *   ② **每一行**解析到的游戏目录都在用户挑的那个盘（`D:\IEML\instances\…`）
+ *   ③ 那些目录磁盘上**都存在**（老行为给出的两个实例路径是不存在的）
+ *   ④ 按用户原动作点「打开目录」，给的路径也在 D 盘
+ *   ⑤ 都不在启动器自己的家（`%APPDATA%\IEML\instances\…`）
  *
  * ★ 会真的弹一次资源管理器（这正是用户那个动作的一部分）—— 读完 toast 后按路径把它关掉。
- * ★ 用真实数据（不设沙盒变量）：user 报的就是"我这台机器上版本列表读的是别的盘"。
+ * ★ 用真实数据（不设沙盒变量）：用户报的就是"我这台机器上版本列表读的是别的盘"。
  *
  * 用法：node tools/live/probe-versions-page-dir.mjs "<exe>"
  */
-import { spawn } from 'node:child_process';
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { invokeOn, killIeml, launch, ps, sleep } from './lib/cdp.mjs';
 
-const PORT = 9973;
-const EXE = process.argv[2] ?? path.join('src-tauri', 'target', 'release', 'ieml.exe');
-const T = process.env.TEMP ?? '.';
-const PROFILE = path.join(T, 'ieml-versdir-prof');
+const EXE = process.argv[2] ?? 'src-tauri/target/release/ieml.exe';
 const APPDATA = process.env.APPDATA ?? '';
 const C_INST = path.join(APPDATA, 'IEML', 'instances').toLowerCase();
 const D_INST = 'd:\\ieml\\instances';
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const ps = (s) =>
-  new Promise((res) => {
-    const p = spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', s], { stdio: ['ignore', 'pipe', 'pipe'] });
-    let o = '';
-    p.stdout.on('data', (d) => (o += d));
-    p.stderr.on('data', (d) => (o += d));
-    p.on('close', () => res(o.trim()));
-  });
 
-if (!existsSync(EXE)) {
-  console.error('找不到 exe：' + EXE);
-  process.exit(2);
-}
-
-/* 先把正在跑的那份收掉（单实例 + 文件占用，都要求先关） */
-await ps(`Get-Process ieml -ErrorAction SilentlyContinue | Stop-Process -Force`);
-await sleep(1000);
-try {
-  rmSync(PROFILE, { recursive: true, force: true });
-} catch {}
-
-const env = { ...process.env };
-delete env.IEML_DATA_DIR;
-delete env.IEML_OWN_DIR;
-const child = spawn(EXE, [], {
-  env: { ...env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${PORT}`, WEBVIEW2_USER_DATA_FOLDER: PROFILE },
-  stdio: 'ignore',
-});
-let page = null;
-for (let i = 0; i < 75; i += 1) {
-  try {
-    const r = await fetch(`http://127.0.0.1:${PORT}/json/list`);
-    page = (await r.json()).find((t) => t.type === 'page' && t.webSocketDebuggerUrl);
-    if (page) break;
-  } catch {}
-  await sleep(400);
-}
-if (!page) {
-  console.error('连不上 CDP');
-  process.exit(3);
-}
-const ws = new WebSocket(page.webSocketDebuggerUrl);
-await new Promise((r) => ws.addEventListener('open', r, { once: true }));
-let seq = 0;
-const pend = new Map();
-ws.addEventListener('message', (e) => {
-  const m = JSON.parse(e.data);
-  if (m.id && pend.has(m.id)) {
-    pend.get(m.id)(m);
-    pend.delete(m.id);
-  }
-});
-const send = (method, params) =>
-  new Promise((res) => {
-    const id = ++seq;
-    pend.set(id, res);
-    ws.send(JSON.stringify({ id, method, params }));
-  });
-const ev = async (expr) => {
-  const r = await send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true });
-  if (r.result?.exceptionDetails) return { __err: String(r.result.exceptionDetails.text).slice(0, 300) };
-  return r.result?.result?.value;
-};
-for (let i = 0; i < 75; i += 1) {
-  if ((await ev(`!!document.querySelector('.nav-item')`)) === true) break;
-  await sleep(400);
-}
-await sleep(2000);
+await killIeml();
+const app = await launch({ exe: EXE, tag: 'versdir' });
+const { ev } = app;
 
 /* 进「版本列表」页 */
 await ev(`[...document.querySelectorAll('.nav-item')].find((x)=>(x.textContent||'').includes('版本列表'))?.click()`);
@@ -104,14 +37,7 @@ const rows = await ev(`[...document.querySelectorAll('.ver-item')].map((x)=>(x.t
 console.log('版本列表页的行：' + JSON.stringify(rows));
 
 /* ---------- 先不下任何副作用地量每一行：preview_launch 的 --gameDir / natives ---------- */
-const invoke = (cmd, args) =>
-  ev(
-    `(async () => {
-       try { return { ok: await window.__TAURI_INTERNALS__.invoke(${JSON.stringify(cmd)}, ${JSON.stringify(args)}) }; }
-       catch (e) { return { err: String(e && e.message ? e.message : e) }; }
-     })()`,
-  );
-const listed = await invoke('list_instances', {});
+const listed = await invokeOn(ev, 'list_instances', {});
 const allRows = [];
 for (const i of listed?.ok?.instances ?? []) {
   const req = {
@@ -130,12 +56,12 @@ for (const i of listed?.ok?.instances ?? []) {
     window_title: null,
     join_server: null,
   };
-  const r = await invoke('preview_launch', { req });
+  const r = await invokeOn(ev, 'preview_launch', { req });
   const m = /--gameDir\s+"?([^"\s]+)"?/.exec(r?.ok?.command ?? '');
   const gd = m ? m[1] : '';
   allRows.push({ 名称: i.config?.name, slug: req.instance_slug, 游戏目录: gd, 存在: gd ? existsSync(gd) : null, 出错: r?.err ?? null });
 }
-console.log('三行各自解析到的游戏目录：');
+console.log('每一行各自解析到的游戏目录：');
 for (const r of allRows) {
   console.log(`   ${r.名称}（${r.slug}）→ ${r.游戏目录}  存在=${r.存在}${r.出错 ? ' 出错=' + r.出错 : ''}`);
 }
@@ -187,12 +113,7 @@ if (dir) {
   console.log('清理资源管理器窗口：' + close);
 }
 
-/* 收尾：关掉这次探针起的启动器 */
-await ps(`Get-Process ieml -ErrorAction SilentlyContinue | Stop-Process -Force`);
-await sleep(700);
-try {
-  rmSync(PROFILE, { recursive: true, force: true });
-} catch {}
+await app.close();
 
 const lower = (s) => String(s ?? '').toLowerCase();
 const dirLow = lower(dir);
