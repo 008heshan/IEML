@@ -5309,7 +5309,11 @@ F1 启动按钮自发光液态玻璃、F2 转圈**替换**三角、F3 按钮随�
 | | 位置 | 装什么 |
 |---|---|---|
 | `root` | 用户挑的那个目录（`D:\IEML`） | **只装游戏**：`root/.minecraft` |
-| `own_root` | 系统应用数据目录（`%APPDATA%\IEML`） | **启动器自己的**：`instances` / `java` / `cache` / `logs` |
+| `own_root` | 系统应用数据目录（`%APPDATA%\IEML`） | **启动器自己的**：`java` / `cache` / `logs` |
+
+> ★★ **2026-09-24 修正**（见 ADR 七十一）：`instances` 当时被一起搬到了 `own_root`，
+> 那是**错的** —— 实例目录里是存档与 Mod（游戏数据），必须留在游戏根目录 `<root>/instances`。
+> 本节下面那几条断言因此反了过来；`java/cache/logs` 留在 `own_root` 这一半仍然成立。
 
 ★ `from_root()` 里四个字段改挂 `own_root` —— 全仓库 45 处引用都走这些字段，
   所以"换位置"只改了拼路径的那一处。
@@ -6673,6 +6677,10 @@ memorySource/javaMode`）。而**实例清单的读写都要过 Rust**（`save_i
 `platform.rs` 从 2026-09-23 起就把 `instances/ java/ cache/ logs/` 挂在 `own_root`
 （Windows `%APPDATA%\IEML`），**但这四个文件没走**：
 
+> ★★ **2026-09-24 修正**（见 ADR 七十一）：`instances/` 那一项当天就被推翻 ——
+> 它跟着游戏根目录走（`<root>/instances`），`java/ cache/ logs/` 留在 `own_root`。
+> 下面这张表（四个**文件**）不受影响。
+
 | 文件 | 旧位置（0.1.0-rc.1） | 现在 |
 |---|---|---|
 | `instances.json` | 游戏根目录 | `own_root` |
@@ -7457,3 +7465,142 @@ rc.2 / rc.3 从来没写进去 ⇒ 用户看到的就是"一篇没更新"。
    **只差 3 个字节**（在嵌入资源区，偏移 8362730 附近），版本资源与功能完全一致
    （都是 0.1.0-rc.3、都能跑）。我没有继续追这 3 个字节 —— 若以后有人碰到
    "安装版与绿色版行为不一致"，这条可以当线索。
+
+### 七十一、「为什么版本列表给我定位到 C 盘」：**实例目录被搬错了地方**（2026-09-24）
+
+用户原话：
+
+> 我在用 D 盘的目录，为什么版本列表的版本给我定位到
+> `C:\Users\Administrator\AppData\Roaming\IEML\instances` 了
+
+问得对，而且这不是显示问题 —— **实例真的被读写到系统盘上去了**。
+
+#### 71.1　真机上量到的事实（改之前）
+
+| 位置 | 内容 |
+|---|---|
+| `D:\IEML`（用户挑的游戏根，`datadir.txt` 里就是它） | `.minecraft` 8908 文件 / 1859 MB、`instances` **130 文件 / 122.8 MB**（`1.8.9`、`26.3`、`26.3-fabric-0.19.5`、`fabric-262`、`vanilla-1122`、`vanilla-262`） |
+| `%APPDATA%\IEML\instances`（启动器自己的家） | **33 文件 / 30.9 MB**，只有一个 `fabric-262`（natives + 当天玩出来的 `game/`） |
+| 清单 `instances.json`（住在 own_root） | 三个实例：`vanilla-262`、`fabric-262`、`vanilla-1122` |
+
+也就是说：**清单里的三个实例有两个在 C 盘那份里根本不存在**，而 D 盘那份 122 MB 全是白放的。
+更糟的是"当场写坏"的那一半：C 盘 `fabric-262/game/options.txt` 的 mtime 是**当天 14:01**
+（用户 14:01 真的玩过那一局），写的却是 `%APPDATA%` —— 存档、Mod、游戏内设置全都会落到系统盘。
+
+根因是 2026-09-23 那次「启动器自己的目录搬出游戏根目录」搬多了：
+
+```rust
+// src-tauri/src/platform.rs（改之前）
+instances: own_root.join("instances"),   // ← instances 跟着 java/cache/logs 一起搬走了
+```
+
+搬走 `java/cache/logs` 是对的（那是启动器自己的东西）；**`instances` 不是** ——
+`instances/{slug}/game/` 就是游戏的工作目录（`--gameDir`），里面是 `saves` / `mods` /
+`config` / `options.txt`，那是**游戏数据**，必须跟用户挑的游戏盘走（和 `.minecraft` 同级）。
+用户 2026-09-22 那句「这个根目录只创建装游戏的根目录，不要附带启动器文件」针对的正是
+**启动器自己的文件**，不是"游戏根目录里不许有子目录"。
+
+顺带查出**同族的两处**（都属于"读的位置不是那份活的"）：
+
+* `instance_health`（"版本失联"提示）与 `instance_usage`（下载页"这个版本还有没有人在用"）
+  仍在读 `state.paths.root.join("instances.json")` —— 也就是 **A-4 之前**的老位置。
+  真机上那份从 2026-09-24 01:25 起再没被写过，于是这两处一直在拿陈旧清单，
+  读不到时还会静默返回空（界面表现为"没有版本失联""没有版本在用"）。
+* 反过来，`migrate_data_root` 每次启动都把 `java/cache/logs` 从 own_root 复制进**游戏根目录**：
+  真机上 `D:\IEML\cache` 与 `%APPDATA%\IEML\cache` 是**各 1839 个文件、9.5 MB 的双份**
+  （`D:\IEML\logs` 11 个文件同理）—— 游戏盘白占一份，而启动器只读 C 盘那份。
+  这正是用户 09-22 说的"根目录里附带了一堆启动器文件"。
+
+#### 71.2　改法：按**数据的归属**分家，而不是按"哪个目录"
+
+| 东西 | 住哪 | 理由 |
+|---|---|---|
+| `.minecraft`、`instances/` | **游戏根目录** `<root>` | 游戏数据（版本/存档/Mod/设置），跟用户挑的盘走 |
+| `instances.json` / `prefs.json` / `ms_client_id.txt` / `cf_api_key.txt` | `own_root`（`%APPDATA%\IEML`） | 启动器的账本：换盘不该丢，删根目录不该跟着没（A-4） |
+| `java/`、`cache/`、`logs/` | `own_root` | 启动器自己的运行时/缓存/日志，与游戏在哪无关 |
+
+配套的四件事：
+
+1. `AppPaths::from_root`：`instances: root.join("instances")`；
+   `ensure()` 建游戏那一边（`.minecraft` + `instances`），`ensure_own()` 只建 `java/cache/logs`；
+2. `migrate_data_root` 的跨根搬家**只剩 `instances`**（`java/cache/logs` 从表里删掉 ——
+   别再往游戏盘灌）；
+3. 新增 `adopt_own_dirs(paths, legacy_root)`：反方向把游戏根目录里的 `java/cache/logs`
+   **收养**回 own_root（只复制缺的、绝不删源；源就是 own_root 自己时直接跳过 ——
+   判据复用 `same_path`，也顺手把 `validate_data_root` 里那份重复的路径规范化闭包合成
+   `norm_path` 一处）；
+4. `instance_health` / `instance_usage` 改走 `own_file_for_read("instances.json")`
+   （优先启动器自己的家、回退老位置 —— 老用户升级当次启动仍读得到）。
+
+#### 71.3　实例目录的补齐要**按 mtime 判胜负**（这条是量出来的）
+
+把实例目录搬回游戏盘时，"目标已有就跳过"这条老规矩会咬人 —— 真机对照
+（`fabric-262/game/options.txt`，两边都 190 行）：
+
+| | 老位置（C，那两天应用实际在写的） | 游戏根（D，十几天前那份） |
+|---|---|---|
+| mtime | **2026-09-24 14:01** | 2026-09-12 21:58 |
+| 关键项 | `lang:zh_cn`、`renderDistance:12`、`graphicsPreset:"custom"`、音乐音量 0.0 | `lang:en_us`、`renderDistance:16`、`graphicsPreset:"fancy"`、音乐音量 1.0 |
+
+按"目标优先"的话，用户换回游戏盘之后**今天玩出来的设置会被 12 天前那份盖掉**，
+而他只会以为是自己记错了。
+
+所以 `instances` 这一项单独走 `merge_instances_by_mtime`（`copy_tree_rule(..., true)`）：
+同名文件**源更新就赢**，覆盖前把目标那份备份成 `<文件名>.ieml-bak`
+（游戏与加载器都不认这个后缀）。三条安全边界：
+
+* `.minecraft` **不**按 mtime（库/jar 的 mtime 没有意义，且会让每次启动都可能重写共享文件）；
+* 备份失败就**不覆盖** —— 判据再合理也不拿数据冒险；
+* `std::fs::copy` 会把源 mtime 带过去，加上判据是**严格大于** → 复制过一次两边相等，
+  下一次启动什么都不做（幂等，不会来回覆盖）。
+
+#### 71.4　真机验证
+
+`tools/live/probe-instance-root.mjs`：**故意用真实数据**（不设任何沙盒变量，`datadir.txt`
+就是 `D:\IEML`），拿**同一批实例、同一份数据**在旧发布版（桌面那份 rc.3）与新构建之间对照。
+跑之前先量过：两个方向的迁移/收养在真机上都是 **0 字节**（C 的 `instances` ⊂ D 的、
+`shared` 的 6754 个文件在 `.minecraft` 里全都有、`cache/logs` 两边逐文件相同），
+所以这次启动不会往任何一边搬东西。
+
+```
+① 旧发布版：3/3 落在 C:\…\AppData\Roaming\IEML\instances（复现用户的报告）✓
+② 新构建：  3/3 落在 D:\IEML\instances（用户挑的游戏盘）✓
+③ 老版本给出的路径里 vanilla-262 / vanilla-1122 **磁盘上不存在**；
+   新构建给出的三个**都存在** ✓
+④ 新构建这次启动没往游戏根目录写启动器文件（D:\IEML\cache 与 logs 无任何新文件）✓
+⑤ 那两天写在老位置的设置被带到新家：新家 options.txt 的 lang=zh_cn，
+   被盖掉的那份留在 options.txt.ieml-bak（lang=en_us）✓
+```
+
+`tools/live/probe-manifest-location.mjs`（沙盒，own 那份两条 / root 那份一条且**不同**）：
+
+```
+① 旧发布版 instance_health 只认游戏根目录那份 → ["root-only"]（判据能红）✓
+② 新构建 → ["own-1","own-2"]（启动器自己的家）✓
+③ 没有把老位置那份混进来（id 集合逐字相等）✓
+```
+
+单测：`cargo test --lib` **459 通过**（原 454 + 5 条新的）：
+`instances_migration_lets_the_newer_copy_win`（含"`.minecraft` 不按 mtime"的反面）、
+`migration_leaves_launcher_dirs_out_of_the_game_root`、
+`adopt_own_dirs_copies_launcher_dirs_into_own_root`、
+`norm_path_is_forgiving_about_separators_and_case`、`open_dir_instance_paths_live_in_the_game_root`；
+`ensure_只建游戏目录_不建启动器目录` 与 `app_paths_shape` 按新规矩**反了过来**（原来是断言
+`instances` 在 own_root 下）。
+
+★ mtime 那条判据**先证明了能红**：把 `merge_instances_by_mtime` 临时改成"目标优先"跑单测 →
+`left: "lang:en_us" / right: "lang:zh_cn"` 如期失败，再改回来。
+
+#### 71.5　如实记三件事
+
+1. **我的探针在 C 盘留下过东西**：旧发布版跑 `preview_launch` 时会**解压 natives**
+   （这是它的正常行为，我只是没料到预览也落盘），于是
+   `%APPDATA%\IEML\instances\{vanilla-262,vanilla-1122}` 这两个目录是**我这次验证造出来的**
+   （各 ~30 MB / ~2 MB）。跑完我把这两个目录删了，C 盘恢复成"只有一个 `fabric-262`"。
+   原有的那个 `fabric-262`（30.7 MB）留着没动 —— 现在**没有任何代码路径会读它**，
+   要不要删由用户决定。
+2. `java/cache/logs` **仍在** `%APPDATA%\IEML`（C 盘）。这是有意的（它们是启动器的东西，
+   与游戏盘无关），但用户如果希望"整份启动器数据都不占 C 盘"，那是另一个决定 ——
+   需要时再搬，代价是换盘时要跟着搬一次。
+3. 版本号没动、**没有发布**：这一条与上一批（更新按钮 / 更新日志页 / 更新提示）一起
+   进下一次发布。

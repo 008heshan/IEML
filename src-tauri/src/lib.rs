@@ -155,6 +155,35 @@ pub fn run() {    /*
         }
     }
 
+    /*
+     * ★★ 2026-09-24：反方向的一件事 —— 把**游戏根目录里的启动器目录**
+     *   （`java` / `cache` / `logs`）收养到启动器自己的家（`own_root`）。
+     *
+     *   为什么要做：这三个目录只认 `own_root`（见 `AppPaths::own_root`），
+     *   而老版本把它们建在游戏根目录里 —— 本机就有（`D:\IEML\cache` 1839 个文件，
+     *   与 C 盘那份一模一样；`D:\IEML\logs` 11 个；`D:\IEML\java` 空）。
+     *   不管它的话，老用户"下好的 Java"会显示成没下过，要走一遍重新下载。
+     *
+     *   只复制缺的、绝不删源；源就是 `own_root` 时函数内部直接跳过
+     *   （所以 `legacy_data_roots()` 里的 `%APPDATA%\IEML` 不会被自己复制自己）。
+     *   必须在任何读 java / cache / logs 的地方之前跑 —— 缓存目录在下面
+     *   `net::metadata::set_cache_dir` 就定下了。
+     */
+    for dir in platform::legacy_data_roots()
+        .into_iter()
+        .chain(std::iter::once(paths.root.clone()))
+    {
+        let n = platform::adopt_own_dirs(&paths, &dir);
+        if n > 0 {
+            say!(
+                "[IEML/paths] 已把 {} 里的启动器目录收回 {}（{:.1} MB）—— 源目录保留不动",
+                dir.display(),
+                paths.own_root.display(),
+                n as f64 / 1024.0 / 1024.0
+            );
+        }
+    }
+
     if let Err(e) = paths.ensure() {
         say!("[IEML/paths] 创建数据目录失败：{e}（{}）", paths.root.display());
     }

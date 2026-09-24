@@ -29,7 +29,9 @@
 | 8b | **C-8** 崩溃规则表两份（36 vs 35） | ✅ **已修**（12 条 id 对齐 + 两边共用判据表 + 进门禁） | 判据表立刻抓出 `gpu-driver` 正则**不跨行**的真缺陷（两侧都修） |
 | 8c | **C-9** Rust 说 LiteLoader「还没做」 | ✅ **已修**（改按 `addon_install_implemented` 判；顺带把**从来没实现过**的两条上游约束真的实现了） | `cargo test --lib` 454 通过；测试改成断言两处说法一致 |
 | 8d | 死代码与死 CSS | ✅ **已清理**（`rust` 对象 / 2 条 Rust 命令 / Rust 脱敏 / flows 死导出 / `.vi-*` 20 条） | `tsc` + `cargo test` + 门禁 |
-| 8e | 更新日志页三处与实现不符 | ⬜ **未复现**（在 CHANGELOG 与 ChangelogPage 里找不到对应文字；写报告时没留行号） | — |
+| 8e | 更新日志页三处与实现不符 | ✅ **已修**（不在 CHANGELOG / ChangelogPage —— 在**面向用户的另一份**：`src/data/release-notes.ts`；三处假承诺按界面事实改掉） | 逐条与界面核对（版本名写法 / 不存在的"皮肤页"）+ ADR 70.12 |
+| 8f | **用户报**：版本列表的版本被定位到 `%APPDATA%\IEML\instances` | ✅ **已修**（实例目录回到游戏根目录 `<root>/instances`；`java/cache/logs` 留在启动器自己的家） | `tools/live/probe-instance-root.mjs` 五条判据：**同一份真机数据**上旧发布版 3/3 落在 C 盘（其中 2 个目录磁盘上根本不存在）→ 新构建 3/3 落在 `D:\IEML\instances` 且都存在；ADR 七十一 |
+| 8g | **同族**：`instance_health` / 下载页"有没有版本在用"仍在读**旧位置**的 `instances.json`；`migrate_data_root` 反向把 `java/cache/logs` 灌进游戏根目录 | ✅ **已修**（改走 `own_file_for_read`；跨根搬家只剩 `instances`，反方向新增 `adopt_own_dirs` 收养回 own_root） | `tools/live/probe-manifest-location.mjs`：旧发布版读到 `["root-only"]`（游戏根那份）→ 新构建读到 `["own-1","own-2"]`（启动器自己的家）；`cargo test --lib` 459 通过 |
 
 > 每批的详细记录在 `docs/DECISIONS.md`（从 ADR 六十二 起）。
 
@@ -579,6 +581,8 @@ blocks: [{模组加载器四选一}, {附加组件 OptiFine 清单来自在线}]
 | `tools/live/probe-native-dialogs.mjs` | `confirm` / `alert` / `prompt` 三者的行为对照 |
 | `tools/live/probe-bug-repro-6.mjs` | **沙盒里对比"只差 addons 的两条记录"的启动命令行**（A-2：OptiFine 勾了也白勾） |
 | `tools/live/probe-bug-repro-7.mjs` | 沙盒里给探针实例连装同一 Mod 的两个版本，数 mods/ 里的 jar（B-1，**还没跑通**：见第七节） |
+| `tools/live/probe-instance-root.mjs` | **真机数据**上对照旧发布版/新构建：实例目录落在 C 盘还是用户挑的游戏盘（8f）；顺带验"实例设置跟不跟着走" |
+| `tools/live/probe-manifest-location.mjs` | 沙盒里 own 那份两条、root 那份一条**且不同**：`instance_health` 读的是哪一份清单（8g） |
 
 跑法：`node tools/live/<脚本>.mjs ["<exe>"]`（默认用 `src-tauri/target/release/ieml.exe`，
 可以传桌面那份 exe）。

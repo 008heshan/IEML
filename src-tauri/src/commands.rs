@@ -5,7 +5,7 @@
 
 use crate::AppState;
 use crate::domain::{
-    combination, crash, java, loader_caps, memory, mods, types::*, version,
+    combination, java, loader_caps, memory, mods, types::*, version,
 };
 use crate::platform;
 use tauri::State;

@@ -350,7 +350,18 @@ fn installed_loaders_for(traces: &[VersionTrace], mc_version: &str) -> Vec<Insta
 ///   反过来会让用户去删一份**正在用**的游戏。
 fn instance_usage(state: &AppState) -> HashMap<String, std::collections::HashSet<String>> {
     use std::collections::HashSet;
-    let path = state.paths.root.join("instances.json");
+    /*
+     * ★★ 2026-09-24：位置改走 `own_file_for_read` —— 原来这里写的是
+     *   `state.paths.root.join("instances.json")`，也就是**A-4 之前**的老位置。
+     *   真机上那个文件从 2026-09-24 01:25 起就再没被写过（清单早就搬到
+     *   `%APPDATA%\IEML`），于是这张"哪些版本还在用"的表是**陈旧数据**算出来的：
+     *   新建的实例在下载页一律显示"没人在用"。
+     *   `own_file_for_read` 的语义正是"优先启动器自己的家，那儿没有才回退老位置"
+     *   （老用户升级当次启动仍读得到）。
+     */
+    let Some(path) = state.paths.own_file_for_read("instances.json") else {
+        return HashMap::new();
+    };
     let mut out: HashMap<String, HashSet<String>> = HashMap::new();
     let Ok(text) = std::fs::read_to_string(&path) else {
         return out;
@@ -4585,7 +4596,15 @@ pub struct InstanceHealth {
 ///   "健康检查说没事、一点启动却说找不到版本"。
 #[tauri::command]
 pub fn instance_health(state: State<'_, AppState>) -> Vec<InstanceHealth> {
-    let path = state.paths.root.join("instances.json");
+    /*
+     * ★★ 2026-09-24：与 `instance_usage` 同一个坑 —— 这里原来读的也是
+     *   `state.paths.root.join("instances.json")`（A-4 之前的老位置）。
+     *   清单现在住在启动器自己的家，读老位置会得到陈旧清单（甚至读不到而
+     *   静默返回空 vec，界面上就是"一个失联的版本都没有"）。
+     */
+    let Some(path) = state.paths.own_file_for_read("instances.json") else {
+        return Vec::new();
+    };
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Vec::new();
     };
@@ -6213,10 +6232,46 @@ mod wire_tests {
             root: base.join("root"),
             own_root: base.join("own"),
             shared: base.join("root").join(".minecraft"),
-            instances: base.join("own").join("instances"),
+            /*
+             * ★★ 2026-09-24：实例目录回到**游戏根目录**下（存档/Mod 是游戏数据）。
+             *   这条夹具原来写的是 `own/instances`（2026-09-23 的错布局）——
+             *   夹具的形状必须跟着真布局走，否则下面的"落在实例目录下"断言
+             *   会在一个现实里不存在的布局上通过。
+             */
+            instances: base.join("root").join("instances"),
             java: base.join("own").join("java"),
             cache: base.join("own").join("cache"),
             logs: base.join("own").join("logs"),
+        }
+    }
+
+    /// ★★ 2026-09-24（用户：「版本列表的版本给我定位到
+    /// `C:\…\AppData\Roaming\IEML\instances` 了」）：
+    ///   `open_data_dir` 的实例那几个分支必须落在**游戏根目录**下 ——
+    ///   这正是用户点「打开目录」时资源管理器会去的地方。
+    ///   启动器自己的三样（logs/java/cache）则必须留在 `own_root`。
+    #[test]
+    fn open_dir_instance_paths_live_in_the_game_root() {
+        let p = probe_paths("instroot");
+        for which in ["instance", "game-dir", "mods"] {
+            let dir = resolve_open_dir(&p, Some(which), Some("s1"));
+            assert!(
+                dir.starts_with(&p.root),
+                "{which} 必须落在游戏根目录（{}）下：{}",
+                p.root.display(),
+                dir.display()
+            );
+            assert!(
+                !dir.starts_with(&p.own_root),
+                "{which} 不该落在启动器目录里：{}",
+                dir.display()
+            );
+        }
+        // 反过来：启动器自己的目录不该跟着游戏盘走
+        for (which, want) in [("logs", &p.logs), ("java", &p.java), ("cache", &p.cache)] {
+            let dir = resolve_open_dir(&p, Some(which), None);
+            assert_eq!(&dir, want);
+            assert!(dir.starts_with(&p.own_root) && !dir.starts_with(&p.root));
         }
     }
 

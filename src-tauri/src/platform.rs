@@ -31,7 +31,23 @@ pub struct AppPaths {
     ///   字段名仍叫 `shared`（"共享"是它的**职责**，`.minecraft` 是它的**位置**）——
     ///   全仓库 45 处引用都走这个字段，所以换位置只需要改这一行。
     pub shared: PathBuf,
-    /// 实例目录（在 `own_root` 下，**不在**游戏根目录里）
+    /// 实例目录（在**游戏根目录**下：`<root>/instances`）
+    ///
+    /// ★★ 2026-09-24（用户：「我在用 D 盘的目录，为什么版本列表的版本给我定位到
+    ///   `C:\Users\…\AppData\Roaming\IEML\instances` 了」）：
+    ///   实例目录里装的是**游戏数据** —— 每个实例的游戏工作目录
+    ///   （`game/` 里的 `saves` 存档、`mods`、`config`、`options.txt`）与它自己的
+    ///   `natives` 都在这下面。它必须跟用户挑的**游戏盘**走，与 `.minecraft` 同级。
+    ///
+    ///   放在 `%APPDATA%` 里的两个直接后果（真机实测）：
+    ///   ① 用户在 D 盘攒的实例**全部作废** —— `D:\IEML\instances` 有 6 个版本目录 /
+    ///      122.8 MB，而 C 盘那份只有一个 30.9 MB 的空壳，清单里的三个实例里
+    ///      有两个（`vanilla-262` / `vanilla-1122`）在 C 盘根本不存在；
+    ///   ② 存档会悄悄写进系统盘，而用户在游戏根目录里永远找不到自己的世界。
+    ///
+    ///   所以 2026-09-23 那次"把 instances 一起搬进 own_root"**搬错了一半**：
+    ///   清单 / 偏好 / Java / 缓存 / 日志留在 `own_root` 是对的（那才是启动器自己的东西），
+    ///   实例目录不是 —— 见 `AppPaths::own_root` 的对比说明。
     pub instances: PathBuf,
     /// 自动下载的 Java（在 `own_root` 下）
     pub java: PathBuf,
@@ -56,11 +72,15 @@ impl AppPaths {
     ///
     /// ★★ 2026-09-23：启动器自己的目录现在挂在 **`own_root`**（`%APPDATA%\IEML`）
     ///   而不是游戏根目录下 —— 见 `AppPaths::own_root` 的说明。
+    ///
+    /// ★★ 2026-09-24：**实例目录是这条规矩的例外，它留在游戏根目录里**
+    ///   （`<root>/instances`）—— 那里面是存档与 Mod，属于游戏数据，
+    ///   必须跟着用户挑的游戏盘走。理由见 `AppPaths::instances` 的说明。
     pub fn from_root(root: PathBuf) -> Self {
         let own_root = default_own_root();
         Self {
             shared: root.join(GAME_DIR_NAME),
-            instances: own_root.join("instances"),
+            instances: root.join("instances"),
             java: own_root.join("java"),
             cache: own_root.join("cache"),
             logs: own_root.join("logs"),
@@ -84,13 +104,19 @@ impl AppPaths {
     /// 启动时确保**游戏根目录**存在。
     ///
     /// ★★ 2026-09-22（用户：「这个根目录只创建装游戏的根目录，**不要附带启动器文件**」）：
-    ///   这里**只建游戏那一边**（根目录 + 它的 `.minecraft`）；
-    ///   启动器自己的目录（instances / java / cache / logs / shared）改成
+    ///   这里**只建游戏那一边**（游戏根目录 + 它的 `.minecraft` + `instances`）；
+    ///   启动器自己的目录（java / cache / logs）改成
     ///   **用到时才建**（见 `ensure_own`）——
     ///   于是"刚选好的空目录"里不会再凭空冒出一堆启动器文件。
+    ///
+    ///   ★ 2026-09-24：`instances` 属于**游戏那一边**（它装的是存档与 Mod），
+    ///     所以从 `ensure_own` 挪到了这里 —— 判据见 `AppPaths::instances`。
+    ///     用户那句"不要附带启动器文件"针对的是**启动器自己的**文件，
+    ///     不是"游戏根目录里一个子目录都不许有"（`.minecraft` 一直都在）。
     pub fn ensure(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.root)?;
         std::fs::create_dir_all(self.game_dir())?;
+        std::fs::create_dir_all(&self.instances)?;
         Ok(())
     }
 
@@ -100,8 +126,12 @@ impl AppPaths {
     }
 
     /// 启动器**自己的**目录。用到时才调（懒建，见 `ensure` 的说明）。
+    ///
+    /// ★ 2026-09-24：列表里**没有 `instances`** —— 它跟着游戏根目录，
+    ///   由 `ensure()` 建（见 `AppPaths::instances`）；
+    ///   也没有 `shared` —— 它的位置就是 `.minecraft`，同样由 `ensure()` 建。
     pub fn ensure_own(&self) -> std::io::Result<()> {
-        for p in [&self.shared, &self.instances, &self.java, &self.cache, &self.logs] {
+        for p in [&self.java, &self.cache, &self.logs] {
             std::fs::create_dir_all(p)?;
         }
         Ok(())
@@ -153,9 +183,12 @@ impl AppPaths {
     ///   （`own_root`，Windows 上是 `%APPDATA%\IEML`），**不在游戏根目录里**。
     ///
     ///   2026-09-24（缺陷报告 A-4）：「启动器数据目录搬出游戏根目录」原来**只搬了一半** ——
-    ///   `instances/ java/ cache/ logs/` 早就挂在 `own_root`，而这四个文件还留在
-    ///   游戏根目录里。真机后果：用户在「候选盘」那页删掉一个游戏根目录，
-    ///   会**连实例清单与全部设置一起删掉**，而两道确认框里都没有这句话。
+    ///   这几个文件当时还留在游戏根目录里。真机后果：用户在「候选盘」那页删掉一个
+    ///   游戏根目录，会**连实例清单与全部设置一起删掉**，而两道确认框里都没有这句话。
+    ///
+    ///   ★ 同日的第二次修正（见 `AppPaths::instances`）：搬走的是**启动器自己的**
+    ///     东西（这四个文件 + java/cache/logs）；**实例目录搬回来了** ——
+    ///     它装的是存档与 Mod，属于游戏数据，得跟用户挑的游戏盘走。
     pub fn own_file(&self, name: &str) -> PathBuf {
         self.own_root.join(name)
     }
@@ -427,15 +460,8 @@ pub fn validate_data_root(target: &Path, current: &Path) -> Result<(), String> {
     }
 
     // 用规范化后的形式比较，避免 `D:\IEML` 与 `D:\IEML\` 被当成两个地方
-    let norm = |p: &Path| -> PathBuf {
-        let s = p.to_string_lossy().replace('/', "\\");
-        let s = s.trim_end_matches('\\').to_string();
-        #[cfg(windows)]
-        let s = s.to_lowercase();
-        PathBuf::from(s)
-    };
-    let t = norm(target);
-    let c = norm(current);
+    let t = norm_path(target);
+    let c = norm_path(current);
 
     if t == c {
         return Err("这就是当前的数据目录，没有变化。".into());
@@ -624,13 +650,14 @@ pub fn list_volumes(current: &Path) -> Vec<VolumeInfo> {
 ///   大小写不敏感、末尾分隔符不算差别（`D:\IEML` 与 `D:\IEML\` 是一个地方）。
 ///   不解析 `..`、不碰符号链接：这里比的是**我们自己拼出来的**建议路径
 ///   与用户记录里的路径，不是任意两个用户输入。
+///
+/// ★ 2026-09-24：规范化那一步改成共用 [`norm_path`] —— 原来这里有一份自己的
+///   实现（顺带把 `/` 也归一了），"是不是同一处"在收养老目录时也要用，
+///   两份实现迟早会对 `D:/IEML` 这种写法给出不同答案。
+///   （副作用：非 Windows 上不再强制小写 —— 那三个平台本来就大小写敏感，
+///   而这只影响开发机上的单测，发行版只有 Windows。）
 pub fn same_path(a: &Path, b: &Path) -> bool {
-    let norm = |p: &Path| {
-        p.to_string_lossy()
-            .trim_end_matches(['\\', '/'])
-            .to_lowercase()
-    };
-    !a.as_os_str().is_empty() && norm(a) == norm(b)
+    !a.as_os_str().is_empty() && norm_path(a) == norm_path(b)
 }
 
 /// 这个目录是不是"一次手滑会删掉一大片"的那种（盘符根 / 用户目录 / 系统目录）。
@@ -901,11 +928,29 @@ pub fn migrate_data_root(old: &Path, new: &Path) -> std::io::Result<u64> {
         return Ok(0);
     }
     // 只认真正的数据子目录，别把用户的杂物搬过去
+    /*
+     * ★★ 2026-09-24：这里**只剩 `instances`** —— 它现在是"游戏那一边"的目录
+     *   （`<root>/instances`，装的是存档与 Mod，见 `AppPaths::instances`），
+     *   跟着游戏根目录一起搬是对的。
+     *
+     *   而 `java` / `cache` / `logs` **必须从这张表里删掉**：它们是启动器自己的东西，
+     *   只认 `own_root`（`%APPDATA%\IEML`）。留在这张表里的后果是真机上量到的：
+     *   每次启动都把 `%APPDATA%\IEML\cache`（1839 个文件 / 9.5 MB）复制进
+     *   `D:\IEML\cache` —— 于是游戏盘上白占一份、启动器又不读它
+     *   （用户 2026-09-22 说的"根目录不要附带启动器文件"正是这件事）。
+     *   老位置里那三样由 `adopt_own_dirs` 往 `own_root` 收养（方向反过来）。
+     */
     let mut copied = 0u64;
-    for name in ["instances", "java", "cache", "logs"] {
+    for name in ["instances"] {
         let from = old.join(name);
         if from.is_dir() {
-            copied += copy_tree(&from, &new.join(name))?;
+            /*
+             * ★ 实例目录用**按 mtime 判胜负**的补齐（不是"目标已有就跳过"）：
+             *   实例里是用户自己会改的东西（options.txt / 存档 / Mod），
+             *   而"错位置那两天"写进去的正是老位置那一份 —— 见
+             *   `merge_instances_by_mtime` 的说明（真机上差 12 天的 options.txt）。
+             */
+            copied += merge_instances_by_mtime(&from, &new.join(name))?;
         }
     }
 
@@ -1056,11 +1101,108 @@ fn should_adopt(from: &Path, to: &Path) -> bool {
     }
 }
 
+/// ★★ 2026-09-24：把**游戏根目录里的启动器目录**收养到 `own_root`。
+///
+/// 管这三个：`java`、`cache`、`logs`。
+///
+/// ## 为什么需要它
+///
+///   0.1.0-beta 时代的启动器把它们建在游戏根目录里（`<root>/java` 之类），
+///   而 2026-09-23 之后启动器**只读 `own_root` 下那一份** ——
+///   老用户升级上来会看到"我下好的 Java 不见了"（要走一遍重新下载 ~200 MB）。
+///   这里在启动时把缺的补过去；顺带也是 `migrate_data_root` 的反方向：
+///   搬家只搬游戏数据，启动器自己的东西**从游戏盘收回系统盘的家**。
+///
+/// ## 三条规矩（与 `adopt_records` / `migrate_data_root` 一致）
+///
+///   ① 只复制、绝不删源（游戏根目录那份留着，用户想回退旧版还能用）；
+///   ② 目标已有的文件一个字节都不动（`copy_tree` 的语义）；
+///   ③ 源就是 `own_root` 自己时直接跳过 —— 否则等于自己复制自己。
+///
+/// 返回复制了多少字节（0 = 什么都不需要做）。
+pub fn adopt_own_dirs(paths: &AppPaths, legacy_root: &Path) -> u64 {
+    if same_path(legacy_root, &paths.own_root) {
+        return 0;
+    }
+    let mut copied = 0u64;
+    for name in ["java", "cache", "logs"] {
+        let from = legacy_root.join(name);
+        if !from.is_dir() {
+            continue;
+        }
+        match copy_tree(&from, &paths.own_root.join(name)) {
+            Ok(0) => {}
+            Ok(n) => {
+                copied += n;
+                say!(
+                    "[IEML/paths] 把游戏根目录里的 {name} 收养到启动器目录（{n} 字节）—— 源那份保留不动"
+                );
+            }
+            Err(e) => say!("[IEML/paths] 收养 {name} 失败：{e}"),
+        }
+    }
+    copied
+}
+
+/// 路径的规范化形式 —— **只用于比较，不碰磁盘**。
+///
+///   分隔符统一成 `\`、去掉结尾的分隔符、Windows 上不分大小写。
+///   `D:\IEML`、`d:/ieml/`、`D:\IEML\\` 都归到同一个值。
+///
+/// ★ 抽出来的理由：`validate_data_root` 里原来有一份一模一样的闭包，
+///   而"这两个目录是不是同一处"在收养老目录时又要用一次 ——
+///   路径比较只允许有一个来源，否则两处会对 `D:\IEML` 与 `d:\ieml\`
+///   给出不同答案。
+fn norm_path(p: &Path) -> PathBuf {
+    let s = p.to_string_lossy().replace('/', "\\");
+    let s = s.trim_end_matches('\\').to_string();
+    #[cfg(windows)]
+    let s = s.to_lowercase();
+    PathBuf::from(s)
+}
+
 /// 递归复制：**目标已有的文件一个字节都不动**，缺什么补什么。
 /// 为什么不是"目标存在就整体跳过"：那样目标上任何一处损坏
 /// （例如被写空的 `instances.json`）都永远修不回来。见
 /// `migrate_data_root` 的说明 —— 这是实测丢过用户数据之后改的。
 fn copy_tree(from: &Path, to: &Path) -> std::io::Result<u64> {
+    copy_tree_rule(from, to, false)
+}
+
+/// ★★ 2026-09-24：**实例目录**的跨根补齐 —— 与 `copy_tree` 只差一条：
+/// 同名文件**按 mtime 判胜负**（源更新就赢；覆盖前把目标那份备份成 `.ieml-bak`）。
+///
+/// ## 为什么只有实例目录需要这条
+///
+///   `.minecraft` 里是库 / jar / 资源包这些**内容由版本决定**的东西，mtime 没有意义
+///   （重新下载就会变），所以那边继续用"目标已有就跳过"最安全。
+///   而实例目录里装的是**用户自己会改的东西**：`options.txt` 的游戏内设置、
+///   `config/`、`mods/`、存档。
+///
+///   真机上量到的实例（`fabric-262`，2026-09-24）：
+///     · 老位置（`%APPDATA%\IEML\instances`）那份 `options.txt` = **当天 14:01 玩的**
+///       （`lang:zh_cn`、`renderDistance:12`、音乐音量 0.0）
+///     · 游戏根（`D:\IEML\instances`）那份 = 09-12 的
+///       （`lang:en_us`、`renderDistance:16`、音乐音量 1.0）
+///   只按"目标存在就跳过"的话，用户换回游戏盘之后**今天的设置会被 12 天前的盖掉** ——
+///   而且他会以为是自己记错了。判据改成 mtime 之后，赢的是"最后一次真正玩过"的那份。
+///
+///   ★ 与 `adopt_records` 是同一条规矩（源更新 → 源赢），只是这里多一层备份：
+///     覆盖前把目标那份存成 `<文件名>.ieml-bak`（游戏/加载器都不认这个后缀，
+///     不会被当成 Mod 或存档读进去），万一判错了东西还在。
+///
+/// ## 为什么不会每次启动都来回覆盖
+///
+///   `std::fs::copy` 会把源的 mtime 一起带过去（Windows 上是 `CopyFileEx`），
+///   加上这里是**严格大于**才覆盖 —— 复制过一次之后两边 mtime 相等，
+///   下一次启动就什么都不做了。
+fn merge_instances_by_mtime(from: &Path, to: &Path) -> std::io::Result<u64> {
+    copy_tree_rule(from, to, true)
+}
+
+/// `copy_tree` 与 `merge_instances_by_mtime` 的共同实现。
+/// `newer_wins = false` → 目标已有就跳过；`true` → 源更新就覆盖（先备份目标）。
+fn copy_tree_rule(from: &Path, to: &Path, newer_wins: bool) -> std::io::Result<u64> {
     std::fs::create_dir_all(to)?;
     let mut bytes = 0u64;
     for e in std::fs::read_dir(from)? {
@@ -1069,10 +1211,26 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<u64> {
         let dst = to.join(e.file_name());
         let meta = e.metadata()?;
         if meta.is_dir() {
-            bytes += copy_tree(&src, &dst)?;
+            bytes += copy_tree_rule(&src, &dst, newer_wins)?;
         } else if meta.is_file() {
             if dst.is_file() {
-                continue; // 目标已有 → 绝不覆盖（那是用户正在用的那份）
+                if !newer_wins || !is_newer(&src, &dst) {
+                    continue; // 目标已有 → 不动（那是用户正在用的那份）
+                }
+                let bak = backup_name(&dst);
+                match std::fs::copy(&dst, &bak) {
+                    Ok(_) => say!("[IEML/paths] 覆盖前把 {} 备份到 {}", dst.display(), bak.display()),
+                    Err(e) => {
+                        // 备份不成功就**不覆盖** —— 判据再合理也不能冒丢数据的风险
+                        say!("[IEML/paths] {} 备份失败（{e}），这一步跳过", dst.display());
+                        continue;
+                    }
+                }
+                say!(
+                    "[IEML/paths] {} 比目标新，用它覆盖 {}（存进实例目录的新家）",
+                    src.display(),
+                    dst.display()
+                );
             }
             // 半截的 .part 不该跟着搬家：新家会用新路径重新下
             if src
@@ -1090,6 +1248,22 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<u64> {
         }
     }
     Ok(bytes)
+}
+
+/// 源文件是不是**比**目标文件新（严格大于；取不到 mtime 就按"不新"处理）。
+fn is_newer(src: &Path, dst: &Path) -> bool {
+    let mtime = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    match (mtime(src), mtime(dst)) {
+        (Some(a), Some(b)) => a > b,
+        _ => false,
+    }
+}
+
+/// 覆盖前的备份名：`options.txt` → `options.txt.ieml-bak`。
+fn backup_name(dst: &Path) -> PathBuf {
+    let mut name = dst.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    name.push_str(".ieml-bak");
+    dst.with_file_name(name)
 }
 
 /* ====================== 机器信息 ====================== */
@@ -1865,8 +2039,9 @@ mod tests {
      *
      *   ★ 这里直接测 `AppPaths::ensure()` 的形状（不碰 `set_data_root` ——
      *     它会写真实的 datadir.txt，跑一次单测就改掉开发机的记录）。
-     *     临时目录里的断言：根目录下**只有 `.minecraft`**，
-     *     不该冒出 instances / java / cache / logs / shared。
+     *     临时目录里的断言：根目录下**只有游戏那边的东西**
+     *     （`.minecraft` + `instances`），
+     *     不该冒出 java / cache / logs / shared。
      */
     #[test]
     fn ensure_只建游戏目录_不建启动器目录() {
@@ -1876,15 +2051,17 @@ mod tests {
 
         // 用 AppPaths 的字段直接拼一份（不 resolve，避免读到开发机的真实配置）
         // ★ 注意 `shared` 的**位置**就是 `.minecraft`（字段名是历史遗留，见它的文档注释）
-        // ★ 2026-09-23：启动器自己的目录挂在 `own_root`（另一个临时目录）——
+        // ★ 2026-09-23：java / cache / logs 挂在 `own_root`（另一个临时目录）——
         //   这条测试仍然要断言"**游戏根目录里不出现它们**"。
+        // ★ 2026-09-24：`instances` 反过来 —— 它是游戏那边的（存档 / Mod），
+        //   所以它**必须**出现在游戏根目录里，而不是 own_root 里。
         let own = std::env::temp_dir().join(format!("ieml-own-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&own);
         let paths = AppPaths {
             root: tmp.clone(),
             own_root: own.clone(),
             shared: tmp.join(".minecraft"),
-            instances: own.join("instances"),
+            instances: tmp.join("instances"),
             java: own.join("java"),
             cache: own.join("cache"),
             logs: own.join("logs"),
@@ -1897,11 +2074,13 @@ mod tests {
             .filter_map(|e| e.ok())
             .map(|e| e.file_name().to_string_lossy().to_string())
             .collect();
-        assert!(
-            names.iter().any(|n| n == ".minecraft"),
-            "应当建出游戏目录 .minecraft，实际：{names:?}"
-        );
-        for bad in ["shared", "instances", "java", "cache", "logs"] {
+        for want in [".minecraft", "instances"] {
+            assert!(
+                names.iter().any(|n| n == want),
+                "应当建出游戏目录 {want}，实际：{names:?}"
+            );
+        }
+        for bad in ["shared", "java", "cache", "logs"] {
             assert!(
                 !names.iter().any(|n| n == bad),
                 "不该在根目录建启动器目录 {bad}，实际：{names:?}"
@@ -1911,14 +2090,19 @@ mod tests {
         // `ensure_own()` 才是建启动器目录的那一个
         // ★ 列表里**没有 `shared`** —— 它的位置就是 `.minecraft`（上面已经建过了）
         // ★ 2026-09-23：它们建在 **own_root** 下，不再在游戏根目录里
+        // ★ 2026-09-24：也没有 `instances` —— 它是游戏那边的，由 `ensure()` 建
         paths.ensure_own().expect("ensure_own 应当成功");
-        for want in ["instances", "java", "cache", "logs"] {
+        for want in ["java", "cache", "logs"] {
             assert!(own.join(want).is_dir(), "ensure_own 之后应当在 own_root 下有 {want}");
             assert!(
                 !tmp.join(want).exists(),
                 "**游戏根目录里不该出现**启动器目录 {want}"
             );
         }
+        assert!(
+            !own.join("instances").exists(),
+            "own_root 里**不该**再出现 instances —— 它跟着游戏根目录"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
         let _ = std::fs::remove_dir_all(&own);
@@ -2172,8 +2356,12 @@ mod tests {
         );
         /*
          * ★★ 2026-09-23（用户确认「启动器自己的目录要搬出游戏根目录：是的」）：
-         *   实例目录**不再**挂在游戏根目录下 —— 它在 `own_root`（%APPDATA%\IEML）。
-         *   这里断言的是新的关系：`own_root` 绝对、实例挂在它下面、而且**不在游戏根目录里**。
+         *   java / cache / logs 挂在 `own_root`（%APPDATA%\IEML）。
+         *
+         * ★★ 2026-09-24（用户：「我在用 D 盘的目录，为什么版本列表的版本给我定位到
+         *   `C:\Users\…\Roaming\IEML\instances` 了」）：
+         *   **实例目录回到游戏根目录**（存档 / Mod 是游戏数据，跟着用户挑的盘走）——
+         *   这条断言因此整个反过来了。判据见 `AppPaths::instances`。
          */
         assert!(
             p.own_root.is_absolute(),
@@ -2181,17 +2369,28 @@ mod tests {
             p.own_root.display()
         );
         assert!(
-            p.instances.starts_with(&p.own_root),
-            "实例目录必须在**启动器数据目录**下：{:?}",
-            p.instances
-        );
-        assert!(
-            !p.instances.starts_with(&p.root),
-            "实例目录**不该**再出现在游戏根目录里：{:?}（root={:?}）",
+            p.instances.starts_with(&p.root),
+            "实例目录必须在**游戏根目录**下：{:?}（root={:?}）",
             p.instances,
             p.root
         );
+        assert!(
+            !p.instances.starts_with(&p.own_root),
+            "实例目录**不该**在启动器数据目录里：{:?}",
+            p.instances
+        );
         assert!(p.instances.ends_with("instances"));
+        // ★ 启动器自己的三样东西留在 own_root 里（与实例目录分开）
+        for (name, dir) in [("java", &p.java), ("cache", &p.cache), ("logs", &p.logs)] {
+            assert!(
+                dir.starts_with(&p.own_root),
+                "{name} 必须在启动器数据目录下：{dir:?}"
+            );
+            assert!(
+                !dir.starts_with(&p.root),
+                "{name} **不该**在游戏根目录里：{dir:?}"
+            );
+        }
         // ★ 游戏数据在数据根目录内的 `.minecraft`（PCL 同款布局）
         assert!(
             p.shared.ends_with(GAME_DIR_NAME),
@@ -2429,21 +2628,195 @@ mod tests {
     }
 
     /// 半截的下载残留不该跟着搬家（新位置会用新路径重下）。
+    ///
+    /// ★ 2026-09-24：例子从 `cache` 换成 `instances` —— 跨根搬家现在只搬
+    ///   `instances`（启动器自己的 java/cache/logs 不再跟着搬，见 `migrate_data_root`），
+    ///   而"半截文件不搬"这条规矩本身没变（实例里也有 `.part` 残留）。
     #[test]
     fn migration_skips_partial_downloads() {
         let old = tmp("old5");
         let new = tmp("new5");
-        std::fs::create_dir_all(old.join("cache")).unwrap();
-        std::fs::write(old.join("cache").join("a.jar.part.3"), b"junk").unwrap();
-        std::fs::write(old.join("cache").join("b.jar"), b"good").unwrap();
+        std::fs::create_dir_all(old.join("instances")).unwrap();
+        std::fs::write(old.join("instances").join("a.jar.part.3"), b"junk").unwrap();
+        std::fs::write(old.join("instances").join("b.jar"), b"good").unwrap();
 
         migrate_data_root(&old, &new).unwrap();
 
         assert!(
-            !new.join("cache").join("a.jar.part.3").exists(),
+            !new.join("instances").join("a.jar.part.3").exists(),
             "半截的分片不该搬过去"
         );
-        assert!(new.join("cache").join("b.jar").is_file());
+        assert!(new.join("instances").join("b.jar").is_file());
+    }
+
+    /// ★★ 2026-09-24：启动器自己的目录**不再被搬进新的游戏根目录**。
+    ///
+    ///   真机上量到过的后果：`%APPDATA%\IEML\cache`（1839 个文件 / 9.5 MB）
+    ///   被复制进 `D:\IEML\cache`，而启动器只读 own_root 那份 ——
+    ///   游戏盘白占一份，用户看到的就是"根目录里附带了一堆启动器文件"。
+    #[test]
+    fn migration_leaves_launcher_dirs_out_of_the_game_root() {
+        let old = tmp("old6");
+        let new = tmp("new6");
+        for name in ["java", "cache", "logs"] {
+            std::fs::create_dir_all(old.join(name)).unwrap();
+            std::fs::write(old.join(name).join("x.bin"), b"launcher").unwrap();
+        }
+        std::fs::create_dir_all(old.join("instances")).unwrap();
+        std::fs::write(old.join("instances").join("keep.bin"), b"game").unwrap();
+
+        migrate_data_root(&old, &new).unwrap();
+
+        assert!(
+            new.join("instances").join("keep.bin").is_file(),
+            "游戏那一边的 instances 还是该搬"
+        );
+        for name in ["java", "cache", "logs"] {
+            assert!(
+                !new.join(name).exists(),
+                "启动器目录 {name} 不该被搬进游戏根目录：{}",
+                new.join(name).display()
+            );
+        }
+    }
+
+    /// ★★ 2026-09-24：**实例目录里的同名文件按 mtime 判胜负** —— 而且只对实例目录。
+    ///
+    ///   为什么：实例目录放的是用户自己会改的东西（`options.txt` 的游戏内设置、
+    ///   存档、Mod）。用户被"错位置"坑了的那两天里，**写进去的是老位置那一份**；
+    ///   只按"目标已有就跳过"，他换回游戏盘之后今天的设置会被十几天前那份盖掉。
+    ///
+    ///   真机上的对照（`fabric-262`）：老位置 = 当天 14:01（`lang:zh_cn`），
+    ///   游戏根 = 09-12（`lang:en_us`）。
+    ///
+    ///   ★ 反面的那一半也要钉住：`.minecraft` 里的同名文件**不按 mtime**
+    ///     （库/jar 的 mtime 没有意义），继续"目标已有就跳过"。
+    #[test]
+    fn instances_migration_lets_the_newer_copy_win() {
+        let old = tmp("old7");
+        let new = tmp("new7");
+        let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        let game = |root: &Path| root.join("instances").join("s1").join("game");
+
+        // 老位置（那两天应用实际在写的那份）
+        std::fs::create_dir_all(game(&old)).unwrap();
+        std::fs::write(game(&old).join("options.txt"), b"lang:zh_cn").unwrap();
+        std::fs::write(game(&old).join("only-in-old.txt"), b"from-old").unwrap();
+        std::fs::write(old.join("instances").join("s1").join("s1-only.bin"), b"x").unwrap();
+        // 游戏根（十几天前那份）
+        std::fs::create_dir_all(game(&new)).unwrap();
+        std::fs::write(game(&new).join("options.txt"), b"lang:en_us").unwrap();
+        std::fs::write(game(&new).join("only-in-new.txt"), b"keep-me").unwrap();
+        // 显式拨 mtime：目标（游戏根）那份是一小时前，源（老位置）那份是现在
+        set_mtime(&game(&new).join("options.txt"), hour_ago);
+        set_mtime(&game(&old).join("options.txt"), std::time::SystemTime::now());
+
+        // `.minecraft` 里的同名文件（同样的 mtime 关系）—— 应当**不动**
+        std::fs::create_dir_all(old.join(GAME_DIR_NAME).join("libraries")).unwrap();
+        std::fs::write(old.join(GAME_DIR_NAME).join("libraries").join("a.jar"), b"res-downloaded").unwrap();
+        std::fs::create_dir_all(new.join(GAME_DIR_NAME).join("libraries")).unwrap();
+        std::fs::write(new.join(GAME_DIR_NAME).join("libraries").join("a.jar"), b"already-here").unwrap();
+        set_mtime(&new.join(GAME_DIR_NAME).join("libraries").join("a.jar"), hour_ago);
+        set_mtime(&old.join(GAME_DIR_NAME).join("libraries").join("a.jar"), std::time::SystemTime::now());
+
+        migrate_data_root(&old, &new).unwrap();
+
+        let opts = game(&new).join("options.txt");
+        assert_eq!(
+            std::fs::read_to_string(&opts).unwrap(),
+            "lang:zh_cn",
+            "★ 老位置那份更新（用户最后真正玩过的那份）→ 它该赢"
+        );
+        let bak = game(&new).join("options.txt.ieml-bak");
+        assert_eq!(
+            std::fs::read_to_string(&bak).unwrap(),
+            "lang:en_us",
+            "被覆盖的那份必须留下备份（判错了也还有救）"
+        );
+        assert!(game(&new).join("only-in-old.txt").is_file(), "缺的要补");
+        assert_eq!(
+            std::fs::read_to_string(game(&new).join("only-in-new.txt")).unwrap(),
+            "keep-me",
+            "目标独有的文件不许动"
+        );
+        assert!(new.join("instances").join("s1").join("s1-only.bin").is_file(), "实例目录整体都要补");
+        // 源一个字节都不删
+        assert!(game(&old).join("options.txt").is_file());
+        // ★ `.minecraft` 不按 mtime：目标已有就跳过
+        assert_eq!(
+            std::fs::read_to_string(new.join(GAME_DIR_NAME).join("libraries").join("a.jar")).unwrap(),
+            "already-here",
+            "库/jar 不该按 mtime 覆盖（那会让每次启动都可能重写共享文件）"
+        );
+        assert!(
+            !new.join(GAME_DIR_NAME).join("libraries").join("a.jar.ieml-bak").exists(),
+            "没覆盖就不该产生备份"
+        );
+
+        // 幂等：复制过一次之后两边 mtime 相等（`fs::copy` 会带 mtime）→ 第二次什么都不做
+        let again = migrate_data_root(&old, &new).unwrap();
+        assert!(
+            again < std::fs::metadata(&opts).unwrap().len() + 1,
+            "第二次不该再重复复制那一份（实际复制了 {again} 字节）"
+        );
+    }
+
+    /// ★★ 2026-09-24：反方向 —— 游戏根目录里的启动器目录被**收养**到 own_root。
+    ///
+    ///   覆盖三件事：① 缺的复制过去；② 目标已有的文件一个字节都不动；
+    ///   ③ 源就是 own_root 时不做任何事（否则等于自己复制自己，白跑一遍）。
+    #[test]
+    fn adopt_own_dirs_copies_launcher_dirs_into_own_root() {
+        let (p, root, own) = tmp_paths("adopt");
+        // 游戏根目录里留着老式启动器目录
+        std::fs::create_dir_all(root.join("java").join("jdk-21")).unwrap();
+        std::fs::write(root.join("java").join("jdk-21").join("bin.exe"), b"jdk").unwrap();
+        std::fs::create_dir_all(root.join("cache")).unwrap();
+        std::fs::write(root.join("cache").join("a.json"), b"from-game-root").unwrap();
+        // 目标**已经有**同名文件（用户在用的那份）→ 绝不能被覆盖
+        std::fs::create_dir_all(own.join("cache")).unwrap();
+        std::fs::write(own.join("cache").join("a.json"), b"mine").unwrap();
+        // 只有游戏根目录才有的第二个文件 → 该补过去
+        std::fs::write(root.join("cache").join("b.json"), b"extra").unwrap();
+        // 游戏根目录里没有 logs → 不该被凭空造出来
+        let copied = adopt_own_dirs(&p, &root);
+
+        assert!(copied > 0, "应当真的复制了东西");
+        assert!(
+            own.join("java").join("jdk-21").join("bin.exe").is_file(),
+            "游戏根目录里下好的 Java 应当被收养"
+        );
+        assert_eq!(
+            std::fs::read_to_string(own.join("cache").join("a.json")).unwrap(),
+            "mine",
+            "目标已有的文件一个字节都不许动"
+        );
+        assert_eq!(
+            std::fs::read_to_string(own.join("cache").join("b.json")).unwrap(),
+            "extra",
+            "目标缺的文件应当补上"
+        );
+        assert!(!own.join("logs").exists(), "源里没有的目录不该凭空造");
+        // 源照旧（只复制、绝不删源）
+        assert!(root.join("cache").join("a.json").is_file());
+        assert!(root.join("java").join("jdk-21").join("bin.exe").is_file());
+        // 第二次跑：没什么可补的 → 0 字节
+        assert_eq!(adopt_own_dirs(&p, &root), 0, "补齐之后不该再有动作");
+        // 源 == own_root（本机就是 `%APPDATA%\IEML`）→ 直接跳过
+        assert_eq!(adopt_own_dirs(&p, &own), 0, "源就是自己的家，不该自己复制自己");
+    }
+
+    /// 路径比较：`D:\IEML`、`d:/ieml/`、`D:\IEML\\` 必须是同一处。
+    /// （收养老目录时用它判断"源是不是就是自己的家"，判错就会白复制一遍。）
+    #[test]
+    fn norm_path_is_forgiving_about_separators_and_case() {
+        let a = norm_path(Path::new("D:\\IEML"));
+        assert_eq!(a, norm_path(Path::new("D:\\IEML\\")));
+        assert_eq!(a, norm_path(Path::new("D:/IEML/")));
+        assert_eq!(a, norm_path(Path::new("D:\\IEML\\\\")));
+        #[cfg(windows)]
+        assert_eq!(a, norm_path(Path::new("d:\\ieml")), "Windows 上不分大小写");
+        assert_ne!(a, norm_path(Path::new("D:\\IEML2")));
     }
 
     /// 系统盘判定：`%SystemRoot%` 所在的盘就是系统盘。
@@ -2489,7 +2862,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let p = AppPaths {
             shared: root.join(GAME_DIR_NAME),
-            instances: own.join("instances"),
+            instances: root.join("instances"),
             java: own.join("java"),
             cache: own.join("cache"),
             logs: own.join("logs"),
