@@ -32,7 +32,21 @@ use std::sync::Mutex;
 
 /// 应用全局状态
 pub struct AppState {
-    pub paths: platform::AppPaths,
+    /*
+     * ★★ 2026-09-25（用户：「我不想要重启才生效，切换游戏数据应该是实时的」）：
+     *   这里原来是 `pub paths: AppPaths`（启动时解析一次、之后定死），
+     *   于是换根目录只能"记下来 + 重启生效"。
+     *
+     *   现在改成**可整体替换的句柄**：`RwLock<Arc<AppPaths>>`。
+     *     · 读：`state.paths()` 克隆一份 `Arc` 出来用 —— **不要跨 await 持锁**
+     *       （RwLockReadGuard 不是 Send，async 命令里持着它过 await 编不过），
+     *       克隆 Arc 之后随便用，锁只在取的那一刻拿一下；
+     *     · 换：`state.set_paths(new)`（调用方负责先校验、先落盘选址记录）。
+     *
+     *   ★ 为什么不是 `Mutex<AppPaths>`：那样每个调用点都要持锁读字段，
+     *     一次跨 await 就会把整个命令卡住。Arc 的代价是一次原子加一。
+     */
+    paths: std::sync::RwLock<std::sync::Arc<platform::AppPaths>>,
     /*
      * ★★ 正在运行的游戏进程：**按实例 id 索引的一张表**（2026-09-15，多开实例）。
      *
@@ -48,6 +62,31 @@ pub struct AppState {
      *   前端的实例表都认它，**一处对齐处处对齐**。
      */
     pub running: Mutex<HashMap<String, launch::RunningGame>>,
+}
+
+impl AppState {
+    pub fn new(paths: platform::AppPaths) -> Self {
+        Self {
+            paths: std::sync::RwLock::new(std::sync::Arc::new(paths)),
+            running: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// 当前这一份路径（克隆 Arc —— 见上面那段说明：**别跨 await 持锁**）
+    pub fn paths(&self) -> std::sync::Arc<platform::AppPaths> {
+        self.paths
+            .read()
+            .expect("paths 锁被毒化（有线程在持有它时 panic 了）")
+            .clone()
+    }
+
+    /// 换游戏根目录（**只换句柄**：校验、落盘记录、建目录都由调用方先做）
+    pub fn set_paths(&self, next: platform::AppPaths) {
+        *self
+            .paths
+            .write()
+            .expect("paths 锁被毒化（有线程在持有它时 panic 了）") = std::sync::Arc::new(next);
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -312,10 +351,7 @@ pub fn run() {    /*
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .manage(AppState {
-            paths,
-            running: Mutex::new(HashMap::new()),
-        })
+        .manage(AppState::new(paths))
         .invoke_handler(tauri::generate_handler![
             /* -------- 领域规则（前端只呈现结论，规则在这里） -------- */
             commands::app_info,

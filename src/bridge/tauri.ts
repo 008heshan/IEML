@@ -1167,8 +1167,13 @@ export const launcher = {
    * ★ 语义是**只切换、不迁移**：新目录是空的，旧的**一个字节都不动**。
    *   界面必须把这件事说清楚，否则用户会以为东西被搬走了。
    *
-   * ★ 返回里带 `restartRequired` —— `AppPaths` 是启动时解析一次的，
-   *   所以这个函数只**记录**选择，界面要如实告诉用户"重启后生效"。
+   * ★★ 2026-09-25（用户：「我不想要重启才生效，切换游戏数据应该是实时的」）：
+   *   `AppPaths` 现在装在 `RwLock<Arc<AppPaths>>` 里（`AppState::set_paths`），
+   *   所以这条命令**当场换句柄** —— 调用方紧接着调
+   *   `reloadAfterRootChange()` 刷新派生数据，不重启也不刷页面。
+   *
+   * ★ `restartRequired` 还在返回值里（老版本/未知情况下的兜底文案用），
+   *   现在固定是 `false`；界面按它分流，不许再自己写"重启后生效"。
    */
   setDataRoot: (path: string) =>
     call<{

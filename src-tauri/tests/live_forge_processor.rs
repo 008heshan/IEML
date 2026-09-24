@@ -35,7 +35,6 @@
 //!
 //! 默认 `#[ignore]`：要下上百 MB、还要跑好几分钟的 patcher。
 
-use std::sync::Mutex;
 
 use ieml_lib::commands_real::run_loader_installer;
 use ieml_lib::net::download::CancelToken;
@@ -100,16 +99,19 @@ async fn forge_installer_produces_the_generated_client_jar() {
     println!("跑安装器之前：{}", if before > 0 { format!("已存在（{before} 字节）") } else { "不存在".into() });
 
     // 重跑官方安装器 —— 它会重新执行 processors
-    let state = AppState {
-        paths: paths.clone(),
-        /*
-         * ★ 2026-09-20 补：`AppState.running` 从 `Mutex<Option<RunningGame>>`
-         *   改成了**按实例 id 索引的表**（beta.6 多开实例），这个集成测试
-         *   一直没跟着改 —— `cargo check --tests` 因此红着，而 `pnpm verify`
-         *   只跑 `--lib`，所以谁都没看见。
-         */
-        running: Mutex::new(std::collections::HashMap::new()),
-    };
+    /*
+     * ★ 2026-09-20 补：`AppState.running` 从 `Mutex<Option<RunningGame>>`
+     *   改成了**按实例 id 索引的表**（beta.6 多开实例），这个集成测试
+     *   一直没跟着改 —— `cargo check --tests` 因此红着，而 `pnpm verify`
+     *   只跑 `--lib`，所以谁都没看见。
+     *
+     * ★★ 2026-09-25：**同一类事又发生了一次** —— `AppState.paths` 从
+     *   `AppPaths` 变成了 `RwLock<Arc<AppPaths>>`（换游戏根目录要即时生效，
+     *   见 ADR-七十九），这里再次编译不过。
+     *   这次不再手写字面量，改走唯一构造口 `AppState::new(paths)`：
+     *   以后字段再加，这里也不会漏。
+     */
+    let state = AppState::new(paths.clone());
     let cancel = CancelToken::new();
     let progress = |m: String| println!("    · {m}");
     run_loader_installer(

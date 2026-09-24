@@ -225,6 +225,13 @@ interface AppContextValue {  state: AppState;
   refreshJava: (list: JavaRuntime[]) => void;
 
   /**
+   * ★★ 换完游戏根目录之后刷新派生的那几样（见实现处的清单）。
+   *   用户 2026-09-25：「切换游戏数据应该是实时的」—— 后端当场换句柄，
+   *   前端紧接着把机器信息 / 实例清单 / Java 重读一遍，**不重启、不刷页面**。
+   */
+  reloadAfterRootChange: () => Promise<void>;
+
+  /**
    * ★ 偏好写盘失败的原因（null = 正常）。
    *
    * 为什么要有它：偏好存不上时用户看到的是"改完设置、重启就没了"，
@@ -1266,6 +1273,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
   /* ★★ 启动器自身的更新：**只挂这一次**（顶栏角标与设置页共用这一份状态） */
   const update = useLauncherUpdate();
 
+  /**
+   * ★★ 2026-09-25（用户：「我不想要重启才生效，切换游戏数据应该是实时的」）：
+   *   换完游戏根目录之后**当场刷新所有从它派生的东西**。
+   *
+   *   为什么要一个专门的函数、而不是让调用方各自去刷：**"哪些东西是从根目录派生的"
+   *   只能有一个答案**（漏一样，就会留下"界面还显示旧根目录"的角落）。这里是那份清单：
+   *     · 机器信息（`machine.dataDir` —— 设置页 / 关于页 / 启动页显示的就是它）
+   *     · 实例清单（`instances.json` 住在启动器自己的家里，但实例**目录**在新根下，
+   *       所以条目要重新按新根算一遍）
+   *     · 「用过的游戏文件夹」列表（刚换过去的那一条要出现在里面）
+   *     · Java 列表（`rescanJava` 顺手把"这个版本要哪个 Java"重算一遍，很便宜）
+   *
+   *   ★ 不做的事：**不重启、也不刷新页面** —— 刷页面会把用户的界面状态
+   *     （当前页、滚动位置、弹窗）全丢掉，而这次切换只是一次数据源替换。
+   */
+  const reloadAfterRootChange = useCallback(async () => {
+    const say = (kind: 'ok' | 'warning' | 'err', title: string, desc?: string) =>
+      window.dispatchEvent(new CustomEvent('ieml:toast', { detail: { kind, title, desc } }));
+    try {
+      const [machine, instances] = await Promise.all([
+        backend.machineInfo(),
+        backend.loadInstances(),
+      ]);
+      dispatch({ type: 'machine/set', machine });
+      dispatch({ type: 'instances/refresh', instances: instances.instances });
+      say('ok', '已切换游戏根目录（即时生效）', '版本列表、启动、装 Mod 都按新目录走。');
+    } catch (e) {
+      say('warning', '切换后刷新失败', e instanceof Error ? e.message : String(e));
+      return;
+    }
+    void rescanJava();
+  }, [backend, rescanJava]);
+
   const value: AppContextValue = {
     state,
     backend,
@@ -1291,6 +1331,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     duplicateInstance,
     rescanJava,
     refreshJava,
+    reloadAfterRootChange,
     prefsSaveFailed,
     update,
     vfx: {

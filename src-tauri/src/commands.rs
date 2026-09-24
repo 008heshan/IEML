@@ -25,14 +25,14 @@ pub fn app_info(state: State<'_, AppState>) -> AppInfo {
     AppInfo {
         name: "IEML".into(),
         version: env!("CARGO_PKG_VERSION").into(),
-        data_dir: state.paths.root.to_string_lossy().to_string(),
+        data_dir: state.paths().root.to_string_lossy().to_string(),
         backend: "rust".into(),
     }
 }
 
 #[tauri::command]
 pub fn machine_info(state: State<'_, AppState>) -> platform::MachineInfo {
-    platform::machine_info(&state.paths)
+    platform::machine_info(&state.paths())
 }
 
 /* ====================== Java ====================== */
@@ -48,7 +48,7 @@ pub async fn scan_java(
     state: State<'_, AppState>,
     manual: Option<Vec<String>>,
 ) -> Result<Vec<java::JavaRuntime>, String> {
-    let paths = state.paths.clone();
+    let paths = state.paths().clone();
     let manual = manual.unwrap_or_default();
     tauri::async_runtime::spawn_blocking(move || platform::scan_java_with_extra(&paths, &manual))
         .await
@@ -67,7 +67,7 @@ pub fn remove_java(
 ) -> Result<(), String> {
     let p = std::path::Path::new(&path);
     // 只允许删除位于 IEML 数据目录里的 Java，避免误删系统安装的
-    let java_root = &state.paths.java;
+    let java_root = &state.paths().java;
     if !p.starts_with(java_root) {
         return Err(format!(
             "只能删除 IEML 自己下载的 Java（位于 {}）。系统安装的 Java 请用系统的方式卸载。",
@@ -415,7 +415,7 @@ pub fn scan_mods(
     state: State<'_, AppState>,
 ) -> Result<Vec<mods::ModEntry>, String> {
     // ★ 必须和游戏读到的是同一个目录（instances/{slug}/game/mods）
-    let dir = state.paths.instance_mods_dir(&instance_id);
+    let dir = state.paths().instance_mods_dir(&instance_id);
     let mut files: Vec<mods::ModFile> = Vec::new();
 
     let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -472,13 +472,13 @@ pub struct InstanceStore {
 ///   不再写在游戏根目录里 —— 用户在「候选盘」那页删掉游戏根目录时，
 ///   实例清单与全部设置不会再跟着一起没（老位置那份由 `platform::adopt_records` 收养）。
 fn instances_file(state: &AppState) -> std::path::PathBuf {
-    state.paths.instances_file()
+    state.paths().instances_file()
 }
 
 #[tauri::command]
 pub fn list_instances(state: State<'_, AppState>) -> Result<InstanceStore, String> {
     // 读：优先 own_root，那儿没有才回退到游戏根目录的老位置（老用户升级上来的那一份）
-    let Some(path) = state.paths.own_file_for_read("instances.json") else {
+    let Some(path) = state.paths().own_file_for_read("instances.json") else {
         return Ok(InstanceStore::default());
     };
     let text = std::fs::read_to_string(&path).map_err(|e| format!("读取实例列表失败：{e}"))?;
@@ -505,8 +505,8 @@ pub fn list_instances(state: State<'_, AppState>) -> Result<InstanceStore, Strin
 #[tauri::command]
 pub fn save_instances(state: State<'_, AppState>, store: InstanceStore) -> Result<(), String> {
     /* ★ A-4：写到**启动器自己的家**（`own_root`），不再写游戏根目录 */
-    std::fs::create_dir_all(&state.paths.own_root)
-        .map_err(|e| format!("无法创建数据目录（{}）：{e}", state.paths.own_root.display()))?;
+    std::fs::create_dir_all(&state.paths().own_root)
+        .map_err(|e| format!("无法创建数据目录（{}）：{e}", state.paths().own_root.display()))?;
     let path = instances_file(&state);
     let text = serde_json::to_string_pretty(&store).map_err(|e| format!("序列化失败：{e}"))?;
     // 先写临时文件再改名，避免写到一半断电导致列表损坏
@@ -519,7 +519,7 @@ pub fn save_instances(state: State<'_, AppState>, store: InstanceStore) -> Resul
 
 /// ★★ A-4（2026-09-24）：与 `instances_file` 同理 —— 全局偏好也住在 `own_root`。
 fn prefs_file(state: &AppState) -> std::path::PathBuf {
-    state.paths.prefs_file()
+    state.paths().prefs_file()
 }
 
 /// 读全局偏好（主题 / 下载源 / 并发数 / 窗口尺寸 / 离线用户名 / 账号 uuid …）。
@@ -534,7 +534,7 @@ fn prefs_file(state: &AppState) -> std::path::PathBuf {
 #[tauri::command]
 pub fn load_prefs(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     // 读：优先 own_root，那儿没有才回退到游戏根目录的老位置（A-4）
-    let Some(path) = state.paths.own_file_for_read("prefs.json") else {
+    let Some(path) = state.paths().own_file_for_read("prefs.json") else {
         return Ok(serde_json::json!({}));
     };
     let text = std::fs::read_to_string(&path).map_err(|e| format!("读取设置失败：{e}"))?;
@@ -557,8 +557,8 @@ pub fn load_prefs(state: State<'_, AppState>) -> Result<serde_json::Value, Strin
 #[tauri::command]
 pub fn save_prefs(state: State<'_, AppState>, prefs: serde_json::Value) -> Result<(), String> {
     /* ★ A-4：写到**启动器自己的家**（`own_root`），不再写游戏根目录 */
-    std::fs::create_dir_all(&state.paths.own_root)
-        .map_err(|e| format!("无法创建数据目录（{}）：{e}", state.paths.own_root.display()))?;
+    std::fs::create_dir_all(&state.paths().own_root)
+        .map_err(|e| format!("无法创建数据目录（{}）：{e}", state.paths().own_root.display()))?;
     let path = prefs_file(&state);
     let text = serde_json::to_string_pretty(&prefs).map_err(|e| format!("序列化失败：{e}"))?;
     let tmp = path.with_extension("json.tmp");
@@ -586,8 +586,8 @@ pub fn delete_instance_files(
     if slug.is_empty() {
         return Err("实例 slug 为空".into());
     }
-    let root = state.paths.instances.clone();
-    let dir = state.paths.instance_dir(&slug);
+    let root = state.paths().instances.clone();
+    let dir = state.paths().instance_dir(&slug);
     // 越界校验：解析后的路径必须以 instances/ 开头，且不等于它本身
     let canon_root = root.canonicalize().unwrap_or_else(|_| root.clone());
     let canon_dir = dir.canonicalize().unwrap_or_else(|_| dir.clone());
@@ -653,9 +653,9 @@ pub fn copy_instance_files(
     if from_slug == to_slug {
         return Err("源和目标不能是同一个实例".into());
     }
-    let root = state.paths.instances.clone();
-    let src = state.paths.instance_dir(&from_slug);
-    let dst = state.paths.instance_dir(&to_slug);
+    let root = state.paths().instances.clone();
+    let src = state.paths().instance_dir(&from_slug);
+    let dst = state.paths().instance_dir(&to_slug);
 
     // 越界校验（与 delete_instance_files 同一套规则）
     let canon_root = root.canonicalize().unwrap_or_else(|_| root.clone());
@@ -735,7 +735,7 @@ fn copy_tree(src: &std::path::Path, dst: &std::path::Path) -> Result<u64, String
 /// 已安装的游戏版本（扫 shared/versions 目录）
 #[tauri::command]
 pub fn installed_versions(state: State<'_, AppState>) -> Vec<String> {
-    let dir = state.paths.shared.join("versions");
+    let dir = state.paths().shared.join("versions");
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return vec![];
     };

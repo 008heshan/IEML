@@ -18,8 +18,11 @@
  *   旧目录里的版本 / 存档 / Mod 一个字节都不动 —— 这句话必须写在界面上，
  *   否则用户不敢点。
  *
- * ★ **重启才生效**：`AppPaths` 是启动时解析一次放进 `AppState` 的。
- *   这里只记录选择（后端返回 `restartRequired`），不假装切成功了。
+ * ★★ **即时生效**（2026-09-25 用户：「我不想要重启才生效，切换游戏数据应该是实时的」）：
+ *   后端 `set_data_root` 校验 + 落盘之后**当场换掉 `AppState` 里的路径句柄**
+ *   （`RwLock<Arc<AppPaths>>`），返回 `restartRequired: false`；
+ *   父组件拿到结果后调 `reloadAfterRootChange()` 把派生的那几样刷新一遍。
+ *   ⇒ 界面上不再有"重启后生效"这一说。
  */
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Chip, Modal, Note } from '../ui';
@@ -31,10 +34,10 @@ import type { DataRoot } from '../bridge/tauri';
 export interface DataRootPickerProps {
   open: boolean;
   onClose: () => void;
-  /** 现在正在用的根目录（`machine_info` 给的，重启前不会变） */
+  /** 现在正在用的根目录（`machine_info` 给的；换完会立刻变） */
   current: string;
   toast: (kind: 'ok' | 'warning' | 'err' | 'info', title: string, desc?: string) => void;
-  /** 已经记下新目录之后（父组件据此显示"重启后生效"） */
+  /** 换成功之后（父组件据此刷新派生的那几样 —— 见 `reloadAfterRootChange`） */
   onChanged?: (next: string) => void;
 }
 
@@ -107,14 +110,19 @@ export function DataRootPicker({ open, onClose, current, toast, onChanged }: Dat
       const extra = [
         r.hasExistingData
           ? '这个目录里已经有游戏数据，会直接用那一份'
-          : '★ 这个目录里还没有游戏数据 —— 重启后版本列表会是空的（旧数据仍在原目录里，随时能换回来）',
+          : '★ 这个目录里还没有游戏数据 —— 版本列表会是空的（旧数据仍在原目录里，随时能换回来）',
         r.onSystemDrive ? '★ 它在系统盘上，游戏多了会把系统盘写满' : null,
       ]
         .filter(Boolean)
         .join('；');
+      /*
+       * ★★ 2026-09-25（用户：「我不想要重启才生效，切换游戏数据应该是实时的」）：
+       *   现在后端**当场换掉句柄**（`restart_required: false`），前端紧接着刷新
+       *   机器信息 / 版本列表 / Java 那些派生数据 —— 所以文案里不再有"重启后生效"。
+       */
       toast(
         r.onSystemDrive || !r.hasExistingData ? 'warning' : 'ok',
-        '已记录新的游戏根目录（重启后生效）',
+        r.restartRequired ? '已记录新的游戏根目录（重启后生效）' : '已切换游戏根目录（即时生效）',
         `新的：${r.path}　旧的：${r.previous} —— 旧目录里的东西一个都没动，` +
           `想换回来重新选它就行。${extra}${extra ? '。' : ''}`,
       );
@@ -358,7 +366,7 @@ export function DataRootPicker({ open, onClose, current, toast, onChanged }: Dat
             ★★ 2026-09-22：同样按"字太多"精简 —— 原来那一长句
               （"换完要重启启动器才生效 —— 数据目录是启动时定下来的，这个弹窗只负责把选择记下来。
                 旧目录不会被搬走也不会被删，想换回来重新选它就行。"）压成两行。 */}
-        ★ 换完<b>重启</b>才生效。旧目录不搬不删，随时能换回来。
+        ★ 换完<b>立刻生效</b>，不用重启。旧目录不搬不删，随时能换回来。
       </div>
     </Modal>
   );
