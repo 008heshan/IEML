@@ -213,6 +213,9 @@ export function createWebBackend(): Backend {
             : 'Linux',
         arch: 'x64',
         dataDir: '演示模式 · 未接真实文件系统',
+        // 演示模式没有磁盘：报 3（与演示数据里那三个实例对上），不报 0 ——
+        // 报 0 会让版本列表显示成"这个目录里还没有版本"，而那在演示里是假的。
+        versionCount: 3,
       };
     },
 

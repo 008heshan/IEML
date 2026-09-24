@@ -98,11 +98,30 @@ function menuLayout(anchor: DOMRect, height: number): MenuPos {
 export function VersionsPage() {
   /** 应用自己的确认弹窗（`window.confirm` 在这个壳里是坏的，见 `ui/confirm.tsx`） */
   const confirm = useConfirm();
-  const { state, goDownloadTab, goDownloadFor, openVersion, toast, removeInstance, duplicateInstance, renameInstance } =
+  const { state, go, goDownloadTab, goDownloadFor, openVersion, toast, removeInstance, duplicateInstance, renameInstance, refreshInstances } =
     useApp();
   const { api } = useRealApi();
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
+
+  /**
+   * ★★ 2026-09-25（用户：「换目录后不会自动刷新，我的建议是，点击版本列表就刷新一下，
+   *   重新读取当前选择的游戏目录」）。
+   *
+   *   进这一页 = 重读一次当前游戏根目录下的东西。两件事都要做：
+   *
+   *     ① 实例清单（`refreshInstances`）—— 实例**目录**是按当前根目录算的；
+   *     ② 下面那条"版本文件还在不在"的体检（依赖 `currentRoot`）。
+   *
+   *   ★ 为什么"点一下就刷新"是对的：页面的数据源只有一个（当前选的那个目录），
+   *     而用户换目录是在设置页做的 —— 回到这一页时机器信息可能已经变了，
+   *     重读一次比"猜它变没变"便宜得多（读盘是毫秒级的）。
+   */
+  const currentRoot = state.machine?.dataDir ?? '';
+  useEffect(() => {
+    void refreshInstances();
+  }, [refreshInstances, currentRoot]);
+
   /**
    * ★★ 2026-09-23（用户第 3 条：「**资源管理器里删除版本，启动器不会同步删除**」）：
    *
@@ -113,7 +132,9 @@ export function VersionsPage() {
    *   ★ 这里**只提示、不删条目**：用户可能只是临时把版本目录搬走，
    *     自动删条目等于替他做决定。
    *   ★ 刷新时机：进这一页时查一次 + **窗口重获焦点时**再查一次
-   *     （用户删目录是在资源管理器里做的，回到启动器那一刻最该重查）。
+   *     （用户删目录是在资源管理器里做的，回到启动器那一刻最该重查）
+   *     + **当前游戏根目录一变就重查**（2026-09-25 补：换目录后这一页
+   *       说的必须是新目录的事实）。
    */
   const [missingVersionIds, setMissingVersionIds] = useState<string[]>([]);
   useEffect(() => {
@@ -135,7 +156,7 @@ export function VersionsPage() {
       alive = false;
       window.removeEventListener('focus', check);
     };
-  }, [api]);
+  }, [api, currentRoot]);
   const [menuFor, setMenuFor] = useState<string | null>(null);
   /**
    * 菜单的锚点（打开那一刻，按钮的屏幕坐标）。
@@ -867,6 +888,35 @@ export function VersionsPage() {
         这里把"版本文件已经不在磁盘上"的实情**如实说出来**（而不是等用户点启动才报错），
         并且**只提示、不替他删条目** —— 他可能只是把版本目录临时搬走。
       */}
+      {/*
+        ★★ 2026-09-25（用户：「换目录后不会自动刷新，我的建议是，点击版本列表就刷新一下，
+          重新读取当前选择的游戏目录」）：
+
+          这一条**必须排在"文件不在了"前面** —— 它解释的正是"为什么下面每一行都在报错"：
+          当前选中的游戏目录里**一个版本都没有**（多半是刚在设置页换到这儿）。
+          没有它，用户看到的是"N 个条目全报错"，只会以为是页面没刷新。
+
+          ★ 判据是**磁盘事实**（`machine.versionCount`，后端数 `<root>/.minecraft/versions`），
+            不是"实例是不是都缺文件" —— 后者分不清"刚换到空目录"和"用户自己把版本删了"，
+            而那两种情况要说不同的话（后者下面那条 Note 已经在说了）。
+      */}
+      {state.machine && state.machine.versionCount === 0 && state.instances.length > 0 ? (
+        <Note
+          tone="warning"
+          icon={<IconAlert />}
+          title="当前游戏目录里还没有版本"
+          actions={
+            <Button size="sm" variant="secondary" onClick={() => go('settings')}>
+              去设置里换目录
+            </Button>
+          }
+        >
+          现在用的是 <span className="mono">{state.machine.dataDir}</span>，里面一个版本文件都没有
+          —— 下面的条目引用的版本在<b>别的目录</b>里。想换回去：设置 → 存储 →「新建/切换…」，
+          旧目录里的东西一个都没动。
+        </Note>
+      ) : null}
+
       {missingVersionIds.length > 0 ? (
         <Note tone="warning" icon={<IconAlert />} title="有版本的磁盘文件已经不在了">
           下面有 <b>{missingVersionIds.length}</b> 个版本引用的游戏文件（

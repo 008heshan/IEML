@@ -1423,6 +1423,22 @@ pub struct MachineInfo {
     pub os: String,
     pub arch: String,
     pub data_dir: String,
+    /// 当前游戏根目录里**装了几个版本**（`<root>/.minecraft/versions` 下的目录数）。
+    ///
+    /// ★★ 2026-09-25（用户：「换目录后不会自动刷新……点击版本列表就刷新一下，
+    ///   重新读取当前选择的游戏目录」）：
+    ///
+    ///   版本列表列的是**账本里的实例**，而账本住在启动器自己的家里（ADR-七十二），
+    ///   **与游戏根目录无关** —— 所以换到一个空目录之后，那一页显示的是
+    ///   "N 个条目全都在报错"，而不是"你选的这个目录里什么都没有"。
+    ///   用户看到的：换了目录，列表却像没刷新过。
+    ///
+    ///   这里补一个**磁盘事实**：当前根目录下到底有几个版本。界面据此把话说清
+    ///   （0 = 这个目录还没有版本，多半是刚换过来），而不是让用户自己猜。
+    ///
+    ///   ★ 为什么不直接看"实例是不是都缺文件"：那分不清"刚换到空目录"与
+    ///     "用户自己在资源管理器里把版本删了" —— 这两种要用不同的话说。
+    pub version_count: usize,
 }
 
 pub fn machine_info(paths: &AppPaths) -> MachineInfo {
@@ -1441,7 +1457,19 @@ pub fn machine_info(paths: &AppPaths) -> MachineInfo {
         os: System::long_os_version().unwrap_or_else(|| std::env::consts::OS.to_string()),
         arch: std::env::consts::ARCH.to_string(),
         data_dir: paths.root.to_string_lossy().to_string(),
+        version_count: count_versions_in(&paths.shared),
     }
+}
+
+/// 数一数 `<shared>/versions` 下有几个版本目录（读不到 = 0，不编数）。
+pub fn count_versions_in(shared: &Path) -> usize {
+    std::fs::read_dir(shared.join("versions"))
+        .map(|it| {
+            it.flatten()
+                .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+                .count()
+        })
+        .unwrap_or(0)
 }
 
 /* ====================== 子进程：别弹控制台窗口 ====================== */

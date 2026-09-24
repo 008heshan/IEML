@@ -11,10 +11,14 @@
  *   ② 弹窗里**没有**任何"重启…才生效"的字样，写的是"立刻生效"（老构建上必红）
  *   ③ 点「用这个」之后：toast 说"即时生效"、弹窗自己关掉、
  *      **设置页那行当场变成新目录**（同一个文档 —— 页面没被刷过）
- *   ④ 不刷页面切到**版本列表**：出现「有版本的磁盘文件已经不在了 · 3 个」
- *      —— 判据**不是**"实例没了"：账本住在启动器自己的家里（ADR-七十二），
- *      换根目录不动它；那 3 个条目还在，只是目录换成新根下的，磁盘上找不到
- *   ⑤ 再从界面上换回来 → 警告消失、machine_info 与记账文件 = 老根目录
+ *   ④ 不刷页面切到**版本列表**：这一页当场按新目录说话 ——
+ *      3 个条目报「有版本的磁盘文件已经不在了」，并且顶部明说
+ *      「当前游戏目录里还没有版本」+ 写着新路径（2026-09-25 用户：
+ *      「换目录后不会自动刷新……点击版本列表就刷新一下，重新读取当前选择的游戏目录」）
+ *      ★ 判据**不是**"实例没了"：账本住在启动器自己的家里（ADR-七十二），
+ *        换根目录不动它；那 3 个条目还在，只是目录换成新根下的，磁盘上找不到
+ *   ⑤ 再从界面上换回来 → 警告与那条提示都消失、版本数 > 0、
+ *      machine_info 与记账文件 = 老根目录
  *
  * ★ "没刷页面"怎么证：换目录前后往 `window` 上钉一个标记，事后还在就是同一个文档。
  * ★ 记账文件与"用过的文件夹"列表都是全局状态：开跑前摆正、跑完擦干净。
@@ -73,6 +77,15 @@ const bodyText = (ev) => ev('document.body.innerText');
 const modalText = (ev) => ev('(document.querySelector(".modal")||{}).innerText || ""');
 const toastText = (ev) => ev('(document.querySelector(".toasts")||{}).innerText || ""');
 const modalOpen = (ev) => ev('!!document.querySelector(".modal")');
+/** 「当前游戏目录里还没有版本」那条提示**自己的**文字（不掺别的页面文字） */
+const noVersionNote = (ev) =>
+  ev(
+    `(() => {
+       const n = [...document.querySelectorAll('.note')]
+         .find((x) => (x.textContent || '').includes('当前游戏目录里还没有版本'));
+       return n ? (n.textContent || '') : '';
+     })()`,
+  );
 const clickByText = (ev, sel, text) =>
   ev(
     `(() => {
@@ -174,12 +187,26 @@ console.log(
 await clickNav(ev, '版本列表');
 await sleep(1200);
 const verTxt = await bodyText(ev);
+const note = await noVersionNote(ev);
 const after = {
   warn: verTxt.includes('磁盘文件已经不在了'),
   count3: /下面有\s*3\s*个版本/.test(verTxt),
+  note: verTxt.includes('当前游戏目录里还没有版本'),
+  notePath: note.includes(NEW_ROOT),
   sameDoc: await ev('window.__probeSameDoc === 1'),
 };
-console.log('④ 版本列表页：警告=' + after.warn + '　说"3 个版本"=' + after.count3 + '　同一个文档=' + after.sameDoc);
+console.log(
+  '④ 版本列表页：警告=' +
+    after.warn +
+    '　说"3 个版本"=' +
+    after.count3 +
+    '　"当前目录里还没有版本"提示=' +
+    after.note +
+    '（提示里的路径=新目录 ' +
+    after.notePath +
+    '）　同一个文档=' +
+    after.sameDoc,
+);
 
 /* ---------- ⑤ 从界面上换回来 ---------- */
 await clickNav(ev, '设置');
@@ -192,17 +219,27 @@ await sleep(2500);
 await clickNav(ev, '版本列表');
 await sleep(1200);
 const verTxt2 = await bodyText(ev);
+const note2 = await noVersionNote(ev);
 const record = existsSync(RECORD) ? readFileSync(RECORD, 'utf8').trim() : '(读不到)';
 const restored = {
   warn: verTxt2.includes('磁盘文件已经不在了'),
+  note: verTxt2.includes('当前游戏目录里还没有版本'),
+  noteStillSaysNew: note2.includes(NEW_ROOT),
   dataDir: (await invokeOn(ev, 'machine_info', {}))?.ok?.data_dir ?? '(取不到)',
+  versionCount: (await invokeOn(ev, 'machine_info', {}))?.ok?.version_count ?? '(取不到)',
   record,
 };
 console.log(
   '⑤ 换回来：版本列表还警告=' +
     restored.warn +
-    '　machine_info=' +
+    '　还挂"当前目录里还没有版本"=' +
+    restored.note +
+    '（里面还写着新目录=' +
+    restored.noteStillSaysNew +
+    '）　machine_info=' +
     restored.dataDir +
+    '　版本数=' +
+    restored.versionCount +
     '　记账文件=' +
     restored.record,
 );
@@ -224,9 +261,17 @@ const c3 =
   mid.sameDoc === true &&
   mid.dataDir.toLowerCase() === NEW_ROOT.toLowerCase() &&
   mid.hint.toLowerCase() === NEW_ROOT.toLowerCase();
-const c4 = after.warn === true && after.count3 === true && after.sameDoc === true;
+const c4 =
+  after.warn === true &&
+  after.count3 === true &&
+  after.note === true &&
+  after.notePath === true &&
+  after.sameDoc === true;
 const c5 =
   restored.warn === false &&
+  restored.note === false &&
+  restored.noteStillSaysNew === false &&
+  restored.versionCount > 0 &&
   restored.dataDir.toLowerCase() === OLD_ROOT.toLowerCase() &&
   restored.record.toLowerCase() === OLD_ROOT.toLowerCase();
 
@@ -234,8 +279,8 @@ console.log('\n===== 判据 =====');
 console.log(`${c1 ? '✓' : '✗'} ① 起手是老根目录 ${OLD_ROOT}（设置页那行 + machine_info），启动页有实例`);
 console.log(`${c2 ? '✓' : '✗'} ② 弹窗写着「立刻生效」，没有「重启才生效」（老构建在这里红）`);
 console.log(`${c3 ? '✓' : '✗'} ③ 界面上点一下就换了：toast 说即时生效、弹窗自动关、设置页那行当场变新目录（页面没刷）`);
-console.log(`${c4 ? '✓' : '✗'} ④ 不刷页面切到版本列表就看到「有版本的磁盘文件已经不在了 · 3 个」（新根下当然找不到）`);
-console.log(`${c5 ? '✓' : '✗'} ⑤ 从界面换回来：警告消失、machine_info 与记账文件都回到 ${OLD_ROOT}`);
+console.log(`${c4 ? '✓' : '✗'} ④ 版本列表当场按**新目录**说话：3 个条目报"文件不在了"，并且顶部明说「当前游戏目录里还没有版本」+ 写着新路径`);
+console.log(`${c5 ? '✓' : '✗'} ⑤ 从界面换回来：警告与那条提示都消失、版本数 > 0、machine_info 与记账文件都回到 ${OLD_ROOT}`);
 if (cleanup) console.log('⚠ ' + cleanup);
 console.log('记账文件收尾：' + (existsSync(RECORD) ? readFileSync(RECORD, 'utf8').trim() : '(读不到)'));
 process.exit(c1 && c2 && c3 && c4 && c5 ? 0 : 1);
