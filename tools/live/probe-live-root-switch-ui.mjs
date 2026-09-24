@@ -113,6 +113,7 @@ const clickRowUse = (ev, needle) =>
 await killIeml();
 const app = await launch({ exe: EXE, tag: 'liverootui', settleMs: 3500 });
 const ev = app.ev;
+const send = app.send;
 
 /* ---------- ① 起手 ---------- */
 await clickNav(ev, '设置');
@@ -207,6 +208,17 @@ console.log(
     '）　同一个文档=' +
     after.sameDoc,
 );
+
+/* 顺手留一张人眼可核对的图：换到空目录之后这一页长什么样 */
+const SHOT = 'tmp/versions-empty-root.png';
+try {
+  const shot = await send('Page.captureScreenshot', { format: 'png' });
+  if (!shot?.result?.data) throw new Error('截图没有数据：' + JSON.stringify(shot).slice(0, 120));
+  writeFileSync(SHOT, Buffer.from(shot.result.data, 'base64'));
+  console.log('   截图已写：' + SHOT);
+} catch (e) {
+  console.log('   （截图失败：' + String(e) + '）');
+}
 
 /* ---------- ⑤ 从界面上换回来 ---------- */
 await clickNav(ev, '设置');
