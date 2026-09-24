@@ -24,6 +24,23 @@ check(m.version === pkg.version, `版本号一致：${m.version}`, `版本号不
 check(!m.notes.includes('\uFFFD'), 'notes 无乱码', 'notes 含替换字符 U+FFFD —— 编码坏了');
 check(/^## /.test(m.notes.trim()), 'notes 是 CHANGELOG 里的一节', 'notes 为空或不是 CHANGELOG 小节');
 check(m.notes.includes(m.version), `notes 提到了 ${m.version}`, `notes 里没有 ${m.version}，可能抓错了小节`);
+/*
+ * ★★ 2026-09-24 新增（这两条是**故意加严**的）：
+ *   上面三条在"notes 只有标题那一行"时**全都成立** —— 于是发布工具里那个
+ *   `m` 标志的 bug（`$` 匹配行尾 ⇒ 惰性匹配停在第一行）藏了好几版都没被发现，
+ *   线上 notes 一直只有 85 字的标题（rc.3 上传后才发现）。
+ *   现在把它变成**会红的判据**：notes 必须像"一节更新说明"。
+ */
+check(
+  m.notes.trim().length >= 200,
+  `notes 有正文（${m.notes.trim().length} 字）`,
+  `notes 只有 ${m.notes.trim().length} 字 —— 多半只抓到了标题那一行（发布工具的 section 正则出问题了）`,
+);
+check(
+  m.notes.split('\n').filter((l) => l.trim() && !l.trim().startsWith('#')).length >= 3,
+  'notes 至少 3 行非空正文',
+  'notes 里没有正文行，只有标题',
+);
 
 // ---- 2. 平台条目 ----
 const plat = m.platforms?.['windows-x86_64'];
