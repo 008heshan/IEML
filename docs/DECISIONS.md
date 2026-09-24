@@ -7245,3 +7245,55 @@ exe 接线    端点 / 公钥 / 插件 / ACL / installMode 五项都在
 它的内容从这一刻起开始累积（第一条就是这个入口去重）。
 要发的时候按 70.6 那套顺序走：升版 → 新写一节 CHANGELOG → 构建签名发行版 →
 `publish-cnb.mjs` → `verify-manifest.mjs` → `--upload` → `verify-endpoint.mjs` → `check-exe-wiring.mjs`。
+
+#### 70.8　下载页的标题栏被封面糊住 —— **层叠上下文**（2026-09-24）
+
+用户截图 +「**只有下载页的标题栏会被糊住，应该是图层问题**」。诊断对了，是图层问题。
+
+**现场**（真机量出来的）：
+
+```
+.page-head    position: sticky, z-index: 20   ← 应该在上面
+.top-glass    position: fixed,  z-index: 5    ← 应该在下面
+但实测绘制顺序是：["top-glass", "page-title", "page-head", …]   ← 玻璃在最上面
+```
+
+**根因**：全仓**只有下载页**渲染一层 `.page-fill` 外壳
+（`DownloadPage.tsx:225`；其它页面返回片段，`.page-head` 直接挂在 `.content` 下 ——
+这条实测记录本来就写在同一段 CSS 的注释里）。而入场动画的规则是
+`.content > * { animation: ieml-page-fade … both }`：
+
+* `.page-fill` 一带 `both` 的动画（opacity + transform 都被 fill 住）→ **它自己成了层叠上下文**；
+* 页头的 `z-index: 20` 于是**被关在这个上下文里面**，与外面的玻璃层（5）不再可比；
+* 外层元素（`.page-fill`，z-index auto）整体画在固定玻璃**之下** ⇒ 玻璃压到页头之上。
+
+**为什么"只有下载页"**：别的页面 `.page-head` 是 `.content` 的直接子元素，
+它的 z-index 20 与玻璃的 5 同处一个上下文，20 > 5 正常生效。
+**同一个页头、同一个玻璃，只因为多了一层带动画的外壳就坏了。**
+
+**修法**：外壳不动画，改让**它里面的元素**各自淡入：
+
+```css
+:root[data-motion='mid'] .content > *:not(.page-fill),
+:root[data-motion='mid'] .content > .page-fill > * { animation: ieml-page-fade 160ms … both; }
+```
+
+视觉完全一样（整页一起淡入），但 `.page-fill` 不再造上下文 ⇒ 页头重新与玻璃可比。
+★ 顺带修好一处**一直存在的不一致**：以前下载页的页头**自己没有入场动画**
+（动画落在了外壳上），现在它与其它页面一致。
+
+**判据**（`tools/live/probe-header-layer.mjs`）——★ 这条判据**先被证明能红**：
+
+| | 坏（撤掉修复、重建） | 好（修复后） |
+|---|---|---|
+| ① `.page-fill` 的动画 | `ieml-page-fade` ✗ | `none` ✓ |
+| ② 标题那一点的绘制顺序 | `["top-glass", "page-title", …]` ✗ | `["page-title", "page-head", "top-glass", …]` ✓ |
+| ③ 入场动画还在（下载页页头/页签 + 版本列表页头） | 下载页 `none` ✗ | 三处都有 ✓ |
+
+★★ **这条判据的第一版是错的，值得记**：我原本用
+`document.elementFromPoint` 看"谁在上面"，而**它会跳过 `pointer-events: none` 的元素** ——
+玻璃层正是 `none`（它不许挡点击），于是它根本不出现在结果里，判据**碰巧通过**。
+现在的做法：量测前**临时**把玻璃的 `pointer-events` 打开，让它参与命中测试，
+`elementsFromPoint` 的顺序就是绘制顺序；量完立刻恢复。
+（另外还做了一次像素差分作为交叉验证：坏 32.56 / 好 3.07 —— 差 10 倍，
+但页头本身是**透明**的，它的背景理应被玻璃处理，所以那条只当参考值，不作判据。）

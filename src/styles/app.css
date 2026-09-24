@@ -2414,15 +2414,39 @@ tbody tr.clickable:focus-visible {
    这种"部分生效"最难发现。
    `.content` 的直接子元素在切页时整批换掉（React 卸载旧的、挂载新的），
    所以动画每次切页都会重放；而 `.content` 自己**不重挂**，所以不能挂在它身上。 */
-:root[data-motion='mid'] .content > * {
+/*
+ * ★★ 2026-09-24（用户截图 +「只有下载页的标题栏会被糊住，应该是图层问题」）：
+ *   `.page-fill` **绝对不能**参与这条入场动画。
+ *
+ *   现场（真机量出来的）：`.page-head` 是 `position: sticky; z-index: 20`，
+ *   固定玻璃层 `.top-glass` 是 `z-index: 5` —— 按数字页头该在上面。
+ *   但 `.page-fill` 带 `animation: … both`（opacity + transform 都会被 fill 住），
+ *   **它自己就成了一个层叠上下文**：页头的 `z-index: 20` 被关在它里面，
+ *   而玻璃层在它外面，于是玻璃压到了页头之上 ——
+ *   滚动时下载页的封面从页头下面过，页头连同标题一起被糊掉。
+ *
+ *   ★ 为什么"只有下载页"：全仓**只有下载页**渲染 `.page-fill`
+ *     （见上面那条注释的实测记录），其它页面的 `.page-head` 直接挂在 `.content` 下，
+ *     与玻璃层同处一个层叠上下文，所以 z-index 20 > 5 生效、一切正常。
+ *     ——这就是"只有下载页坏"的完整原因。
+ *
+ *   修法：**外壳不动画，改让它里面的元素各自淡入**。视觉完全一样
+ *   （整页一起淡入），但层叠关系对了：`.page-fill` 不再造上下文，
+ *   页头的 z-index 重新与玻璃层可比，卡片仍在玻璃之下（该糊的照样糊）。
+ */
+:root[data-motion='mid'] .content > *:not(.page-fill),
+:root[data-motion='mid'] .content > .page-fill > * {
   animation: ieml-page-fade 160ms var(--ease-out) both;
 }
-:root[data-motion='aura'] .content > * {
+:root[data-motion='aura'] .content > *:not(.page-fill),
+:root[data-motion='aura'] .content > .page-fill > * {
   animation: ieml-page-fade 200ms var(--ease-out) both;
 }
 /* 灵韵：正文再"抬起来"一点，晚 60ms —— 标题先到、内容随后。
-   ★ `:not(.page-head)`：页头是 sticky 的，抬它会牵动吸顶那次布局。 */
-:root[data-motion='aura'] .content > *:not(.page-head) {
+   ★ `:not(.page-head)`：页头是 sticky 的，抬它会牵动吸顶那次布局。
+   ★ `:not(.page-fill)`：同上，外壳不能带动画（它会造层叠上下文）。 */
+:root[data-motion='aura'] .content > *:not(.page-head):not(.page-fill),
+:root[data-motion='aura'] .content > .page-fill > *:not(.page-head) {
   animation: ieml-rise 300ms var(--ease-out) 60ms both;
 }
 
