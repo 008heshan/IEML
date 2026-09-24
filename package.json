@@ -1,7 +1,7 @@
 {
   "name": "ieml",
   "private": true,
-  "version": "0.1.0-rc.2",
+  "version": "0.1.0-rc.3",
   "description": "IEML - 极简跨平台 Minecraft 启动器（Rust + Tauri 2 · React 18 + TS）",
   "type": "module",
   "scripts": {
