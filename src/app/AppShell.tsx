@@ -38,7 +38,7 @@ import { TaskCenter } from '../components/TaskCenter';
 import { AccountPanel } from '../components/AccountPanel';
 import { AccountMenu } from '../components/AccountMenu';
 import { WindowControls } from '../components/WindowControls';
-import { isInstanceRunning, runningInstances } from '../state/store';
+import { runningInstances } from '../state/store';
 import { getRealApi } from '../bridge';
 
 interface NavEntry {
@@ -462,32 +462,15 @@ export function App() {
                 })}
               </nav>
 
-              <div className="side-foot">
-                <Button
-                  variant="primary"
-                  className="side-launch"
-                  loading={stopping}
-                  onClick={async () => {
-                    if (isInstanceRunning(state, open.id)) {
-                      await handleStopOne(open.id);
-                    } else {
-                      window.dispatchEvent(
-                        new CustomEvent('ieml:launch-request', { detail: open.id }),
-                      );
-                    }
-                  }}
-                >
-                  {isInstanceRunning(state, open.id) ? (
-                    <>
-                      <IconStop /> 停止游戏
-                    </>
-                  ) : (
-                    <>
-                      <IconPlay /> 启动这个版本
-                    </>
-                  )}
-                </Button>
-              </div>
+              {/*
+                ★★ 2026-09-24（用户截图 +「**这两个启动键都不要**」）：
+                  这里原来有一个「启动这个版本 / 停止游戏」按钮，被删掉了。
+                  同一个动作在界面上有三处入口（版本列表行菜单、实例概览页头、这里），
+                  用户明确不要这两个 —— 启动请走「版本列表 → 启动」。
+                  ★ 停止游戏的能力**没有丢**：启动页上有「停止游戏」，
+                    下面主导航侧栏底部那份"正在运行的版本"列表里每个也都能单独停
+                    （`handleStopOne` / `stopping` 仍然被那份列表用着）。
+              */}
             </>
           ) : (
             <nav aria-label="主导航">

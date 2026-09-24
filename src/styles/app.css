@@ -345,9 +345,6 @@
   flex-direction: column;
   gap: var(--space-2);
 }
-.side-launch {
-  width: 100%;
-}
 
 /* 运行中实例卡 —— 这东西在主页与侧栏都出现，是全局状态 */
 .running-chip {
@@ -2238,11 +2235,6 @@ tbody tr.clickable:focus-visible {
   }
   .side-inst {
     display: none;
-  }
-  .side-launch {
-    font-size: 0;
-    padding: 0;
-    width: 36px;
   }
   .running-chip .txt {
     display: none;
