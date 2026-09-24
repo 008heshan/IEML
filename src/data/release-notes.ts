@@ -64,6 +64,24 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.1.0-rc.6',
+    date: '2026-09-25',
+    headline: '这一版把换游戏根目录改成了立刻生效，不用再重启启动器。',
+    groups: [
+      {
+        title: '删除了',
+        items: ['删除了设置页那句「重启后生效」的说明和那个角标。'],
+      },
+      {
+        title: '修改了',
+        items: [
+          '修改了换游戏根目录：点一下立刻生效，版本列表、启动、装 Mod 当场按新目录走。',
+          '修改了换目录之后的提示：会说清旧目录里的东西一个都没动，随时能换回来。',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.1.0-rc.5',
     date: '2026-09-25',
     headline: '这一版修掉了两件会影响使用的事，另外把低性能损耗模式的行为改正了。',

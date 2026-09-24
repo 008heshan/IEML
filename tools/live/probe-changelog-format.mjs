@@ -4,8 +4,8 @@
  * 判据（四条）：
  *   ① 页面上能读到五段里的那几段（顺序正确、没有空段）
  *   ② 每一条都以所属段落的类别词开头（页面上的文本，不是源码）
- *   ③ 最新一版是 rc.4（版本号 + 今天）
- *   ④ 顺手截一张图，给人眼核对
+ *   ③ 最新一版与 `package.json` 里的版本号一致（不写死）
+ *   ④ 顺手截一张图（文件名带版本号），给人眼核对
  *
  * 用法：node tools/live/probe-changelog-format.mjs "<exe>" [截图路径]
  */
@@ -13,13 +13,17 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { clickNav, killIeml, launch, sleep } from './lib/cdp.mjs';
 
 const EXE = process.argv[2] ?? 'src-tauri/target/release/ieml.exe';
-const SHOT = process.argv[3] ?? 'tmp/rc4-changelog.png';
 /*
  * ★ 期望的版本号从 `package.json` 读 —— **不要写死**：
  *   写死的话每发一版都要改一次，而这条探针恰恰是每次发完都该跑的那条
  *   （与 `probe-live-update-check.mjs` 同一个教训）。
  */
 const EXPECTED = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
+/*
+ * ★ 截图名也跟着版本号走：原来写死成 `tmp/rc4-changelog.png`，
+ *   到 rc.6 那一版文件名还叫 rc4 —— 事后翻 tmp 时看不出这是哪一版的页面。
+ */
+const SHOT = process.argv[3] ?? `tmp/changelog-${EXPECTED}.png`;
 
 await killIeml();
 const app = await launch({ exe: EXE, tag: 'changelog' });
