@@ -352,14 +352,14 @@ fn instance_usage(state: &AppState) -> HashMap<String, std::collections::HashSet
     use std::collections::HashSet;
     /*
      * ★★ 2026-09-24：位置改走 `own_file_for_read` —— 原来这里写的是
-     *   `state.paths.root.join("instances.json")`，也就是**A-4 之前**的老位置。
+     *   `state.paths().root.join("instances.json")`，也就是**A-4 之前**的老位置。
      *   真机上那个文件从 2026-09-24 01:25 起就再没被写过（清单早就搬到
      *   `%APPDATA%\IEML`），于是这张"哪些版本还在用"的表是**陈旧数据**算出来的：
      *   新建的实例在下载页一律显示"没人在用"。
      *   `own_file_for_read` 的语义正是"优先启动器自己的家，那儿没有才回退老位置"
      *   （老用户升级当次启动仍读得到）。
      */
-    let Some(path) = state.paths.own_file_for_read("instances.json") else {
+    let Some(path) = state.paths().own_file_for_read("instances.json") else {
         return HashMap::new();
     };
     let mut out: HashMap<String, HashSet<String>> = HashMap::new();
@@ -397,9 +397,9 @@ pub async fn fetch_version_manifest(
         .await
         .map_err(err)?;
 
-    let versions_dir = state.paths.shared.join("versions");
+    let versions_dir = state.paths().shared.join("versions");
     // ★ 一次扫盘，之后给每一行按需归档（900 个版本 × 一次 read_dir 太贵）
-    let traces = scan_version_dir(&state.paths.shared);
+    let traces = scan_version_dir(&state.paths().shared);
     // ★ 一次读实例列表，标注"盘上有"与"有版本在用"的区别
     let usage = instance_usage(&state);
     let rows = m
@@ -447,7 +447,7 @@ pub fn detect_installed_loaders(
     mc_version: String,
     state: State<'_, AppState>,
 ) -> Vec<InstalledLoader> {
-    let traces = scan_version_dir(&state.paths.shared);
+    let traces = scan_version_dir(&state.paths().shared);
     let mut loaders = installed_loaders_for(&traces, &mc_version);
     /*
      * ★ 同样要标注"有没有版本在用"。
@@ -870,7 +870,7 @@ pub fn cf_key_status() -> CfKeyStatus {
 /// 保存一把自己的 key（空串 = 删掉，回到内置的那把）
 #[tauri::command]
 pub fn cf_set_key(key: String, state: State<'_, AppState>) -> Result<CfKeyStatus, String> {
-    crate::net::curseforge::save_api_key(&state.paths, &key)
+    crate::net::curseforge::save_api_key(&state.paths(), &key)
         .map_err(|e| e.to_string())?;
     Ok(cf_key_status())
 }
@@ -945,7 +945,7 @@ pub fn clean_unused_files(
     dry_run: bool,
     state: State<'_, AppState>,
 ) -> Result<CleanReport, String> {
-    let shared = &state.paths.shared;
+    let shared = &state.paths().shared;
 
     // ---------- ① 收集保留集 ----------
     // 库坐标 → 磁盘相对路径
@@ -1167,8 +1167,8 @@ pub fn clean_caches(
     dry_run: bool,
     state: State<'_, AppState>,
 ) -> Result<CacheCleanReport, String> {
-    let cache = state.paths.cache.clone();
-    let logs = state.paths.logs.clone();
+    let cache = state.paths().cache.clone();
+    let logs = state.paths().logs.clone();
 
     let mut installer_files = 0usize;
     let mut installer_bytes = 0u64;
@@ -1362,7 +1362,7 @@ pub async fn scan_mods_detailed(
     loader_kind: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Vec<ModScanEntry>, String> {
-    let dir = state.paths.instance_mods_dir(&slug);
+    let dir = state.paths().instance_mods_dir(&slug);
     let mut files: Vec<(String, std::path::PathBuf, u64, u64)> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(&dir) {
         for e in rd.flatten() {
@@ -1776,7 +1776,7 @@ pub async fn install_resource(
         ));
     }
 
-    let dir = state.paths.instance_resource_dir(&slug, k);
+    let dir = state.paths().instance_resource_dir(&slug, k);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(&safe_name);
 
@@ -1828,7 +1828,7 @@ pub async fn install_mod(
     sha1: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let mods_dir = state.paths.instance_mods_dir(&slug);
+    let mods_dir = state.paths().instance_mods_dir(&slug);
     std::fs::create_dir_all(&mods_dir).map_err(|e| e.to_string())?;
     let path = mods_dir.join(&filename);
 
@@ -1884,7 +1884,7 @@ pub async fn install_api_library(
     state: State<'_, AppState>,
 ) -> Result<ApiLibInstall, String> {
     install_api_library_for(
-        &state.paths.instance_mods_dir(&slug),
+        &state.paths().instance_mods_dir(&slug),
         &mc_version,
         &base,
         Source::Bmclapi,
@@ -1923,7 +1923,7 @@ pub async fn install_optifine(
 
     // ② 下载安装器
     let installer = crate::net::optifine::download_installer(
-        &state.paths.cache,
+        &state.paths().cache,
         &mc_version,
         &v,
         Source::Bmclapi,
@@ -1935,7 +1935,7 @@ pub async fn install_optifine(
         .map_err(|e| format!("读不出 OptiFine 安装器需要的 Java 版本：{e}"))?;
 
     // ④ 从本机挑一个满足要求的（优先 IEML 自己下的，其次系统扫到的）
-    let runtimes = crate::platform::scan_java(&state.paths);
+    let runtimes = crate::platform::scan_java(&state.paths());
     let java = runtimes
         .iter()
         .filter(|r| r.major >= need && !r.disabled_by_default)
@@ -1959,7 +1959,7 @@ pub async fn install_optifine(
 
     let progress = |_msg: String| {};
     crate::net::optifine::install(
-        &state.paths.shared,
+        &state.paths().shared,
         &mc_version,
         &v,
         &installer,
@@ -2006,13 +2006,13 @@ pub async fn install_liteloader(
 
     // ★ 定挂载点：只有基座是 Forge 系列时才去找 Forge 版本目录
     let mount = liteloader_mount_point(
-        &state.paths.shared,
+        &state.paths().shared,
         &mc_version,
         base_loader_kind.as_deref(),
     );
     if let Some(m) = &mount {
         if m != &mc_version && !state
-            .paths
+            .paths()
             .shared
             .join("versions")
             .join(m)
@@ -2029,7 +2029,7 @@ pub async fn install_liteloader(
 
     let progress = |_m: String| {};
     crate::net::liteloader::install(
-        &state.paths.shared,
+        &state.paths().shared,
         &mc_version,
         &v,
         mount.as_deref(),
@@ -2134,7 +2134,7 @@ pub fn check_api_library(
      *     QFAPI 已内含 Fabric API，两者都能满足依赖它的 Mod；
      *     真正该提醒的是"一个都没有"，那时才谈得上"缺前置"。
      */
-    let dir = state.paths.instance_mods_dir(&slug);
+    let dir = state.paths().instance_mods_dir(&slug);
     let mut found: Option<(String, &'static str)> = None;
     if let Ok(rd) = std::fs::read_dir(&dir) {
         for e in rd.flatten() {
@@ -2186,7 +2186,7 @@ pub async fn set_mod_enabled(
     enabled: bool,
     state: State<'_, AppState>,
 ) -> Result<usize, String> {
-    let mods_dir = state.paths.instance_mods_dir(&slug);
+    let mods_dir = state.paths().instance_mods_dir(&slug);
     let mut done = 0usize;
     for p in paths {
         let src = std::path::PathBuf::from(&p);
@@ -2262,7 +2262,7 @@ pub async fn delete_mods(
     permanent: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<usize, String> {
-    let mods_dir = state.paths.instance_mods_dir(&slug);
+    let mods_dir = state.paths().instance_mods_dir(&slug);
     let perm = permanent.unwrap_or(false);
     let mut done = 0usize;
     let mut first_err: Option<String> = None;
@@ -2321,7 +2321,7 @@ pub async fn java_install(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let root = state.paths.java.clone();
+    let root = state.paths().java.clone();
     let app2 = app.clone();
     let tid = task_id.clone();
 
@@ -2349,7 +2349,7 @@ pub struct InstalledJavaRow {
 /// 列出 IEML 下载过的 Java（设置页展示 + 删除）
 #[tauri::command]
 pub fn java_list_downloaded(state: State<'_, AppState>) -> Vec<InstalledJavaRow> {
-    adoptium::list_downloaded_java(&state.paths.java)
+    adoptium::list_downloaded_java(&state.paths().java)
         .into_iter()
         .map(|j| InstalledJavaRow {
             major: j.major,
@@ -2383,7 +2383,7 @@ pub async fn plan_install(
     state: State<'_, AppState>,
 ) -> Result<PlanPreview, String> {
     let src = parse_source(&source);
-    let instance_dir = state.paths.instances.join(format!("preview-{mc_version}"));
+    let instance_dir = state.paths().instances.join(format!("preview-{mc_version}"));
     let input = build_plan_input(&mc_version, loader_kind.as_deref(), loader_version.as_deref(), src, &state, &instance_dir).await?;
     let plan = installer::plan_tasks(&input, src).map_err(err)?;
 
@@ -2455,7 +2455,7 @@ pub async fn run_loader_installer(
         other => return Err(format!("不认识的加载器：{other}")),
     };
     let jar = state
-        .paths
+        .paths()
         .cache
         .join(format!("{kind}-{mc_version}-{version}-installer.jar"));
 
@@ -2473,7 +2473,7 @@ pub async fn run_loader_installer(
 
     // ② 找 Java
     on_progress("查找 Java 运行时".into());
-    let runtimes = platform::scan_java(&state.paths);
+    let runtimes = platform::scan_java(&state.paths());
     let input = domain::java::JavaConstraintInput::from(mc_version, true, 0, false);
     let picked = domain::java::pick_java("auto", &runtimes, input, None, None);
     let java = picked
@@ -2481,7 +2481,7 @@ pub async fn run_loader_installer(
         .ok_or_else(|| format!("没有可用的 Java：{}", picked.reason))?;
 
     // ③ 目标目录 = shared（versions/ 与 libraries/ 都落在这里，和启动读的一致）
-    let target_dir = &state.paths.shared;
+    let target_dir = &state.paths().shared;
     std::fs::create_dir_all(target_dir).map_err(|e| e.to_string())?;
     // 安装器硬性要求 launcher_profiles.json，给一个最小的（不覆盖用户已有的）
     let profiles = target_dir.join("launcher_profiles.json");
@@ -2582,7 +2582,7 @@ pub async fn install_version(
 ) -> Result<InstalledSummary, String> {
     let src = parse_source(&source);
     let instance_dir = state
-        .paths
+        .paths()
         .instances
         .join(format!("install-{mc_version}"));
     let input = build_plan_input(
@@ -2817,7 +2817,7 @@ async fn build_plan_input(
 
     Ok(PlanInput {
         version: merged,
-        shared_root: state.paths.shared.clone(),
+        shared_root: state.paths().shared.clone(),
         instance_dir: instance_dir.to_path_buf(),
         source,
         download_assets: true,
@@ -3042,10 +3042,10 @@ pub async fn launch_minecraft(
     }
 
     let log_path = state
-        .paths
+        .paths()
         .logs
         .join(format!("{}-{}.log", req.instance_slug, now_secs()));
-    std::fs::create_dir_all(&state.paths.logs).map_err(|e| format!("创建日志目录失败：{e}"))?;
+    std::fs::create_dir_all(&state.paths().logs).map_err(|e| format!("创建日志目录失败：{e}"))?;
     let log_file = std::fs::File::create(&log_path).map_err(|e| format!("创建日志失败：{e}"))?;
     let log_err = log_file.try_clone().map_err(|e| e.to_string())?;
 
@@ -3432,10 +3432,10 @@ async fn prepare_spec(
      *   不带时是毫秒级 —— 这才是"预览"该有的成本。
      */
     repair: bool,
-) -> Result<LaunchSpec, LaunchError> {    let shared = &state.paths.shared;
-    let instance_dir = state.paths.instance_dir(&req.instance_slug);
+) -> Result<LaunchSpec, LaunchError> {    let shared = &state.paths().shared;
+    let instance_dir = state.paths().instance_dir(&req.instance_slug);
     // 游戏工作目录：saves / mods / config 都在这里（与 scan_mods / install_mod 同一来源）
-    let game_dir = state.paths.instance_game_dir(&req.instance_slug);
+    let game_dir = state.paths().instance_game_dir(&req.instance_slug);
     let natives_dir = instance_dir.join("natives");
 
     // 读版本 JSON（加载器版本优先）
@@ -4195,10 +4195,10 @@ fn find_java_by_requirement(
     mc_version: &str,
 ) -> Result<std::path::PathBuf, LaunchError> {
     let requirement = crate::domain::java::resolve_java_requirement(input.clone());
-    let scanned = crate::platform::scan_java(&state.paths);
+    let scanned = crate::platform::scan_java(&state.paths());
 
     // ① IEML 自己下的优先（来源最明确、版本最可控）
-    let downloaded = adoptium::list_downloaded_java(&state.paths.java);
+    let downloaded = adoptium::list_downloaded_java(&state.paths().java);
     let in_range = |major: u32| requirement.range.contains(major as f64);
 
     if let Some(j) = downloaded
@@ -4466,7 +4466,7 @@ pub struct StopInfo {
 /// 读某个实例的最新日志尾部（供崩溃分析弹窗）
 #[tauri::command]
 pub fn read_latest_log(slug: String, state: State<'_, AppState>) -> Result<String, String> {
-    let dir = &state.paths.logs;
+    let dir = &state.paths().logs;
     let mut newest: Option<(std::path::PathBuf, std::time::SystemTime)> = None;
     if let Ok(entries) = std::fs::read_dir(dir) {
         for e in entries.flatten() {
@@ -4497,9 +4497,9 @@ pub fn open_instance_folder(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let dir = if slug.is_empty() {
-        state.paths.root.clone()
+        state.paths().root.clone()
     } else {
-        state.paths.instance_dir(&slug)
+        state.paths().instance_dir(&slug)
     };
     std::fs::create_dir_all(&dir).ok();
     // ★ 真正调起资源管理器打开目录（之前只返回路径，等于没反应）
@@ -4552,7 +4552,7 @@ pub fn open_data_dir(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let dir = resolve_open_dir(&state.paths, which.as_deref(), slug.as_deref());
+    let dir = resolve_open_dir(&state.paths(), which.as_deref(), slug.as_deref());
     std::fs::create_dir_all(&dir).ok();
     use tauri_plugin_opener::OpenerExt;
     app.opener()
@@ -4570,7 +4570,7 @@ pub fn open_data_dir(
 ///   （校验、建目录、写记录文件都在那儿，且只有那一处）。
 #[tauri::command]
 pub fn list_data_roots(state: State<'_, AppState>) -> Vec<crate::platform::KnownRoot> {
-    crate::platform::list_known_roots(&state.paths.root)
+    crate::platform::list_known_roots(&state.paths().root)
 }
 
 /// 一个实例的"健康"状况（只读，不改任何东西）。
@@ -4598,11 +4598,11 @@ pub struct InstanceHealth {
 pub fn instance_health(state: State<'_, AppState>) -> Vec<InstanceHealth> {
     /*
      * ★★ 2026-09-24：与 `instance_usage` 同一个坑 —— 这里原来读的也是
-     *   `state.paths.root.join("instances.json")`（A-4 之前的老位置）。
+     *   `state.paths().root.join("instances.json")`（A-4 之前的老位置）。
      *   清单现在住在启动器自己的家，读老位置会得到陈旧清单（甚至读不到而
      *   静默返回空 vec，界面上就是"一个失联的版本都没有"）。
      */
-    let Some(path) = state.paths.own_file_for_read("instances.json") else {
+    let Some(path) = state.paths().own_file_for_read("instances.json") else {
         return Vec::new();
     };
     let Ok(text) = std::fs::read_to_string(&path) else {
@@ -4611,7 +4611,7 @@ pub fn instance_health(state: State<'_, AppState>) -> Vec<InstanceHealth> {
     let Ok(store) = serde_json::from_str::<crate::commands::InstanceStore>(&text) else {
         return Vec::new();
     };
-    let shared = &state.paths.shared;
+    let shared = &state.paths().shared;
     store
         .instances
         .into_iter()
@@ -4648,7 +4648,7 @@ pub async fn delete_data_root(path: String, state: State<'_, AppState>) -> Resul
     }
 
     // ① 当前正在用的根目录：**先切走再删**（否则下一次启动就没家了）
-    if crate::platform::same_path(&target, &state.paths.root) {
+    if crate::platform::same_path(&target, &state.paths().root) {
         return Err(
             "这是**现在正在用**的游戏根目录 —— 先在上面选另一个目录切换过去，再删这个。".into(),
         );
@@ -4659,11 +4659,11 @@ pub async fn delete_data_root(path: String, state: State<'_, AppState>) -> Resul
      *   实例清单、自动下载的 Java、缓存、日志都住在里面 ——
      *   删它等于把用户的实例全删掉。列表里可以从候选里移除，但目录得留着。
      */
-    if crate::platform::same_path(&target, &state.paths.own_root) {
+    if crate::platform::same_path(&target, &state.paths().own_root) {
         return Err(format!(
             "这是**启动器自己的数据目录**（{}）：实例、Java、缓存、日志都在里面，\n\
              删它会连你的实例一起删掉。想让它不出现在这张列表里，用「移除」就好。",
-            state.paths.own_root.display()
+            state.paths().own_root.display()
         ));
     }
 
@@ -4739,17 +4739,20 @@ pub struct DataRootChange {
 /// ★ **不迁移**：新目录是空的，旧的**一个字节都不动**。语义与理由见
 ///   `platform::set_data_root` 的文档注释。
 ///
-/// ★ **需要重启**：`AppPaths` 在启动时解析一次、放进 `AppState`，
-///   而实例列表、缓存路径、日志路径全都从它派生。运行中换掉它意味着
-///   要把这些全部重建 —— 那是另一件事（而且要处理"旧句柄还开着"）。
-///   所以这里只**记录**选择，并如实告诉界面"要重启才生效"，
-///   而不是假装切成功了。
+/// ★★ 2026-09-25（用户：「我不想要重启才生效，切换游戏数据应该是实时的」）：
+///   以前这里只**记录**选择、返回 `restart_required: true`（`AppPaths` 在启动时定死）。
+///   现在 `AppState` 里的路径是**可整体替换的句柄**（`RwLock<Arc<AppPaths>>`），
+///   所以校验 + 落盘之后**当场换掉**：此后所有命令（版本扫描、启动、装 Mod、
+///   打开目录…）读到的都是新根目录，**同一个进程、不重启**。
+///   ★ 正在跑的游戏不受影响：它的工作目录与日志都在已经打开的句柄/`own_root` 里，
+///     换根目录不会去动它们（停止、退出、日志照旧）。
 #[tauri::command]
 pub async fn set_data_root(
     path: String,
     state: State<'_, AppState>,
 ) -> Result<DataRootChange, String> {
-    let previous = state.paths.root.clone();
+    let current = state.paths();
+    let previous = current.root.clone();
     let target = std::path::PathBuf::from(path.trim());
 
     // 它的错误本来就是给用户看的中文 String，直接透传（不再过 `err` 那层转换）
@@ -4762,6 +4765,24 @@ pub async fn set_data_root(
      */
     crate::platform::remember_root(&target);
 
+    /*
+     * ★★ 实时切换本体：
+     *   ① 先把新根目录建出来（游戏那一边 `.minecraft` + `instances`，
+     *      启动器那一边 java/cache/logs）—— 建不出来只是记一条日志，不拦切换；
+     *   ② 再换句柄 —— 这一步之后所有命令读到的都是新根目录；
+     *   ③ `own_root` 不变（账本 / Java / 缓存 / 日志仍住在启动器自己的家里），
+     *      所以切换不需要搬任何启动器数据。
+     */
+    let next = crate::platform::AppPaths::from_root(target.clone());
+    if let Err(e) = next.ensure().and_then(|_| next.ensure_own()) {
+        say!("[IEML/paths] 新根目录建目录失败（不影响切换）：{e}");
+    }
+    state.set_paths(next.clone());
+    say!(
+        "[IEML/paths] 已实时切换到 {}（同一个进程，无需重启）",
+        next.root.display()
+    );
+
     // 目标里是不是已经有游戏数据 —— 有的话用户可能选到了某个老目录，
     // 值得在界面上说一句（不是错误：他可能就是要用那份）
     let has_existing_data = target.join("instances.json").is_file()
@@ -4772,7 +4793,7 @@ pub async fn set_data_root(
         path: target.to_string_lossy().to_string(),
         previous: previous.to_string_lossy().to_string(),
         on_system_drive: crate::platform::is_on_system_drive(&target),
-        restart_required: true,
+        restart_required: false,
         has_existing_data,
     })
 }
@@ -4793,7 +4814,7 @@ pub async fn verify_version(
     slugs: Vec<String>,
     state: State<'_, AppState>,
 ) -> Result<VerifyReport, String> {
-    let shared = &state.paths.shared;
+    let shared = &state.paths().shared;
     let json_path = shared
         .join("versions")
         .join(&mc_version)
@@ -4853,7 +4874,7 @@ pub async fn verify_version(
      *   从来没启动过就不提这一项（启动时会自动解压）。
      */
     for slug in &slugs {
-        let nd = state.paths.instance_dir(slug).join("natives");
+        let nd = state.paths().instance_dir(slug).join("natives");
         if !nd.is_dir() {
             continue; // 还没启动过 → 启动时自动解压，不是问题
         }
@@ -4949,7 +4970,7 @@ pub fn ms_set_client_id(
     client_id: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    auth::save_client_id(&state.paths, &client_id).map_err(err_auth)
+    auth::save_client_id(&state.paths(), &client_id).map_err(err_auth)
 }
 
 /// 第一步：申请设备代码，前端把它展示给用户
@@ -5156,7 +5177,7 @@ pub async fn modpack_install(
     // ---------- ① 读清单 ----------
     emit("读取整合包清单", 0, 1, 0, &name);
     let downloaded = download::DownloadTask::new(
-        state.paths.cache.join(format!("mrpack-{task_id}.mrpack")),
+        state.paths().cache.join(format!("mrpack-{task_id}.mrpack")),
         url.clone(),
         String::new(),
         0,
@@ -5191,7 +5212,7 @@ pub async fn modpack_install(
         loader_version.as_deref(),
         src,
         &state,
-        &state.paths.instance_dir(&slug),
+        &state.paths().instance_dir(&slug),
     )
     .await?;
 
@@ -5304,7 +5325,7 @@ pub async fn modpack_install(
     }
 
     // ---------- ③ 按清单下载 Mod / 资源包 ----------
-    let game_dir = state.paths.instance_game_dir(&slug);
+    let game_dir = state.paths().instance_game_dir(&slug);
     let (tasks, unsafe_paths) = modrinth::mrpack_download_tasks(&idx, &game_dir);
     /*
      * ★★ 清单里指到游戏目录**外面**的路径必须**说出来**，不许静默丢掉。
@@ -5428,7 +5449,7 @@ pub async fn modpack_install(
             } else {
                 emit("安装 API 前置包", 0, 1, 0, kind);
                 match install_api_library_for(
-                    &state.paths.instance_mods_dir(&slug),
+                    &state.paths().instance_mods_dir(&slug),
                     &mc_version,
                     kind,
                     src,

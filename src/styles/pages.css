@@ -1822,16 +1822,10 @@
   margin-top: var(--space-3);
   line-height: 1.6;
 }
-/* 设置页那一行里的「重启后生效」角标（换完但还没重启） */
-.droot-pending {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-  margin-top: 4px;
-  font-size: var(--text-xs);
-  color: var(--text-tertiary);
-}
+/*
+ * ★★ 2026-09-25：`.droot-pending`（设置页那行里的「重启后生效」角标）**已删除** ——
+ *   换游戏根目录现在即时生效，那个角标永远不会出现，留着就是死 CSS。
+ */
 
 /* 设备码登录（比内嵌浏览器更安全，也更省事） */
 .device-code {

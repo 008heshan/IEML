@@ -50,7 +50,17 @@ import type { DownloadSourcesPayload } from '../bridge/tauri';
 export function SettingsPage() {
   /** 应用自己的确认弹窗（`window.confirm` 在这个壳里是坏的，见 `ui/confirm.tsx`） */
   const confirm = useConfirm();
-  const { state, rescanJava, toast, backend, refreshJava, prefsSaveFailed, vfx, setTheme } = useApp();
+  const {
+    state,
+    rescanJava,
+    toast,
+    backend,
+    refreshJava,
+    prefsSaveFailed,
+    vfx,
+    setTheme,
+    reloadAfterRootChange,
+  } = useApp();
   const { api } = useRealApi();
   /*
    * ★★ 2026-09-23 用户：「**设置里的关于就不要了吧**」——
@@ -91,14 +101,12 @@ export function SettingsPage() {
   const [systemReduced, setSystemReduced] = useState(() => systemWantsReduced());
   /** 换游戏根目录的弹窗开没开 */
   const [rootPicker, setRootPicker] = useState(false);
-  /**
-   * 已经记下、但**还没重启**的新数据目录（null = 没换过）。
-   *
-   * ★ 为什么要有这个：换目录是"记录 + 重启后生效"，重启前 `machine.dataDir`
-   *   仍是旧的。不给个提示的话，用户换完回来一看还是老路径，
-   *   只会以为"没换成"（这正是本仓库最忌讳的那类"看起来什么都没有发生"）。
+  /*
+   * ★★ 2026-09-25（用户：「我不想要重启才生效，切换游戏数据应该是实时的」）：
+   *   原来这里有一个 `pendingRoot`（记住"已记下、等重启"的新目录，配一个
+   *   「重启后生效」角标）。后端现在**当场换掉句柄**并返回 `restart_required: false`，
+   *   所以那套"待生效"状态整体删掉了 —— 留着它就是一段永远不会走到的死代码。
    */
-  const [pendingRoot, setPendingRoot] = useState<string | null>(null);
 
   async function loadDownloadedJava() {
     if (!api) return;
@@ -401,17 +409,11 @@ export function SettingsPage() {
               >
                 {shortPath(state.machine?.dataDir ?? '未知')}
               </span>
-              {/* ★ 换过、但还没重启时**必须留个痕**：否则用户回到这一页
-                  看到的还是旧路径，只会以为"没换成"（见 pendingRoot 的说明）。 */}
-              {pendingRoot ? (
-                <span
-                  className="droot-pending"
-                  title={`现在用的还是 ${state.machine?.dataDir ?? '旧目录'}，重启后改成 ${pendingRoot}`}
-                >
-                  <Chip tone="warning">重启后生效</Chip>
-                  <span className="mono truncate">{pendingRoot}</span>
-                </span>
-              ) : null}
+              {/*
+                ★★ 2026-09-25：这里原来有一个「重启后生效」角标（`pendingRoot`）。
+                  换目录现在**即时生效**（见 `reloadAfterRootChange`），
+                  所以整块删掉了 —— 状态删了还留着 UI，就是"看得见但永远不出现"的死代码。
+              */}
             </span>
             <div className="field-control">
               <Button
@@ -1019,7 +1021,12 @@ export function SettingsPage() {
         onClose={() => setRootPicker(false)}
         current={state.machine?.dataDir ?? ''}
         toast={toast}
-        onChanged={setPendingRoot}
+        /*
+         * ★★ 2026-09-25：换完**当场**把派生的那几样刷新一遍
+         *   （机器信息 / 实例清单 / Java —— 清单在 `reloadAfterRootChange` 里）。
+         *   后端已经即时换掉句柄，所以这里不再有"重启后生效"那一说。
+         */
+        onChanged={() => void reloadAfterRootChange()}
       />
     </>
   );

@@ -312,6 +312,14 @@ export type Action =
    *   只换 instances —— 别的一律不动（刷新不该顺手改选中、改页面）。
    */
   | { type: 'instances/refresh'; instances: AppState['instances'] }
+  /*
+   * ★★ 2026-09-25：只换"机器信息"这一项。
+   *   起因：换游戏根目录现在**即时生效**（用户：「切换游戏数据应该是实时的」），
+   *   换完要立刻把 `machine.dataDir` 换成新的 —— 而那时**其它启动数据都不该动**
+   *   （实例清单、Java、偏好各自有各自的刷新路径）。用 `boot/ok` 顶一遍会把
+   *   整份启动结果重写，等于把别的数据也当成刚启动。
+   */
+  | { type: 'machine/set'; machine: MachineInfo }
   | { type: 'resource/open'; hit: unknown; kind: string; source?: string }
   | { type: 'resource/close' }
   | {
@@ -394,6 +402,9 @@ export type Action =
 
 export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
+    /* ★ 只换机器信息（换游戏根目录之后要立刻反映新路径），别的一概不动 */
+    case 'machine/set':
+      return { ...state, machine: action.machine };
     case 'boot/ok':
       return {
         ...state,
