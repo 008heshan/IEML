@@ -7238,3 +7238,10 @@ exe 接线    端点 / 公钥 / 插件 / ACL / installMode 五项都在
 （`tools/live/probe-no-launch-buttons.mjs` 三条判据全绿）。
 停止游戏的入口也还在：启动页上的「停止游戏」，以及主导航侧栏底部那份
 "正在运行的版本"列表（`handleStopOne` / `stopping` 仍然被它用着）。
+
+★★ **发布状态（重要，别忘）**：用户选择「**先攒着，继续改界面**」——
+也就是**线上仍然是 rc.2**（那份**还有**这两个按钮），
+而本地/桌面那份已经是"拿掉按钮"的版本。**下一次发布 = rc.3**，
+它的内容从这一刻起开始累积（第一条就是这个入口去重）。
+要发的时候按 70.6 那套顺序走：升版 → 新写一节 CHANGELOG → 构建签名发行版 →
+`publish-cnb.mjs` → `verify-manifest.mjs` → `--upload` → `verify-endpoint.mjs` → `check-exe-wiring.mjs`。
