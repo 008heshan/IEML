@@ -30,6 +30,12 @@ const FILE = arg ? (isAbsolute(arg) ? arg : resolve(ROOT, arg)) : join(ROOT, 'sr
 const ORDER = ['新增了', '修复了', '优化了', '删除了', '修改了'];
 /** 一条太长就不是"言简意赅"了；上限定得比现有最长条目宽一些，只拦明显的啰嗦 */
 const MAX_ITEM = 80;
+/**
+ * ★ 2026-09-25（用户：「更新日志不要写我报上来的」）：**不写归属** ——
+ *   不写"你报的 / 报上来的 / 你点出来的"这类话：只说改了什么，不说这是谁发现的。
+ *   与"不吹自己"是同一个方向 —— 读者关心的是变化，不是功劳簿。
+ */
+const FORBIDDEN = ['你报', '我报', '报上来', '用户报', '你点出来', '用户反馈', '用户指出'];
 
 let text;
 try {
@@ -87,7 +93,7 @@ for (const v of versions) {
     /* ③ 每段至少一条（空的段应当整段不写） */
     if (g.items.length === 0) problems.push(`[${v.version}] 「${g.title}」是空段 —— 没有内容就别写这一段`);
 
-    /* ④ 每条以本段类别词开头；⑤ 别太长；⑥ 别写括号里的解释 */
+    /* ④ 每条以本段类别词开头；⑤ 别太长；⑥ 别写括号里的解释；⑦ 不写归属 */
     for (const it of g.items) {
       itemCount += 1;
       if (!it.startsWith(g.title)) {
@@ -99,14 +105,37 @@ for (const v of versions) {
       if (it.includes('（') || it.includes('(')) {
         problems.push(`[${v.version}] 这条里有括号 —— 用户要的是"只说事，不写括号里的解释"：${it.slice(0, 30)}…`);
       }
+      for (const bad of FORBIDDEN) {
+        if (it.includes(bad)) {
+          problems.push(
+            `[${v.version}] 这条写了归属（"${bad}"）—— 只说改了什么，不写这是谁发现的：${it.slice(0, 30)}…`,
+          );
+        }
+      }
     }
+  }
+}
+
+/*
+ * ⑦ 归属检查也要覆盖 headline（它不是条目，走的是另一条字段）——
+ *   在**剥掉注释之后**的字符串字面量里找，避免把文件头那些"用户要求…"的说明算进去。
+ */
+const codeOnly = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+for (const bad of FORBIDDEN) {
+  if (codeOnly.includes(bad)) {
+    const at = codeOnly.indexOf(bad);
+    problems.push(`正文里有归属字样（"${bad}"）：…${codeOnly.slice(Math.max(0, at - 24), at + 12).trim()}…`);
   }
 }
 
 if (problems.length) {
   console.error(`✗ 更新日志格式不合规（${FILE}）：`);
   for (const p of problems) console.error(`    ${p}`);
-  console.error('\n  格式见 src/data/release-notes.ts 文件头（五段 + 每条类别词 + 言简意赅 + 不写括号解释）。');
+  console.error(
+    '\n  格式见 src/data/release-notes.ts 文件头（五段 + 每条类别词 + 言简意赅 + 不写括号解释 + 不写归属）。',
+  );
   process.exit(1);
 }
-console.log(`✓ 更新日志格式合规：${versions.length} 个版本 / ${itemCount} 条（五段名、顺序、类别词、长度都过了）`);
+console.log(
+  `✓ 更新日志格式合规：${versions.length} 个版本 / ${itemCount} 条（五段名、顺序、类别词、长度、无括号、无归属都过了）`,
+);

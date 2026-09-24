@@ -9,11 +9,17 @@
  *
  * 用法：node tools/live/probe-changelog-format.mjs "<exe>" [截图路径]
  */
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { clickNav, killIeml, launch, sleep } from './lib/cdp.mjs';
 
 const EXE = process.argv[2] ?? 'src-tauri/target/release/ieml.exe';
 const SHOT = process.argv[3] ?? 'tmp/rc4-changelog.png';
+/*
+ * ★ 期望的版本号从 `package.json` 读 —— **不要写死**：
+ *   写死的话每发一版都要改一次，而这条探针恰恰是每次发完都该跑的那条
+ *   （与 `probe-live-update-check.mjs` 同一个教训）。
+ */
+const EXPECTED = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
 
 await killIeml();
 const app = await launch({ exe: EXE, tag: 'changelog' });
@@ -69,12 +75,12 @@ const c1 =
   groups.every((g) => g.条.length > 0);
 const badItems = groups.flatMap((g) => g.条.filter((it) => !it.startsWith(g.段)).map((it) => `${g.段}: ${it.slice(0, 24)}`));
 const c2 = badItems.length === 0;
-const c3 = String(dump?.版本 ?? '').includes('0.1.0-rc.4');
+const c3 = String(dump?.版本 ?? '') === EXPECTED;
 const c4 = existsSync(SHOT);
 
 console.log('\n===== 判据 =====');
 console.log(`${c1 ? '✓' : '✗'} ① 五段齐全有序、没有空段（${groups.map((g) => g.段).join(' / ')}）`);
 console.log(`${c2 ? '✓' : '✗'} ② 每条都以类别词开头${badItems.length ? '，不合规的：' + JSON.stringify(badItems) : ''}`);
-console.log(`${c3 ? '✓' : '✗'} ③ 最新一版是 rc.4（页面上读到：${JSON.stringify(dump?.版本)}）`);
+console.log(`${c3 ? '✓' : '✗'} ③ 最新一版与 package.json 一致（期望 ${EXPECTED}，页面上读到：${JSON.stringify(dump?.版本)}）`);
 console.log(`${c4 ? '✓' : '✗'} ④ 截图已生成：${SHOT}`);
 process.exit(c1 && c2 && c3 && c4 ? 0 : 1);
