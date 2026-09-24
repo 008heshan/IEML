@@ -74,11 +74,37 @@ function isLong(text: string): boolean {
 }
 
 export function App() {
-  const { state, go, dismissToast, closeVersion, setSubPage, open, setLaunchTarget } =
+  const { state, go, dismissToast, closeVersion, setSubPage, open, setLaunchTarget, update } =
     useApp();
   const [stopping, setStopping] = useState(false);
   /** 顶栏的账号弹窗（正版登录入口） */
   const [accountOpen, setAccountOpen] = useState(false);
+
+  /*
+   * ★★ 2026-09-24（用户）：「**每次进启动器，先进行一次静默检查更新，如果有就弹窗，
+   *   并且「关于」两字的右边写「有更新」，没有就静默**」。
+   *
+   *   静默检查本来就有（开机 8 秒后自动查一次，失败不留痕 —— 见 `useLauncherUpdate`），
+   *   这里补的是**看见它**的两处：
+   *     · 侧栏「关于」右边一个「有更新」标记（用户点名要的位置）；
+   *     · 查到就弹一次窗（本会话内关掉之后不再自己冒出来）。
+   *   ★ 三种阶段都算"有更新"：available（刚查到，后台在下）/ downloading / ready（下好了）。
+   */
+  const hasUpdate =
+    update.state.phase === 'available' ||
+    update.state.phase === 'downloading' ||
+    update.state.phase === 'ready';
+  const [updateNoticeDismissed, setUpdateNoticeDismissed] = useState(false);
+  const [updateNoticeOpen, setUpdateNoticeOpen] = useState(false);
+  useEffect(() => {
+    /* 关掉过一次就不再自动弹（同一个版本、同一个会话）—— 但侧栏那个标记一直留着 */
+    if (hasUpdate && !updateNoticeDismissed) setUpdateNoticeOpen(true);
+    if (!hasUpdate) setUpdateNoticeOpen(false);
+  }, [hasUpdate, updateNoticeDismissed]);
+  const closeUpdateNotice = () => {
+    setUpdateNoticeOpen(false);
+    setUpdateNoticeDismissed(true);
+  };
 
   /*
    * ★★ 2026-09-24（A-1 修复）：**把 `ieml:launch-request` 的监听提到常驻层**。
@@ -540,8 +566,19 @@ export function App() {
                   className={'side-link' + (state.page === 'about' ? ' on' : '')}
                   aria-current={state.page === 'about' ? 'page' : undefined}
                   onClick={() => go('about')}
+                  /*
+                   * ★★ 2026-09-24（用户）：「**「关于」两字的右边写「有更新」**」。
+                   *   位置就是他点名的这里；文案也用他的原话（三个字，不缩写成 dot）。
+                   *   ★ 只在**真的有**更新时出现 —— 没有更新时这一行与以前完全一样。
+                   */
+                  title={hasUpdate ? `有新版本 ${update.state.version ?? ''} 可更新` : undefined}
                 >
                   <IconInfo /> 关于
+                  {hasUpdate ? (
+                    <em className="side-badge" data-testid="about-update-badge">
+                      有更新
+                    </em>
+                  ) : null}
                 </button>
               </div>
 
@@ -650,6 +687,62 @@ export function App() {
           }
           onLoggedIn={() => setAccountOpen(false)}
         />
+      </Modal>
+
+      {/*
+        ★★ 2026-09-24（用户）：「每次进启动器，先进行一次静默检查更新，如果有就弹窗」。
+          这个弹窗就是那个"有更新"的通知。三种阶段说三句不同的话 ——
+          查到就弹（此时通常在后台下），下好了按钮才可用（见 `ready` 那个判断）。
+        ★ 关掉之后**本会话不再自动弹**（`updateNoticeDismissed`），
+          但侧栏「关于」右边那个「有更新」一直在，用户随时能自己走过去。
+      */}
+      <Modal
+        open={updateNoticeOpen}
+        onClose={closeUpdateNotice}
+        title={`发现新版本 ${update.state.version ?? ''}`}
+        subtitle="更新包会在后台下好；装的时候启动器会自己退出、装完再回来"
+        footer={
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                closeUpdateNotice();
+                go('changelog');
+              }}
+            >
+              看看改了什么
+            </Button>
+            <div className="spacer" />
+            <Button variant="secondary" size="sm" onClick={closeUpdateNotice}>
+              稍后
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={update.state.phase !== 'ready'}
+              onClick={() => void update.install()}
+            >
+              {update.state.phase === 'ready'
+                ? '现在重启并更新'
+                : update.state.phase === 'downloading'
+                  ? '正在下载…'
+                  : '正在准备…'}
+            </Button>
+          </>
+        }
+      >
+        <p className="about-line" style={{ textAlign: 'left' }}>
+          {update.state.phase === 'ready'
+            ? `新版本 ${update.state.version ?? ''} 已经下好了。点「现在重启并更新」会关掉启动器，静默装好之后再自动打开。`
+            : update.state.phase === 'downloading'
+              ? `正在后台下载 ${update.state.version ?? ''}${
+                  update.state.downloaded && update.state.total
+                    ? `（${Math.round((update.state.downloaded / update.state.total) * 100)}%）`
+                    : ''
+                } —— 你可以继续用启动器，下好了这里就能一键更新。`
+              : `新版本 ${update.state.version ?? ''} 正在准备下载 —— 你可以继续用启动器。`}
+        </p>
       </Modal>
 
       <ToastRegion>

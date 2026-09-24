@@ -70,14 +70,42 @@ export function AboutPage() {
             <Button
               variant={upd.phase === 'ready' ? 'primary' : 'secondary'}
               size="sm"
-              loading={checking || upd.phase === 'checking'}
+              loading={checking || upd.phase === 'checking' || upd.phase === 'installing'}
+              disabled={upd.phase === 'downloading'}
               onClick={() => {
+                /*
+                 * ★★ 2026-09-24（用户报的 bug）：「**在检查到更新并下载完新版本后，
+                 *   转变安装按钮时，点击依旧是检查更新，而且还会再给我下一份**」。
+                 *
+                 *   原来这里**无论什么状态都调 `checkNow()`** —— 按钮文字虽然会变成
+                 *   「重启并更新」，点下去却是"再检查一次"：又问他一次服务端、
+                 *   拿到新的 Update 对象、把刚下好的那份**从头再下一遍**。
+                 *
+                 *   现在按状态分支，而且**只做这一件事对应的动作**：
+                 *     · ready      → 装（本进程会退出并重开，见 install 的说明）
+                 *     · downloading→ 什么都不做（按钮此时是禁用 + 显示进度）
+                 *     · installing → 什么都不做
+                 *     · 其它        → 才去检查
+                 *   `checkNow` 里也加了守卫（手里有下好的包就不再查/不再下）——
+                 *   界面之外还可能有人调进来，判据不能只写在按钮里。
+                 */
+                if (upd.phase === 'ready') {
+                  void update.install();
+                  return;
+                }
+                if (upd.phase === 'downloading' || upd.phase === 'installing') return;
                 setChecking(true);
                 void update.checkNow({ silent: false });
                 window.setTimeout(() => setChecking(false), 1200);
               }}
             >
-              {upd.phase === 'ready' ? '重启并更新' : '检查更新'}
+              {upd.phase === 'ready'
+                ? '重启并更新'
+                : upd.phase === 'downloading'
+                  ? '正在下载…'
+                  : upd.phase === 'installing'
+                    ? '正在安装…'
+                    : '检查更新'}
             </Button>
           </div>
         </Card>
