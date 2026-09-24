@@ -101,6 +101,17 @@ impl AppPaths {
         legacy_data_roots()[0].join("datadir.txt")
     }
 
+    /// ★★ 2026-09-24（C）：**启动器自己的家在哪**的选址记录。
+    ///
+    ///   与 `datadir.txt` 同一个宿主目录（`%APPDATA%\IEML`），理由完全一样：
+    ///   这条记录是"账本 / Java / 缓存 / 日志在哪"的答案，放进被它决定的目录里
+    ///   就是循环依赖。所以系统盘上**只留这两个几十字节的记录文件**，
+    ///   其余（`instances.json` / `prefs.json` / `cache` / `logs` / `java`）都跟着
+    ///   `own_root` 走 —— 本机 = `D:\IEML-launcher`。
+    pub fn own_location_file() -> PathBuf {
+        legacy_data_roots()[0].join("ownroot.txt")
+    }
+
     /// 启动时确保**游戏根目录**存在。
     ///
     /// ★★ 2026-09-22（用户：「这个根目录只创建装游戏的根目录，**不要附带启动器文件**」）：
@@ -257,28 +268,152 @@ pub fn legacy_data_roots() -> Vec<PathBuf> {
 /// 启动器**自己**的数据目录（实例清单 / Java / 缓存 / 日志）。
 ///
 /// ★★ 2026-09-23：与"游戏在哪"**解耦** —— 见 `AppPaths::own_root`。
-///   这里就用系统的应用数据目录（Windows `%APPDATA%`），
-///   与游戏根目录在不在同一个盘无关。
 ///
-/// ★ 为什么不做成"跟着便携模式走"：便携模式的语义是"整个程序连同数据一起带走"，
-///   那需要把游戏数据也带上 —— 那是另一个决定（用户没要求），
-///   现在只做"启动器自己的东西别弄脏游戏目录"这一件事。
+/// ★★ 2026-09-24（用户：「ABC 全做」，C = 把启动器的账本与 Java/缓存/日志也搬到 D 盘，
+///   让系统盘彻底不留东西）：选址规则与数据根目录**同一套判据**（见 [`resolve_data_root`]）：
+///
+///   ① 环境变量 `IEML_OWN_DIR`（测试 / 绿色版显式覆盖）
+///   ② `ownroot.txt` 记录（与 `datadir.txt` 同级、同一个宿主目录，理由见 `location_file`）
+///   ③ 自动选址：**空闲空间最大的非系统盘**上的 `IEML-launcher`
+///   ④ 兜底：`%APPDATA%\IEML`（单盘机器，没有别的选择）
+///
+///   ★ 为什么必须有 ② 这条记录：③ 是按"当前空闲空间"挑的，而空闲空间**每天都在变** ——
+///     没有记录的话，D 与 E 的排序一变，启动器的家就会自己搬家，账本看着就"丢了"。
+///     记录一次之后它就固定下来，换游戏根目录也不跟着动（A-4 的语义仍然成立）。
 fn default_own_root() -> PathBuf {
+    let mut cands: Vec<PathBuf> = Vec::new();
+
     /*
      * ★ 测试与自动化要能改：环境变量 `IEML_OWN_DIR` 覆盖。
-     *   没有它的话，单测一跑就会去动**开发机真实的** %APPDATA%\IEML。
+     *   没有它的话，单测一跑就会去动**开发机真实的**启动器数据目录。
      */
     if let Ok(custom) = std::env::var("IEML_OWN_DIR") {
         if !custom.trim().is_empty() {
-            return PathBuf::from(custom);
+            cands.push(PathBuf::from(custom));
         }
     }
-    dirs_data_dir().join("IEML")
+
+    if let Some(recorded) = read_record(&AppPaths::own_location_file()) {
+        cands.push(recorded);
+    }
+
+    if let Some(best) = pick_best_volume() {
+        cands.push(best.path.join(OWN_DIR_NAME));
+    }
+
+    let fallback = dirs_data_dir().join("IEML");
+    cands.push(fallback.clone());
+
+    match first_usable(cands) {
+        Some(p) => p,
+        None => fallback, // 连兜底都建不出来（极端情况）：至少不去 panic
+    }
 }
 
+/// 从记录文件里读一行路径（**纯读**，不建目录、不写任何东西）。
+fn read_record(file: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(file).ok()?;
+    let line = text.lines().next().unwrap_or("").trim().to_string();
+    if line.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(line))
+}
+
+/// 按顺序取**第一个可用**的候选（能建、能写）。
+///
+/// ★ 抽成收 `Vec` 的纯函数是为了能单测：`default_own_root` 走的是环境变量 + 真实磁盘，
+///   而这套优先级（谁先可用就用谁）才是真正要钉住的东西 —— 见
+///   `first_usable_skips_candidates_that_cannot_be_created`。
+fn first_usable(cands: Vec<PathBuf>) -> Option<PathBuf> {
+    for p in cands {
+        if p.as_os_str().is_empty() {
+            continue;
+        }
+        if ensure_writable(&p) {
+            return Some(p);
+        }
+        say!("[IEML/paths] 候选目录不可用（建不出来或写不进去）：{}", p.display());
+    }
+    None
+}
+
+/// ★★ 把"启动器自己的家在哪"记下来（幂等：内容一样就不写，免得每次启动都动文件）。
+///
+/// 放在 `%APPDATA%\IEML\ownroot.txt`（与 `datadir.txt` 同一个目录）——
+/// 理由与那个文件完全一样：记录本身必须是"与所选盘无关的固定位置"。
+pub fn remember_own_root(root: &Path) {
+    remember_own_root_at(&AppPaths::own_location_file(), root);
+}
+
+fn remember_own_root_at(file: &Path, root: &Path) {
+    if let Some(prev) = read_record(file) {
+        if same_path(&prev, root) {
+            return;
+        }
+        say!(
+            "[IEML/paths] 启动器数据目录从 {} 改为 {}（记录在 {}）",
+            prev.display(),
+            root.display(),
+            file.display()
+        );
+    } else {
+        say!(
+            "[IEML/paths] 启动器数据目录（账本 / Java / 缓存 / 日志）现在放在 {}（记录在 {}）",
+            root.display(),
+            file.display()
+        );
+    }
+    write_location(file, root);
+}
+
+/// ★★ 2026-09-24：把"启动器自己的家"从**老位置**搬到新位置（**只复制，绝不删源**）。
+///
+/// 管两组东西：
+///   · 账本四件：`instances.json` / `prefs.json` / `ms_client_id.txt` / `cf_api_key.txt`
+///     —— 用 [`adopt_records_from`] 同一套判据（目标缺就补、源更新就赢、覆盖前先 `.bak`）；
+///   · 运行时三样：`java` / `cache` / `logs` —— `copy_tree`（目标已有就跳过）。
+///
+/// ★ 为什么账本要"源更新就赢"：本机真机上 `%APPDATA%\IEML\instances.json` 才是应用
+///   一直在写的那份（22:05 还在写），而游戏根目录那份停在 09-24 01:25（陈旧）。
+///   如果这里按"目标已有就跳过"、而目标又恰好是刚建的新家（空的），
+///   那么随后 `adopt_records` 会把游戏根目录里那份**陈旧**清单补进来 ——
+///   顺序与新旧的判定都得对，否则用户会看到一份四小时前的清单。
+///
+/// 返回复制了多少字节（0 = 什么都不需要做）。
+pub fn migrate_own_root(old: &Path, paths: &AppPaths) -> u64 {
+    if !old.is_dir() || same_path(old, &paths.own_root) {
+        return 0;
+    }
+    let mut copied = adopt_records_from(old, paths);
+    for name in ["java", "cache", "logs"] {
+        let from = old.join(name);
+        if !from.is_dir() {
+            continue;
+        }
+        match copy_tree(&from, &paths.own_root.join(name)) {
+            Ok(0) => {}
+            Ok(n) => {
+                copied += n;
+                say!(
+                    "[IEML/paths] 把 {name} 搬到启动器数据目录（{n} 字节）—— 老位置那份保留不动"
+                );
+            }
+            Err(e) => say!("[IEML/paths] 搬 {name} 失败：{e}"),
+        }
+    }
+    copied
+}
 
 /// 一个候选磁盘上，我们打算用的子目录名
 const DATA_DIR_NAME: &str = "IEML";
+
+/// 非系统盘上放**启动器自己的家**的目录名（本机 = `D:\IEML-launcher`）。
+///
+/// ★ 为什么不直接叫 `IEML`：那是**游戏**根目录的名字（`D:\IEML` 里是 `.minecraft`
+///   与 `instances`）。启动器自己的账本/Java/缓存放同一个名字下会与游戏目录撞车，
+///   而"游戏的家"与"启动器的家"是两个东西（见 `AppPaths::own_root`）。
+const OWN_DIR_NAME: &str = "IEML-launcher";
 
 /// ★ 解析数据根目录。
 ///
@@ -1043,6 +1178,16 @@ fn should_take_record(from: &Path, to: &Path) -> std::io::Result<bool> {
 ///
 /// 返回复制了多少字节（0 = 什么都不需要做）。
 pub fn adopt_records(paths: &AppPaths) -> u64 {
+    // 老位置 = 游戏根目录（0.1.0-rc.1 及以前那四个文件就住在那里）
+    adopt_records_from(&paths.root.clone(), paths)
+}
+
+/// [`adopt_records`] 的通用形式：账本四件从**任意一个老位置**收养过来。
+///
+///   两个调用方、一套判据（这条规矩只允许有一份实现）：
+///     · `adopt_records` —— 游戏根目录（A-4 的老位置）
+///     · `migrate_own_root` —— 启动器自己的家的老位置（`%APPDATA%\IEML`，C 的搬迁）
+fn adopt_records_from(from_dir: &Path, paths: &AppPaths) -> u64 {
     const NAMES: [&str; 4] = [
         "instances.json",
         "prefs.json",
@@ -1051,7 +1196,7 @@ pub fn adopt_records(paths: &AppPaths) -> u64 {
     ];
     let mut copied = 0u64;
     for name in NAMES {
-        let from = paths.legacy_record_file(name);
+        let from = from_dir.join(name);
         if !from.is_file() {
             continue;
         }
@@ -2765,9 +2910,15 @@ mod tests {
     ///
     ///   覆盖三件事：① 缺的复制过去；② 目标已有的文件一个字节都不动；
     ///   ③ 源就是 own_root 时不做任何事（否则等于自己复制自己，白跑一遍）。
+    ///
+    ///   ★ 临时目录的 tag 必须是**独一份**：这条原来叫 `"adopt"`，与 A-4 那条
+    ///     `adopt_records_copies_from_the_game_root_and_keeps_the_source` **撞了**
+    ///     （`tmp_paths` 是按 tag + PID 拼路径的）—— 两条测试并行跑时会互相
+    ///     `remove_dir_all` 掉对方的种子目录，于是**偶发**红一次
+    ///     （实测：第一次全量跑就红在这里，单独跑却怎么都过）。
     #[test]
     fn adopt_own_dirs_copies_launcher_dirs_into_own_root() {
-        let (p, root, own) = tmp_paths("adopt");
+        let (p, root, own) = tmp_paths("adoptdirs");
         // 游戏根目录里留着老式启动器目录
         std::fs::create_dir_all(root.join("java").join("jdk-21")).unwrap();
         std::fs::write(root.join("java").join("jdk-21").join("bin.exe"), b"jdk").unwrap();
@@ -2804,6 +2955,143 @@ mod tests {
         assert_eq!(adopt_own_dirs(&p, &root), 0, "补齐之后不该再有动作");
         // 源 == own_root（本机就是 `%APPDATA%\IEML`）→ 直接跳过
         assert_eq!(adopt_own_dirs(&p, &own), 0, "源就是自己的家，不该自己复制自己");
+    }
+
+    /// ★★ 2026-09-24（C）：候选目录**按顺序取第一个能用的** —— 这条优先级是要钉住的东西。
+    ///
+    ///   场景：记录里的盘拔了 / 选了只读位置 / 单盘机器。
+    ///   第一个候选故意用一个**建不出来的路径**（父级是个文件）来代表"不可用"。
+    #[test]
+    fn first_usable_skips_candidates_that_cannot_be_created() {
+        let base = tmp("ownpick");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let file = base.join("not-a-dir");
+        std::fs::write(&file, b"x").unwrap();
+        let good = base.join("good");
+
+        let got = first_usable(vec![PathBuf::new(), file.join("child"), good.clone()]);
+        assert_eq!(got, Some(good), "空路径与建不出来的路径都要跳过，选第一个能用的");
+        assert!(base.join("good").is_dir(), "选中的那一个应当被建出来");
+
+        // 一个都用不了 → None（调用方会退回兜底，不许 panic）
+        assert_eq!(first_usable(vec![file.join("child")]), None);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// ★★ 2026-09-24（C）：`remember_own_root` 幂等 —— 内容一样时**不重写文件**。
+    ///
+    ///   判据用 mtime：先把记录文件拨到一小时前，再调一次同值 → mtime 必须还是那个旧值。
+    ///   （否则每次启动都会动一次文件，而"启动器改了系统盘上的文件"这种事没必要。）
+    #[test]
+    fn remember_own_root_is_idempotent() {
+        let base = tmp("ownrec");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let file = base.join("ownroot.txt");
+        let home = base.join("IEML-launcher");
+        let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+
+        remember_own_root_at(&file, &home);
+        assert_eq!(
+            read_record(&file),
+            Some(home.clone()),
+            "记录里应当是刚写进去的那个路径"
+        );
+
+        set_mtime(&file, hour_ago);
+        remember_own_root_at(&file, &home); // 同一个值 → 不该重写
+        let after_same = std::fs::metadata(&file).unwrap().modified().unwrap();
+        assert!(
+            after_same < hour_ago + std::time::Duration::from_secs(60),
+            "同值时不该重写记录文件（mtime 被刷新了）"
+        );
+
+        // 换一个位置 → 必须重写
+        let other = base.join("别的家");
+        remember_own_root_at(&file, &other);
+        assert_eq!(read_record(&file), Some(other.clone()));
+        assert!(
+            std::fs::metadata(&file).unwrap().modified().unwrap() > after_same,
+            "换了位置就应当重写"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// ★★ 2026-09-24（C）：把"启动器自己的家"从老位置搬到新位置。
+    ///
+    ///   覆盖五件事：① 账本缺的补过去；② 账本"源更新就赢" + 先备份目标；
+    ///   ③ 目标更新就一个字节都不动；④ `java/cache/logs` 只补缺、不覆盖；
+    ///   ⑤ 源一个字节都不删、第二次调用什么都不做；⑥ 源 == 目标时直接跳过。
+    #[test]
+    fn migrate_own_root_moves_ledger_and_runtime_dirs() {
+        let (mut p, _root, old) = tmp_paths("mvhome");
+        let new_home = tmp("ieml-mvhome-new");
+        let _ = std::fs::remove_dir_all(&new_home);
+        std::fs::create_dir_all(&new_home).unwrap();
+        p.own_root = new_home.clone();
+        let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+
+        // 老的家：账本四件 + java/cache/logs
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("instances.json"), r#"{"instances":[{"id":"a"},{"id":"b"}]}"#).unwrap();
+        std::fs::write(old.join("prefs.json"), r#"{"theme":"从老位置来的"}"#).unwrap();
+        std::fs::write(old.join("ms_client_id.txt"), "old-id\n").unwrap();
+        std::fs::create_dir_all(old.join("cache").join("sub")).unwrap();
+        std::fs::write(old.join("cache").join("a.json"), b"cache-from-old").unwrap();
+        std::fs::write(old.join("cache").join("sub").join("b.json"), b"sub-from-old").unwrap();
+        std::fs::create_dir_all(old.join("logs")).unwrap();
+        std::fs::write(old.join("logs").join("game.log"), b"log").unwrap();
+        std::fs::create_dir_all(old.join("java")).unwrap();
+
+        // 新的家：prefs 有一份**更新**的（必须赢）、ms_client_id 有一份更新的（不许动）、
+        //         cache 里有一份同名文件（不许覆盖）
+        std::fs::create_dir_all(new_home.join("cache")).unwrap();
+        std::fs::write(new_home.join("prefs.json"), r#"{"theme":"新的"}"#).unwrap();
+        std::fs::write(new_home.join("ms_client_id.txt"), "new-id\n").unwrap();
+        std::fs::write(new_home.join("cache").join("a.json"), b"cache-already-here").unwrap();
+        set_mtime(&new_home.join("prefs.json"), hour_ago);
+        set_mtime(&new_home.join("ms_client_id.txt"), std::time::SystemTime::now());
+        set_mtime(&old.join("prefs.json"), std::time::SystemTime::now());
+
+        let copied = migrate_own_root(&old, &p);
+        assert!(copied > 0, "应当真的搬了东西");
+        // ① 账本缺的补过去
+        assert!(p.own_file("instances.json").is_file(), "缺的账本要补");
+        // ② 源更新 → 源赢，且旧目标进 .bak
+        assert_eq!(
+            std::fs::read_to_string(p.own_file("prefs.json")).unwrap(),
+            r#"{"theme":"从老位置来的"}"#
+        );
+        assert_eq!(
+            std::fs::read_to_string(p.own_root.join("prefs.json.bak")).unwrap(),
+            r#"{"theme":"新的"}"#
+        );
+        // ③ 目标更新 → 一个字节都不动
+        assert_eq!(
+            std::fs::read_to_string(p.own_file("ms_client_id.txt")).unwrap(),
+            "new-id\n"
+        );
+        // ④ 运行时目录只补缺
+        assert_eq!(
+            std::fs::read_to_string(p.own_root.join("cache").join("a.json")).unwrap(),
+            "cache-already-here",
+            "目标已有的缓存文件不许覆盖"
+        );
+        assert!(p.own_root.join("cache").join("sub").join("b.json").is_file(), "缺的要补（含子目录）");
+        assert!(p.own_root.join("logs").join("game.log").is_file());
+        assert!(p.own_root.join("java").is_dir());
+        // ⑤ 源一个字节都不删
+        assert!(old.join("prefs.json").is_file() && old.join("cache").join("a.json").is_file());
+        assert!(old.join("instances.json").is_file());
+        // 幂等
+        assert_eq!(migrate_own_root(&old, &p), 0, "第二次不该再搬");
+        // ⑥ 源就是自己的家 → 跳过（否则等于自己复制自己）
+        assert_eq!(migrate_own_root(&new_home, &p), 0, "源 == 目标时不该动作");
+
+        let _ = std::fs::remove_dir_all(&new_home);
     }
 
     /// 路径比较：`D:\IEML`、`d:/ieml/`、`D:\IEML\\` 必须是同一处。
