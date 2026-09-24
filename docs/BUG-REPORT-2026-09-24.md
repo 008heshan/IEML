@@ -32,6 +32,9 @@
 | 8e | 更新日志页三处与实现不符 | ✅ **已修**（不在 CHANGELOG / ChangelogPage —— 在**面向用户的另一份**：`src/data/release-notes.ts`；三处假承诺按界面事实改掉） | 逐条与界面核对（版本名写法 / 不存在的"皮肤页"）+ ADR 70.12 |
 | 8f | **用户报**：版本列表的版本被定位到 `%APPDATA%\IEML\instances` | ✅ **已修 + 已部署**（实例目录回到游戏根目录 `<root>/instances`；`java/cache/logs` 留在启动器自己的家） | `probe-instance-root.mjs` 五条判据：**同一份真机数据**上旧发布版 3/3 落在 C 盘（其中 2 个目录磁盘上根本不存在）→ 新构建 3/3 落在 `D:\IEML\instances` 且都存在；**部署后**又按用户原动作验 `probe-versions-page-dir.mjs`：版本列表 →「打开目录」的 toast = `D:\IEML\instances\vanilla-262`、资源管理器窗口的 LocationURL 也是它；ADR 七十一 |
 | 8g | **同族**：`instance_health` / 下载页"有没有版本在用"仍在读**旧位置**的 `instances.json`；`migrate_data_root` 反向把 `java/cache/logs` 灌进游戏根目录 | ✅ **已修**（改走 `own_file_for_read`；跨根搬家只剩 `instances`，反方向新增 `adopt_own_dirs` 收养回 own_root） | `tools/live/probe-manifest-location.mjs`：旧发布版读到 `["root-only"]`（游戏根那份）→ 新构建读到 `["own-1","own-2"]`（启动器自己的家）；`cargo test --lib` 459 通过 |
+| 8h | **用户要求（非缺陷）**：ABC 全做 —— 删 C 盘残留 + 把启动器自己的家也搬到游戏盘 | ✅ **已做**（`%APPDATA%\IEML` 从 1.11 GB 降到 **2516 字节 / 5 个文件**；家 = `D:\IEML-launcher`） | `tools/live/probe-own-root-move.mjs` 六条判据（含"存回偏好写进新家、C 盘连文件都没有"）+ 删除前逐项核对"目标侧已有"；ADR 七十二 |
+| 8i | **用户报**：点侧栏切换页面时，滚动位置被上一页继承（不回顶部） | ✅ **已修**（`AppShell` 换屏时把 `.content` 滚回 0；`useLayoutEffect` + 只认"屏幕身份"那几个字段） | `tools/live/probe-page-scroll-top.mjs` 红绿对照：坏构建 设置→更新日志 停在 **906**、更新日志→设置停在 **906**；修好后都是 **0**；同一屏内拨开关不被拽回顶部；ADR 七十三 |
+| 8j | **用户定格式**：更新日志正文改成「新增了 / 修复了 / 优化了 / 删除了 / 修改了」五段（必读模板） | ✅ **已定稿 + 已进门禁 + 已发布 rc.4**（`release-notes.ts` 文件头即模板、段名进类型、新增第 25 项门禁） | `tools/check-release-notes.mjs` 进 `verify.mjs`（门禁 **25 项全过**，四类规则都先证明能红）；`probe-changelog-format.mjs` 4/4 + 截图；ADR 七十四 |
 
 > 每批的详细记录在 `docs/DECISIONS.md`（从 ADR 六十二 起）。
 
@@ -586,8 +589,7 @@ blocks: [{模组加载器四选一}, {附加组件 OptiFine 清单来自在线}]
 | `tools/live/probe-own-root-move.mjs` | 真实数据上验"启动器自己的家"搬到了哪：记录文件、账本与界面互证、原样存回偏好证明写入落点（8h） |
 | `tools/live/probe-page-scroll-top.mjs` | 换页是否滚回顶部（8i）：长页↔长页的红绿对照 + "同一屏内不重置"的反面 |
 | `tools/live/probe-versions-page-dir.mjs` | 真实数据上按用户原动作走「版本列表 → ⋯ → 打开目录」，读 toast 里的路径并核对资源管理器窗口（8f 的端到端判据） |
-| 8h | **用户要求（非缺陷）**：ABC 全做 —— 删 C 盘残留 + 把启动器自己的家也搬到游戏盘 | ✅ **已做**（`%APPDATA%\IEML` 从 1.11 GB 降到 **2516 字节 / 5 个文件**；家 = `D:\IEML-launcher`） | `tools/live/probe-own-root-move.mjs` 六条判据（含"存回偏好写进新家、C 盘连文件都没有"）+ 删除前逐项核对"目标侧已有"；ADR 七十二 |
-| 8i | **用户报**：点侧栏切换页面时，滚动位置被上一页继承（不回顶部） | ✅ **已修**（`AppShell` 换屏时把 `.content` 滚回 0；`useLayoutEffect` + 只认"屏幕身份"那几个字段） | `tools/live/probe-page-scroll-top.mjs` 红绿对照：坏构建 设置→更新日志 停在 **906**、更新日志→设置停在 **906**；修好后都是 **0**；同一屏内拨开关不被拽回顶部；ADR 七十三 |
+| `tools/live/probe-changelog-format.mjs` | 「更新日志」页渲染出来是不是那个五段格式（8j）：五段有序、每条带类别词、最新一版是 rc.4，并留一张截图 |
 
 跑法：`node tools/live/<脚本>.mjs ["<exe>"]`（默认用 `src-tauri/target/release/ieml.exe`，
 可以传桌面那份 exe）。
