@@ -103,6 +103,43 @@ await sleep(2500);
 const rows = await ev(`[...document.querySelectorAll('.ver-item')].map((x)=>(x.textContent||'').replace(/\\s+/g,' ').trim().slice(0,50))`);
 console.log('版本列表页的行：' + JSON.stringify(rows));
 
+/* ---------- 先不下任何副作用地量每一行：preview_launch 的 --gameDir / natives ---------- */
+const invoke = (cmd, args) =>
+  ev(
+    `(async () => {
+       try { return { ok: await window.__TAURI_INTERNALS__.invoke(${JSON.stringify(cmd)}, ${JSON.stringify(args)}) }; }
+       catch (e) { return { err: String(e && e.message ? e.message : e) }; }
+     })()`,
+  );
+const listed = await invoke('list_instances', {});
+const allRows = [];
+for (const i of listed?.ok?.instances ?? []) {
+  const req = {
+    mc_version: i.mcVersion,
+    loader_kind: i.loader ? i.loader.kind : null,
+    loader_version: i.loader ? i.loader.version : null,
+    username: 'PathProbe',
+    account_uuid: null,
+    memory_mb: i.config?.memoryMb ?? 2048,
+    width: 854,
+    height: 480,
+    instance_slug: i.config?.slug ?? '',
+    instance_id: i.id,
+    extra_jvm_args: [],
+    extra_game_args: [],
+    window_title: null,
+    join_server: null,
+  };
+  const r = await invoke('preview_launch', { req });
+  const m = /--gameDir\s+"?([^"\s]+)"?/.exec(r?.ok?.command ?? '');
+  const gd = m ? m[1] : '';
+  allRows.push({ 名称: i.config?.name, slug: req.instance_slug, 游戏目录: gd, 存在: gd ? existsSync(gd) : null, 出错: r?.err ?? null });
+}
+console.log('三行各自解析到的游戏目录：');
+for (const r of allRows) {
+  console.log(`   ${r.名称}（${r.slug}）→ ${r.游戏目录}  存在=${r.存在}${r.出错 ? ' 出错=' + r.出错 : ''}`);
+}
+
 /* 第一行 → ⋯ →「打开目录」 */
 const clicked = await ev(`(() => {
   const row = document.querySelector('.ver-item');
@@ -157,14 +194,18 @@ try {
   rmSync(PROFILE, { recursive: true, force: true });
 } catch {}
 
-const lower = dir.toLowerCase();
+const lower = (s) => String(s ?? '').toLowerCase();
+const dirLow = lower(dir);
+const allRowsD = allRows.length > 0 && allRows.every((r) => lower(r.游戏目录).startsWith(D_INST + '\\'));
+const allRowsExist = allRows.length > 0 && allRows.every((r) => r.存在 === true);
 const c1 = Array.isArray(rows) && rows.length >= 1;
-const c2 = lower.startsWith(D_INST + '\\');
-const c3 = !lower.startsWith(C_INST + '\\');
+const c2 = dirLow.startsWith(D_INST + '\\');
+const c3 = !dirLow.startsWith(C_INST + '\\');
 const c4 = dir ? existsSync(dir) : false;
 console.log('\n===== 判据 =====');
 console.log(`${c1 ? '✓' : '✗'} ① 版本列表读到了实例（${(rows ?? []).length} 行）`);
-console.log(`${c2 ? '✓' : '✗'} ② 「打开目录」的路径在 D:\\IEML\\instances 下：${dir}`);
-console.log(`${c3 ? '✓' : '✗'} ③ 不在 %APPDATA%\\IEML\\instances 下（老行为才会那样）`);
-console.log(`${c4 ? '✓' : '✗'} ④ 那个目录磁盘上真的存在`);
-process.exit(c1 && c2 && c3 && c4 ? 0 : 1);
+console.log(`${allRowsD ? '✓' : '✗'} ② **每一行**解析到的游戏目录都在 ${D_INST} 下（共 ${allRows.length} 行）`);
+console.log(`${allRowsExist ? '✓' : '✗'} ③ 那些目录磁盘上都存在`);
+console.log(`${c2 ? '✓' : '✗'} ④ 按用户原动作点「打开目录」给的路径也在 D 盘：${dir}`);
+console.log(`${c3 ? '✓' : '✗'} ⑤ 都不在 %APPDATA%\\IEML\\instances 下（老行为才会那样）`);
+process.exit(c1 && allRowsD && allRowsExist && c2 && c3 && c4 ? 0 : 1);

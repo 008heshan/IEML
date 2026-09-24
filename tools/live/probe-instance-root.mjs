@@ -55,25 +55,56 @@ const C_INST = path.join(APPDATA, 'IEML', 'instances');
 const D_ROOT = 'D:\\IEML';
 const D_INST = path.join(D_ROOT, 'instances');
 
+/* 两个阶段各一个 WebView 用户目录（与"各一个端口"配套，互不干扰） */
+for (const tag of ['old', 'new']) {
+  try {
+    rmSync(PROFILE + '-' + tag, { recursive: true, force: true });
+  } catch {}
+}
+
 /* ---------- 起一个实例（真实数据、真实环境）并接上 CDP ---------- */
-const startApp = async (exe) => {
+/*
+ * ★★ 2026-09-24 修探针自身的一个坑（差点得出假结论）：
+ *   原来两个阶段**共用同一个 CDP 端口**（9971）。而启动器是单实例的 ——
+ *   如果旧进程没被彻底杀掉（杀完只等 1.2 秒，WebView2 还在退），
+ *   第二阶段起的那个新进程会被单实例挡掉、悄悄退出，
+ *   而探针照样能连上 9971（那是**旧进程**还在服务）⇒ 于是"新构建"那一栏
+ *   量到的其实是旧构建（第一版就撞上了：部署版 exe 的哈希明明是对的，
+ *   却报出 C 盘路径、判据 ②③ 假红）。
+ *
+ *   两处修法：
+ *     ① 每个阶段**用不同的端口** —— 阶段 2 的端口只可能由阶段 2 那个进程服务；
+ *     ② 起之前**等所有 ieml 进程真的消失**，起之后确认端口确实活了；
+ *        连不上就明确报"本次测量无效"，而不是拿上一条连接凑数。
+ */
+const waitNoIeml = async (tag) => {
+  for (let i = 0; i < 40; i += 1) {
+    const n = (await ps(`(Get-Process ieml -ErrorAction SilentlyContinue | Measure-Object).Count`)) || '0';
+    if (n.trim() === '0') return true;
+    await sleep(500);
+  }
+  console.error(`[${tag}] 等不到 ieml 退出 —— 本次测量无效（不要让旧进程冒充新进程）`);
+  return false;
+};
+
+const startApp = async (exe, port, tag) => {
   const env = { ...process.env };
   /* ★ 必须显式清掉：否则会读到开发机上的沙盒变量（本探针要的正是真实数据） */
   delete env.IEML_DATA_DIR;
   delete env.IEML_OWN_DIR;
-  env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = `--remote-debugging-port=${PORT}`;
-  env.WEBVIEW2_USER_DATA_FOLDER = PROFILE;
+  env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = `--remote-debugging-port=${port}`;
+  env.WEBVIEW2_USER_DATA_FOLDER = PROFILE + '-' + tag;
   const child = spawn(exe, [], { env, stdio: 'ignore' });
   let page = null;
   for (let i = 0; i < 75; i += 1) {
     try {
-      const r = await fetch(`http://127.0.0.1:${PORT}/json/list`);
+      const r = await fetch(`http://127.0.0.1:${port}/json/list`);
       page = (await r.json()).find((t) => t.type === 'page' && t.webSocketDebuggerUrl);
       if (page) break;
     } catch {}
     await sleep(400);
   }
-  if (!page) throw new Error('连不上 CDP（' + exe + '）');
+  if (!page) throw new Error(`连不上 CDP（${tag}，端口 ${port}，pid ${child.pid}）—— 本次测量无效`);
   const ws = new WebSocket(page.webSocketDebuggerUrl);
   await new Promise((r) => ws.addEventListener('open', r, { once: true }));
   let seq = 0;
@@ -189,24 +220,25 @@ console.log('D 盘实例目录：' + D_INST + ' → ' + (existsSync(D_INST) ? re
 
 await ps(`Get-Process ieml -ErrorAction SilentlyContinue | Stop-Process -Force`);
 await sleep(900);
+if (!(await waitNoIeml('前置'))) process.exit(4);
 
 const before = snapGameRoot();
 console.log('\n=== 运行前 ===');
 console.log(JSON.stringify(before, null, 2));
 
 /* ---------- ① 旧发布版：应当复现用户的报告 ---------- */
-console.log('\n=== 旧发布版（rc.3）：同一份真机数据 ===');
-const oldRun = await startApp(OLD_EXE);
+console.log('\n=== 旧发布版（rc.3，改之前那份）：同一份真机数据 ===');
+const oldRun = await startApp(OLD_EXE, PORT, 'old');
 const oldPaths = await probePaths(oldRun.ev, '旧发布版');
 console.log(JSON.stringify(oldPaths, null, 2));
 const oldHealth = await invoke(oldRun.ev, 'instance_health', {});
 console.log('instance_health：' + JSON.stringify(oldHealth?.ok ?? oldHealth?.err));
 await ps(`Get-Process ieml -ErrorAction SilentlyContinue | Stop-Process -Force`);
-await sleep(1200);
+if (!(await waitNoIeml('旧版跑完'))) process.exit(4);
 
 /* ---------- ② 新构建：应当落在 D 盘 ---------- */
-console.log('\n=== 新构建：同一份真机数据 ===');
-const newRun = await startApp(NEW_EXE);
+console.log('\n=== 新构建（部署到桌面那份）：同一份真机数据 ===');
+const newRun = await startApp(NEW_EXE, PORT + 1, 'new');
 const newPaths = await probePaths(newRun.ev, '新构建');
 console.log(JSON.stringify(newPaths, null, 2));
 const newHealth = await invoke(newRun.ev, 'instance_health', {});
@@ -253,4 +285,12 @@ console.log(
   `${settingsKept ? '✓' : '✗'} ⑤ 实例设置跟着走：新家 options.txt 的 lang=${langOf(optNew)}，备份那份 lang=${langOf(optBak)}`,
 );
 console.log(`   instance_health：旧 ${JSON.stringify(oldHealth?.ok?.length ?? oldHealth?.err)} 条 → 新 ${JSON.stringify(newHealth?.ok?.length ?? newHealth?.err)} 条`);
-process.exit(0);
+
+/* 收尾：两个阶段的 WebView 用户目录都不留 */
+for (const tag of ['old', 'new']) {
+  try {
+    rmSync(PROFILE + '-' + tag, { recursive: true, force: true });
+  } catch {}
+}
+const ok = oldAllC && newAllD && newAllDExist && gameRootUntouched && settingsKept;
+process.exit(ok ? 0 : 1);
