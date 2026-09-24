@@ -127,6 +127,20 @@ results.push([
   run('取消语义', 'node', ['--test', 'tests/cancel.test.mjs']),
 ]);
 /*
+ * ★★ 崩溃规则表的**两侧一致性**（2026-09-24，C-8）。
+ *
+ *   规则有两份实现：Rust `domain/crash.rs`（judge_crash 用，也就是游戏退出那条 toast 的判据）
+ *   与 TS `src/domain/crash.ts`（崩溃弹窗与日志页用）。
+ *   它们曾经漂移而**没有任何判据能发现**：36 条 vs 35 条、12 条 id 起名不同
+ *   （TS `out-of-memory-heap` / Rust `oom-heap` …）。
+ *   这条门禁让两份读**同一份判据表**（`tests/crash-rules.cases.json`）：
+ *   哪一边改了规则没改另一边，就有一边红（Rust 侧那条在 crash.rs 的 tests 里）。
+ */
+results.push([
+  '崩溃规则两侧一致',
+  run('崩溃规则两侧一致', 'node', ['--test', 'tests/crash-rules.test.mjs']),
+]);
+/*
  * ★★ 九套主题的令牌与对比度（2026-09-22 用户要求 9 套主题）。
  *
  *   为什么这是**门禁**而不是"看一眼"：9 套 × 30 个令牌全是手写的颜色，

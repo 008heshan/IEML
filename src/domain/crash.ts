@@ -230,7 +230,17 @@ export const CRASH_RULES: CrashRule[] = [
   {
     id: 'gpu-driver',
     category: 'graphics',
-    pattern: /EXCEPTION_ACCESS_VIOLATION.*(?:nvoglv|atio|ig\d)/i,
+    /*
+     * ★★ 2026-09-24（C-8 的判据表逼出来的真缺陷）：原来写的是
+     *   `EXCEPTION_ACCESS_VIOLATION.*(?:nvoglv|atio|ig\d)` —— 而 `.` 在 JS 正则里
+     *   **不跨行**，真实的 JVM 崩溃日志却一定是这个形状：
+     *       # EXCEPTION_ACCESS_VIOLATION (0xc0000005) at pc=…, pid=…, tid=…
+     *       C  [nvoglv64.dll+0x…]
+     *   驱动名在**下一行** ⇒ 这条规则在真机上**永远不会命中**（写了等于没写）。
+     *   现在用 `[\s\S]{0,400}?` 跨行且限定距离（避免把整篇日志的两个无关片段凑成一条）——
+     *   Rust 侧的 `regex` 同样支持 `[\s\S]`，两边写法保持一致（见 tests/crash-rules.cases.json）。
+     */
+    pattern: /EXCEPTION_ACCESS_VIOLATION[\s\S]{0,400}?(?:nvoglv|atio|ig\d)/i,
     conclusion: '显卡驱动崩溃了',
     fix: { label: '更新显卡驱动', kind: 'none' },
     detail: '日志里出现 nvoglv64.dll / atio6axx.dll / igdumdim64.dll 就是显卡驱动的名字。',

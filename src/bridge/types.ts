@@ -41,16 +41,14 @@ export interface LaunchResult {
   command: string;
 }
 
-export interface CrashReport {
-  /** 面向用户的原因（不是堆栈） */
-  reason: string;
-  /** 建议动作 */
-  actions: Array<{ label: string; kind: string }>;
-  /** 原始日志（默认折叠） */
-  raw: string;
-  /** 匹配到的日志特征 */
-  matches: Array<{ pattern: string; conclusion: string }>;
-}
+/*
+ * ★ 2026-09-24（死代码清理）：`CrashReport` 类型与 `Backend.analyzeCrash` 一起删掉了。
+ *   理由：`analyzeCrash` 全仓库 **0 处调用**（崩溃弹窗走的是 `domain/crash.ts`
+ *   的 `analyzeCrashLog`，同步、无需 IPC），而它拖着一条只会说谎的链路：
+ *   Tauri 版去调 Rust 的 `analyze_crash`（那份规则表与 TS 那份漂移过，见 C-8）。
+ *   规则现在只有 TS 一份（Rust 侧的 `judge_crash` 只用它自己那份做"崩没崩"的判断，
+ *   由 tests/crash-rules.cases.json 钉着两边一致）。
+ */
 
 /**
  * 后端接口。所有方法在网页版与 Tauri 版都必须实现。
@@ -145,7 +143,4 @@ export interface Backend {
   listMods(
     instanceId: string,
   ): Promise<Array<{ fileName: string; path: string; bytes: number; mtimeMs: number }>>;
-
-  /* --- 崩溃分析 --- */
-  analyzeCrash(instanceId: string): Promise<CrashReport | null>;
 }

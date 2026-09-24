@@ -2241,65 +2241,14 @@
 .vi svg {
   display: block;
 }
-.vi-top,
-.vi-left,
-.vi-right {
-  stroke: none;
-}
-.vi-modern .vi-top {
-  fill: #57c96a;
-}
-.vi-modern .vi-right {
-  fill: #3ea353;
-}
-.vi-modern .vi-left {
-  fill: #2c7c3e;
-}
-.vi-mid .vi-top {
-  fill: #5b8def;
-}
-.vi-mid .vi-right {
-  fill: #4a74c8;
-}
-.vi-mid .vi-left {
-  fill: #37579a;
-}
-.vi-classic .vi-top {
-  fill: #8f7bea;
-}
-.vi-classic .vi-right {
-  fill: #7562cc;
-}
-.vi-classic .vi-left {
-  fill: #5849a0;
-}
-.vi-legacy .vi-top {
-  fill: #d9a441;
-}
-.vi-legacy .vi-right {
-  fill: #b8862f;
-}
-.vi-legacy .vi-left {
-  fill: #8c6521;
-}
-.vi-snapshot .vi-top {
-  fill: #c77bea;
-}
-.vi-snapshot .vi-right {
-  fill: #a562c8;
-}
-.vi-snapshot .vi-left {
-  fill: #7c49a0;
-}
-.vi-april .vi-top {
-  fill: #e07a7a;
-}
-.vi-april .vi-right {
-  fill: #c05f5f;
-}
-.vi-april .vi-left {
-  fill: #934747;
-}
+/*
+ * ★★ 2026-09-24（死代码清理，C 组低项）：这里原来有 `.vi-top / .vi-left / .vi-right`
+ *   三族共 20 条规则（每个世代一组 `fill`）—— 那是**自绘 SVG 等距方块**时代的样式。
+ *   现在 `VersionIcon.tsx` 渲染的是一个 `<img>`（`version-icon.png`）：
+ *   `className={`vi vi-${fam.tone}`}` 里只用到**容器**那一个类，
+ *   三个面（top/left/right）**再也不存在** ⇒ 那 20 条规则永远不会命中。
+ *   删掉它们（容器样式与 `.vi svg` 保留 —— 前者在用，后者是 svg 兜底）。
+ */
 
 /* 版本列表里的分组标题（世代分隔） */
 .wz-group {

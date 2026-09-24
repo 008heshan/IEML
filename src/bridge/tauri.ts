@@ -14,7 +14,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { Instance, JavaRuntime } from '../domain';
-import type { Backend, BackendInfo, CrashReport, LaunchResult } from './types.ts';
+import type { Backend, BackendInfo, LaunchResult } from './types.ts';
 
 /* ====================== 类型 ====================== */
 
@@ -642,36 +642,6 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     throw new Error(typeof e === 'string' ? e : e instanceof Error ? e.message : String(e));
   }
 }
-
-/* ====================== 领域规则（Rust 侧） ====================== */
-
-export const rust = {
-  /** 加载器能力表 —— 规则在 Rust，前端只呈现 */
-  capabilities: (mcVersion: string) =>
-    call<unknown>('loader_capabilities', { mcVersion }),
-
-  validate: (selection: unknown) =>
-    call<unknown>('validate_combination', { selection }),
-
-  autoMemory: (modCount: number, kind: string, totalGb: number, availableGb: number) =>
-    call<{
-      reasoning: string;
-      suggested_gear: number;
-      snapped_gb: number;
-      max_gear: number;
-      result: { gb: number };
-    }>('auto_memory', { modCount, kind, totalGb, availableGb }),
-
-  isolation: (mode: string, hasContent: boolean, globalDefault: string, fromModpack: boolean) =>
-    call<{ isolated: boolean; source: string; reason: string; warning: string | null }>(
-      'resolve_isolation',
-      { mode, hasContent, globalDefault, fromModpack },
-    ),
-
-  analyzeCrash: (logText: string) => call<unknown>('analyze_crash', { logText }),
-
-  redact: (text: string) => call<unknown>('redact_report', { text }),
-};
 
 /* ====================== 真实元数据 ====================== */
 
@@ -1717,27 +1687,6 @@ export function createTauriBackend(): Backend {
         bytes: r.bytes,
         mtimeMs: r.mtime_ms,
       }));
-    },
-
-    async analyzeCrash(instanceId): Promise<CrashReport | null> {
-      try {
-        const log = await launcher.readLog(instanceId);
-        if (!log) return null;
-        const a = await call<{
-          reason: string;
-          matches: Array<{ conclusion: string; rule_id: string }>;
-          actions: Array<{ label: string; kind: string }>;
-          heuristic: boolean;
-        }>('analyze_crash', { logText: log });
-        return {
-          reason: a.reason,
-          actions: a.actions.map((x) => ({ label: x.label, kind: x.kind })),
-          raw: log,
-          matches: a.matches.map((m) => ({ pattern: m.rule_id, conclusion: m.conclusion })),
-        };
-      } catch {
-        return null;
-      }
     },
   };
 }

@@ -17,7 +17,7 @@ import { VersionPicker } from '../components/ResourceBrowser';
 import { useRealApi } from '../hooks/useRealApi';
 import { useApp } from '../state/AppContext';
 import { installResourceVersion } from '../flows/resource-install';
-import type { ModrinthHit, ModrinthVersion, ResourceKindInfo, ResourceKindName } from '../bridge/tauri';
+import type { ModrinthHit, ModrinthVersion, ResourceKindInfo, ResourceKindName, ResourceSourceName } from '../bridge/tauri';
 
 export function ResourceInstallPage() {
   const { state, closeResource, toast } = useApp();
@@ -41,8 +41,10 @@ export function ResourceInstallPage() {
   /*
    * ★★ 2026-09-24（C-18 修复）：来源如实显示 —— 这一页原来写死「来自 Modrinth」，
    *   从 CurseForge 那一栏点进来的包也会这么写。
+   * ★ C-1：这个来源同时要**传给后端**（版本列表按来源走），所以收成 ResourceSourceName。
    */
-  const source = state.resourceTarget?.source ?? 'modrinth';
+  const source: ResourceSourceName =
+    state.resourceTarget?.source === 'curseforge' ? 'curseforge' : 'modrinth';
   const sourceLabel = source === 'curseforge' ? 'CurseForge' : 'Modrinth';
 
   useEffect(() => {
@@ -74,13 +76,25 @@ export function ResourceInstallPage() {
     }
     setLoading(true);
     setError(null);
+    /*
+     * ★★ 2026-09-24（C-1 修复）：这里原来调的是 `api.modrinth.versions(hit.project_id)` ——
+     *   **只有 Modrinth 那一条路**。而 CF 命中的 `project_id` 是**数字 id**，
+     *   拿它去问 Modrinth 只会得到 404 或空列表 ——
+     *   真机上的表现就是报告里那句「这个整合包没有可下载的版本 / 上游没有给它发布任何文件」，
+     *   而那个包在 CurseForge 上明明有几十个文件。
+     *
+     *   后端**早就有** source-aware 的 `resource_versions`（`commands_real.rs:803`：
+     *   CF → `curseforge::files`，Modrinth → `project_versions`），
+     *   `ResourceBrowser` 展开卡片时用的就是它 —— 只有这一页漏了。
+     *   现在两边一致：**来源只作为参数传下去，界面不写 `if (source === …)`**。
+     */
     void api.modrinth
-      .versions(hit.project_id)
+      .resourceVersions({ kind, projectId: hit.project_id, source })
       .then(setVersions)
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
   };
-  useEffect(load, [hit?.project_id]);
+  useEffect(load, [hit?.project_id, kind, source]);
 
   const install = async (v: ModrinthVersion) => {
     if (!api || !hit) return;

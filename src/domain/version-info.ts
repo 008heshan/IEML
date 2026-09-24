@@ -15,7 +15,7 @@
  */
 
 /** 当前版本号。形状：`<主>.<次>.<修订>[-<阶段>.<序号>]` */
-export const APP_VERSION = '0.1.0-rc.1';
+export const APP_VERSION = '0.1.0-rc.2';
 
 /**
  * 版本号里的阶段（没有后缀 = 正式版）。
