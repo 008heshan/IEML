@@ -134,6 +134,12 @@ export async function launch({
   waitFor = '.nav-item',
   settleMs = 2500,
   retries = 2,
+  /*
+   * ★ 保留 WebView 用户目录（默认每次清空）。
+   *   `localStorage`（`ieml.motion` / `ieml.lowPerf` 这些"本机偏好"）就存在那里 ——
+   *   要验"重启之后设置还在不在"必须保留它，否则每次都是全新的浏览器配置。
+   */
+  keepProfile = false,
 } = {}) {
   if (!existsSync(exe)) throw new Error('找不到 exe：' + exe);
   const cdpPort = port || (await pickFreePort());
@@ -165,7 +171,7 @@ export async function launch({
       await sleep(wait);
     }
     try {
-      rmSync(profile, { recursive: true, force: true });
+      if (!keepProfile) rmSync(profile, { recursive: true, force: true });
     } catch {}
 
     child = spawn(exe, [], { env: childEnv, stdio: ['ignore', logFd, logFd] });
@@ -248,7 +254,7 @@ export async function launch({
     } catch {}
     await killIeml();
     try {
-      rmSync(profile, { recursive: true, force: true });
+      if (!keepProfile) rmSync(profile, { recursive: true, force: true });
     } catch {}
   };
 

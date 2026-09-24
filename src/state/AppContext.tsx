@@ -26,7 +26,7 @@ import type { ModEntry, ModFilter, ModStateResult } from '../domain/mods.ts';
 import { instanceNameRules, validate } from '../domain/validate.ts';
 import { getBackend } from '../bridge';
 import type { Backend } from '../bridge';
-import { MOTION_KEY, setMotion } from '../ui/motion';
+import { applyMotion, MOTION_KEY, readMotion, setMotion } from '../ui/motion';
 import { applyTheme, isThemeId, type ThemeId } from '../ui/theme';
 import {
   applyVfx,
@@ -339,12 +339,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const vfxDecision = useMemo(() => decideVfx(vfxWant, vfxCap), [vfxWant, vfxCap]);
-  const vfxDowngradedByLowPerf = lowPerf && vfxDecision.level === 'aura';
+  /*
+   * ★ 低性能损耗模式把视效**压到「弱化」**（不是「适中」）。
+   *
+   *   用户 2026-09-22 对那个开关的原话是「一键开启**减少动效和弱化视效**」——
+   *   所以派生出来的生效档位就该是 `weak`。原来这里压在 `mid`（只降一档），
+   *   而设置页那个被删掉的 `vfx.choose('weak')` 才是压到 `weak` 的 ——
+   *   两者不一致：老代码靠"写盘 + 降两档"达到 weak，删掉写盘之后就露出来了。
+   */
+  const vfxDowngradedByLowPerf = lowPerf && vfxDecision.level !== 'weak';
   /** 实际生效的档位（能力校正 + 低性能模式压制之后的那一个） */
-  const vfxLevel: VfxLevel = vfxDowngradedByLowPerf ? 'mid' : vfxDecision.level;
+  const vfxLevel: VfxLevel = vfxDowngradedByLowPerf ? 'weak' : vfxDecision.level;
   const vfxClamped = vfxDecision.clamped || vfxDowngradedByLowPerf;
   const vfxWhy = vfxDowngradedByLowPerf
-    ? '低性能损耗模式开着，灵动视效被压到「适中」（关掉它就能回来）'
+    ? '低性能损耗模式开着，视效被压到「弱化」（关掉它就能回来）'
     : vfxDecision.why;
 
   /** 换档：写盘 + 立刻改 `data-vfx`（**不等 React 重渲染**，否则会闪一帧旧材质） */
@@ -365,6 +373,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
      *   就是"状态两边不一致 + 白按尺寸重烘法线图"（实测 low-perf 开着时
      *   6 块玻璃仍挂着 data-lens）。
      */
+    /*
+     * ★★ 2026-09-24 修正（用户那条"档位莫名其妙变了"的根因）：
+     *   低性能损耗模式开着时，**动效也降到「减少」——但只施加、不写盘**。
+     *   原来这条降档是设置页 `setMotion('lite')` 做的（写盘 → 把用户选的「灵韵」
+     *   永久改成「减少」），而"原值"只存在一个内存 ref 里 ⇒ **重启之后再也回不来**。
+     *   现在：用户选什么就存在 localStorage 里不动，开关只决定**当下生效哪一档**；
+     *   关掉开关时从盘上读回他自己的档位。
+     *   （视效那一侧本来就是派生：见上面的 `vfxDowngradedByLowPerf`。）
+     */
+    applyMotion(lowPerf ? 'lite' : readMotion());
     glassRef.current?.setLowPerf(lowPerf);
     glassRef.current?.setLevel(vfxLevel);
   }, [vfxLevel, lowPerf]);
