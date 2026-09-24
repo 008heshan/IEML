@@ -94,6 +94,12 @@ export function useLauncherUpdate() {
   }));
   /** 待安装的 Update 对象。放 ref 里 —— 它不该触发重渲染。 */
   const pending = useRef<Update | null>(null);
+  /**
+   * ★ 包**已经下到本地**了吗？（2026-09-24 加）
+   *   `pending.current` 只表示"查到了一个更新"，不代表包在手上；
+   *   而"能不能直接装"取决于这个 —— 用户报的"点了又下一份"就出在这个区别上。
+   */
+  const downloaded = useRef(false);
   const busy = useRef(false);
   /** 自动查只做一次（这个 hook 挂在 AppContext 上，但别指望它只渲染一次） */
   const autoChecked = useRef(false);
@@ -120,6 +126,7 @@ export function useLauncherUpdate() {
           setState((s) => ({ ...s, downloaded: got }));
         }
       });
+      downloaded.current = true;
       setState((s) => ({ ...s, phase: 'ready' }));
     } catch (e) {
       /*
@@ -140,6 +147,22 @@ export function useLauncherUpdate() {
         setState({ phase: 'unsupported' });
         return;
       }
+      /*
+       * ★★ 2026-09-24（用户报的 bug）：「**在检查到更新并下载完新版本后，转变安装按钮时，
+       *   点击依旧是检查更新，而且还会再给我下一份**」。
+       *
+       *   现场：关于页那个按钮的文字已经变成「重启并更新」，但 onClick 里写的还是
+       *   `checkNow()` —— 于是它**又去问了一次服务端**、拿到**一个新的 Update 对象**放进
+       *   `pending.current`，接着 `download()` 从头再下一份（3.4 MB，白下一遍）。
+       *
+       *   两道修：① 按钮按状态分支（见 `AboutPage`）；② 这里加守卫 ——
+       *   **手里已经有一个下好的包，就不许再查、更不许再下**，只把状态重申成 ready。
+       *   守卫必须有：界面之外还可能有人（快捷键/未来接线）调进来。
+       */
+      if (pending.current && downloaded.current) {
+        setState((s) => ({ ...s, phase: 'ready', error: undefined }));
+        return;
+      }
       const silent = opts?.silent === true;
       busy.current = true;
       setState({ phase: 'checking' });
@@ -148,6 +171,7 @@ export function useLauncherUpdate() {
         const update = await check({ timeout: CHECK_TIMEOUT_MS });
         if (!update) {
           pending.current = null;
+          downloaded.current = false;
           setState({ phase: 'uptodate' });
           return;
         }
@@ -185,6 +209,7 @@ export function useLauncherUpdate() {
     try {
       await update.install();
       pending.current = null;
+      downloaded.current = false;
     } catch (e) {
       const raw = describeUpdateError(e);
       /*

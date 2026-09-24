@@ -283,6 +283,21 @@
   background: var(--bg-active);
   color: var(--text-tertiary);
 }
+/*
+ * ★★ 2026-09-24（用户：「「关于」两字的右边写「有更新」」）：
+ *   侧栏「关于」右边那个标记。与 `.nav-badge` 的区别是**它要说事**（不是数字），
+ *   用强调色，让它在一列灰字里能被一眼看到 —— 而它只在真的有更新时出现。
+ */
+.side-link .side-badge {
+  margin-left: auto;
+  font-size: 10px;
+  font-style: normal;
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  background: var(--accent-subtle);
+  color: var(--accent);
+  border: 1px solid var(--accent-border);
+}
 
 /* ---------- 二级页：返回按钮 + 当前版本卡 + 底部主操作 ---------- */
 .back-btn {
