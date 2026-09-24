@@ -2650,7 +2650,9 @@
   justify-content: space-between;
   gap: var(--space-3);
   flex-wrap: wrap;
-  font-size: var(--text-sm);
+  /* ★ 2026-09-24（同上那条）：12px → 13px —— 这一行（「X 的全部版本（N 个）」）
+     与下面那排 chips 是同一组信息，字号不该差一档。 */
+  font-size: var(--text-base);
   color: var(--text-secondary);
   margin-bottom: var(--space-2);
 }
@@ -2967,6 +2969,19 @@
   gap: var(--space-2);
   padding: var(--space-1) 0 var(--space-3);
 }
+/*
+ * ★★ 2026-09-24（用户：「资源下载里的**时代分类**都大一点，目前有点小有点费眼」）：
+ *   那排版本 chips（「全部 42 / 26.3 12 / 1.21 30 …」）原来吃的是 `.chip-btn` 的
+ *   12px + `4px 11px` 内边距 —— 在一屏几十个版本号的列表上面，确实偏小。
+ *   这里**只放大资源页这一排**（`.res-vchips` 作用域），不动全局 `.chip`：
+ *   12px → 13px（`--text-base`），内边距 4/11 → 6/13（点起来也更稳）。
+ */
+.res-vchips .chip {
+  font-size: var(--text-base);
+}
+.res-vchips .chip-btn {
+  padding: 6px 13px;
+}
 .res-vgroup + .res-vgroup {
   margin-top: var(--space-2);
 }
@@ -2975,13 +2990,14 @@
   align-items: center;
   gap: var(--space-2);
   width: 100%;
-  padding: 7px var(--space-3);
+  /* ★ 同上（用户那条要求）：分组标题 13px → 14px，内边距 7px → 9px */
+  padding: 9px var(--space-3);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   background: var(--bg-raised);
   color: var(--text-primary);
   font-family: inherit;
-  font-size: var(--text-base);
+  font-size: var(--text-md);
   text-align: left;
   cursor: pointer;
   transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
@@ -2993,9 +3009,15 @@
 .res-vgroup-name {
   font-weight: 600;
   font-family: var(--font-mono, monospace);
+  /* ★ 2026-09-24：分组标题里的版本号（26.3 / 1.21 / 快照）再明确一点字号，
+     等宽字体在同字号下看着更小 —— 这里跟 `.res-vgroup-head` 的 14px 对齐。 */
+  font-size: var(--text-md);
+  letter-spacing: 0.01em;
 }
 .res-vgroup-head .dim {
   margin-left: auto;
+  /* ★ 2026-09-24：「N 个版本」跟着放大一档（12px → 13px），别让右侧那半行更小 */
+  font-size: var(--text-base);
 }
 /* 箭头：折叠时朝右、展开时朝下（只转这一个元素，省得画两个图标） */
 .res-vgroup-head svg {
