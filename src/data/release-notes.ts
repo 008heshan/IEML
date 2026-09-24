@@ -64,6 +64,24 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.1.0-rc.7',
+    date: '2026-09-25',
+    headline: '这一版改了「版本列表」：换过游戏目录之后，它会当场按新目录说话。',
+    groups: [
+      {
+        title: '修复了',
+        items: ['修复了换过游戏目录之后「版本列表」不说清当前目录里有没有版本，看着像没刷新。'],
+      },
+      {
+        title: '修改了',
+        items: [
+          '修改了进「版本列表」时的读取时机：现在进去就重读当前选择的那份游戏目录。',
+          '修改了换目录之后的提示：会写明当前目录里还没有版本，并给出换回去的入口。',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.1.0-rc.6',
     date: '2026-09-25',
     headline: '这一版把换游戏根目录改成了立刻生效，不用再重启启动器。',
