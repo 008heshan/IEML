@@ -7663,3 +7663,102 @@ toast：[{"已打开实例目录","D:\\IEML\\instances\\vanilla-262"}]
    要让它以"新版本"的形式到达其他机器（以及他自己那台在装完 rc.4 之后），得走一次发布。
 4. **我把他的启动器进程关掉过**（部署要替换正在运行的 exe）：探针按老规矩先
    `Stop-Process ieml`，验完把修复版重新启动起来了。他当时开着的那份是 20:50 启动的旧构建。
+
+### 七十二、「ABC 全做」：把启动器自己的家搬到游戏盘，系统盘只剩记录文件（2026-09-24）
+
+用户看完 ADR 七十一 之后说了一句：**「ABC 全做」** —— 也就是
+
+* **A** 删掉 `%APPDATA%\IEML\instances`（旧位置残留的 `fabric-262`，30.7 MB）
+* **B** 删掉 `%APPDATA%\IEML\shared`（09-12 换盘留下的旧 `.minecraft`，1079 MB）
+* **C** 把**启动器自己的家**（账本 / Java / 缓存 / 日志）也搬到 D 盘 ——「让 C 盘彻底不留东西」
+
+#### 72.1　C：启动器自己的家现在也按"避开系统盘"选址
+
+改之前 `own_root` 是写死的 `%APPDATA%\IEML`（2026-09-23 的决定：与"游戏在哪"解耦）。
+解耦本身是对的，但"解耦"不等于"必须放系统盘" —— 于是：
+
+```rust
+// src-tauri/src/platform.rs（现在）
+fn default_own_root() -> PathBuf {
+    // ① IEML_OWN_DIR（测试 / 绿色版显式覆盖）
+    // ② %APPDATA%\IEML\ownroot.txt 记录  ← 新增
+    // ③ 自动选址：空闲空间最大的非系统盘上的 IEML-launcher
+    // ④ 兜底：%APPDATA%\IEML
+}
+```
+
+三条要点：
+
+1. **记录文件 `ownroot.txt` 必须存在**：③ 是按"当前空闲空间"挑的，而空闲空间每天都在变 ——
+   没有记录的话 D 与 E 的排序一变，启动器的家就自己搬家、账本看着就"丢了"。
+   位置与 `datadir.txt` 同一个宿主目录（`%APPDATA%\IEML`），理由也一样：
+   这条记录是"东西在哪"的答案，放进被它决定的目录里就是循环依赖。
+   （`known-roots.json` 同样留在那儿 —— 它记的是"启动器知道哪些游戏文件夹"，
+   正是**数据目录不可用/要换掉**时需要读的东西，见它的文档注释。）
+2. **顺序**：`migrate_own_root` 必须跑在 `adopt_records` **之前**。
+   否则新家刚建出来还是空的，`adopt_records` 会把**游戏根目录**里那份
+   `instances.json` 当成"新位置没有"补进来 —— 而真机上那份停在 09-24 01:25，
+   用户会看到一份四小时前的版本列表。
+3. **只复制、绝不删源**：搬迁是复制（账本用 `adopt_records_from` 那套判据：目标缺就补、
+   源更新就赢、覆盖前先 `.bak`；`java/cache/logs` 用 `copy_tree`：目标已有就跳过）。
+   腾出系统盘空间是**另一件事**，要用户点头（这次他点了 —— 见 72.2）。
+
+顺带把 `/APPDATA%\IEML` 里那份 `cache` 的双向问题收干净了：
+`migrate_own_root` 是"老的家 → 新家"，而 `adopt_own_dirs`（ADR 七十一）是
+"游戏根目录里的启动器目录 → 新家"，两者都不往游戏盘灌东西。
+
+#### 72.2　A / B：清理是"逐项核对过才删"的
+
+删之前对每一项都做了"目标侧已有"的核对（这一条是硬要求：**先证明不丢东西，再删**）：
+
+| 删掉的 | 大小 | 删之前的核对 |
+|---|---|---|
+| `%APPDATA%\IEML\instances` | 30.7 MB | 里面只有一个 `fabric-262`；它的每个文件都在 `D:\IEML\instances\fabric-262` 里（独有文件 **0** 个） |
+| `%APPDATA%\IEML\shared`（旧 `.minecraft`） | **1079 MB** | 6754 个文件里，`D:\IEML\.minecraft` 缺 **0** 个；而且里面只有 `assets` / `libraries` / `versions` / `launcher_profiles.json` —— **没有存档、没有配置、没有资源包/Mod** |
+| `%APPDATA%\IEML\cache` / `logs` / `java` | 9.6 MB | 三样都已复制到 `D:\IEML-launcher`（1839 / 11 / 0 个文件） |
+| `%APPDATA%\IEML\instances.json` / `prefs.json` / `ms_client_id.txt` | ~2.5 KB | 新家已有；`instances.json` 逐字节相同（1971 B） |
+
+**C 盘最后只剩 5 个文件 / 2516 字节**：
+
+```
+datadir.txt          8 B   ← 游戏根目录记录（必须留在固定位置）
+ownroot.txt         17 B   ← 启动器自己的家在哪（同上）
+known-roots.json    91 B   ← "用过的游戏文件夹"列表（数据目录坏了时要读得到，设计如此）
+instances.json.bak 1980 B  ← 两份账本备份：万一搬迁时判断错了，东西还在
+prefs.json.bak      420 B
+```
+
+#### 72.3　真机验证（`tools/live/probe-own-root-move.mjs`，跑的是部署后的桌面 exe）
+
+```
+① 记录 ownroot.txt = "D:\IEML-launcher" ✓
+② 账本（instances.json / prefs.json / ms_client_id.txt）+ java/cache/logs 都在新家 ✓
+③ 新家账本与界面**互证**：实例 3 条 = 版本列表 3 行；主题 daiqing = 界面上那个 ✓
+④ 界面照常：版本列表 3 行、data_dir=D:\IEML ✓
+⑤ ★ 决定性一条：把当前偏好**原样存回一次** → 新家 prefs.json 的 mtime 前进，
+   C 盘那份**根本不存在**（0）✓
+⑥ 老位置只剩记录文件（见上表）✓
+```
+
+`tools/live/probe-versions-page-dir.mjs` 复跑也仍然 5/5 绿（三行版本 → `D:\IEML\instances\…`，
+「打开目录」toast 与资源管理器窗口都指向 D 盘）。
+
+★ 两次判据写错的教训（都记在这里，免得下次再犯）：
+
+1. ⑤ 第一版用"取版本清单会写 cache"来证明写入落点 —— 结果清单还在 TTL 内时应用
+   **什么都不写**，红的是"没写到 D 盘"而读起来像"C 盘还在被写"。
+   换成"原样存回偏好"这种**与网络/TTL 无关**的动作才稳定。
+2. ② 第一版要求"账本四件都在"，可 `cf_api_key.txt` 本机从来没设过 —— 判据本身写错了。
+   改成"老位置**有的**那几件都要在新家"。
+
+#### 72.4　如实记
+
+1. **探针跑出来的 vfx 降级我改回去了**：我的探针用全新 WebView 配置跑，性能判定把
+   `vfx` 从用户自己的 `aura` 自动降到了 `mid`（那是应用自己的省电策略，不是 bug）——
+   验完我把 `D:\IEML-launcher\prefs.json` 里的 `vfx` 改回 `aura`。
+2. **部署了三轮**：先修实例目录（`3B8FA6CD…DF47`），这一轮再把家搬走（`EA9AF302…AA15`），
+   桌面那份与快捷方式指向的安装版都换了；旧的四份备份留在仓库
+   `tmp/ieml-rc3*.exe.bak`。部署时都先关掉正在跑的进程，验完再重新打开。
+3. **版本号仍是 `0.1.0-rc.3`、仍未发布**：线上还是旧的 rc.3，所以启动器自己的"检查更新"
+   不会有任何提示。要让**别的机器**拿到这一轮（含 ADR 七十一 + 七十二），
+   得走一次正式发布（rc.4）。

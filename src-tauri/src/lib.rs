@@ -184,6 +184,36 @@ pub fn run() {    /*
         }
     }
 
+    /*
+     * ★★ 2026-09-24（C）：把**启动器自己的家**从老位置搬到 `paths.own_root`。
+     *
+     *   用户：「ABC 全做」—— C 是"把账本 + Java/缓存/日志也搬到 D 盘，让系统盘彻底不留东西"。
+     *   选址规则见 `platform::default_own_root`（本机自动落在 `D:\IEML-launcher`），
+     *   这里负责**把老位置（`%APPDATA%\IEML`）里的东西复制过去**：
+     *   账本四件（源更新就赢、覆盖前先 `.bak`）+ `java` / `cache` / `logs`（目标已有就跳过）。
+     *
+     *   ★ 顺序是**必须的**：这一段要在 `adopt_records` **之前**跑。
+     *     否则新家刚建出来还是空的，`adopt_records` 会把**游戏根目录**里那份
+     *     `instances.json` 当成"新位置没有"补进来 —— 而那份在本机是停更了
+     *     好几小时的陈旧清单（09-24 01:25），用户会看到一份四小时前的版本列表。
+     *
+     *   ★ 只复制、绝不删源：老位置那份留着（用户想退回旧版启动器还能用）。
+     *     真要腾出系统盘空间，是"另外一件事、要用户点头"——见 ADR 七十二。
+     */
+    for old in platform::legacy_data_roots() {
+        let n = platform::migrate_own_root(&old, &paths);
+        if n > 0 {
+            say!(
+                "[IEML/paths] 启动器数据目录已搬到 {}（从 {}，复制了 {:.1} MB）—— 源目录保留不动",
+                paths.own_root.display(),
+                old.display(),
+                n as f64 / 1024.0 / 1024.0
+            );
+        }
+    }
+    /* 记下"启动器自己的家在哪"（幂等）—— 下次启动就不用再按空闲空间猜一遍 */
+    platform::remember_own_root(&paths.own_root);
+
     if let Err(e) = paths.ensure() {
         say!("[IEML/paths] 创建数据目录失败：{e}（{}）", paths.root.display());
     }
