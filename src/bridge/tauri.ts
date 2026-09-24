@@ -1392,6 +1392,7 @@ export function createTauriBackend(): Backend {
         os: string;
         arch: string;
         data_dir: string;
+        version_count: number;
       }>('machine_info');
       return {
         totalMemoryGb: r.total_memory_gb,
@@ -1400,6 +1401,7 @@ export function createTauriBackend(): Backend {
         os: r.os,
         arch: r.arch,
         dataDir: r.data_dir,
+        versionCount: r.version_count,
       };
     },
 

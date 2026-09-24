@@ -232,6 +232,21 @@ interface AppContextValue {  state: AppState;
   reloadAfterRootChange: () => Promise<void>;
 
   /**
+   * ★★ 2026-09-25（用户：「换目录后不会自动刷新……点击版本列表就刷新一下，
+   *   重新读取当前选择的游戏目录」）。
+   *
+   *   把实例清单从后端重读一遍。为什么"进版本列表"要重读：账本本身住在
+   *   启动器自己的家里（与游戏根目录无关），但**每个实例的目录**是按当前
+   *   根目录算出来的 —— 目录一换，这一页显示的东西就该跟着换。
+   *
+   *   ★ 它与"窗口重获焦点时刷新"是**同一个函数**（2026-09-23 那条需求建的），
+   *     不是第二份实现。
+   *   ★ 读失败时**保持现状**（不清空、也不弹错）：空清单是一句假话，
+   *     而这一页的磁盘事实由它自己的读盘路径负责报错（见 `VersionsPage`）。
+   */
+  refreshInstances: () => Promise<void>;
+
+  /**
    * ★ 偏好写盘失败的原因（null = 正常）。
    *
    * 为什么要有它：偏好存不上时用户看到的是"改完设置、重启就没了"，
@@ -1017,6 +1032,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
    *
    *   ★ 为什么挂在"重获焦点"而不是定时轮询：用户删目录这个动作发生在**别的窗口**，
    *     他回到启动器那一刻就是最该刷新的时刻；定时轮询既费电，又可能在他正操作时改列表。
+   *
+   * ★★ 2026-09-25（用户：「换目录后不会自动刷新，我的建议是，点击版本列表就刷新一下，
+   *   重新读取当前选择的游戏目录」）：**进「版本列表」页时也调它**（外加当前游戏根目录
+   *   一变就再调一次）。实例的**目录**是按当前根目录算出来的 —— 用户换目录是在设置页做的，
+   *   回到这一页时数据源已经换了，重读一次比"猜它变没变"便宜得多（读盘是毫秒级的）。
+   *   ★ 只有一个"刷新实例"的入口：这里没有第二份实现。
    */
   const refreshInstances = useCallback(async () => {
     try {
@@ -1332,6 +1353,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     rescanJava,
     refreshJava,
     reloadAfterRootChange,
+    refreshInstances,
     prefsSaveFailed,
     update,
     vfx: {

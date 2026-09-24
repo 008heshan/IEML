@@ -73,6 +73,13 @@ export interface MachineInfo {
   os: string;
   arch: string;
   dataDir: string;
+  /**
+   * 当前游戏根目录里装了几个版本（读盘得到的磁盘事实）。
+   *
+   * ★★ 2026-09-25：`versionCount === 0` = "你选的这个目录里还没有版本" ——
+   *   版本列表据此在换目录之后把话说明白（见 `VersionsPage` 顶部那条提示）。
+   */
+  versionCount: number;
 }
 
 export interface JavaState {

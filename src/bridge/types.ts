@@ -64,6 +64,13 @@ export interface Backend {
     os: string;
     arch: string;
     dataDir: string;
+    /**
+     * 当前游戏根目录里装了几个版本（`<root>/.minecraft/versions` 下的目录数）。
+     *
+     * ★★ 2026-09-25：给「版本列表」页用 —— 那一页列的是账本里的实例（与根目录无关），
+     *   换到空目录之后要靠这个数把"你选的这个目录里什么都还没有"说出来。
+     */
+    versionCount: number;
   }>;
   scanJava(): Promise<JavaRuntime[]>;
   /** 从网络获取 Java（Adoptium） */
