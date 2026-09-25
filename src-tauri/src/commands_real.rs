@@ -5914,6 +5914,68 @@ pub fn download_sources_payload() -> serde_json::Value {
     })
 }
 
+/* ====================== 更新说明（实时） ====================== */
+
+/// 更新通道的清单地址（**编在 exe 里的那个**）。
+///
+/// ★★ 它必须与 `src-tauri/tauri.conf.json` 的 `plugins.updater.endpoints[0]` **逐字相同**，
+///   而那条一致性由 `tools/gates/check-update-endpoint.mjs` 守着（它现在比**四处**）。
+///   ⇒ 改端点时**四处一起改**，别只改这里或者只改 conf。
+const UPDATER_MANIFEST_URL: &str =
+    "https://cnb.cool/IEML_Official/IEML/-/releases/download/latest/latest.json";
+
+/// 更新说明（来自更新通道的清单）。
+///
+/// ★★ 2026-09-26 用户：「**这个版本更新列表可以改成实时获取吗，点进去就刷新**」。
+///
+///   为什么需要它：Tauri 的 updater 插件在**版本相同时返回 `null`**
+///   （`check()` 里 `should_update == false` ⇒ 连 `body` 都不给你），
+///   所以"我已经是最新版了，这一版改了什么"在客户端里**根本拿不到** ——
+///   只能靠构建时打进包里的那份（`src/data/release-notes.ts`）。
+///   现在多一条实时的路：直接读清单，**不改版本也能看到说明**。
+///
+/// ★ 它不是"权威"：清单可能拿不到（断网 / DNS / 上游挂了），
+///   那时界面照旧显示构建时那份 —— 所以这个命令**失败不报错**，由调用方决定怎么说。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateNotes {
+    /// 清单里写的版本号
+    pub version: String,
+    /// 更新说明正文（可能为空 —— 清单没写 notes 时）
+    pub notes: String,
+    /// 发布时刻（清单里的 `pub_date`，原样透传；没有就是空串）
+    pub pub_date: String,
+}
+
+/// JSON 里取一个字符串字段（没有 / 不是字符串 / 只有空白 ⇒ 空串）。
+///
+/// ★ 一律走它而不是 `"{}".to_string()`：清单是**远端**给的，
+///   字段可能缺失（`#[serde(default)]` 那条守的是反序列化，这条守的是"缺字段"）。
+fn json_str(v: &serde_json::Value, key: &str) -> String {
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
+/// 实时读更新说明（只读那一份公开清单，不需要任何凭据）。
+///
+/// ★ 走 [`net::api_client`]：25 秒整体超时 —— 这个请求是用户点了才发的，
+///   不能让界面无限转圈（"卡住比报错更难查"，见 `net::api_client` 的注释）。
+#[tauri::command]
+pub async fn fetch_update_notes() -> Result<UpdateNotes, String> {
+    let v: serde_json::Value = net::get_json(UPDATER_MANIFEST_URL).await.map_err(err)?;
+    let version = json_str(&v, "version");
+    if version.is_empty() {
+        return Err("更新清单里没有版本号 —— 拿到的可能不是清单".to_string());
+    }
+    Ok(UpdateNotes {
+        version,
+        notes: json_str(&v, "notes"),
+        pub_date: json_str(&v, "pub_date"),
+    })
+}
+
 #[cfg(test)]
 mod wire_tests {
     //! 跨 IPC 边界的字段名回归（前端契约见 `src/bridge/tauri.ts`）。

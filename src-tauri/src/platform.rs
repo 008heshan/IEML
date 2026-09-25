@@ -735,6 +735,17 @@ pub struct VolumeInfo {
 ///
 /// ★ 顺序：非系统盘在前，同组按剩余空间从大到小，最后按盘符定序（结果稳定）。
 ///   这与自动选址 [`pick_best_volume`] 是**同一套判据**，不另立一份。
+///
+/// ★★ 2026-09-26 起**没有生产调用方**了：它原来唯一的生产用途是
+///   `list_known_roots` 里那条"扫盘扫到 `<盘>\IEML` 就列出来"，
+///   而用户明确要求那张表**只显示他自己选过的目录**（见 `list_known_roots` 的说明）。
+///
+///   ★ 但它**没有删**，两个理由：
+///     · 它用的判据（哪些盘可用、哪个是系统盘、建议目录名来自 `DATA_DIR_NAME`）
+///       与自动选址 `pick_best_volume` 是**同一套**，而下面那两条测试守的正是这套判据；
+///     · 以后若要加一个**用户主动打开**的"浏览其它盘/目录"面板，它就是现成的数据源 ——
+///       被去掉的是"默认就列出来"，不是"这个能力不该存在"。
+#[allow(dead_code)]
 pub fn list_volumes(current: &Path) -> Vec<VolumeInfo> {
     #[cfg(windows)]
     {
@@ -834,6 +845,10 @@ pub fn is_dangerous_root(p: &Path) -> bool {
 ///   ★ 两边都要有：用过的（`known`，存在记录文件里）+
 ///     在盘上扫到的同款目录（`found`，`<盘>\IEML` 且**确实存在**）——
 ///     后者让"第一次用这个功能"的人也有东西可点，而不是对着一行空白。
+///
+///   ★★ 2026-09-26：上面那条"扫盘"的来源**已按用户要求去掉**（现在只剩
+///     `current` 与 `known`，且 `known` 只由"玩家自己换过目录"写入）。
+///     字段本身留着 —— 界面上给行加什么标记是它的事，但**值只有这两种**。
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KnownRoot {
@@ -848,7 +863,10 @@ pub struct KnownRoot {
     pub is_current: bool,
     /// 在系统盘上 —— 提示，不是错误（只有一块盘的机器上它就是唯一选择）
     pub on_system_drive: bool,
-    /// 这一行从哪来：`known` = 记录里用过；`found` = 在盘上扫到的同款目录
+    /// 这一行从哪来：`current` = 现在正在用的那个；`known` = 玩家自己选过的
+    ///
+    /// ★★ 2026-09-26：**只剩这两种**。以前的 `found`（扫盘扫到的 `<盘>\IEML`）
+    ///   已按用户要求去掉 —— 那张表只显示他自己选过的目录。
     pub source: String,
 }
 
@@ -944,8 +962,35 @@ fn forget_root_at(file: &Path, root: &Path) {
     }
 }
 
-/// 组装设置页要显示的那张列表：**用过的 + 盘上扫到且确实存在的**，当前那个排最前。
+/// 组装设置页要显示的那张列表：**玩家选过的那些目录**，当前那个排最前。
+///
+/// ★★ 2026-09-26 用户（设置页 → 存储 → 切换，截图）：
+///   「改成**默认只显示玩家安装时选择的那盘的游戏目录文件夹**，当玩家新建一个新的
+///     游戏目录文件夹时，新的文件夹会出现在这个栏里，**其余的不要**」。
+///
+///   改之前这张表有**三个来源**：当前目录 + 用过的（记录文件）+ **扫盘扫到的
+///   `<盘>\IEML`**。第三个是这次要去掉的 —— 它的本意是"第一次用这个功能的人
+///   也有东西可点，而不是对着一行空白"，但实际效果是**替玩家列了一堆他没选的目录**：
+///   截图里 `E:\IEML` 与 `C:\Users\…\Roaming\IEML` 都不是他挑的，只是盘上恰好存在。
+///
+///   ⇒ 现在的判据只有一条：**这个目录是玩家自己选过的**（或者就是现在正在用的那个）。
+///     所以下面的候选**只来自** `current` 与 `load_known_roots()`，
+///     而记录文件由 `remember_root` 写 —— 它的唯一调用点是 `set_data_root` 成功之后。
+///     ★ 连启动时那次"顺手记一下"也删了（在 `lib.rs`）：那不是玩家的选择，
+///       而且它会把**探针/测试跑过的临时目录**永久留在玩家的列表里
+///       （截图里那两条 `ieml-live-*` 就是这么来的）。
 pub fn list_known_roots(current: &Path) -> Vec<KnownRoot> {
+    let mut remembered = vec![current.to_path_buf()];
+    remembered.extend(load_known_roots());
+    merge_root_candidates(current, remembered)
+}
+
+/// ★ 真正干活的那一半：**只认传进来的候选**，不自己去发现任何目录。
+///
+///   拆出来的理由与 [`load_known_roots_from`] 一样，是**可测性**：
+///   候选从哪来（记录文件 / 以后可能别的地方）不是这里该管的事，
+///   这里只保证"进来什么就只显示什么" —— 也就是上面那条要求的判据本身。
+fn merge_root_candidates(current: &Path, candidates: Vec<PathBuf>) -> Vec<KnownRoot> {
     let mut out: Vec<KnownRoot> = Vec::new();
     let mut push = |p: &Path, source: &str| {
         if out.iter().any(|r| same_path(Path::new(&r.path), p)) {
@@ -967,17 +1012,10 @@ pub fn list_known_roots(current: &Path) -> Vec<KnownRoot> {
     };
 
     // ① 现在正在用的那个排最前（PCL 的截图里也是"当前文件夹"在最上面）
-    push(current, "known");
-    // ② 用过的（新 → 旧）
-    for p in load_known_roots() {
+    push(current, "current");
+    // ② 玩家自己选过的那些（新 → 旧）
+    for p in candidates {
         push(&p, "known");
-    }
-    // ③ 盘上扫到的同款目录（`<盘>\IEML`）—— **只收确实存在的**
-    for v in list_volumes(current) {
-        let p = PathBuf::from(&v.suggested);
-        if p.is_dir() {
-            push(&p, "found");
-        }
     }
     out
 }
@@ -2479,13 +2517,46 @@ mod tests {
         assert!(!list.is_empty(), "至少要有当前这一条");
         assert!(list[0].is_current, "当前那个必须排最前：{list:?}");
         assert_eq!(list[0].name, "__ieml_list_test__", "名字取路径最后一段");
-        assert_eq!(list[0].source, "known");
-        // 同一个路径不许出现两次（known 与 found 去重）
+        assert_eq!(list[0].source, "current", "当前那条的来源是 current");
+        // 同一个路径不许出现两次（同一路径只该有一行）
         let same = list
             .iter()
             .filter(|r| same_path(Path::new(&r.path), &custom))
             .count();
         assert_eq!(same, 1, "同一路径只该有一行：{list:?}");
+    }
+
+    /// ★★ 2026-09-26（用户截图）：那张表**只显示玩家自己选过的目录**。
+    ///
+    ///   用户原话：「改成默认只显示玩家安装时选择的那盘的游戏目录文件夹，
+    ///   当玩家新建一个新的游戏目录文件夹时，新的文件夹会出现在这个栏里，**其余的不要**」。
+    ///
+    ///   这条判据守的是**"不许再自己发现目录"**：以前的实现会扫一遍盘，
+    ///   把 `<盘>\IEML` 里**确实存在的**都列出来（来源标记 `found`）——
+    ///   于是玩家看到一堆他没选过的行（截图里 `E:\IEML` 就是）。
+    ///   ⇒ 现在的契约是：**进来什么候选，就只显示什么**。
+    #[test]
+    fn the_list_only_shows_what_the_player_chose() {
+        let current = PathBuf::from(r"D:\玩家选的目录");
+        // 造两个候选：一个是"玩家选过的"，一个是"盘上碰巧存在的"（模拟旧行为会自己塞进来的东西）
+        let chosen = PathBuf::from(r"D:\玩家选过的旧目录");
+        let not_chosen = PathBuf::from(r"E:\IEML");
+
+        let list = merge_root_candidates(&current, vec![chosen.clone()]);
+
+        assert_eq!(list.len(), 2, "只该有当前 + 玩家选过的那两条：{list:?}");
+        assert!(list[0].is_current, "当前那个排最前");
+        assert_eq!(list[0].source, "current");
+        assert_eq!(list[1].path, chosen.to_string_lossy());
+        assert_eq!(list[1].source, "known");
+        assert!(
+            !list.iter().any(|r| same_path(Path::new(&r.path), &not_chosen)),
+            "没被选过的目录**不许**出现在表里：{list:?}"
+        );
+        assert!(
+            !list.iter().any(|r| r.source == "found"),
+            "`found` 这个来源已经被取消，不该再有人产出它：{list:?}"
+        );
     }
 
     #[test]

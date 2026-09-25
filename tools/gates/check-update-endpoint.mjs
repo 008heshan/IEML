@@ -3,14 +3,17 @@
  *
  * ## 为什么值得一条判据（这是"静默失效"的典型）
  *
- * 更新链路上有两个各自独立的地方，它们必须指向**同一个仓库**：
+ * 更新链路上有**四处**各自独立的地址，它们必须指向**同一个仓库**：
  *
  *   ① 客户端读哪：`src-tauri/tauri.conf.json` 的 `plugins.updater.endpoints[0]`
  *      —— 这个地址被**编进 exe**，改它必须重新构建；
  *   ② 发布发到哪：`tools/release/publish-cnb.mjs` 的 `REPO` 常量
- *      （以及 `verify-endpoint.mjs` 里那个用于自检的地址）。
+ *      （以及 `verify-endpoint.mjs` 里那个用于自检的地址）；
+ *   ③ 自检验哪：`tools/release/verify-endpoint.mjs` 的 `ENDPOINT`；
+ *   ④ 「更新日志」页实时读哪：`src-tauri/src/commands_real.rs` 的
+ *      `UPDATER_MANIFEST_URL`（2026-09-26 新增，见本文件末尾那段）。
  *
- * 两者不一致时的表现是**最难查的一种**：发布脚本高高兴兴报"上传成功"、
+ * 它们不一致时的表现是**最难查的一种**：发布脚本高高兴兴报"上传成功"、
  * 端点自检也绿（它验的是**旧仓**那个地址），而**用户端永远收不到更新** ——
  * 没有任何一处会报错。这个仓库已经吃过一次同族的亏（beta.49「发布失败而我没发现」）。
  *
@@ -85,11 +88,38 @@ if (existsSync(verifyPath)) {
   }
 }
 
+/* ---------- ④ 后端"实时读更新说明"用的是不是同一个地址 ---------- */
+/*
+ * ★★ 2026-09-26 新增这一处：用户要求「版本更新列表实时获取，点进去就刷新」，
+ *   于是 Rust 侧多了一个直接读清单的命令（`fetch_update_notes`）。
+ *   它当然也得指向**同一个仓** —— 否则表现是"更新检查说有新版，更新日志却还是旧的"。
+ *   ★ 这条判据的价值就在这里：**多一处地址就多一处能悄悄漂移的地方**。
+ */
+const cmdPath = join(root, 'src-tauri', 'src', 'commands_real.rs');
+if (existsSync(cmdPath)) {
+  const src = readFileSync(cmdPath, 'utf8');
+  const m = /const UPDATER_MANIFEST_URL: &str =\s*\n?\s*"([^"]+)"/.exec(src);
+  const rustUrl = m?.[1] ?? '';
+  const rustRepo = repoOf(rustUrl);
+  if (!rustRepo) {
+    problems.push(
+      `commands_real.rs 里的 UPDATER_MANIFEST_URL 不是 CNB releases 地址（读不到或为空）：${rustUrl || '(没有)'}`,
+    );
+  } else if (clientRepo && rustRepo !== clientRepo) {
+    problems.push(
+      `**"实时读更新说明"读的是另一个仓**：commands_real.rs → ${rustRepo}，客户端更新检查 → ${clientRepo}\n` +
+        `      ⇒ 表现是"说有新版本、更新日志却还是旧的"，两处都不报错`,
+    );
+  } else {
+    notes.push('实时更新说明与客户端更新检查读的是同一个地址');
+  }
+}
+
 for (const n of notes) console.log(`  · ${n}`);
 for (const p of problems) console.log(`  ✗ ${p}`);
 
 if (problems.length === 0) {
-  console.log('  ✓ 更新链路三处（客户端 / 发布 / 自检）指向同一个仓');
+  console.log('  ✓ 更新链路四处（客户端 / 发布 / 自检 / 实时说明）指向同一个仓');
   process.exit(0);
 }
 console.error('');

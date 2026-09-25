@@ -9,7 +9,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/domain.test.js tests/loader-catalog.test.mjs tests/delete-semantics.test.mjs tests/server-address.test.mjs tests/java-rules.test.mjs tests/multi-instance.test.mjs tests/fabric-api.test.mjs",
+    "test": "node --test tests/domain.test.js tests/loader-catalog.test.mjs tests/delete-semantics.test.mjs tests/server-address.test.mjs tests/java-rules.test.mjs tests/multi-instance.test.mjs tests/fabric-api.test.mjs tests/release-notes.test.mjs",
     "test:e2e": "node tests/e2e-check.mjs",
     "test:multi": "node --test tests/multi-instance.test.mjs",
     "test:loaders": "node --test tests/loader-catalog.test.mjs",

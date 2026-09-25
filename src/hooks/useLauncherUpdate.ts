@@ -38,6 +38,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DownloadEvent, Update } from '@tauri-apps/plugin-updater';
 import { isTauri } from '../bridge';
+import { useRealApi } from './useRealApi';
 /*
  * ★★ 2026-09-24：`describeUpdateError` 住在 `domain/update-copy.ts` ——
  *   放这个文件里没法被单测钉住（它依赖 React 与 Tauri 桥），
@@ -68,6 +69,14 @@ export interface UpdateState {
   downloaded?: number;
   total?: number | null;
   error?: string;
+  /* ---------- ★★ 2026-09-26 新增：**实时更新说明**（与"有没有新版本"无关） ---------- */
+  /**
+   * 「更新日志」页实时读到的那一份说明（**不管你是不是最新版**）。
+   * 拿不到就是 `undefined` —— 页面退回构建时打进包里的那份。
+   */
+  liveNotes?: { version: string; notes: string; pubDate: string };
+  /** 实时那一份的状态（页面据此说清"这是刚拉的"还是"这是包里的"） */
+  notesPhase: 'idle' | 'loading' | 'live' | 'failed';
 }
 
 /**
@@ -89,8 +98,10 @@ const CHECK_TIMEOUT_MS = 30_000;
 const AUTO_CHECK_DELAY_MS = 8_000;
 
 export function useLauncherUpdate() {
+  const { api } = useRealApi();
   const [state, setState] = useState<UpdateState>(() => ({
     phase: isTauri() ? 'idle' : 'unsupported',
+    notesPhase: 'idle',
   }));
   /** 待安装的 Update 对象。放 ref 里 —— 它不该触发重渲染。 */
   const pending = useRef<Update | null>(null);
@@ -144,7 +155,11 @@ export function useLauncherUpdate() {
     async (opts?: { silent?: boolean }) => {
       if (busy.current) return;
       if (!isTauri()) {
-        setState({ phase: 'unsupported' });
+        /*
+         * ★ 用函数式写法保留 `notesPhase` 等字段：这个状态里现在还装着
+         *   「实时更新说明」（见 `refreshNotes`），整份覆盖会把那条链路的状态抹掉。
+         */
+        setState((s) => ({ ...s, phase: 'unsupported' }));
         return;
       }
       /*
@@ -165,18 +180,18 @@ export function useLauncherUpdate() {
       }
       const silent = opts?.silent === true;
       busy.current = true;
-      setState({ phase: 'checking' });
+      setState((s) => ({ ...s, phase: 'checking' }));
       try {
         const { check } = await import('@tauri-apps/plugin-updater');
         const update = await check({ timeout: CHECK_TIMEOUT_MS });
         if (!update) {
           pending.current = null;
           downloaded.current = false;
-          setState({ phase: 'uptodate' });
+          setState((s) => ({ ...s, phase: 'uptodate' }));
           return;
         }
         pending.current = update;
-        setState({ phase: 'available', version: update.version, notes: update.body ?? '' });
+        setState((s) => ({ ...s, phase: 'available', version: update.version, notes: update.body ?? '' }));
         busy.current = false; // 下载自己管 busy，这里先放开
         /* ★ 查到就**后台下**：等用户决定时包已经在了（见文件头部的说明） */
         void download();
@@ -184,9 +199,9 @@ export function useLauncherUpdate() {
         if (silent) {
           /* 自动查失败 = 用户没做任何操作 → 不留痕、不打扰（下次开机再试） */
           console.warn('[IEML/update] 自动检查更新失败：', e);
-          setState({ phase: 'idle' });
+          setState((s) => ({ ...s, phase: 'idle' }));
         } else {
-          setState({ phase: 'error', error: describeUpdateError(e) });
+          setState((s) => ({ ...s, phase: 'error', error: describeUpdateError(e) }));
         }
       } finally {
         busy.current = false;
@@ -217,7 +232,7 @@ export function useLauncherUpdate() {
        *   再让他重新下一遍是第二次收税。`ready` 这个状态表示"包在手上，
        *   只是没装成"，界面上按钮仍然是"重启并更新"，可以直接再试。
        */
-      setState((s) => ({ phase: 'ready', error: raw, version: s.version, notes: s.notes }));
+      setState((s) => ({ ...s, phase: 'ready', error: raw }));
     }
   }, []);
 
@@ -229,5 +244,41 @@ export function useLauncherUpdate() {
     return () => clearTimeout(t);
   }, [checkNow]);
 
-  return { state, checkNow, download, install };
+  /**
+   * ★★ 实时拉「更新说明」（2026-09-26 新增）。
+   *
+   *   用户：「**这个版本更新列表可以改成实时获取吗，点进去就刷新**」。
+   *
+   *   与 `checkNow` 的分工说清楚（这是这个改动里最容易做错的地方）：
+   *     · `checkNow` 问的是"**有没有新版本**"（走 updater 插件），
+   *       而插件在**版本相同时返回 `null`** —— 连说明都不给你；
+   *     · 这个函数问的是"**最新那一版改了什么**"，直接读更新通道的清单，
+   *       **不改版本也能拿到**。所以"已经是最新版"时更新日志页依然有东西可看。
+   *
+   *   ★ 只在这一处改 `notesPhase`（不碰更新主状态）：自动检查更新与它互不干扰 ——
+   *     否则"开机自动查一次"会把更新日志页的状态也一起搅动。
+   *   ★ 失败**保持静默**（`notesPhase: 'failed'` 只用于页面上一句轻提示）：
+   *     这些是说明文字，拿不到就用包里那份，不该弹错。
+   */
+  const refreshNotes = useCallback(async () => {
+    if (!isTauri()) return;
+    if (!api) {
+      /* 桥还没就绪（冷启动那几毫秒）—— 不当失败，页面下次进来还会调 */
+      return;
+    }
+    setState((s) => ({ ...s, notesPhase: 'loading' }));
+    try {
+      const r = await api.launcher.updateNotes();
+      setState((s) => ({
+        ...s,
+        liveNotes: { version: r.version, notes: r.notes ?? '', pubDate: r.pubDate ?? '' },
+        notesPhase: 'live',
+      }));
+    } catch (e) {
+      console.warn('[IEML/update] 实时读更新说明失败（用包里那份）：', e);
+      setState((s) => ({ ...s, notesPhase: 'failed' }));
+    }
+  }, [api]);
+
+  return { state, checkNow, download, install, refreshNotes };
 }
