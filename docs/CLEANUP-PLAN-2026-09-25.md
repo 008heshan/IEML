@@ -104,7 +104,7 @@
 | W-2 | `.workbuddy/memory/_probe.txt` | 1 行（内容就 `probe`） | 删（工作区探针残留） |
 | W-3 | `.workbuddy/` 整体 | 71 个被跟踪文件 | 移出跟踪 + 进 `.gitignore`（P-4） |
 | W-4 | `docs/LAUNCHER_SOURCE_STUDY.md` 等研究文档 | 83 KB，含 PCL2/HMCL 行号引用 | **保留**（是研读笔记不是代码拷贝；但 `.workbuddy/refs/` 那份必须走） |
-| W-5 | 死代码 / 死 CSS | 未量化 | 用 `tools/diag/find-orphans.mjs` 过一遍，只删"引用数为 0 且结论已固化"的（**还没做**） |
+| W-5 | 死代码 / 死文件 | ✅ **已做（结论：仓库里没有死文件）** —— 但过程里先修好了工具：`find-orphans.mjs` 的判据**一直是坏的、只输出假阳性**（24 前端 + 9 Rust，连 `DownloadPage.tsx`/`platform.rs` 都报）。真因是两个错叠加：`(ts\|tsx)` 的交替从左往右匹配导致 stem 没被剥掉；以及**前端 import 不带扩展名**，`split('X.tsx')` 永远为 0。修完从 33 个降到 **8 个**，而那 8 个都是真入口（`main.tsx`/`vite-env.d.ts`/`lib.rs`/`main.rs` + 3 个 `mod.rs`） |
 | W-6 | 公开库惯例文件 | 缺 | 评估是否补 `CONTRIBUTING.md`（提交信息规范、`verify` 门槛、分支策略）—— **待定** |
 | **W-7** | **仓库根里的运行期产物**（2026-09-25 清掉） | `debug.log` 416 B（还是 NVIDIA 的 CEF 日志）、`instances.json` / `prefs.json`（**含账号 UUID `edc5ea66…` 与离线用户名**）、`.minecraft/` 与 `instances/`（探针留下的空目录）、`tmp/` **26.3 MB** | ✅ 全删（都**未被跟踪**，所以没泄露）。★ 新增门禁 `check-repo-root.mjs` 守住 |
 | **W-8** | `tmp/IEML-main-130commits.bundle` | 1.36 MB —— **重写前的仓库快照**，指向旧的 `70a31ef` | 随着 `tmp/` 一起删。★ 判据：**别把仓库的备份塞在仓库自己里面**；重写前/后的完整镜像备份都在仓库外（`D:\IEML-backup-*.git` / `D:\IEML-after-rewrite-*.git`） |
@@ -186,6 +186,7 @@
 | Q-3 | 那 16 处本机路径怎么办？ | 4 处在 `CHANGELOG`（不许改写 ⇒ 只能保留或加更正）；其余可改成占位符。`Administrator` 是镜像默认账号名，算不上个人信息，**建议保留、只登记** |
 | Q-4 | 发布仓 `IEML_Official/IEML-releases` 与更新通道是否也要一起整理？ | 那是另一个仓库（CNB），本次工单只覆盖 `E:\IEML` |
 | Q-5 | 转公开的时机 | 建议：本工单第 1–5 步 + P-1（吊销）+ Q-2（强推）完成后再动 |
+| **Q-6** | ★★ **ADR-006 与当前实现冲突**（清理时查出来的，**不是清理活儿**） | `src-tauri/src/commands.rs` 里有 5 条命令**注册着、前端 0 处调用**：`validate_combination` / `auto_memory` / `memory_targets` / `build_install_plan` / `installed_versions`。而其中三条在前端**各有一套 TS 实现**（`src/domain/combination.ts:291`、`src/domain/memory.ts:24`/`:96`），`installed_versions` 由前端从 `state.instances` 自算。ADR-006 的原话是"约束校验逻辑**只实现一次**，且**必须放 Rust 侧**，前端不允许自己判断" ⇒ **这就是它当初要防的那种"两份判据"**。两条路：① 前端改成调后端（删 TS 那套）；② 承认"TS ↔ Rust 一一对应"（ADR-036 的写法）并把 ADR-006 更新掉。**要单独一轮**，且改之前先确认为什么当初没走后端那条路（`loader-caps.ts` 本地实现是 beta 期间为"即时反馈"加的，见 ADR-040） |
 
 ## 九、执行记录（做完一行补一行，不重写）
 
