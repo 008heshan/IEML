@@ -47,3 +47,18 @@ instances.json
 #      PCL2 **不开源** —— 把别人的闭源源码放进 GPL-3.0 仓库是法律风险，不只是难看。
 #   本地保留（移出跟踪用 `git rm -r --cached .workbuddy`，文件不会丢）。
 /.workbuddy/
+
+# --- ★ Tauri 生成的 ACL 清单与 schema：**不入库**（2026-09-25 公开化清理）---
+#   判据同上（能不能由仓库里的东西重新生成）：**能**。
+#   `src-tauri/build.rs` 的 `tauri_build::build()` 会按 `capabilities/*.json`
+#   生成这四个文件（acl-manifests / capabilities / desktop-schema / windows-schema，
+#   合计约 952 kB，其中两个 schema 只是 windows/desktop 各一份）。
+#
+#   ★ 实测过"删掉会不会丢东西"（2026-09-25）：
+#     移开 `gen/` → 只跑 cargo check ⇒ **不会回来**（build.rs 没声明依赖它）；
+#     再把 `capabilities/` 也移开 → 编译 ⇒ **四个文件全部重建**，
+#     且与入库那份**逐字节相同**（SHA256 一一比对）⇒ 入库那份没有独有信息。
+#   ⇒ 所以"构建产物不入库"这条规则在这里成立；`capabilities/default.json` 里那句
+#     `"$schema": "../gen/schemas/desktop-schema.json"` 是**编辑器提示**，
+#     本地构建后文件就在，校验不会失效。
+/src-tauri/gen/

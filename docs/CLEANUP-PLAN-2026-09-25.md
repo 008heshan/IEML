@@ -109,6 +109,7 @@
 | **W-7** | **仓库根里的运行期产物**（2026-09-25 清掉） | `debug.log` 416 B（还是 NVIDIA 的 CEF 日志）、`instances.json` / `prefs.json`（**含账号 UUID `edc5ea66…` 与离线用户名**）、`.minecraft/` 与 `instances/`（探针留下的空目录）、`tmp/` **26.3 MB** | ✅ 全删（都**未被跟踪**，所以没泄露）。★ 新增门禁 `check-repo-root.mjs` 守住 |
 | **W-8** | `tmp/IEML-main-130commits.bundle` | 1.36 MB —— **重写前的仓库快照**，指向旧的 `70a31ef` | 随着 `tmp/` 一起删。★ 判据：**别把仓库的备份塞在仓库自己里面**；重写前/后的完整镜像备份都在仓库外（`D:\IEML-backup-*.git` / `D:\IEML-after-rewrite-*.git`） |
 | **W-9** | 混合行尾文件 | 实测 **7 个**（记忆里记的 6 个已过期）：`DownloadPage.tsx`（1195 CRLF + 1 LF）、`live-glass-check.mjs`（946 + 25）、`launch_smoke.rs` / `live_launch_java.rs` / `natives_layout.rs` / `capabilities/default.json` / `build.rs`（各 1 行 CRLF） | **不批量修**：那会造出上千行的无关 diff（正是这类判据想防的东西）。改这几个文件时按字节保留行尾；是否统一**待定** |
+| **W-10** | `src-tauri/gen/`（Tauri 生成的 ACL 清单与 schema） | **952 kB / 4 个文件**，其中两个 schema 各 406 kB 只是 windows/desktop 一份 | ✅ **移出跟踪**（368 → 364 个被跟踪文件），本地保留。★ 实测过"删掉会不会丢东西"：移开 `gen/` 只跑 `cargo check` ⇒ **不会回来**（build.rs 没声明依赖它）；把 `capabilities/` 也移开再编译 ⇒ **四个文件全部重建，且与入库那份逐字节相同**（SHA256 一一比对）⇒ 入库那份没有独有信息。判据是 `.gitignore` 那条"能不能由仓库里的东西重新生成" |
 
 ## 五、第 3 级：防复发（这次清理真正的价值）
 
