@@ -107,9 +107,13 @@ console.log('   页头：' + head);
 console.log('① 列表里的行：' + JSON.stringify(rows));
 const has1214 = rows.some((r) => r.includes('1.21.4'));
 const hasFabricClaimed = rows.some((r) => /Fabric/i.test(r));
-const badCount = /错误的版本（(\d+)）/.exec(txt)?.[1] ?? null;
+/* 账本里对不上这个文件夹的那条（1.12.2）**不该出现**（用户 2026-09-25 晚：「既然不在这个文件夹就不用显示了」） */
+const ghostShown = rows.some((r) => r.includes('1.12.2'));
+const groupShown = txt.includes('错误的版本');
 console.log('   有账本里没有的 1.21.4=' + has1214 + '　fabric 那份被实例认领=' + hasFabricClaimed);
-console.log('② 「错误的版本」折叠组里的条数=' + badCount + '（应为 1：账本里 1.12.2 那条）');
+console.log(
+  '② 不在这个文件夹里的那条（1.12.2）显示了吗=' + ghostShown + '　「错误的版本」分组还在吗=' + groupShown,
+);
 
 /* ---------- ④ 从界面换回 D:\IEML（真实入口 → 会触发前端刷新） ---------- */
 await clickNav(ev, '设置');
@@ -140,7 +144,8 @@ const cleanup = forceOldRecord('换回来之后记账文件不对');
 
 /* ---------- 判据 ---------- */
 const c1 = has1214 && hasFabricClaimed && rows.length === 3;
-const c2 = badCount === '1';
+/* 不在这个文件夹里的**不显示**（账本里那条 1.12.2 既不在行里，也没有"错误的版本"分组） */
+const c2 = ghostShown === false && groupShown === false;
 /*
  * ③ 的判据要注意：Windows 会返回 **8.3 短路径**（`C:\Users\ADMINI~1\…`），
  *    所以不能拿长路径做字符串相等 —— 判"提级"这件事本身：
@@ -154,7 +159,7 @@ const c5 = existsSync(RECORD) && readFileSync(RECORD, 'utf8').trim().toLowerCase
 
 console.log('\n===== 判据 =====');
 console.log(`${c1 ? '✓' : '✗'} ① 换到那个文件夹后，列表 = 文件夹里的三份版本（含账本里没有的 1.21.4）`);
-console.log(`${c2 ? '✓' : '✗'} ② 账本里对不上的那条落进「错误的版本（1）」折叠组，一条不丢`);
+console.log(`${c2 ? '✓' : '✗'} ② 不在这个文件夹里的条目**不显示**（账本原样保留，换回去就回来）`);
 console.log(`${c3 ? '✓' : '✗'} ③ 直接指「.minecraft」会被提到上一级，并且返回里说明了（normalizedFrom）`);
 console.log(`${c4 ? '✓' : '✗'} ④ 从界面换回 D:\\IEML 后，列表当场变成那个文件夹的版本（${rows2.length} 行）、折叠组消失`);
 console.log(`${c5 ? '✓' : '✗'} ⑤ 记账文件最后回到 ${OLD_ROOT}`);

@@ -13,9 +13,9 @@
  *      **设置页那行当场变成新目录**（同一个文档 —— 页面没被刷过）
  *   ④ 不刷页面切到**版本列表**：这一页当场按新目录说话 ——
  *      空状态写着「这个文件夹里没有可用的版本」+ 新路径，
- *      账本里那 3 条（对不上这个空文件夹）收进「错误的版本（3）」折叠组
- *      （2026-09-25 用户：「换目录后不会自动刷新……点击版本列表就刷新一下，
- *      重新读取当前选择的游戏目录」；rc.8 起列表直接读文件夹，见 ADR-八十一）
+ *      而账本里那 3 条（对不上这个空文件夹）**一条都不显示**
+ *      （2026-09-25 用户：先是「换目录后不会自动刷新……点击版本列表就刷新一下」，
+ *       再是「既然不在这个文件夹就不用显示了」；见 ADR-八十一）
  *      ★ 判据**不是**"实例没了"：账本住在启动器自己的家里（ADR-七十二），
  *        换根目录不动它；那 3 个条目还在，只是目录换成新根下的，磁盘上找不到
  *   ⑤ 再从界面上换回来 → 警告与那条提示都消失、版本数 > 0、
@@ -78,6 +78,12 @@ const bodyText = (ev) => ev('document.body.innerText');
 const modalText = (ev) => ev('(document.querySelector(".modal")||{}).innerText || ""');
 const toastText = (ev) => ev('(document.querySelector(".toasts")||{}).innerText || ""');
 const modalOpen = (ev) => ev('!!document.querySelector(".modal")');
+/** 列表里可见的版本行标题（`.ver-item`）—— 用来断言"该显示的显示了、不该显示的一条都没有" */
+const visibleRows = (ev) =>
+  ev(
+    `[...document.querySelectorAll('.ver-item')].map((r) => (r.querySelector('.ver-title-name')||{}).textContent || '')`,
+  );
+
 /** 「这个文件夹里没有可用的版本」那块空状态（rc.8 起，替代了 rc.7 那条横幅提示） */
 const noVersionNote = (ev) =>
   ev(
@@ -194,8 +200,11 @@ const after = {
   /* rc.8 起：这件事由列表自己的空状态说（不再是顶部那条横幅） */
   empty: verTxt.includes('这个文件夹里没有可用的版本'),
   emptyPath: note.includes(NEW_ROOT),
-  /* 账本那 3 条对不上这个空文件夹 → 收进折叠组（条数 3） */
-  bad3: /错误的版本（3）/.test(verTxt),
+  /*
+   * 账本里那 3 条对不上这个空文件夹 ⇒ **一条都不显示**（2026-09-25 晚用户：
+   * 「既然不在这个文件夹就不用显示了」）。列表里连一个 `.ver-item` 都不该有。
+   */
+  ghostRows: await visibleRows(ev),
   sameDoc: await ev('window.__probeSameDoc === 1'),
 };
 console.log(
@@ -203,8 +212,8 @@ console.log(
     after.empty +
     '（里面写着新目录 ' +
     after.emptyPath +
-    '）　「错误的版本（3）」=' +
-    after.bad3 +
+    '）　列出的行=' +
+    JSON.stringify(after.ghostRows) +
     '　同一个文档=' +
     after.sameDoc,
 );
@@ -235,7 +244,8 @@ const note2 = await noVersionNote(ev);
 const record = existsSync(RECORD) ? readFileSync(RECORD, 'utf8').trim() : '(读不到)';
 const restored = {
   empty: verTxt2.includes('这个文件夹里没有可用的版本'),
-  badGroup: /错误的版本（\d+）/.test(verTxt2),
+  /* 换回来之后，那条被藏起来的实例（1.12.2）应该又出现了 —— 证明"不显示 ≠ 删掉" */
+  hiddenBack: verTxt2.includes('1.12.2'),
   noteStillSaysNew: note2.includes(NEW_ROOT),
   dataDir: (await invokeOn(ev, 'machine_info', {}))?.ok?.data_dir ?? '(取不到)',
   versionCount: (await invokeOn(ev, 'machine_info', {}))?.ok?.version_count ?? '(取不到)',
@@ -244,8 +254,8 @@ const restored = {
 console.log(
   '⑤ 换回来：还挂空状态=' +
     restored.empty +
-    '　还有折叠组=' +
-    restored.badGroup +
+    '　被藏起来的条目回来了=' +
+    restored.hiddenBack +
     '（里面还写着新目录=' +
     restored.noteStillSaysNew +
     '）　machine_info=' +
@@ -273,10 +283,14 @@ const c3 =
   mid.sameDoc === true &&
   mid.dataDir.toLowerCase() === NEW_ROOT.toLowerCase() &&
   mid.hint.toLowerCase() === NEW_ROOT.toLowerCase();
-const c4 = after.empty === true && after.emptyPath === true && after.bad3 === true && after.sameDoc === true;
+const c4 =
+  after.empty === true &&
+  after.emptyPath === true &&
+  after.ghostRows.length === 0 &&
+  after.sameDoc === true;
 const c5 =
   restored.empty === false &&
-  restored.badGroup === false &&
+  restored.hiddenBack === true &&
   restored.noteStillSaysNew === false &&
   restored.versionCount > 0 &&
   restored.dataDir.toLowerCase() === OLD_ROOT.toLowerCase() &&
@@ -286,8 +300,8 @@ console.log('\n===== 判据 =====');
 console.log(`${c1 ? '✓' : '✗'} ① 起手是老根目录 ${OLD_ROOT}（设置页那行 + machine_info），启动页有实例`);
 console.log(`${c2 ? '✓' : '✗'} ② 弹窗写着「立刻生效」，没有「重启才生效」（老构建在这里红）`);
 console.log(`${c3 ? '✓' : '✗'} ③ 界面上点一下就换了：toast 说即时生效、弹窗自动关、设置页那行当场变新目录（页面没刷）`);
-console.log(`${c4 ? '✓' : '✗'} ④ 版本列表当场按**新目录**说话：空状态写着新路径、账本那 3 条收进「错误的版本（3）」`);
-console.log(`${c5 ? '✓' : '✗'} ⑤ 从界面换回来：空状态与折叠组都消失、版本数 > 0、machine_info 与记账文件都回到 ${OLD_ROOT}`);
+console.log(`${c4 ? '✓' : '✗'} ④ 版本列表当场按**新目录**说话：空状态写着新路径，账本那 3 条一条都不显示`);
+console.log(`${c5 ? '✓' : '✗'} ⑤ 从界面换回来：空状态消失、条目回来、版本数 > 0、machine_info 与记账文件都回到 ${OLD_ROOT}`);
 if (cleanup) console.log('⚠ ' + cleanup);
 console.log('记账文件收尾：' + (existsSync(RECORD) ? readFileSync(RECORD, 'utf8').trim() : '(读不到)'));
 process.exit(c1 && c2 && c3 && c4 && c5 ? 0 : 1);

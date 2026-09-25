@@ -123,41 +123,13 @@ export function VersionsPage() {
     void refreshInstances();
   }, [refreshInstances, currentRoot]);
 
-  /**
-   * ★★ 2026-09-23（用户第 3 条：「**资源管理器里删除版本，启动器不会同步删除**」）：
-   *
-   *   哪些实例的**版本文件**已经不在磁盘上了（`versions/<id>/` 找不到）。
-   *
-   *   ★ 判据是**版本文件**，不是"实例目录" —— 后者是懒建的，
-   *     上一轮我拿它当判据，结果把**所有**实例都判成已删除（已回退）。
-   *   ★ 这里**只提示、不删条目**：用户可能只是临时把版本目录搬走，
-   *     自动删条目等于替他做决定。
-   *   ★ 刷新时机：进这一页时查一次 + **窗口重获焦点时**再查一次
-   *     （用户删目录是在资源管理器里做的，回到启动器那一刻最该重查）
-   *     + **当前游戏根目录一变就重查**（2026-09-25 补：换目录后这一页
-   *       说的必须是新目录的事实）。
+  /*
+   * ★★ 2026-09-23 那条"哪些实例的版本文件不在磁盘上了"的体检（`instanceHealth`）
+   *   **在 2026-09-25 晚去掉了**：它的用途是给"失联的条目"加提示与分组，
+   *   而现在"在不在"由**文件夹扫描**直接回答（在就列出来、不在就不列），
+   *   再单独查一遍属于第二份判据 —— 两份判据迟早会说出不一样的话。
+   *   `instanceHealth` 命令本身还留着（后端与探针在用），只是这一页不需要它了。
    */
-  const [missingVersionIds, setMissingVersionIds] = useState<string[]>([]);
-  useEffect(() => {
-    if (!api) return;
-    let alive = true;
-    const check = () => {
-      void api.launcher
-        .instanceHealth()
-        .then((list) => {
-          if (alive) setMissingVersionIds(list.filter((x) => x.version_missing).map((x) => x.id));
-        })
-        .catch(() => {
-          /* 查不到就当作"都健康"—— 别因为这个提示把页面搞成红色 */
-        });
-    };
-    check();
-    window.addEventListener('focus', check);
-    return () => {
-      alive = false;
-      window.removeEventListener('focus', check);
-    };
-  }, [api, currentRoot]);
   const [menuFor, setMenuFor] = useState<string | null>(null);
   /**
    * 菜单的锚点（打开那一刻，按钮的屏幕坐标）。
@@ -349,24 +321,24 @@ export function VersionsPage() {
     void reloadFolderVersions();
   }, [reloadFolderVersions, currentRoot]);
 
-  const [badOpen, setBadOpen] = useState(false);
-
   /**
    * 把"文件夹里的版本"与"账本里的实例"对上：一个实例认领一个版本
    * （MC 版本相同 + 是不是加载器版本也相同）。
+   *
+   * ★★ 2026-09-25 晚（用户看了折叠组那行之后）：
+   *   「既然不在这个文件夹就不用显示了」
+   *   ⇒ **认领不到的实例不显示**（不是删掉）：这一页就是"这个文件夹里有什么"，
+   *     不属于这个文件夹的东西不该占位置。账本**原样保留** —— 把目录换回去，
+   *     那些实例就又出现了（存档、Mod、设置都还在原地）。
    *
    * ★ 判据只用"这个版本是不是加载器版本"这一位 —— 因为 `FolderVersion` 里
    *   按设计只带了目录名认出来的加载器名（要精确到"哪个加载器的哪个版本"，
    *   得再读一遍 JSON，而列表行本来就会显示盘上事实，不值得为此多做一次读盘）。
    */
-  const { okRows, badRows, newVersions } = useMemo(() => {
+  const { okRows, newVersions } = useMemo(() => {
     if (folderVers === null) {
-      // 读不到文件夹：退回"体检结果"分组（不显示"还没建实例"的行 —— 那需要盘上事实）
-      return {
-        okRows: rows.filter((i) => !missingVersionIds.includes(i.id)),
-        badRows: rows.filter((i) => missingVersionIds.includes(i.id)),
-        newVersions: [] as FolderVersion[],
-      };
+      // 读不到文件夹 ⇒ 退回"账本里的都列出来"：**读不到 ≠ 没有**，不能因此把它们藏掉
+      return { okRows: rows, newVersions: [] as FolderVersion[] };
     }
     const pool = folderVers.filter((v) => v.hasJson);
     const usedIdx = new Set<number>();
@@ -385,7 +357,6 @@ export function VersionsPage() {
     }
     return {
       okRows: rows.filter((i) => matched.has(i.id)),
-      badRows: rows.filter((i) => !matched.has(i.id)),
       /* 「还没建实例」的那些也吃同一套筛选/搜索（否则筛选后列表里会混进不该有的行） */
       newVersions: pool.filter((v, idx) => {
         if (usedIdx.has(idx)) return false;
@@ -397,12 +368,12 @@ export function VersionsPage() {
         return true;
       }),
     };
-  }, [folderVers, rows, missingVersionIds, filter, query]);
+  }, [folderVers, rows, filter, query]);
 
-  /** 列表里真正要渲染的条目：这个文件夹里的版本 +（折叠组标题 + 展开后的坏条目） */
+  /** 列表里真正要渲染的条目：**这个文件夹里的版本**（没有就空状态） */
   const listEntries = useMemo(() => {
     const out: Array<{
-      kind: 'row' | 'new' | 'bad-head' | 'empty';
+      kind: 'row' | 'new' | 'empty';
       inst?: (typeof state.instances)[number];
       fv?: FolderVersion;
     }> = [];
@@ -411,12 +382,8 @@ export function VersionsPage() {
       for (const inst of okRows) out.push({ kind: 'row', inst });
       for (const fv of newVersions) out.push({ kind: 'new', fv });
     }
-    if (badRows.length > 0) {
-      out.push({ kind: 'bad-head' });
-      if (badOpen) for (const inst of badRows) out.push({ kind: 'row', inst });
-    }
     return out;
-  }, [okRows, badRows, newVersions, badOpen]);
+  }, [okRows, newVersions]);
 
   /** 用文件夹里已有的版本建一个实例（PCL 里点一下版本就能用） */
   const [adopting, setAdopting] = useState<string | null>(null);
@@ -575,7 +542,6 @@ export function VersionsPage() {
           */}
           <p className="page-desc">
             {okRows.length + newVersions.length} 个版本
-            {badRows.length > 0 ? ` · ${badRows.length} 个错误的版本（下面折叠着）` : ''}
             {' · 文件夹 '}
             <span className="mono" title={state.machine?.dataDir ?? ''}>
               {state.machine?.dataDir ?? '未知'}
@@ -641,32 +607,9 @@ export function VersionsPage() {
         </Note>
       ) : null}
 
-      {/* ==================== 列表（PCL 结构：正常版本在上，错误的版本折叠在下） ==================== */}
+      {/* ==================== 列表：**这个文件夹里有什么**（PCL 同款口径） ==================== */}
       <div className="ver-list">
         {listEntries.map((entry) => {
-          /* 折叠组的标题行 —— 一条都不删，只是默认不占地方 */
-          if (entry.kind === 'bad-head') {
-            return (
-              <button
-                key="bad-head"
-                type="button"
-                className="ver-group-head"
-                aria-expanded={badOpen}
-                title={
-                  '这些条目引用的版本文件在**当前游戏目录**里找不到。\n' +
-                  '多半是你在资源管理器里删掉或移走了它们，或者你刚换到了一个还没有版本的目录。\n' +
-                  '条目不会被自动删掉：想清理，用每行右边的「⋯ → 删除」；只是临时搬走的话，搬回来就会自动恢复正常。'
-                }
-                onClick={() => setBadOpen((v) => !v)}
-              >
-                <IconAlert />
-                <span className="ver-group-name">错误的版本（{badRows.length}）</span>
-                <span className="dim">
-                  {badOpen ? '收起' : '文件不在这个文件夹里 · 展开看看'}
-                </span>
-              </button>
-            );
-          }
           /* 当前文件夹里一个能用的版本都没有（多半是刚换过目录） */
           if (entry.kind === 'empty') {
             return (
@@ -677,8 +620,9 @@ export function VersionsPage() {
                   desc={
                     `现在用的游戏目录是 ${state.machine?.dataDir ?? '(未知)'} —— ` +
                     `里面找不到任何版本文件。想装一份就走「下载」页；` +
-                    `如果这些条目本来在别的目录里，去设置 → 存储 →「新建/切换…」把目录换回去（旧目录里的东西一个都没动）。`
-                  }                  actions={
+                    `如果版本本来在别的目录里，去设置 → 存储 →「新建/切换…」把目录换回去（旧目录里的东西一个都没动）。`
+                  }
+                  actions={
                     <>
                       <Button variant="primary" onClick={() => goDownloadTab('game')}>
                         <IconBox /> 去下载页装一份
