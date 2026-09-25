@@ -63,7 +63,7 @@ test('★ 失败原因要说人话（这条是**真机抓到的原串**逼出来
    * 于是**断网的用户看到的是一句纯英文**。
    */
   const real = new Error(
-    'error sending request for url (https://cnb.cool/IEML_Official/IEML-releases/-/releases/download/latest/latest.json)',
+    'error sending request for url (https://cnb.cool/IEML_Official/IEML/-/releases/download/latest/latest.json)',
   );
   const t = describeUpdateError(real);
   assert.ok(!/error sending request/i.test(t), '不该把英文原文甩给用户：' + t);
