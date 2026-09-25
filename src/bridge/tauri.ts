@@ -329,7 +329,10 @@ export interface MsLoginStatus {
    * ★ 这把 id 从哪来：`settings` / `env` / `builtin` / `none`。
    *
    *   为什么界面需要它：微软授权页显示的是**这个 ID 所属应用的名字** ——
-   *   内置的是 Prism Launcher 的公开 id，所以页面上会写「已登录到 Prism Launcher」。
+   *   内置的那把是**用户自己 Azure 应用注册**的 id，所以显示的是那个注册的名字。
+   *   ★ 2026-09-25 更正：这里原来写"内置的是 Prism Launcher 的公开 id，
+   *   所以页面上会写「已登录到 Prism Launcher」"—— **错的**，内置的一直是用户自己的注册
+   *   （Prism 那把 `c36a9fb6-…` 只是当初的对照样本）。
    *   界面必须能如实说清"现在用的是哪一把、是谁的"。
    */
   source: 'settings' | 'env' | 'builtin' | 'none';
