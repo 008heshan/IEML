@@ -277,6 +277,20 @@ results.push([
   run('README 与事实一致', 'node', ['tools/gates/check-readme-truth.mjs']),
 ]);
 
+/*
+ * ★★ **仓库根只放该放的东西**（同一天新增）。
+ *
+ *   清理时发现根目录里躺着 `debug.log`、`instances.json`/`prefs.json`（**含账号 UUID**）、
+ *   探针留下的空 `.minecraft/` 与 `instances/`、以及 26.3 MB 的 `tmp/`。
+ *   它们都没被跟踪（所以没泄露），但项目规矩写着"日志不许落进仓库根"——
+ *   **规矩在、判据不在，于是又长回来了**。
+ *   判据是白名单：根目录只允许配置文件、README/CHANGELOG/LICENSE、源码与文档目录。
+ */
+results.push([
+  '仓库根布局',
+  run('仓库根布局', 'node', ['tools/gates/check-repo-root.mjs']),
+]);
+
 if (existsSync(join(root, 'src-tauri', 'Cargo.toml'))) {
   results.push([
     'Rust 领域测试（含 Java 判据表）',

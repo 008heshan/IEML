@@ -104,8 +104,11 @@
 | W-2 | `.workbuddy/memory/_probe.txt` | 1 行（内容就 `probe`） | 删（工作区探针残留） |
 | W-3 | `.workbuddy/` 整体 | 71 个被跟踪文件 | 移出跟踪 + 进 `.gitignore`（P-4） |
 | W-4 | `docs/LAUNCHER_SOURCE_STUDY.md` 等研究文档 | 83 KB，含 PCL2/HMCL 行号引用 | **保留**（是研读笔记不是代码拷贝；但 `.workbuddy/refs/` 那份必须走） |
-| W-5 | 死代码 / 死 CSS | 未量化 | 用 `tools/diag/find-orphans.mjs` 过一遍，只删"引用数为 0 且结论已固化"的 |
-| W-6 | 公开库惯例文件 | 缺 | 评估是否补 `CONTRIBUTING.md`（提交信息规范、`verify` 门槛、分支策略） |
+| W-5 | 死代码 / 死 CSS | 未量化 | 用 `tools/diag/find-orphans.mjs` 过一遍，只删"引用数为 0 且结论已固化"的（**还没做**） |
+| W-6 | 公开库惯例文件 | 缺 | 评估是否补 `CONTRIBUTING.md`（提交信息规范、`verify` 门槛、分支策略）—— **待定** |
+| **W-7** | **仓库根里的运行期产物**（2026-09-25 清掉） | `debug.log` 416 B（还是 NVIDIA 的 CEF 日志）、`instances.json` / `prefs.json`（**含账号 UUID `edc5ea66…` 与离线用户名**）、`.minecraft/` 与 `instances/`（探针留下的空目录）、`tmp/` **26.3 MB** | ✅ 全删（都**未被跟踪**，所以没泄露）。★ 新增门禁 `check-repo-root.mjs` 守住 |
+| **W-8** | `tmp/IEML-main-130commits.bundle` | 1.36 MB —— **重写前的仓库快照**，指向旧的 `70a31ef` | 随着 `tmp/` 一起删。★ 判据：**别把仓库的备份塞在仓库自己里面**；重写前/后的完整镜像备份都在仓库外（`D:\IEML-backup-*.git` / `D:\IEML-after-rewrite-*.git`） |
+| **W-9** | 混合行尾文件 | 实测 **7 个**（记忆里记的 6 个已过期）：`DownloadPage.tsx`（1195 CRLF + 1 LF）、`live-glass-check.mjs`（946 + 25）、`launch_smoke.rs` / `live_launch_java.rs` / `natives_layout.rs` / `capabilities/default.json` / `build.rs`（各 1 行 CRLF） | **不批量修**：那会造出上千行的无关 diff（正是这类判据想防的东西）。改这几个文件时按字节保留行尾；是否统一**待定** |
 
 ## 五、第 3 级：防复发（这次清理真正的价值）
 
@@ -114,6 +117,24 @@
 | G-1 | **敏感串扫描进门禁**：被跟踪文件里不许出现 `$2a$10$`、`-----BEGIN`、`client_secret`、以及本机路径 `C:\Users\Administrator` | 这次是靠人眼通读才发现的，下次必须有机器守 |
 | G-2 | **文档漂移词扫描**：`README` 的「已知限制」里不许出现已经删掉的机制名（如 `重启后生效`） | D-1 那类假话的根本解法 |
 | G-3 | **ADR 锚点自检**：`DECISIONS.md` 里的 `#adr-xxx…` 链接必须在文件里找得到对应标题 | D-7 那类死锚点 |
+| **G-4** | **仓库根布局白名单**：根目录只允许配置/README/CHANGELOG/LICENSE/源码与文档目录 | W-7 那类"产物又长回来" |
+
+**四条都已落地**（`tools/gates/check-secrets.mjs` / `check-readme-truth.mjs` /
+`check-doc-anchors.mjs` / `check-repo-root.mjs`，都进了 `verify.mjs`，且**都喂过坏样本证明能红**）。
+
+### ★ 一个"想过但决定不做"的判据：混合行尾硬门禁
+
+`git diff --numstat` 与 `--ignore-cr-at-eol` 不一致 = 有纯空白噪声 —— 这条判据很准，
+但做成**硬门禁**会逼着一次**上千行的全文件重写**（`DownloadPage.tsx` 有 1195 行 CRLF），
+而那正是这类判据想防的"无关改动"。所以：
+**保留判据但不进门禁** —— 改动那几个文件时按字节处理，`git diff --numstat` 自查（写在这里，供下次用）。
+
+### ★ 另一个教训：pickaxe 会命中"提到 key 的文档"
+
+重写后 `git log --all -S '<key 前缀>'` 仍报 1 个提交，一度看起来像没清干净。
+查下来是**我自己写进本文件的验证命令**（文档正文里提到了那个前缀）被 pickaxe 命中了 ——
+**不是泄露**。⇒ 审计判据要用**更硬的两条**：逐个 blob 全扫 + 逐条提交信息（`%B`）扫，
+别只看 pickaxe 的计数（它同时受"文档里提到过"影响）。
 
 ## 六、执行顺序（★ 顺序本身是判据）
 
@@ -131,8 +152,8 @@
 > ★ 2026-09-25：**本地那几项已经全部做到**（打勾的是实测过的），
 > 但「远端」那一节是**新发现的缺口**，见下。
 
-- [x] `git log --all -S 'eD53P3AwyKg'` 无输出（历史里没有 key）—— 实测 **0 个提交**
-- [x] 逐个 blob 全扫：**含 key 的 blob = 0 / 3153**（在**外部克隆**里验的，那才是别人拿到的）
+- [x] 逐个 blob 全扫：**含完整 key 的 blob = 0 / 3447**（在**外部克隆**里验的，那才是别人拿到的）
+- [x] 逐条提交信息（`%B`，含正文）扫：**含完整 key 的提交 = 0**
 - [x] `BUILTIN_API_KEY` 只剩空串（没有硬编码值）
 - [x] `.workbuddy/` 不在 `git ls-files` 里，也不在历史里（`--all` 下 **0 条目**）
 - [x] `src-tauri/icons/` 只剩 Windows 需要的 6 个文件
