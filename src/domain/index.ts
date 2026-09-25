@@ -11,3 +11,5 @@ export * from './install-plan.ts';
 export * from './crash.ts';
 export * from './delete.ts';
 export * from './server-address.ts';
+/* ★ 2026-09-25：「当前文件夹里的版本」与「账本里的实例」怎么对上（PCL 的文件夹逻辑） */
+export * from './folder-versions.ts';

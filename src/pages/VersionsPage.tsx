@@ -31,6 +31,7 @@ import {
   IconRefresh,
 } from '../ui/Icons';
 import { useRealApi } from '../hooks/useRealApi';
+import { DataRootPicker } from '../components/DataRootPicker';
 import { formatBytes } from '../domain';
 /*
  * ★ 2026-09-17：「安装 Mod」改成走 `goDownloadFor('mod', inst.id)` 跳下载页之后，
@@ -99,11 +100,13 @@ function menuLayout(anchor: DOMRect, height: number): MenuPos {
 export function VersionsPage() {
   /** 应用自己的确认弹窗（`window.confirm` 在这个壳里是坏的，见 `ui/confirm.tsx`） */
   const confirm = useConfirm();
-  const { state, go, goDownloadTab, goDownloadFor, openVersion, toast, removeInstance, duplicateInstance, renameInstance, refreshInstances, createInstance, noteFolderVersionCount } =
+  const { state, goDownloadTab, goDownloadFor, openVersion, toast, removeInstance, duplicateInstance, renameInstance, refreshInstances, createInstance, folder, reloadAfterRootChange } =
     useApp();
   const { api } = useRealApi();
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
+  /** 「新建/切换游戏目录」弹窗（2026-09-25 用户：把它做到版本列表这一页，按钮样式） */
+  const [rootPicker, setRootPicker] = useState(false);
 
   /**
    * ★★ 2026-09-25（用户：「换目录后不会自动刷新，我的建议是，点击版本列表就刷新一下，
@@ -289,93 +292,38 @@ export function VersionsPage() {
   }, [state.instances, filter, query]);
 
   /**
-   * ★★ 2026-09-25（用户给了两张 PCL 截图：「你看 PCL，就是像换了个文件夹去读游戏版本，
-   *   可以无缝切换」）：
+   * ★★ 2026-09-25（用户给的 PCL 截图 + 「主页也有同样问题」）：
    *
-   *   **这一页的数据源从"账本里的实例"改成"当前文件夹里扫出来的版本"**。
+   *   **这一页的数据源 = 当前文件夹里的版本**，而这一份数据现在住在 `AppContext`
+   *   （`app.folder`）—— 版本列表、启动页、侧栏角标、筛选里的"全部 N"都用它。
    *
-   *   为什么必须改：账本住在启动器自己的家里（与文件夹无关），所以从前"换到 E 盘，
-   *   列表里还摆着 D 盘那 3 条" —— 用户看到的正是这个。PCL 不是这么干的：
-   *   它的列表就是**这个文件夹里的版本**，换文件夹 = 换一份游戏数据，列表跟着变。
-   *
-   *   现在的关系是：
-   *     · `folderVers`（真读盘）决定**有哪些版本**；
-   *     · 账本里的实例只负责给某个版本补上"你起的名字 / 设置 / 存档目录"。
-   *   对不上任何实例的版本，显示成「还没建实例」，点一下就用它建一个（PCL 里点一下就能玩）。
+   *   ★ 为什么搬去全局：上一轮我在这一页自己扫、自己算，结果页头显示 0、
+   *     侧栏角标还显示 3（用户截图）。**一个事实只能有一个来源**。
+   *   ★ 匹配规则也搬走了（`domain/folder-versions.ts`）—— 启动页要用同一份。
    */
-  const [folderVers, setFolderVers] = useState<FolderVersion[] | null>(null);
-  const reloadFolderVersions = useCallback(async () => {
-    if (!api) {
-      setFolderVers(null);
-      return;
-    }
-    try {
-      const list = await api.launcher.folderVersions();
-      setFolderVers(list);
-      /*
-       * ★★ 2026-09-25（用户：「版本列表的计数不是实时更新的」）：
-       *   页头 / 侧栏角标 / 筛选里的"全部 N"必须是同一个数 ——
-       *   而这里才是唯一知道最新值的地方（真读盘扫出来的），所以推回全局。
-       */
-      noteFolderVersionCount(list.filter((v) => v.hasJson).length);
-    } catch {
-      /* 读不到就落回"按账本"的老路子：宁可少说，不说假话 */
-      setFolderVers(null);
-    }
-  }, [api, noteFolderVersionCount]);
-
-  useEffect(() => {
-    void reloadFolderVersions();
-  }, [reloadFolderVersions, currentRoot]);
+  const {
+    instancesInFolder,
+    versionsWithoutInstance,
+    reload: reloadFolderVersions,
+  } = folder;
 
   /**
-   * 把"文件夹里的版本"与"账本里的实例"对上：一个实例认领一个版本
-   * （MC 版本相同 + 是不是加载器版本也相同）。
-   *
-   * ★★ 2026-09-25 晚（用户看了折叠组那行之后）：
-   *   「既然不在这个文件夹就不用显示了」
-   *   ⇒ **认领不到的实例不显示**（不是删掉）：这一页就是"这个文件夹里有什么"，
-   *     不属于这个文件夹的东西不该占位置。账本**原样保留** —— 把目录换回去，
-   *     那些实例就又出现了（存档、Mod、设置都还在原地）。
-   *
-   * ★ 判据只用"这个版本是不是加载器版本"这一位 —— 因为 `FolderVersion` 里
-   *   按设计只带了目录名认出来的加载器名（要精确到"哪个加载器的哪个版本"，
-   *   得再读一遍 JSON，而列表行本来就会显示盘上事实，不值得为此多做一次读盘）。
+   * 这一页真正列出来的行：**属于当前文件夹的实例** + **还没建实例的版本**，
+   * 两者都吃同一套筛选/搜索。
    */
   const { okRows, newVersions } = useMemo(() => {
-    if (folderVers === null) {
-      // 读不到文件夹 ⇒ 退回"账本里的都列出来"：**读不到 ≠ 没有**，不能因此把它们藏掉
-      return { okRows: rows, newVersions: [] as FolderVersion[] };
-    }
-    const pool = folderVers.filter((v) => v.hasJson);
-    const usedIdx = new Set<number>();
-    const matched = new Set<string>();
-    for (const inst of rows) {
-      const i = pool.findIndex(
-        (v, idx) =>
-          !usedIdx.has(idx) &&
-          v.mcVersion.toLowerCase() === inst.mcVersion.toLowerCase() &&
-          (v.loaderName !== null) === (inst.loader !== null),
-      );
-      if (i >= 0) {
-        usedIdx.add(i);
-        matched.add(inst.id);
-      }
-    }
-    return {
-      okRows: rows.filter((i) => matched.has(i.id)),
-      /* 「还没建实例」的那些也吃同一套筛选/搜索（否则筛选后列表里会混进不该有的行） */
-      newVersions: pool.filter((v, idx) => {
-        if (usedIdx.has(idx)) return false;
-        const q = query.trim().toLowerCase();
-        if (q && !v.dir.toLowerCase().includes(q) && !v.mcVersion.toLowerCase().includes(q))
-          return false;
-        if (filter === 'modded') return v.loaderName !== null;
-        if (filter === 'vanilla') return v.loaderName === null;
-        return true;
-      }),
-    };
-  }, [folderVers, rows, filter, query]);
+    const idsInFolder = new Set(instancesInFolder.map((i) => i.id));
+    const mine = rows.filter((i) => idsInFolder.has(i.id));
+    const q = query.trim().toLowerCase();
+    const extra = versionsWithoutInstance.filter((v) => {
+      if (q && !v.dir.toLowerCase().includes(q) && !v.mcVersion.toLowerCase().includes(q))
+        return false;
+      if (filter === 'modded') return v.loaderName !== null;
+      if (filter === 'vanilla') return v.loaderName === null;
+      return true;
+    });
+    return { okRows: mine, newVersions: extra };
+  }, [rows, instancesInFolder, versionsWithoutInstance, filter, query]);
 
   /** 列表里真正要渲染的条目：**这个文件夹里的版本**（没有就空状态） */
   const listEntries = useMemo(() => {
@@ -556,6 +504,15 @@ export function VersionsPage() {
           </p>
         </div>
         <div className="page-actions">
+          {/*
+            ★★ 2026-09-25（用户）：「版本列表在合适位置把『新建/切换』移过来，
+              文本改成『新建/切换游戏目录』，要按钮样式，而不是纯文本了」。
+            ⇒ 常驻在这一页的右上角（与「重新探测」并排）—— 换文件夹是这个启动器
+              最常用的动作之一，不该藏在设置页里。
+          */}
+          <Button size="sm" variant="secondary" onClick={() => setRootPicker(true)}>
+            <IconFolder /> 新建/切换游戏目录
+          </Button>
           {api ? (
             <Button
               size="sm"
@@ -624,18 +581,18 @@ export function VersionsPage() {
                 <EmptyState
                   icon={<IconBox />}
                   title="这个文件夹里没有可用的版本"
-                  desc={
-                    `现在用的游戏目录是 ${state.machine?.dataDir ?? '(未知)'} —— ` +
-                    `里面找不到任何版本文件。想装一份就走「下载」页；` +
-                    `如果版本本来在别的目录里，去设置 → 存储 →「新建/切换…」把目录换回去（旧目录里的东西一个都没动）。`
-                  }
+                  /*
+                   * ★★ 2026-09-25（用户）：「图二这个描述不要」
+                   *   ⇒ 那两行说明删掉。该说的话由按钮说：
+                   *     要装新版就「去下载页装一份」，要换文件夹就「新建/切换游戏目录」。
+                   */
                   actions={
                     <>
                       <Button variant="primary" onClick={() => goDownloadTab('game')}>
                         <IconBox /> 去下载页装一份
                       </Button>
-                      <Button variant="secondary" onClick={() => go('settings')}>
-                        换一个游戏目录
+                      <Button variant="secondary" onClick={() => setRootPicker(true)}>
+                        <IconFolder /> 新建/切换游戏目录
                       </Button>
                     </>
                   }
@@ -1123,6 +1080,15 @@ export function VersionsPage() {
           一条 Note 分不清"这个文件夹是空的"和"用户把几个版本删了"，
           分组天然分得清（好的在上面、坏的折叠在下面）。
       */}
+
+      {/* 「新建/切换游戏目录」弹窗（与设置页那一个是同一个组件、同一份实现） */}
+      <DataRootPicker
+        open={rootPicker}
+        onClose={() => setRootPicker(false)}
+        current={state.machine?.dataDir ?? ''}
+        toast={toast}
+        onChanged={() => void reloadAfterRootChange()}
+      />
     </>
   );
 }

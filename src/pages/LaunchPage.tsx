@@ -43,7 +43,7 @@ import { VersionIcon } from '../components/VersionIcon';
 import { launchFailureOf, type LaunchPreview, type LaunchRequest } from '../bridge/tauri';
 
 export function LaunchPage() {
-  const { state, target, go, goDownloadTab, backend, toast, setLaunchTarget, openVersion } = useApp();
+  const { state, target, go, goDownloadTab, backend, toast, setLaunchTarget, openVersion, folder } = useApp();
   const { api, isDesktop } = useRealApi();
 
   const [launching, setLaunching] = useState(false);
@@ -251,12 +251,25 @@ export function LaunchPage() {
   }
 
   /**
+   * ★★ 2026-09-25（用户：「主页也有同样问题」）：
+   *
+   *   **启动页也按当前文件夹说话** —— 能启动的只有"版本确实在这个文件夹里"的那些
+   *   （名单来自 `AppContext` 的 `folder.instancesInFolder`，与版本列表同一份规则）。
+   *   以前这里列的是**账本里的全部实例**，所以换到空文件夹之后，
+   *   主页仍然摆着三个"能启动"的版本 —— 点下去只会报"找不到版本文件"。
+   *
+   *   ★ 读不到文件夹时 `instancesInFolder` **不筛**（读不到 ≠ 没有），
+   *     与版本列表的兜底完全一致。
+   */
+  const launchable = folder.instancesInFolder;
+
+  /**
    * 其它版本（除了当前选中的）—— "一眼换目标"用。
    * 排序：最近玩过的在前；没玩过的按建立时间倒序。
    */
   const others = useMemo(
     () =>
-      state.instances
+      launchable
         .filter((i) => i.id !== target?.id)
         .sort((a, b) => {
           const at = a.lastPlayedAt ?? '';
@@ -266,11 +279,11 @@ export function LaunchPage() {
           if (bt) return 1;
           return (b.createdAt ?? '').localeCompare(a.createdAt ?? '');
         }),
-    [state.instances, target?.id],
+    [launchable, target?.id],
   );
 
-  /* ---------- 空状态：没有实例 ---------- */
-  if (state.instances.length === 0) {
+  /* ---------- 空状态：这个文件夹里没有可启动的版本 ---------- */
+  if (launchable.length === 0) {
     return (
       <>
         <div className="page-head">
@@ -532,7 +545,7 @@ export function LaunchPage() {
             onChange={setLaunchTarget}
             disabled={isRunning}
             ariaLabel="要启动的版本"
-            options={state.instances.map((i) => ({
+            options={launchable.map((i) => ({
               value: i.id,
               /* ★ 2026-09-22：统一格式（"Minecraft 26.2 + Fabric 26.2：模组加载器"） */
               label: instanceTitle(i.config.name, i.mcVersion, i.loader),
