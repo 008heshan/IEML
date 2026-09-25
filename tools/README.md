@@ -55,6 +55,7 @@ tools/
 │   ├─ probe-bmclapi.mjs / probe-mirrors.mjs / probe-sources.mjs   镜像与源
 │   ├─ probe-assets.mjs / probe-chunk-throttle.mjs / probe-dev.mjs
 │   ├─ probe-fabric-sources.mjs / probe-java-dll.mjs
+│   ├─ probe-legacy-endpoint-bridge.mjs  ★ 旧发布仓那座"桥"还通不通（决定能不能彻底删老仓）
 │   └─ （一次性探针用完就删：结论已经写成单元测试/live 测试，留着只是噪音）
 │
 └─ diag/      ★ 一次性诊断与考古：看本机数据目录、回答"盘上到底怎么了"
