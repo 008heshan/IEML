@@ -44,7 +44,8 @@ import {
   describeDelete,
   trashUnavailablePrompt,
 } from '../domain/delete.ts';
-import type { InstalledLoader } from '../bridge/tauri';
+import type { FolderVersion, InstalledLoader } from '../bridge/tauri';
+import { autoMemory, type Instance } from '../domain';
 import { instanceTitle } from '../state/instance-name';
 
 type Filter = 'all' | 'modded' | 'vanilla';
@@ -98,7 +99,7 @@ function menuLayout(anchor: DOMRect, height: number): MenuPos {
 export function VersionsPage() {
   /** 应用自己的确认弹窗（`window.confirm` 在这个壳里是坏的，见 `ui/confirm.tsx`） */
   const confirm = useConfirm();
-  const { state, go, goDownloadTab, goDownloadFor, openVersion, toast, removeInstance, duplicateInstance, renameInstance, refreshInstances } =
+  const { state, go, goDownloadTab, goDownloadFor, openVersion, toast, removeInstance, duplicateInstance, renameInstance, refreshInstances, createInstance } =
     useApp();
   const { api } = useRealApi();
   const [filter, setFilter] = useState<Filter>('all');
@@ -315,6 +316,150 @@ export function VersionsPage() {
     });
   }, [state.instances, filter, query]);
 
+  /**
+   * ★★ 2026-09-25（用户给了两张 PCL 截图：「你看 PCL，就是像换了个文件夹去读游戏版本，
+   *   可以无缝切换」）：
+   *
+   *   **这一页的数据源从"账本里的实例"改成"当前文件夹里扫出来的版本"**。
+   *
+   *   为什么必须改：账本住在启动器自己的家里（与文件夹无关），所以从前"换到 E 盘，
+   *   列表里还摆着 D 盘那 3 条" —— 用户看到的正是这个。PCL 不是这么干的：
+   *   它的列表就是**这个文件夹里的版本**，换文件夹 = 换一份游戏数据，列表跟着变。
+   *
+   *   现在的关系是：
+   *     · `folderVers`（真读盘）决定**有哪些版本**；
+   *     · 账本里的实例只负责给某个版本补上"你起的名字 / 设置 / 存档目录"。
+   *   对不上任何实例的版本，显示成「还没建实例」，点一下就用它建一个（PCL 里点一下就能玩）。
+   */
+  const [folderVers, setFolderVers] = useState<FolderVersion[] | null>(null);
+  const reloadFolderVersions = useCallback(async () => {
+    if (!api) {
+      setFolderVers(null);
+      return;
+    }
+    try {
+      setFolderVers(await api.launcher.folderVersions());
+    } catch {
+      /* 读不到就落回"按账本 + 体检"的老路子：宁可少说，不说假话 */
+      setFolderVers(null);
+    }
+  }, [api]);
+
+  useEffect(() => {
+    void reloadFolderVersions();
+  }, [reloadFolderVersions, currentRoot]);
+
+  const [badOpen, setBadOpen] = useState(false);
+
+  /**
+   * 把"文件夹里的版本"与"账本里的实例"对上：一个实例认领一个版本
+   * （MC 版本相同 + 是不是加载器版本也相同）。
+   *
+   * ★ 判据只用"这个版本是不是加载器版本"这一位 —— 因为 `FolderVersion` 里
+   *   按设计只带了目录名认出来的加载器名（要精确到"哪个加载器的哪个版本"，
+   *   得再读一遍 JSON，而列表行本来就会显示盘上事实，不值得为此多做一次读盘）。
+   */
+  const { okRows, badRows, newVersions } = useMemo(() => {
+    if (folderVers === null) {
+      // 读不到文件夹：退回"体检结果"分组（不显示"还没建实例"的行 —— 那需要盘上事实）
+      return {
+        okRows: rows.filter((i) => !missingVersionIds.includes(i.id)),
+        badRows: rows.filter((i) => missingVersionIds.includes(i.id)),
+        newVersions: [] as FolderVersion[],
+      };
+    }
+    const pool = folderVers.filter((v) => v.hasJson);
+    const usedIdx = new Set<number>();
+    const matched = new Set<string>();
+    for (const inst of rows) {
+      const i = pool.findIndex(
+        (v, idx) =>
+          !usedIdx.has(idx) &&
+          v.mcVersion.toLowerCase() === inst.mcVersion.toLowerCase() &&
+          (v.loaderName !== null) === (inst.loader !== null),
+      );
+      if (i >= 0) {
+        usedIdx.add(i);
+        matched.add(inst.id);
+      }
+    }
+    return {
+      okRows: rows.filter((i) => matched.has(i.id)),
+      badRows: rows.filter((i) => !matched.has(i.id)),
+      /* 「还没建实例」的那些也吃同一套筛选/搜索（否则筛选后列表里会混进不该有的行） */
+      newVersions: pool.filter((v, idx) => {
+        if (usedIdx.has(idx)) return false;
+        const q = query.trim().toLowerCase();
+        if (q && !v.dir.toLowerCase().includes(q) && !v.mcVersion.toLowerCase().includes(q))
+          return false;
+        if (filter === 'modded') return v.loaderName !== null;
+        if (filter === 'vanilla') return v.loaderName === null;
+        return true;
+      }),
+    };
+  }, [folderVers, rows, missingVersionIds, filter, query]);
+
+  /** 列表里真正要渲染的条目：这个文件夹里的版本 +（折叠组标题 + 展开后的坏条目） */
+  const listEntries = useMemo(() => {
+    const out: Array<{
+      kind: 'row' | 'new' | 'bad-head' | 'empty';
+      inst?: (typeof state.instances)[number];
+      fv?: FolderVersion;
+    }> = [];
+    if (okRows.length === 0 && newVersions.length === 0) out.push({ kind: 'empty' });
+    else {
+      for (const inst of okRows) out.push({ kind: 'row', inst });
+      for (const fv of newVersions) out.push({ kind: 'new', fv });
+    }
+    if (badRows.length > 0) {
+      out.push({ kind: 'bad-head' });
+      if (badOpen) for (const inst of badRows) out.push({ kind: 'row', inst });
+    }
+    return out;
+  }, [okRows, badRows, newVersions, badOpen]);
+
+  /** 用文件夹里已有的版本建一个实例（PCL 里点一下版本就能用） */
+  const [adopting, setAdopting] = useState<string | null>(null);
+  const adoptFolderVersion = useCallback(
+    async (fv: FolderVersion) => {
+      setAdopting(fv.dir);
+      try {
+        const takenSlugs = new Set(state.instances.map((i) => i.config.slug));
+        let slug = fv.dir;
+        for (let n = 2; takenSlugs.has(slug); n++) slug = `${fv.dir}-${n}`;
+        const kind = knownLoaderKind(fv.loaderName);
+        const inst: Instance = {
+          id: `inst-${Date.now().toString(36)}`,
+          mcVersion: fv.mcVersion,
+          loader: kind ? { kind, version: '', mcVersion: fv.mcVersion } : null,
+          addons: [],
+          config: {
+            name: fv.dir,
+            slug,
+            isolation: 'auto',
+            memoryMb: Math.round(
+              autoMemory(0, 'vanilla', state.machine?.totalMemoryGb ?? 16, state.machine?.availableMemoryGb ?? 8)
+                .gb * 1024,
+            ),
+            memorySource: 'auto',
+            javaMode: 'auto',
+          },
+          createdAt: new Date().toISOString(),
+          lastPlayedAt: null,
+          totalPlaySeconds: 0,
+        };
+        await createInstance(inst);
+        toast('ok', '已经用这个文件夹里的版本建好实例', `${fv.dir} —— 现在可以启动它了`);
+        openVersion(inst.id);
+      } catch (e) {
+        toast('err', '建实例失败', e instanceof Error ? e.message : String(e));
+      } finally {
+        setAdopting(null);
+      }
+    },
+    [state.instances, state.machine, createInstance, openVersion, toast],
+  );
+
   /*
    * ★★ 2026-09-24（C-4 修复）：这里原来算的是
    *   `state.versions.filter(v => v.installed).length`，而 `state.versions`
@@ -323,10 +468,13 @@ export function VersionsPage() {
    *   真机后果：装 1.21.4（不在那 10 个里）能正常启动，
    *   版本列表底部却挂着「这些版本还没有游戏文件」—— 一句假警报。
    *   现在只认**磁盘事实**：`instanceHealth()` 逐个实例查版本文件在不在
-   *   （见上面那段 effect），当**这一页列出来的行**在盘上都没有版本文件时才提示。
-   *   ★ 判据只有一个来源：删掉 `installedCount`，不再用那张静态表。
+   *   （见上面那段 effect）。
+   *
+   * ★★ 2026-09-25：原来那个 `allRowsMissing`（"全都缺文件"就挂一条 Note）**去掉了** ——
+   *   它想说的话现在由「错误的版本（N）」那个折叠组与空状态说，而且说得更准：
+   *   一条 Note 分不清"这个文件夹是空的"和"用户把几个版本删了"，
+   *   而分组天然分得清（好的在上面、坏的折叠在下面）。
    */
-  const allRowsMissing = rows.length > 0 && rows.every((r) => missingVersionIds.includes(r.id));
 
   /** 这个 MC 版本在盘上装了哪些加载器（读盘结果，空的 = 没有或没读到） */
   const diskLoadersOf = (mcVersion: string): InstalledLoader[] =>
@@ -415,15 +563,36 @@ export function VersionsPage() {
         <div>
           <h1 className="page-title">版本列表</h1>
           {/* ★ 2026-09-16 用户（截图）：删掉"· 盘上已装 N 份游戏文件"与"· 点一行进它的设置" */}
-          <p className="page-desc">{state.instances.length} 个版本</p>
+          {/*
+            ★★ 2026-09-25：按 PCL 的口径说"这个文件夹里有什么" ——
+              能用几个、坏掉几个（坏的在下面折叠着，不占地方）。
+          */}
+          {/*
+            ★★ 2026-09-25（PCL 那两张截图）：**把"当前是哪个文件夹"写在页头** ——
+              PCL 的「版本选择」左侧一直挂着「当前文件夹 D:\Minecraft\.minecraft\」。
+              换文件夹是这个启动器最容易被误解的一个动作（"我怎么还在读 D 盘？"），
+              所以把这份事实一直摆在眼前，而不是等用户去设置页翻。
+          */}
+          <p className="page-desc">
+            {okRows.length + newVersions.length} 个版本
+            {badRows.length > 0 ? ` · ${badRows.length} 个错误的版本（下面折叠着）` : ''}
+            {' · 文件夹 '}
+            <span className="mono" title={state.machine?.dataDir ?? ''}>
+              {state.machine?.dataDir ?? '未知'}
+            </span>
+          </p>
         </div>
         <div className="page-actions">
           {api ? (
             <Button
               size="sm"
               variant="ghost"
-              title="重新读一遍磁盘上的 versions/ 目录（不会重新下载）"
-              onClick={() => void refreshDisk()}
+              title="重新读一遍这个文件夹里的 versions/（不会重新下载）"
+              onClick={() => {
+                void refreshDisk();
+                /* ★ 2026-09-25：这一页的数据源是"文件夹里有什么"，所以重探也要重扫文件夹 */
+                void reloadFolderVersions();
+              }}
             >
               <IconRefresh /> 重新探测
             </Button>
@@ -441,7 +610,7 @@ export function VersionsPage() {
           value={filter}
           onChange={setFilter}
           options={[
-            { value: 'all', label: `全部 ${state.instances.length}` },
+            { value: 'all', label: `全部 ${state.instances.length + newVersions.length}` },
             { value: 'modded', label: '可装 Mod' },
             { value: 'vanilla', label: '原版' },
           ]}
@@ -472,9 +641,86 @@ export function VersionsPage() {
         </Note>
       ) : null}
 
-      {/* ==================== 列表 ==================== */}
+      {/* ==================== 列表（PCL 结构：正常版本在上，错误的版本折叠在下） ==================== */}
       <div className="ver-list">
-        {rows.map((inst) => {
+        {listEntries.map((entry) => {
+          /* 折叠组的标题行 —— 一条都不删，只是默认不占地方 */
+          if (entry.kind === 'bad-head') {
+            return (
+              <button
+                key="bad-head"
+                type="button"
+                className="ver-group-head"
+                aria-expanded={badOpen}
+                title={
+                  '这些条目引用的版本文件在**当前游戏目录**里找不到。\n' +
+                  '多半是你在资源管理器里删掉或移走了它们，或者你刚换到了一个还没有版本的目录。\n' +
+                  '条目不会被自动删掉：想清理，用每行右边的「⋯ → 删除」；只是临时搬走的话，搬回来就会自动恢复正常。'
+                }
+                onClick={() => setBadOpen((v) => !v)}
+              >
+                <IconAlert />
+                <span className="ver-group-name">错误的版本（{badRows.length}）</span>
+                <span className="dim">{badOpen ? '收起' : '展开'}</span>
+              </button>
+            );
+          }
+          /* 当前文件夹里一个能用的版本都没有（多半是刚换过目录） */
+          if (entry.kind === 'empty') {
+            return (
+              <div key="empty" className="ver-empty">
+                <EmptyState
+                  icon={<IconBox />}
+                  title="这个文件夹里没有可用的版本"
+                  desc={
+                    `现在用的游戏目录是 ${state.machine?.dataDir ?? '(未知)'} —— ` +
+                    `里面找不到任何版本文件。想装一份就走「下载」页；` +
+                    `如果这些条目本来在别的目录里，去设置 → 存储 →「新建/切换…」把目录换回去（旧目录里的东西一个都没动）。`
+                  }                  actions={
+                    <>
+                      <Button variant="primary" onClick={() => goDownloadTab('game')}>
+                        <IconBox /> 去下载页装一份
+                      </Button>
+                      <Button variant="secondary" onClick={() => go('settings')}>
+                        换一个游戏目录
+                      </Button>
+                    </>
+                  }
+                />
+              </div>
+            );
+          }
+          /* 这个文件夹里已经有、但还没建过实例的版本 —— 点一下就用它建一个 */
+          if (entry.kind === 'new') {
+            const fv = entry.fv!;
+            return (
+              <div key={'fv-' + fv.dir} className="ver-item ver-item-new">
+                <VersionIcon version={fv.mcVersion} size={34} />
+                <div className="ver-info">
+                  <div className="ver-title">
+                    <span className="ver-title-name truncate">{fv.dir}</span>
+                    {fv.loaderName ? <Chip tone="neutral">{fv.loaderName}</Chip> : null}
+                    <Chip tone="accent">还没建实例</Chip>
+                  </div>
+                  <div className="ver-meta">
+                    <span className="mono">{fv.mcVersion}</span>
+                    <span className="dim">· 这个文件夹里已经有这份版本</span>
+                  </div>
+                </div>
+                <div className="ver-actions">
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    loading={adopting === fv.dir}
+                    onClick={() => void adoptFolderVersion(fv)}
+                  >
+                    用它建一个
+                  </Button>
+                </div>
+              </div>
+            );
+          }
+          const inst = entry.inst!;
           // ★ 多开实例：判据只有一份（`isInstanceRunning`）
           const isRunning = isInstanceRunning(state, inst.id);
           const openMenu = menuFor === inst.id;
@@ -950,16 +1196,12 @@ export function VersionsPage() {
           「盘上已装 N 份游戏文件」。真需要解释的时候，是用户第一次点
           「一键补齐」时 —— 那时 `installGame` 会自己说"已存在的会跳过"。
 
-        ★ 但"还没有游戏文件"必须留：它说明这些版本**现在起不来**，
-          属于用户需要马上知道的事（不是概念解释）。
-        ★★ 2026-09-24（C-4）：它的判据改成**读盘结果**（`allRowsMissing`），
-          不再用那张内置版本表 —— 见上面 `allRowsMissing` 的说明。
+        ★ 原来这里还有一条「这些版本还没有游戏文件」（判据 `allRowsMissing`）。
+        ★★ 2026-09-25（PCL 那两张截图）：**整条去掉了** —— 它想说的话现在由
+          「错误的版本（N）」折叠组和列表里的空状态说，而且说得更准：
+          一条 Note 分不清"这个文件夹是空的"和"用户把几个版本删了"，
+          分组天然分得清（好的在上面、坏的折叠在下面）。
       */}
-      {allRowsMissing ? (
-        <Note tone="warning" icon={<IconAlert />} title="这些版本还没有游戏文件">
-          起不来。去「下载」页装一份，或点进版本后用「检查并补齐文件」补上。
-        </Note>
-      ) : null}
     </>
   );
 }
@@ -972,4 +1214,19 @@ function loaderName(kind: string): string {
     quilt: 'Quilt',
   };
   return map[kind] ?? kind;
+}
+
+/**
+ * 目录名里认出来的加载器 → `BaseLoaderKind`（认不出的返回 null）。
+ *
+ * ★ 为什么要有这一步：`FolderVersion.loaderName` 是**按目录名猜的字符串**
+ *   （Rust 侧只做了 `contains`），而账本里的 `loader.kind` 是一个**受约束的联合类型** ——
+ *   直接把字符串塞进去会让类型系统失去保护。认不出的（比如 `optifine`、`liteloader`）
+ *   一律当"没有加载器"：那两种在 IEML 里走的是 `addons`，不是 `loader`。
+ */
+function knownLoaderKind(name: string | null): 'forge' | 'neoforge' | 'fabric' | 'quilt' | null {
+  if (name === 'forge' || name === 'neoforge' || name === 'fabric' || name === 'quilt') {
+    return name;
+  }
+  return null;
 }

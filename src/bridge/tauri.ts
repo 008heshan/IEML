@@ -670,6 +670,22 @@ export const metadata = {
     call<InstalledLoader[]>('detect_installed_loaders', { mcVersion }),
 };
 
+/** `versions/<dir>` 里的一份版本（与 Rust 侧 `commands_real::FolderVersion` 一一对应） */
+export interface FolderVersion {
+  /** 目录名（`versions/<这个>`）—— PCL 列表里显示的就是它 */
+  dir: string;
+  /** 版本 JSON 里声明的 `id`（读不到 JSON 时与 `dir` 相同） */
+  id: string;
+  /** 加载器版本继承的父版本（如 `26.2`）；原版是空串 */
+  inherits: string;
+  /** 实际算出来的 Minecraft 版本（有 `inherits` 用它，否则用 `id`） */
+  mcVersion: string;
+  /** 按目录名认出的加载器（`fabric` / `forge` / `neoforge` / `quilt` / …）；原版是 null */
+  loaderName: string | null;
+  /** 版本 JSON 在不在（`false` = 这个目录是空的/坏的） */
+  hasJson: boolean;
+}
+
 /* ====================== Modrinth ====================== */
 
 export const modrinth = {
@@ -1182,6 +1198,12 @@ export const launcher = {
       onSystemDrive: boolean;
       restartRequired: boolean;
       hasExistingData: boolean;
+      /**
+       * ★★ 你选的是 `.minecraft` 目录本身、被我们往上提了一级时，这里是原路径。
+       *   PCL 的"文件夹"就是 `.minecraft`（它截图里写的是 `D:\Minecraft\.minecraft\`），
+       *   而 IEML 的根目录是它的上一级 —— 界面据此说一句，免得用户以为选错了。
+       */
+      normalizedFrom?: string;
     }>('set_data_root', { path }),
 
   /**
@@ -1207,6 +1229,41 @@ export const launcher = {
   deleteDataRoot: (path: string) => call<number>('delete_data_root', { path }),
   /** 查哪些实例的版本文件已不在磁盘上（只读，不删条目） */
   instanceHealth: () => call<Array<{ id: string; version_missing: boolean }>>('instance_health'),
+
+  /**
+   * ★★ 2026-09-25（用户给了两张 PCL 截图：「你看 PCL，就是像换了个文件夹去读游戏版本，
+   *   可以无缝切换」）：**当前游戏文件夹里有哪几个版本**。
+   *
+   *   真读盘（`versions/*` 的目录 + 各自的版本 JSON），**不看账本、不看网络清单** ——
+   *   这是「版本列表」的数据源：换文件夹 = 换一份游戏数据，列表跟着变。
+   *   账本（实例清单）只用来给这些版本补上"你给它起的名字 / 设置"，
+   *   不再决定"列表里有哪些行"。
+   *
+   * ★ 字段映射**必须显式写**：Rust 侧是 snake_case（`has_json`），而这个接口对外
+   *   承诺的是 camelCase（`hasJson`）。偷懒直接透传的话，`v.hasJson` 会是 `undefined`
+   *   ⇒ 每一份版本都被当成"没有 JSON"，列表一个都不显示 —— 这个坑本轮真踩过一次
+   *   （现象是"后端明明返回了 3 个版本，界面上 0 行"）。
+   */
+  folderVersions: async () => {
+    const raw = await call<
+      Array<{
+        dir: string;
+        id: string;
+        inherits: string;
+        mc_version: string;
+        loader_name: string | null;
+        has_json: boolean;
+      }>
+    >('folder_versions');
+    return raw.map((r) => ({
+      dir: r.dir,
+      id: r.id,
+      inherits: r.inherits,
+      mcVersion: r.mc_version,
+      loaderName: r.loader_name,
+      hasJson: r.has_json,
+    }));
+  },
 };
 
 /**
