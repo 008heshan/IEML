@@ -235,6 +235,48 @@ results.push([
   run('PowerShell 脚本编码', 'node', ['tools/gates/check-ps1-encoding.mjs']),
 ]);
 
+/*
+ * ★★ **密钥类内容不许进被跟踪文件**（2026-09-25 公开化清理新增）。
+ *
+ *   起因是一条真实事故：`net/curseforge.rs` 里内置着一把用户的真实 CurseForge
+ *   API Key，而且它从**初始提交**起就在 git 历史里。它是当初 ADR-052 的**有意取舍**
+ *   （"拿到 exe 就能用"），但**没有任何判据守着它** —— 于是活了 12 天、穿过 20 多轮
+ *   改动，没有一次红过，直到有人为了"转公开"把全部源码与文档通读一遍才发现。
+ *   ★ 教训：**靠人眼通读才能发现的问题，一定会复发。**
+ */
+results.push([
+  '敏感串扫描',
+  run('敏感串扫描', 'node', ['tools/gates/check-secrets.mjs']),
+]);
+
+/*
+ * ★★ **文档里的站内锚点必须存在**（同一天新增）。
+ *
+ *   `DECISIONS.md` 里有个死锚点 `#adr-020主页即当前实例概览`，而 ADR-020 从第一天起
+ *   就叫"加载器识别必须用 libraries 坐标" —— 顺着点会点到空气。
+ *   ★ 这类链接**人手写不对**（GitHub 的锚点规则要从标题算），只能靠机器对。
+ *   ★ 这条门禁自己踩过一次"量法错"：第一版把"空格"写成 JS 的 `\s`，
+ *     而它**包含全角空格**、GitHub 不包含 —— 于是把 12 个**正确**的链接判成死锚点。
+ *     红了先怀疑量法（这个仓库的老规矩）。
+ */
+results.push([
+  '文档锚点自检',
+  run('文档锚点自检', 'node', ['tools/gates/check-doc-anchors.mjs']),
+]);
+
+/*
+ * ★★ **README 说的东西必须真的存在**（同一天新增）。
+ *
+ *   同一次通读里 README 抓到两条用户可见的假话：「换数据根目录要重启才生效」
+ *   （rc.6 起即时生效）、以及三个过期的数字（8.9 MB / 437 项测试 / 760 kB）。
+ *   判据是**会随代码自动更新**的那两条：README 提到的路径必须存在、
+ *   命令必须在 package.json 里；再加几条"已作废机制"的定点禁用短语。
+ */
+results.push([
+  'README 与事实一致',
+  run('README 与事实一致', 'node', ['tools/gates/check-readme-truth.mjs']),
+]);
+
 if (existsSync(join(root, 'src-tauri', 'Cargo.toml'))) {
   results.push([
     'Rust 领域测试（含 Java 判据表）',
