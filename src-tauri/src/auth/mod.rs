@@ -1161,7 +1161,8 @@ mod tests {
     /// 真的 id 一个都不许误伤 —— 误伤的后果是"用户填了真的却被告知是假的"。
     #[test]
     fn real_looking_ids_are_not_flagged() {
-        // 内置的那把（Prism Launcher 公开 id，实测能发设备码）
+        // Prism Launcher 的公开 id（对照用的那个；★ 2026-09-25 更正：这不是"内置的那把"——
+        //   内置的是 `BUILTIN_CLIENT_ID`，即用户自己 Azure 注册的那把）
         assert!(!looks_like_placeholder("c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb"));
         // 官方启动器历史上用过的那把（今天已不存在，但**形状**是真的）
         assert!(!looks_like_placeholder("00000000402b5328"));

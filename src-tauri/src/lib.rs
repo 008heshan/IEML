@@ -394,7 +394,7 @@ pub fn run() {    /*
             commands_real::resource_search,
             /* ★ 取"兼容当前实例的版本"（两个源共用一条命令，ADR-052） */
             commands_real::resource_versions,
-            /* ★★ CurseForge 的 key（内置一把 + 设置页可覆盖，ADR-052） */
+            /* ★★ CurseForge 的 key（2026-09-25 起：**内置那把已清空**；没 key 走国内镜像，照样开箱即用） */
             commands_real::cf_key_status,
             commands_real::cf_set_key,
             commands_real::cf_test_key,

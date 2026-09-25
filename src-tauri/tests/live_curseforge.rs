@@ -15,8 +15,13 @@
 //!   test --manifest-path src-tauri/Cargo.toml --test live_curseforge -- --ignored --nocapture --test-threads=1
 //! ```
 //!
-//! ★ 需要网络。key 用**内置的那把**（`net::curseforge::api_key()`），
-//!   所以不用设环境变量；想用自己的就设 `IEML_CF_API_KEY`。
+//! ★ 需要网络。
+//!
+//! ★★ 2026-09-25（公开化清理）：**内置的那把 key 已经删掉了**，所以这组测试
+//!   现在跑的是"**没有任何凭据**"的那条路 —— 默认走国内镜像
+//!   （`mod.mcimirror.top`，不需要 key）。这正好让它们变成"开箱即用"的判据：
+//!   只要这组全绿，就说明**新装的用户什么都不用填**也能搜到、查到、反查到。
+//!   想验官方那条路（自备 key）就设 `IEML_CF_API_KEY`，那时走官方。
 
 use ieml_lib::domain::resources::ResourceKind;
 use ieml_lib::net::curseforge;
