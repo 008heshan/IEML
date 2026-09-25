@@ -327,6 +327,17 @@ export type Action =
    *   整份启动结果重写，等于把别的数据也当成刚启动。
    */
   | { type: 'machine/set'; machine: MachineInfo }
+  /*
+   * ★★ 2026-09-25（用户：「版本列表的计数不是实时更新的」）：
+   *
+   *   只更新「当前文件夹里有几个版本」这一个数。
+   *
+   *   为什么需要它：这个数现在**决定**版本列表页头、侧栏角标与筛选里的"全部 N" ——
+   *   而它们必须是同一个数。`machine_info` 只在启动与换目录时刷新，
+   *   所以**版本列表页每次真读盘扫完**就把结果推回来（那是唯一知道最新值的地方）。
+   *   ★ 这样一来"装完一个版本，角标还停在旧数"不会发生：装完回到这一页就会刷新。
+   */
+  | { type: 'machine/versionCount'; count: number }
   | { type: 'resource/open'; hit: unknown; kind: string; source?: string }
   | { type: 'resource/close' }
   | {
@@ -412,6 +423,11 @@ export function reducer(state: AppState, action: Action): AppState {
     /* ★ 只换机器信息（换游戏根目录之后要立刻反映新路径），别的一概不动 */
     case 'machine/set':
       return { ...state, machine: action.machine };
+    /* ★ 只换"当前文件夹里有几个版本"（版本列表页扫完推回来；machine 还没到时不动） */
+    case 'machine/versionCount':
+      return state.machine
+        ? { ...state, machine: { ...state.machine, versionCount: action.count } }
+        : state;
     case 'boot/ok':
       return {
         ...state,

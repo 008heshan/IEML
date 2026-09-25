@@ -28,6 +28,8 @@ const KNOWN = path.join(APPDATA, 'IEML', 'known-roots.json');
 const OLD_ROOT = 'D:\\IEML';
 const SANDBOX = path.join(process.env.TEMP ?? '.', 'ieml-pcl-folder');
 const MC = path.join(SANDBOX, '.minecraft');
+/* 一个**空的**文件夹：用来复现"页头 0 个版本、角标却还是 3"那个场景 */
+const EMPTY = path.join(process.env.TEMP ?? '.', 'ieml-empty-folder');
 
 const knownBackup = existsSync(KNOWN) ? readFileSync(KNOWN, 'utf8') : null;
 const forceOldRecord = (why) => {
@@ -53,10 +55,12 @@ mkVersion('fabric-loader-0.19.5-26.2', {
 // ★ 账本里没有的版本 —— 它出现在列表里，就证明"列表来自文件夹，不是账本"
 mkVersion('1.21.4', { id: '1.21.4', mainClass: 'net.minecraft.client.main.Main' });
 
-/* 记账文件摆正 + 把两个文件夹都放进"用过的文件夹"（好在界面上点它们） */
+/* 记账文件摆正 + 把三个文件夹都放进"用过的文件夹"（好在界面上点它们） */
 const was = forceOldRecord('开跑前记账文件不是老根目录');
 if (was) console.log('⚠ ' + was + '\n');
-writeFileSync(KNOWN, JSON.stringify({ roots: [OLD_ROOT, SANDBOX] }, null, 2));
+rmSync(EMPTY, { recursive: true, force: true });
+mkdirSync(path.join(EMPTY, '.minecraft', 'versions'), { recursive: true });
+writeFileSync(KNOWN, JSON.stringify({ roots: [OLD_ROOT, SANDBOX, EMPTY] }, null, 2));
 
 const bodyText = (ev) => ev('document.body.innerText');
 const header = (ev) =>
@@ -115,7 +119,43 @@ console.log(
   '② 不在这个文件夹里的那条（1.12.2）显示了吗=' + ghostShown + '　「错误的版本」分组还在吗=' + groupShown,
 );
 
-/* ---------- ④ 从界面换回 D:\IEML（真实入口 → 会触发前端刷新） ---------- */
+/* ---------- ② 计数三处必须一致（用户：「版本列表的计数不是实时更新的」） ---------- */
+/*
+ * 页头 / 侧栏角标 / 筛选里的"全部 N" 是同一个事实的三个出口。
+ * 以前角标按**账本里的实例数**算，于是换到空文件夹之后出现
+ * 「页头 0 个版本 · 角标 3」这种自相矛盾的画面（用户截图）。
+ */
+const counts = (ev) =>
+  ev(
+    `(() => {
+       const head = (document.querySelector('.page-desc') || {}).innerText || '';
+       const badge = (document.querySelector('.nav-item .nav-badge') || {}).textContent || '';
+       const seg = [...document.querySelectorAll('.seg-item, .segmented button, button')]
+         .map((b) => (b.textContent || '').trim())
+         .find((t) => t.startsWith('全部')) || '';
+       return { head: head.trim(), badge: badge.trim(), seg };
+     })()`,
+  );
+await clickNav(ev, '版本列表');
+await sleep(1200);
+const cnt3 = await counts(ev);
+console.log('② 沙盒文件夹（3 个版本）三处计数：' + JSON.stringify(cnt3));
+
+/* ---------- ③ 换到一个**空文件夹**（正是用户截图那个场景） ---------- */
+await clickNav(ev, '设置');
+await sleep(700);
+await clickByText(ev, 'button', '新建/切换');
+await sleep(800);
+const toEmpty = await clickRowUse(ev, 'ieml-empty-folder');
+await sleep(2500);
+await clickNav(ev, '版本列表');
+await sleep(1500);
+const cnt0 = await counts(ev);
+const emptyTxt = await bodyText(ev);
+const emptyRows = await visibleRows(ev);
+console.log('③ 空文件夹：' + JSON.stringify(cnt0) + '　空状态=' + emptyTxt.includes('这个文件夹里没有可用的版本') + '　列出的行=' + JSON.stringify(emptyRows));
+
+/* ---------- ④ 从界面换回 D:\IEML ---------- */
 await clickNav(ev, '设置');
 await sleep(800);
 await clickByText(ev, 'button', '新建/切换');
@@ -139,29 +179,43 @@ if (shot?.result?.data) {
 
 await app.close();
 rmSync(SANDBOX, { recursive: true, force: true });
+rmSync(EMPTY, { recursive: true, force: true });
 if (knownBackup !== null) writeFileSync(KNOWN, knownBackup);
 const cleanup = forceOldRecord('换回来之后记账文件不对');
 
 /* ---------- 判据 ---------- */
+const headCount = (s) => Number((/(\d+)\s*个版本/.exec(s) ?? [])[1] ?? NaN);
 const c1 = has1214 && hasFabricClaimed && rows.length === 3;
 /* 不在这个文件夹里的**不显示**（账本里那条 1.12.2 既不在行里，也没有"错误的版本"分组） */
 const c2 = ghostShown === false && groupShown === false;
+/* 计数三处一致：沙盒里 3 个版本 ⇒ 页头 3 · 侧栏角标 3 · 筛选"全部 3" */
+const c3 = headCount(cnt3.head) === 3 && cnt3.badge === '3' && cnt3.seg === '全部 3';
+/* 空文件夹 ⇒ 三处都归零（角标不显示 = 不再是 3），且空状态在、一行都不列 */
+const c4 =
+  headCount(cnt0.head) === 0 &&
+  cnt0.badge === '' &&
+  cnt0.seg === '全部 0' &&
+  emptyRows.length === 0 &&
+  emptyTxt.includes('这个文件夹里没有可用的版本');
 /*
- * ③ 的判据要注意：Windows 会返回 **8.3 短路径**（`C:\Users\ADMINI~1\…`），
+ * ⑤ 注意：Windows 会返回 **8.3 短路径**（`C:\Users\ADMINI~1\…`），
  *    所以不能拿长路径做字符串相等 —— 判"提级"这件事本身：
  *    `normalized_from` 必须是 `.minecraft`，而且它的上级就是返回的 `path`。
  */
 const nf = (dotMc?.ok?.normalized_from ?? '').toLowerCase();
 const p = (dotMc?.ok?.path ?? '').toLowerCase();
-const c3 = nf.endsWith('\\.minecraft') && p.length > 3 && nf.startsWith(p);
-const c4 = rows2.length >= 20 && !txt2.includes('错误的版本') && head2.includes(OLD_ROOT);
-const c5 = existsSync(RECORD) && readFileSync(RECORD, 'utf8').trim().toLowerCase() === OLD_ROOT.toLowerCase();
+const c5 = nf.endsWith('\\.minecraft') && p.length > 3 && nf.startsWith(p);
+const c6 = rows2.length >= 20 && !txt2.includes('错误的版本') && head2.includes(OLD_ROOT);
+const c7 =
+  existsSync(RECORD) && readFileSync(RECORD, 'utf8').trim().toLowerCase() === OLD_ROOT.toLowerCase();
 
 console.log('\n===== 判据 =====');
 console.log(`${c1 ? '✓' : '✗'} ① 换到那个文件夹后，列表 = 文件夹里的三份版本（含账本里没有的 1.21.4）`);
 console.log(`${c2 ? '✓' : '✗'} ② 不在这个文件夹里的条目**不显示**（账本原样保留，换回去就回来）`);
-console.log(`${c3 ? '✓' : '✗'} ③ 直接指「.minecraft」会被提到上一级，并且返回里说明了（normalizedFrom）`);
-console.log(`${c4 ? '✓' : '✗'} ④ 从界面换回 D:\\IEML 后，列表当场变成那个文件夹的版本（${rows2.length} 行）、折叠组消失`);
-console.log(`${c5 ? '✓' : '✗'} ⑤ 记账文件最后回到 ${OLD_ROOT}`);
+console.log(`${c3 ? '✓' : '✗'} ③ 计数三处一致（3 个版本时）：页头=${cnt3.head}　角标=${cnt3.badge || '(无)'}　筛选=${cnt3.seg}`);
+console.log(`${c4 ? '✓' : '✗'} ④ 空文件夹时三处都归零：页头=${cnt0.head}　角标=${cnt0.badge || '(无)'}　筛选=${cnt0.seg}`);
+console.log(`${c5 ? '✓' : '✗'} ⑤ 直接指「.minecraft」会被提到上一级，并且返回里说明了（normalized_from）`);
+console.log(`${c6 ? '✓' : '✗'} ⑥ 从界面换回 D:\\IEML 后，列表当场变成那个文件夹的版本（${rows2.length} 行）`);
+console.log(`${c7 ? '✓' : '✗'} ⑦ 记账文件最后回到 ${OLD_ROOT}`);
 if (cleanup) console.log('⚠ ' + cleanup);
-process.exit(c1 && c2 && c3 && c4 && c5 ? 0 : 1);
+process.exit(c1 && c2 && c3 && c4 && c5 && c6 && c7 ? 0 : 1);
