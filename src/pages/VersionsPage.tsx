@@ -661,7 +661,9 @@ export function VersionsPage() {
               >
                 <IconAlert />
                 <span className="ver-group-name">错误的版本（{badRows.length}）</span>
-                <span className="dim">{badOpen ? '收起' : '展开'}</span>
+                <span className="dim">
+                  {badOpen ? '收起' : '文件不在这个文件夹里 · 展开看看'}
+                </span>
               </button>
             );
           }
@@ -1130,47 +1132,15 @@ export function VersionsPage() {
       </div>
 
       {/*
-        ★★ 2026-09-23（用户第 3 条）：「**资源管理器里删除版本，启动器不会同步删除**」。
-        这里把"版本文件已经不在磁盘上"的实情**如实说出来**（而不是等用户点启动才报错），
-        并且**只提示、不替他删条目** —— 他可能只是把版本目录临时搬走。
+        ★★ 2026-09-23（用户第 3 条）：「**资源管理器里删除版本，启动器不会同步删除**」——
+        这条要求本身还在（那些条目一条都没被删），但**表达方式换了**：
+
+        ★★ 2026-09-25（rc.8）：原来这里挂着一条整幅的 Note（「有版本的磁盘文件已经不在了」），
+          rc.7 又在它上面压了一条。现在两条**都去掉** —— 同一件事由
+          「错误的版本（N）」那个折叠组说（组标题就在列表里、还带条数，
+          鼠标停上去有完整解释），列表自己的空状态则负责"这个文件夹里什么都没有"。
+          一页挂三条横幅解释同一件事，正是用户说过的那种"眼花缭乱"。
       */}
-      {/*
-        ★★ 2026-09-25（用户：「换目录后不会自动刷新，我的建议是，点击版本列表就刷新一下，
-          重新读取当前选择的游戏目录」）：
-
-          这一条**必须排在"文件不在了"前面** —— 它解释的正是"为什么下面每一行都在报错"：
-          当前选中的游戏目录里**一个版本都没有**（多半是刚在设置页换到这儿）。
-          没有它，用户看到的是"N 个条目全报错"，只会以为是页面没刷新。
-
-          ★ 判据是**磁盘事实**（`machine.versionCount`，后端数 `<root>/.minecraft/versions`），
-            不是"实例是不是都缺文件" —— 后者分不清"刚换到空目录"和"用户自己把版本删了"，
-            而那两种情况要说不同的话（后者下面那条 Note 已经在说了）。
-      */}
-      {state.machine && state.machine.versionCount === 0 && state.instances.length > 0 ? (
-        <Note
-          tone="warning"
-          icon={<IconAlert />}
-          title="当前游戏目录里还没有版本"
-          actions={
-            <Button size="sm" variant="secondary" onClick={() => go('settings')}>
-              去设置里换目录
-            </Button>
-          }
-        >
-          现在用的是 <span className="mono">{state.machine.dataDir}</span>，里面一个版本文件都没有
-          —— 下面的条目引用的版本在<b>别的目录</b>里。想换回去：设置 → 存储 →「新建/切换…」，
-          旧目录里的东西一个都没动。
-        </Note>
-      ) : null}
-
-      {missingVersionIds.length > 0 ? (
-        <Note tone="warning" icon={<IconAlert />} title="有版本的磁盘文件已经不在了">
-          下面有 <b>{missingVersionIds.length}</b> 个版本引用的游戏文件（
-          <span className="mono">.minecraft/versions/…</span>）在磁盘上找不到了 ——
-          多半是你在资源管理器里删掉或移走了它们。点「启动」会报"找不到版本文件"。 想清理掉这些条目，
-          用每行右边的「⋯ → 删除」；如果只是临时搬走，把它搬回来即可（这里会自动恢复正常）。
-        </Note>
-      ) : null}
 
       {rows.length === 0 ? (
         <EmptyState
