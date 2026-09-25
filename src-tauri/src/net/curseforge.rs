@@ -366,18 +366,47 @@ async fn request_with_fallback(
     match send_once(method.clone(), &primary_url, primary_body, key.as_deref()).await {
         Ok(t) => Ok(t),
         Err(e) => {
+            /*
+             * ★★ 2026-09-25（真机实测逼出来的）：**鉴权类失败也要换镜像**。
+             *
+             *   情况是这么来的：用户配了一把 CurseForge key，它能过鉴权、
+             *   但**没有 mod 数据的权限** —— 实测同一把 key 下：
+             *     `categories` / `minecraft/version` → **200**
+             *     `mods/search` / `mods/{id}` / `mods/{id}/files` → **403**
+             *   而"有 key 就走官方"这条规则会让 403 直接把请求打死
+             *   （403 是"确定的结论"，本来不该换源重试）—— 于是**搜索一路全空**，
+             *   而镜像那条路**根本不需要 key**、本来能给出结果。
+             *
+             *   ⇒ 所以对 CurseForge 这里加一条特例：**401/403 照样试镜像**。
+             *     理由很硬：镜像的鉴权模型与官方不同（它自己解决），
+             *     所以"官方说这把 key 不行"**不构成**"镜像也不行"的证据。
+             *   ★ 这条只在"有 key 且官方拒绝"时才生效；没有 key 时主路本来就是镜像。
+             */
+            let auth_failed = matches!(
+                e,
+                NetError::Status { status: 401 | 403, .. }
+            );
             // ★ 兜底**永远只有镜像这一条**（镜像自己再失败就没有下一步了，不来回弹）。
-            //   这里不要 `next` 那个值 —— 有它在只是为了"官方才有兜底"这个判断。
-            if fallback_route(primary).is_none() {
+            if fallback_route(primary).is_none() && !auth_failed {
                 return Err(e);
             }
             let Some(mirror_url) = mirror else {
                 return Err(NetError::Other(format!("{e}（没有可用的镜像兜底）")));
             };
-            say!("[IEML/curseforge] {primary_url} 失败（{e}），换 {mirror_url} 重试");
+            if auth_failed {
+                say!(
+                    "[IEML/curseforge] 官方用这把 key 拒绝了（{e}）—— 换镜像试试\
+                     （镜像不需要 key，所以「官方不认这把 key」不等于「镜像也不行」）"
+                );
+            } else {
+                say!("[IEML/curseforge] {primary_url} 失败（{e}），换 {mirror_url} 重试");
+            }
             // ★ 换镜像时用 fallback_body —— 指纹那条路两条路的 body 形状不同
+            //   ★ 并且**不再带 key**：镜像自己解决鉴权（实测不带 key 也能用）。
+            //     带上它没有收益，反而多一个"镜像哪天开始校验 x-api-key"的失败点
+            //     —— 而这条兜底存在的全部意义就是"官方那条路不成立时还有一条路"。
             let body = fallback_body.or(primary_body);
-            send_once(method, &mirror_url, body, key.as_deref()).await
+            send_once(method, &mirror_url, body, None).await
         }
     }
 }
