@@ -18,8 +18,11 @@ import { clickNav, invokeOn, killIeml, launch, ps, sleep } from './lib/cdp.mjs';
 
 const EXE = process.argv[2] ?? 'src-tauri/target/debug/ieml.exe';
 
-/* ★ 不替用户关掉他正在用的启动器（同 `live-single-instance-check.mjs` 的规矩） */
-const running = ps('(Get-Process ieml -ErrorAction SilentlyContinue | Measure-Object).Count').trim();
+/* ★ 不替用户关掉他正在用的启动器（同 `live-single-instance-check.mjs` 的规矩）。
+ *   ★ `ps()` 是 **async** 的（`lib/cdp.mjs` 里返回 Promise）—— 漏了 await 的话
+ *     会在 Promise 上调用 `.trim()`，报一句 `trim is not a function`，而这个探针
+ *     就**根本没跑**（"探针自己崩了"和"判据红了"是两件事，别混）。 */
+const running = (await ps('(Get-Process ieml -ErrorAction SilentlyContinue | Measure-Object).Count')).trim();
 if (running && running !== '0') {
   console.error(`有 ${running} 个 ieml 进程在跑 —— 先关掉再跑这个检查（我不替你关）。`);
   process.exit(2);
