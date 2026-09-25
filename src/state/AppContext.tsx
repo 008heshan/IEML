@@ -1368,7 +1368,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ]);
       dispatch({ type: 'machine/set', machine });
       dispatch({ type: 'instances/refresh', instances: instances.instances });
-      say('ok', '已切换游戏根目录（即时生效）', '版本列表、启动、装 Mod 都按新目录走。');
+      /*
+       * ★★ 2026-09-25（用户截图：换目录之后弹了两条提示）：
+       *   「下面的文字只保留『已切换游戏根目录』，文字改成『游戏根目录已切换』」
+       *   ⇒ 标题改成一句干净的陈述，副标题去掉（"版本列表、启动、装 Mod 都按新目录走"
+       *     这件事，进那一页就看得见，不必在提示里再说一遍）。
+       */
+      say('ok', '游戏根目录已切换');
     } catch (e) {
       say('warning', '切换后刷新失败', e instanceof Error ? e.message : String(e));
       return;

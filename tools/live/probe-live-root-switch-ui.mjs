@@ -9,7 +9,7 @@
  * 判据（五条）：
  *   ① 起手：设置页「数据目录」那行是老根目录，启动页有实例（没有空状态）
  *   ② 弹窗里**没有**任何"重启…才生效"的字样，写的是"立刻生效"（老构建上必红）
- *   ③ 点「用这个」之后：toast 说"即时生效"、弹窗自己关掉、
+ *   ③ 点「用这个」之后：toast 说「游戏根目录已切换」、弹窗自己关掉、
  *      **设置页那行当场变成新目录**（同一个文档 —— 页面没被刷过）
  *   ④ 不刷页面切到**版本列表**：这一页当场按新目录说话 ——
  *      空状态写着「这个文件夹里没有可用的版本」+ 新路径，
@@ -34,16 +34,45 @@ const EXE = process.argv[2] ?? 'src-tauri/target/release/ieml.exe';
 const APPDATA = process.env.APPDATA ?? '';
 const RECORD = path.join(APPDATA, 'IEML', 'datadir.txt');
 const KNOWN = path.join(APPDATA, 'IEML', 'known-roots.json');
-const OLD_ROOT = 'D:\\IEML';
-const NEW_ROOT = path.join(process.env.TEMP ?? '.', 'ieml-live-root-ui');
+/*
+ * ★★ 2026-09-25 改：**老根目录也自带**（`<temp>\ieml-live-old`，里面造三个版本，
+ *   正好对上账本里那三个实例）。以前它拿 `D:\IEML` 当老根目录 —— 那台机器上
+ *   版本被用户自己删掉之后，① ④ ⑤ 会红，而代码其实是对的。判据不该依赖
+ *    "这台机器恰好有几份数据"（同 `probe-versions-read-folder.mjs`）。
+ */
+const TMP = process.env.TEMP ?? '.';
+const OLD_ROOT = path.join(TMP, 'ieml-live-old');
+const NEW_ROOT = path.join(TMP, 'ieml-live-root-ui');
 const EMPTY_TEXT = '还没有可启动的版本';
+/** 设置页那行只显示「尾部三段」，所以拿目录名去认它（老根目录现在是探针自带的临时目录） */
+const OLD_TAIL = path.basename(OLD_ROOT);
 
-/* ---------- 全局状态：开跑前摆正 ---------- */
+/* ---------- 全局状态：开跑前摆正，跑完**写回原值** ---------- */
 const knownBackup = existsSync(KNOWN) ? readFileSync(KNOWN, 'utf8') : null;
+const recordBackup = existsSync(RECORD) ? readFileSync(RECORD, 'utf8') : null;
+
+/** 造一个"有版本的老根目录"：三个版本，正好对上账本里那三个实例 */
+const seedOldRoot = () => {
+  rmSync(OLD_ROOT, { recursive: true, force: true });
+  const mk = (dir, json) => {
+    const d = path.join(OLD_ROOT, '.minecraft', 'versions', dir);
+    mkdirSync(d, { recursive: true });
+    writeFileSync(path.join(d, `${dir}.json`), JSON.stringify(json));
+  };
+  mk('26.2', { id: '26.2', mainClass: 'net.minecraft.client.main.Main' });
+  mk('fabric-loader-0.19.5-26.2', {
+    id: 'fabric-loader-0.19.5-26.2',
+    inheritsFrom: '26.2',
+    mainClass: 'net.fabricmc.loader.impl.launch.knot.KnotClient',
+  });
+  mk('1.12.2', { id: '1.12.2', mainClass: 'net.minecraft.client.main.Main' });
+};
+
 const preseed = () => {
   const was = existsSync(RECORD) ? readFileSync(RECORD, 'utf8').trim() : '(没有)';
+  seedOldRoot();
   writeFileSync(RECORD, OLD_ROOT + '\n');
-  // 让弹窗里能列出新目录这一行（弹窗列的是"用过的游戏文件夹"）
+  // 让弹窗里能列出这两个目录（弹窗列的是"用过的游戏文件夹"）
   writeFileSync(KNOWN, JSON.stringify({ roots: [OLD_ROOT, NEW_ROOT] }, null, 2));
   return was;
 };
@@ -51,21 +80,28 @@ const restoreKnown = () => {
   if (knownBackup === null) rmSync(KNOWN, { force: true });
   else writeFileSync(KNOWN, knownBackup);
 };
-/** 记账文件是**全局状态**：跑完要是它没回到老根目录，探针自己擦干净并说出来。
+/** 记账文件是**全局状态**：跑完写回**原值**（不是写回老根目录 —— 那是探针自己造的临时目录）。
  *
- *  ★ 老构建上必然发生：它的"当前根"还在内存里，点「换回来」会被后端当成
- *    「这就是当前的数据目录，没有变化」而拒绝落盘 —— 记录就留在新目录了，
- *    下次启动会真的按新目录起来。 */
-const forceOldRecord = (why) => {
+ *  ★ 老构建上必然发生"没换回来"：它的"当前根"还在内存里，点「换回来」会被后端当成
+ *    「这就是当前的数据目录，没有变化」而拒绝落盘 —— 记录就留在新目录了。 */
+const restoreRecord = (why) => {
   const now = existsSync(RECORD) ? readFileSync(RECORD, 'utf8').trim() : '';
-  if (now.toLowerCase() === OLD_ROOT.toLowerCase()) return '';
-  writeFileSync(RECORD, OLD_ROOT + '\n');
-  return `（探针擦屁股：${why}；记账文件从 ${now} 写回 ${OLD_ROOT}）`;
+  const want = recordBackup === null ? '' : recordBackup.trim();
+  if (recordBackup === null) rmSync(RECORD, { force: true });
+  else writeFileSync(RECORD, recordBackup);
+  return now === want
+    ? ''
+    : `（探针收尾：${why}；记账文件从 ${now || '(没有)'} 写回 ${want || '(删掉)'}）`;
+};
+const cleanupAll = (why) => {
+  const note = restoreRecord(why);
+  for (const d of [OLD_ROOT, NEW_ROOT]) rmSync(d, { recursive: true, force: true });
+  return note;
 };
 
 const was = preseed();
 if (was.toLowerCase() !== OLD_ROOT.toLowerCase()) {
-  console.log(`⚠ 开跑前记账文件是 ${was}，已摆正为 ${OLD_ROOT}\n`);
+  console.log(`⚠ 开跑前记账文件是 ${was}，已摆正为自带的 ${OLD_ROOT}\n`);
 }
 
 /* 新根目录：只有空壳（没有 .minecraft/versions，也没有账本） */
@@ -127,7 +163,11 @@ await clickNav(ev, '设置');
 await sleep(600);
 const setTxt0 = await bodyText(ev);
 const dirRow0 = await ev(
-  '(() => { const h = [...document.querySelectorAll(".field-hint")].find((x) => (x.getAttribute("title")||"").includes("IEML")); return h ? (h.getAttribute("title")||"") : "(没找到那一行)"; })()',
+  `(() => {
+     const h = [...document.querySelectorAll('.field-hint')]
+       .find((x) => (x.getAttribute('title') || '').includes(${JSON.stringify(OLD_TAIL)}));
+     return h ? (h.getAttribute('title') || '') : '(没找到那一行)';
+   })()`,
 );
 await clickNav(ev, '启动');
 await sleep(600);
@@ -186,6 +226,18 @@ console.log(
     mid.hint,
 );
 
+/* ★ 2026-09-25（用户：「上面的那个不要；下面只留『游戏根目录已切换』」）：
+   在"刚换完、提示还在屏幕上"这一刻留一张图，给人眼核对是不是只剩一条。 */
+try {
+  const shotNow = await send('Page.captureScreenshot', { format: 'png' });
+  if (shotNow?.result?.data) {
+    writeFileSync('tmp/switch-toast.png', Buffer.from(shotNow.result.data, 'base64'));
+    console.log('   截图已写：tmp/switch-toast.png');
+  }
+} catch {
+  /* 截图失败不影响判据 */
+}
+
 /* ---------- ④ 不刷页面切到版本列表 ---------- */
 /*
  * ★ 判据不是"实例没了"：账本（`instances.json`）住在**启动器自己的家**里
@@ -196,10 +248,14 @@ await clickNav(ev, '版本列表');
 await sleep(1200);
 const verTxt = await bodyText(ev);
 const note = await noVersionNote(ev);
+/* ★ 空状态里**没有**路径了（用户要求删掉那段描述），路径现在在**页头**：读它来断言 */
+const pageDesc = await ev(
+  `(() => { const el = document.querySelector('.page-desc'); return el ? el.innerText : ''; })()`,
+);
 const after = {
   /* rc.8 起：这件事由列表自己的空状态说（不再是顶部那条横幅） */
   empty: verTxt.includes('这个文件夹里没有可用的版本'),
-  emptyPath: note.includes(NEW_ROOT),
+  emptyPath: pageDesc.includes(NEW_ROOT),
   /*
    * 账本里那 3 条对不上这个空文件夹 ⇒ **一条都不显示**（2026-09-25 晚用户：
    * 「既然不在这个文件夹就不用显示了」）。列表里连一个 `.ver-item` 都不该有。
@@ -234,7 +290,7 @@ await clickNav(ev, '设置');
 await sleep(600);
 await clickByText(ev, 'button', '新建/切换');
 await sleep(700);
-const backClick = await clickRowUse(ev, 'D:\\IEML');
+const backClick = await clickRowUse(ev, 'ieml-live-old');
 console.log('   点老目录那行的「用这个」：' + JSON.stringify(backClick));
 await sleep(2500);
 await clickNav(ev, '版本列表');
@@ -269,7 +325,7 @@ console.log(
 await app.close();
 rmSync(NEW_ROOT, { recursive: true, force: true });
 restoreKnown();
-const cleanup = forceOldRecord('应用自己没能把记账文件换回来');
+const cleanup = cleanupAll('把记账文件换回探针开跑前的原值');
 
 /* ---------- 判据 ---------- */
 const c1 =
@@ -278,7 +334,7 @@ const c1 =
   before.empty === false;
 const c2 = opened.ok === true && saysLive === true && saysRestart === false;
 const c3 =
-  mid.toast.includes('即时生效') &&
+  mid.toast.includes('游戏根目录已切换') &&
   mid.modal === false &&
   mid.sameDoc === true &&
   mid.dataDir.toLowerCase() === NEW_ROOT.toLowerCase() &&
@@ -299,7 +355,7 @@ const c5 =
 console.log('\n===== 判据 =====');
 console.log(`${c1 ? '✓' : '✗'} ① 起手是老根目录 ${OLD_ROOT}（设置页那行 + machine_info），启动页有实例`);
 console.log(`${c2 ? '✓' : '✗'} ② 弹窗写着「立刻生效」，没有「重启才生效」（老构建在这里红）`);
-console.log(`${c3 ? '✓' : '✗'} ③ 界面上点一下就换了：toast 说即时生效、弹窗自动关、设置页那行当场变新目录（页面没刷）`);
+console.log(`${c3 ? '✓' : '✗'} ③ 界面上点一下就换了：toast 说「游戏根目录已切换」、弹窗自动关、设置页那行当场变新目录（页面没刷）`);
 console.log(`${c4 ? '✓' : '✗'} ④ 版本列表当场按**新目录**说话：空状态写着新路径，账本那 3 条一条都不显示`);
 console.log(`${c5 ? '✓' : '✗'} ⑤ 从界面换回来：空状态消失、条目回来、版本数 > 0、machine_info 与记账文件都回到 ${OLD_ROOT}`);
 if (cleanup) console.log('⚠ ' + cleanup);
