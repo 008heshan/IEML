@@ -291,6 +291,19 @@ results.push([
   run('仓库根布局', 'node', ['tools/gates/check-repo-root.mjs']),
 ]);
 
+/*
+ * ★★ **发布的仓 == 客户端读的仓**（2026-09-26 两仓合并那一轮新增）。
+ *
+ *   更新链路上有三处各自独立的地址：客户端读的（`tauri.conf.json`，**编进 exe**）、
+ *   发布发的（`publish-cnb.mjs` 的 `REPO`）、自检验的（`verify-endpoint.mjs`）。
+ *   它们不一致时的表现是最难查的一种：**发布报成功、自检也绿，而用户永远收不到更新**
+ *   —— 没有任何一处会报错。这个仓库吃过同族的亏（beta.49「发布失败而我没发现」）。
+ */
+results.push([
+  '更新链路端点一致',
+  run('更新链路端点一致', 'node', ['tools/gates/check-update-endpoint.mjs']),
+]);
+
 if (existsSync(join(root, 'src-tauri', 'Cargo.toml'))) {
   results.push([
     'Rust 领域测试（含 Java 判据表）',

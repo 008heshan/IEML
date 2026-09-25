@@ -13,8 +13,15 @@
 import { createHash, createPublicKey, verify as edVerify } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
 
+/*
+ * ★★ 2026-09-26：**代码仓与发布仓合并了**（用户要求：CNB 的代码仓直接当分发仓）。
+ *   以前这里是 `IEML_Official/IEML-releases`（单独的公开仓）—— 那条理由（代码仓是私密的、
+ *   而更新端点必须匿名可访问）随着两个仓都转公开而消失。
+ *   ★ 桥接期注意：**已装的旧客户端读的仍是旧发布仓**，它们要等一次"桥接发布"
+ *   （`publish-cnb.mjs --bridge`）才会跟过来。
+ */
 const ENDPOINT =
-  'https://cnb.cool/IEML_Official/IEML-releases/-/releases/download/latest/latest.json';
+  'https://cnb.cool/IEML_Official/IEML/-/releases/download/latest/latest.json';
 const problems = [];
 const ok = [];
 

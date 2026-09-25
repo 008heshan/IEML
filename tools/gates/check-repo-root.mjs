@@ -82,14 +82,30 @@ for (const e of entries) {
   bad.push({ name: e.name, size, hint });
 }
 
-// tmp/ 允许存在，但**必须是空的或只有 gitignore 的东西**（它是"临时"，不是"堆放处"）
+/*
+ * tmp/ 允许存在，但**内容必须能说清来历**。
+ *
+ * ★ 2026-09-26 校准过一次：一开始写的是"tmp 必须是空的"，结果**发布完就红**——
+ *   因为 `node tools/release/publish-cnb.mjs` 会写 `tmp/latest.json`，
+ *   而 `verify-manifest.mjs` 又要读它（这是发布流程的必需中间物，不是垃圾）。
+ *   判据太松会把垃圾放过去，太紧则会逼人绕过门禁 —— 所以取"白名单内容"：
+ *   只放行发布流程明确会写的那个文件，其余一律报出来（跑完就该清掉）。
+ */
+const TMP_ALLOWED = new Set(['latest.json']);
 if (existsSync('tmp')) {
-  const junk = readdirSync('tmp', { withFileTypes: true }).filter((e) => !e.name.startsWith('.'));
+  const junk = readdirSync('tmp', { withFileTypes: true })
+    .filter((e) => !e.name.startsWith('.') && !TMP_ALLOWED.has(e.name));
   if (junk.length > 0) {
     bad.push({
       name: 'tmp/',
       size: `(${junk.length} 个条目)`,
-      hint: '临时目录里有东西 —— 跑完就该清掉（或者用 gitignore 的路径）',
+      hint:
+        '临时目录里有不该留的东西（只放行发布流程写的 latest.json）—— ' +
+        '跑完就该清掉：' +
+        junk
+          .slice(0, 6)
+          .map((e) => e.name)
+          .join('、'),
     });
   }
 }
