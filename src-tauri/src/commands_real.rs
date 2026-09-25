@@ -867,7 +867,11 @@ pub fn cf_key_status() -> CfKeyStatus {
     }
 }
 
-/// 保存一把自己的 key（空串 = 删掉，回到内置的那把）
+/// 保存一把自己的 key（空串 = 删掉覆盖值）。
+///
+/// ★ 2026-09-25：**"回到内置的那把"这句话不再成立** —— 内置 key 已为公开化清空
+///   （见 `net/curseforge.rs` 的 `BUILTIN_API_KEY`）。现在清空覆盖值 = 回到
+///   "没有 key"那条路，也就是**走国内镜像**（照样开箱即用）。
 #[tauri::command]
 pub fn cf_set_key(key: String, state: State<'_, AppState>) -> Result<CfKeyStatus, String> {
     crate::net::curseforge::save_api_key(&state.paths(), &key)

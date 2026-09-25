@@ -782,7 +782,7 @@ export const modrinth = {
       source: opts.source ?? 'modrinth',
     }),
 
-  /* ---------- CurseForge 的 key（内置一把） ---------- */
+  /* ---------- CurseForge 的 key（2026-09-25 起：**内置那把已清空**） ---------- */
 
   /**
    * 当前 key 的状态（**它从哪来的**会如实说明）。
@@ -793,10 +793,16 @@ export const modrinth = {
    *   （留着是给"以后要把入口加回来"用的），但**现在没有任何 tsx 调它们** ——
    *   全仓库 grep `cfKeyStatus` / `cfSetKey` / `cfTestKey` 在 `.tsx` 里是 0 命中。
    *   写注释就得写当下的事实，不然下一个人会照着一个不存在的入口去改。
+   *
+   * ★★ 2026-09-25（公开化清理）：**内置的那把 key 也清掉了**（见
+   *   `docs/CLEANUP-PLAN-2026-09-25.md`：它从初始提交起就在 git 历史里，
+   *   而仓库要转公开）。所以现在是"**想要 CurseForge 就得自备 key**"，
+   *   而界面没有入口 ⇒ 用户实际只有两条路：换成 Modrinth，或设环境变量
+   *   `IEML_CF_API_KEY`。后端那句提示已按这个事实改过（别再指"设置页里填"）。
    */
   cfKeyStatus: () => call<CfKeyStatus>('cf_key_status'),
 
-  /** 保存一把自己的 key（空串 = 删除，回到内置的那把）—— 界面暂无入口，见上 */
+  /** 保存一把自己的 key（空串 = 删除）—— 界面暂无入口，见上 */
   cfSetKey: (key: string) => call<CfKeyStatus>('cf_set_key', { key }),
 
   /** ★ 真打一次接口验证（不是"看起来对"）—— 界面暂无入口，见上 */

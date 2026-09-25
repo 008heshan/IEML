@@ -4,7 +4,7 @@
 
 **当前版本：`0.1.0-rc.8`** — 改动见 [`CHANGELOG.md`](CHANGELOG.md)。
 
-真实可运行的桌面应用，437 项 Rust 测试 + 前端测试，真实下载和真实启动都跑通过。
+真实可运行的桌面应用，465 项 Rust 测试 + 前端测试，真实下载和真实启动都跑通过。
 
 ## 快速开始
 
@@ -32,7 +32,7 @@ pnpm desktop:build
 
 ## 为什么做这个
 
-Tauri 2 + Rust + React 18。不打包 Chromium，裸 exe 8.9 MB，NSIS 安装包 3.4 MB，Rust 主进程内存 30.5 MB。
+Tauri 2 + Rust + React 18。不打包 Chromium，裸 exe 9.1 MB，NSIS 安装包 3.4 MB，Rust 主进程内存 30.5 MB。
 
 数据目录默认不放在系统盘，按空闲空间挑盘。游戏数据放在 `.minecraft`，实例隔离在 `instances/<名字>/game/`。
 
@@ -73,14 +73,17 @@ UI（React）  →  桥接（一个接口两套实现）  →  领域层（TS �
   （实测：TUNA 403、NJU / BFSU / SJTU / ZJU / PKU / 阿里 404、USTC 反爬、
   BMCLAPI 302 到 Cloudflare）。所以网络不好时这一步会失败；
   失败不影响已有 Java：设置页能看到本机扫到的 Java（8 / 21 / 25 …），也可以手动指定路径。
-- **CurseForge 需要一把可用的 API Key**。程序内置一把（拿到 exe 就能用）；
-  界面里没有填写入口（设置页那一栏当初按用户要求删掉了）。
+- **CurseForge 的资源走国内镜像**（`mod.mcimirror.top`）—— 那条路**不需要 API Key**，
+  所以拿到 exe 就能用，什么都不用填。
+  代价说清楚：它是个第三方镜像，哪天它挂了，CurseForge 这一路就得等它回来；
+  Modrinth 不受影响。★ 如果你自己有 CurseForge 的 API Key，设环境变量
+  `IEML_CF_API_KEY` 就会改走官方接口（界面里没有填写入口，那一栏当初按用户要求删掉了）。
 - **换数据根目录只切换、不迁移**：新目录是空的，旧目录里的版本 / 存档 / Mod
-  一个字节都不动，但**要重启启动器才生效**（界面上会挂"重启后生效"的角标）。
+  一个字节都不动。换完**立刻生效**（不用重启，界面当场刷新）。
 
 ## 技术栈
 
-Rust · Tauri 2 · React 18 · TypeScript · Vite · 手写 CSS（无 UI 框架，前端产物约 760 kB）
+Rust · Tauri 2 · React 18 · TypeScript · Vite · 手写 CSS（无 UI 框架，前端产物约 858 kB）
 
 ## 许可
 

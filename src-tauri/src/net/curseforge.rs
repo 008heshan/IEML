@@ -17,11 +17,11 @@
 //! | 下载地址 | API 给的 `edge.forgecdn.net` 在**本机时好时坏**（200 / 连接失败 / 404 都见过）；`mediafilez.forgecdn.net` 与 `mod.mcimirror.top/files/…` **两次都通** → 见 `download_candidates` |
 //! | API 兜底 | `api.curseforge.com` 本机**间歇性连接超时**（10s）；`mod.mcimirror.top/curseforge/v1/…` 稳定且**不需要 key** |
 //!
-//! ## key 从哪来（按用户选的方案：内置 + 可覆盖）
+//! ## key 从哪来
 //!
 //!   优先级：**设置里填的 > 环境变量 `IEML_CF_API_KEY` > 内置**。
-//!   内置值让"拿到 exe 就能用"成立（PCL / HMCL 也是这么做的，见 ADR-052 的取舍记录）；
-//!   想换成自己的 key 就在设置页填一次，它会落盘覆盖内置值。
+//!   ★ 2026-09-25：**内置那把已清空**（仓库转公开，见 `BUILTIN_API_KEY` 的注释）——
+//!   所以现在是"用户自备 key 才能用 CurseForge"，界面上也照实说这件事。
 //!
 //! ★ 一条纪律：**任何"没配 key"的判断都要基于 `api_key()`**，
 //!   不要在别处再写一份"有没有 key"的逻辑（那种两份判据迟早打架）。
@@ -37,11 +37,22 @@ use std::sync::RwLock;
 
 /* ====================== key 管理 ====================== */
 
-/// ★ 内置 key（用户提供）。
+/// ★★ **内置 key 已于 2026-09-25 清空**（公开化清理，见 `docs/CLEANUP-PLAN-2026-09-25.md`）。
 ///
-/// 取舍写在 ADR-052 里：好处是"拿到就能用"，代价是这个 key 留在了源码树里
-/// （它可随时被撤销，且只对该 user 的额度生效）。要换成自己的：
-/// 设置页填一次，或设环境变量 `IEML_CF_API_KEY`。
+/// 历史：ADR-052（dev.13）按"开箱即用"的取舍内置过一把 key —— 用户提供的、
+/// **只对他自己的 CurseForge 账号额度生效**。代价当时也如实写进了 ADR-052：
+/// 它留在源码树里、随时可被撤销。
+///
+/// 现在为什么必须清掉：仓库要转公开。那把 key 从**初始提交 `f71c91c`** 起就在
+/// git 历史里，而公开后任何人都能 `git log -p` 翻出来 —— 那就是一份真泄露。
+/// 处置是两步，缺一不可：① 用户去 `console.curseforge.com` 吊销/轮换它；
+/// ② 这个常量清空 + 重写 git 历史。
+///
+/// ★ 清空之后，CurseForge 相关功能**仍然可用**，只是需要用户自备 key：
+/// 优先级链（设置里填的 > 环境变量 `IEML_CF_API_KEY` > 内置）**一个字都没改**，
+/// 没有 key 时的提示也是一句可行动的话（见 `require_key`）。
+/// ★ 另外 `api.curseforge.com` 在本机本来就**间歇性超时**，而
+/// `mod.mcimirror.top/curseforge/v1/…` 稳定且**不需要 key** —— 兜底路径还在。
 const BUILTIN_API_KEY: &str = "";
 
 /// 运行期覆盖值（设置页 / 启动参数注入）
@@ -129,14 +140,15 @@ pub fn load_api_key_from_disk(paths: &crate::platform::AppPaths) {
         if !first.is_empty() {
             set_api_key(&first);
             say!(
-                "[IEML/curseforge] 已载入你填的 CurseForge API Key（{}…）—— 它会覆盖内置的那把",
+                "[IEML/curseforge] 已载入你填的 CurseForge API Key（{}…）",
                 &first[..first.len().min(6)]
             );
         }
     }
 }
 
-/// 保存并立即生效（设置页调用）。空串 = 删掉覆盖值，回到内置 key。
+/// 保存并立即生效（设置页调用）。空串 = 删掉覆盖值，回到环境变量 / 内置
+/// （★ 2026-09-25：内置已清空 ⇒ 两者都没有时就是"没有 key"，那条路走国内镜像）。
 pub fn save_api_key(paths: &crate::platform::AppPaths, key: &str) -> Result<()> {
     let trimmed = key.trim().to_string();
     if trimmed.is_empty() {
@@ -259,21 +271,147 @@ pub fn loaders_of(game_versions: &[String]) -> Vec<String> {
         .collect()
 }
 
-/* ====================== 请求（官方优先，镜像兜底） ====================== */
+/* ====================== 请求 ======================
+ *
+ * ★★ 2026-09-25（公开化清理）——**这一段的形状变了，先读懂再改**：
+ *
+ *   以前是"官方（带 key）为主，镜像兜底"，而 key 是**内置在源码里**的。
+ *   仓库要转公开 ⇒ 内置凭据必须消失（它从初始提交起就在 git 历史里）。
+ *   但"**开箱即用**"是用户明确的产品要求（"用户根本就不会填"）——
+ *   所以不能简单地把 key 删掉让用户自己想办法。
+ *
+ *   实测得到的解法（`tools/probe/probe-cf-mirror-keyless.mjs`，5/5 通过）：
+ *   `mod.mcimirror.top` 在**不带任何 key** 的前提下就能提供搜索 / 文件列表 /
+ *   项目详情 / 分类 / **指纹反查**，返回形状与官方一致。而且 `mirror.rs`
+ *   早就把 CurseForge 排成"**国内 mcimirror 首选、官方兜底**"了。
+ *
+ *   ⇒ 于是默认路径**不需要 key**：
+ *     · 用户**没**自备 key → 走镜像（开箱即用，仓库里没有任何凭据）
+ *     · 用户**自备**了 key（设置页 / `IEML_CF_API_KEY`）→ 走官方（更稳、更尊重他的配额），
+ *       失败再退镜像
+ *
+ *   ★★ 一个必须记住的**形状差异**（两个方向都实测过，见下面那两条函数注释）：
+ *     指纹反查的请求体在两条路上**正好相反**：
+ *       · 官方：`{ "fingerprints": [ 123 ] }`（**裸整数**）
+ *       · 镜像：`{ "fingerprints": [ { "fingerprint": 123 } ] }`（对象数组）
+ *     发错方向两边都是 400。以前镜像兜底时直接复用官方的 body ⇒
+ *     **那条兜底等于没有**（必然 400），而没有任何判据能发现。
+ */
 
-/// 带 key 的 GET。**官方不通时换 mcimirror**（它不需要 key 也能用）。
-///
-/// 复用 `net::get_text_with_headers` 的三段式超时与 429 退避 ——
-/// 那套逻辑只写一份（ADR-051）。
-async fn api_text(path_and_query: &str) -> Result<String> {
-    let url = format!("{API}{path_and_query}");
-    let Some(key) = api_key() else {
-        return Err(NetError::Other(
-            "没有 CurseForge API Key —— 到「设置 → 下载」里填一个（或设环境变量 IEML_CF_API_KEY）。"
-                .to_string(),
-        ));
+/// 一次请求走哪条路 —— 与"怎么拼 URL / 要不要带 key"绑定在一起，
+/// 免得出现"URL 是镜像的、头里还带着 key"这种自相矛盾的组合。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Route {
+    /// 默认：国内镜像，**不带 key**（开箱即用的那条路）
+    MirrorNoKey,
+    /// 用户自备了 key：走官方，带上它
+    OfficialWithKey,
+    /// 自备了 key 但官方不通：退回镜像（镜像不需要 key）
+    MirrorWithKey,
+}
+
+impl Route {
+    fn is_mirror(self) -> bool {
+        matches!(self, Route::MirrorNoKey | Route::MirrorWithKey)
+    }
+}
+
+impl std::fmt::Display for Route {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Route::MirrorNoKey => "镜像(无需 key)",
+            Route::OfficialWithKey => "官方(自备 key)",
+            Route::MirrorWithKey => "镜像(官方不通，自备 key 未用上)",
+        })
+    }
+}
+
+/// 主路：有自备 key 走官方，否则走镜像。**内置 key 已清空，所以"没有 key"是常态。**
+fn primary_route() -> Route {
+    if api_key().is_some() {
+        Route::OfficialWithKey
+    } else {
+        Route::MirrorNoKey
+    }
+}
+
+/// 兜底路：换另一条（官方 ↔ 镜像）。已经是镜像时**没有兜底**（不来回弹）。
+fn fallback_route(current: Route) -> Option<Route> {
+    match current {
+        Route::OfficialWithKey => Some(Route::MirrorWithKey),
+        Route::MirrorNoKey | Route::MirrorWithKey => None,
+    }
+}
+
+/// 主路失败之后换兜底路 —— 一次网络请求。**这是 GET 与 POST 共用的那一份**（ADR-051：
+/// 判据只能有一份；以前 GET 走 `get_text_third_party`、POST 自己手写一遍，于是 POST 那半
+/// 就漏掉了"镜像要裸整数"这个形状差异）。
+async fn request_with_fallback(
+    method: reqwest::Method,
+    path_and_query: &str,
+    primary_body: Option<&str>,
+    fallback_body: Option<&str>,
+) -> Result<String> {
+    let official = format!("{API}{path_and_query}");
+    let mirror = mirror::mcimirror_url(&official);
+
+    let primary = primary_route();
+    let primary_url = if primary.is_mirror() {
+        mirror.clone().unwrap_or_else(|| official.clone())
+    } else {
+        official.clone()
     };
-    super::get_text_third_party_with_headers(&url, &[("x-api-key", key.as_str())]).await
+    let key = api_key();
+
+    match send_once(method.clone(), &primary_url, primary_body, key.as_deref()).await {
+        Ok(t) => Ok(t),
+        Err(e) => {
+            // ★ 兜底**永远只有镜像这一条**（镜像自己再失败就没有下一步了，不来回弹）。
+            //   这里不要 `next` 那个值 —— 有它在只是为了"官方才有兜底"这个判断。
+            if fallback_route(primary).is_none() {
+                return Err(e);
+            }
+            let Some(mirror_url) = mirror else {
+                return Err(NetError::Other(format!("{e}（没有可用的镜像兜底）")));
+            };
+            say!("[IEML/curseforge] {primary_url} 失败（{e}），换 {mirror_url} 重试");
+            // ★ 换镜像时用 fallback_body —— 指纹那条路两条路的 body 形状不同
+            let body = fallback_body.or(primary_body);
+            send_once(method, &mirror_url, body, key.as_deref()).await
+        }
+    }
+}
+
+async fn send_once(
+    method: reqwest::Method,
+    url: &str,
+    body: Option<&str>,
+    key: Option<&str>,
+) -> Result<String> {
+    let mut req = api_client().request(method, url);
+    if let Some(k) = key {
+        req = req.header("x-api-key", k);
+    }
+    if let Some(b) = body {
+        req = req
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(b.to_string());
+    }
+    let resp = req.send().await?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(NetError::Status {
+            status: status.as_u16(),
+            url: url.to_string(),
+        });
+    }
+    Ok(text)
+}
+
+/// 不带请求体的取（搜索 / 文件列表 / 详情 / 分类都走它）。
+async fn api_text(path_and_query: &str) -> Result<String> {
+    request_with_fallback(reqwest::Method::GET, path_and_query, None, None).await
 }
 
 async fn api_json<T: serde::de::DeserializeOwned>(path_and_query: &str) -> Result<T> {
@@ -285,49 +423,24 @@ async fn api_json<T: serde::de::DeserializeOwned>(path_and_query: &str) -> Resul
     })
 }
 
-/// POST 一次（官方或镜像）。抽成独立函数而不是闭包：
-/// 闭包会把 `key` 借进返回的 future，调用两次时借用检查过不去。
-async fn post_once(target: &str, payload: &str, key: &str) -> Result<String> {
-    let resp = api_client()
-        .post(target)
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .header("x-api-key", key)
-        .body(payload.to_string())
-        .send()
-        .await?;
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
-    if !status.is_success() {
-        return Err(NetError::Status {
-            status: status.as_u16(),
-            url: target.to_string(),
-        });
-    }
-    Ok(text)
-}
-
-/// POST JSON（指纹反查用）。同样官方优先、镜像兜底。
-async fn api_post_json<B: serde::Serialize, T: serde::de::DeserializeOwned>(
+/// POST JSON。**主路与兜底路的请求体可以不同**（指纹那条路就是：
+/// 官方要裸整数、镜像要对象数组）—— 这就是 `fallback_body` 存在的理由。
+async fn api_post_json<B: serde::Serialize, FB: serde::Serialize, T: serde::de::DeserializeOwned>(
     path: &str,
     body: &B,
+    fallback_body: &FB,
 ) -> Result<T> {
-    let url = format!("{API}{path}");
-    let Some(key) = api_key() else {
-        return Err(NetError::Other("没有 CurseForge API Key".to_string()));
-    };
     let payload = serde_json::to_string(body)
         .map_err(|e| NetError::Other(format!("序列化请求失败：{e}")))?;
-
-    let text = match post_once(&url, &payload, &key).await {
-        Ok(t) => t,
-        Err(e) => {
-            // 4xx 是确定的结论，换镜像也一样；其余（超时/5xx/被墙）换镜像再试
-            let mirror_url = mirror::mcimirror_url(&url)
-                .ok_or_else(|| NetError::Other(format!("{e}（没有可用的镜像兜底）")))?;
-            say!("[IEML/curseforge] POST {url} 失败（{e}），换 mcimirror 重试");
-            post_once(&mirror_url, &payload, &key).await?
-        }
-    };
+    let payload_mirror = serde_json::to_string(fallback_body)
+        .map_err(|e| NetError::Other(format!("序列化请求失败：{e}")))?;
+    let text = request_with_fallback(
+        reqwest::Method::POST,
+        path,
+        Some(&payload),
+        Some(&payload_mirror),
+    )
+    .await?;
     serde_json::from_str(&text)
         .map_err(|e| NetError::Other(format!("解析 CurseForge 响应失败：{e}")))
 }
@@ -801,9 +914,48 @@ struct CfFingerprintHit {
     file: Option<CfFile>,
 }
 
+/// 官方要的形状：**裸整数数组** `{ "fingerprints": [123, …] }`。
+///
+/// ★★ 2026-09-25 实测（带真 key 打官方，见下方的形状测试）：
+///   · `{"fingerprints":[123]}` → **HTTP 200** ✓
+///   · `{"fingerprints":[{"fingerprint":123}]}` → **HTTP 400**
+///     `The JSON value could not be converted to System.UInt32`
+///   ⇒ 官方要的是**裸整数**。（这一条以前被注释写反过，害得我以为兜底失败是它引起的。）
 #[derive(Debug, Serialize)]
 struct CfFingerprintBody<'a> {
     fingerprints: &'a [u32],
+}
+
+/// ★ 镜像要的形状：**对象数组** `{ "fingerprints": [ { "fingerprint": 123 } ] }`。
+///
+/// ★★ 同一次实测：镜像上这两个形状**正好反过来** ——
+///   裸整数 → 400 `invalid type: map, expected i64`；对象数组 → **200** ✓。
+///   所以"官方不通就换镜像"这条兜底**必须换一份 body**，否则必然 400
+///   （这就是 2026-09-25 修掉的那个真缺陷）。
+///
+/// ★★ 这里**必须显式声明那层包装**：写成 `fingerprints: &[u32]` 序列化出来还是
+///   `[123]`（裸整数），与官方那份**一模一样** —— 等于没换 body。
+///   第一版就是这么写的，被下面那条形状测试当场抓住。
+#[derive(Debug, Serialize)]
+struct CfFingerprintBodyForMirror<'a> {
+    fingerprints: Vec<CfFingerprintEntry<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct CfFingerprintEntry<'a> {
+    fingerprint: &'a u32,
+}
+
+impl<'a> CfFingerprintBodyForMirror<'a> {
+    /// 把一批指纹包成镜像要的那种形状（每一层都是实测出来的，别省）
+    fn new(chunk: &'a [u32]) -> Self {
+        Self {
+            fingerprints: chunk
+                .iter()
+                .map(|fp| CfFingerprintEntry { fingerprint: fp })
+                .collect(),
+        }
+    }
 }
 
 /// 按指纹批量反查（**这是"Mod 有没有更新"的真实机制**，Modrinth 那边用 SHA1）。
@@ -828,8 +980,17 @@ pub async fn match_fingerprints(fps: &[u32]) -> Result<HashMap<u32, FingerprintM
     // 接口一次最多 1000 个；按 100 一批（Mod 数量级够用，也省额度）
     let mut out = HashMap::new();
     for chunk in fps.chunks(100) {
+        /*
+         * ★★ 两条路的请求体**形状不同**（2026-09-25 实测，两个方向都验过）：
+         *   · 官方：`{ "fingerprints": [123, …] }`（裸整数）→ 200
+         *   · 镜像：`{ "fingerprints": [ { "fingerprint": 123 } ] }`（对象数组）→ 200
+         *   各自发对方的形状都是 400。以前兜底时复用了官方那份 ⇒
+         *   **"官方不通就换镜像"这条兜底 100% 失败**，而没有任何判据能发现。
+         */
         let body = CfFingerprintBody { fingerprints: chunk };
-        let resp: CfOne<CfFingerprintData> = api_post_json("/fingerprints", &body).await?;
+        let body_bare = CfFingerprintBodyForMirror::new(chunk);
+        let resp: CfOne<CfFingerprintData> =
+            api_post_json("/fingerprints", &body, &body_bare).await?;
         for (i, hit) in resp.data.exact_matches.into_iter().enumerate() {
             let Some(file) = hit.file else { continue };
             let Some(fp) = resp.data.exact_fingerprints.get(i).copied() else {
@@ -1142,20 +1303,76 @@ mod tests {
 
     #[test]
     fn key_priority_settings_over_env_over_builtin() {
-        // 内置值存在（用户选的方案：开箱即用）
-        assert!(!BUILTIN_API_KEY.trim().is_empty(), "内置 key 不该是空的");
-        // 默认（没有覆盖、环境变量也可能没有）→ 至少能拿到内置值
+        /*
+         * ★ 2026-09-25（公开化清理）：内置值**已清空**，所以这条测试不再假设"一定有 key"。
+         *   判据改成"跟着事实走"：内置为空 ⇒ `api_key()` 必须是 `None`（一个都没有就不该发请求）；
+         *   内置非空 ⇒ 必须拿得到它。这样以后谁再决定内置一把，这条测试也不会假绿。
+         */
         set_api_key("");
-        let k = api_key().expect("内置 key 应当生效");
-        assert!(k.starts_with("$2a$10$"), "拿到的不是这把 key：{k:.10}");
+        let builtin = BUILTIN_API_KEY.trim();
+        match api_key() {
+            Some(k) => {
+                assert!(!builtin.is_empty(), "没有内置 key 却拿到了一个：{k:.10}");
+                assert!(k.starts_with("$2a$10$"), "拿到的不是这把 key：{k:.10}");
+            }
+            None => {
+                assert!(builtin.is_empty(), "内置 key 非空，`api_key()` 不该返回 None");
+                assert!(
+                    std::env::var(KEY_ENV).map(|v| v.trim().is_empty()).unwrap_or(true),
+                    "环境变量里有 key，`api_key()` 不该返回 None"
+                );
+                assert_eq!(key_source(), "none", "一个 key 都没有时来源必须是 none");
+            }
+        }
 
-        // 设置页填的覆盖内置（并如实报告来源）
+        // 设置页填的**永远优先**（这一条与内置有没有值无关）
         set_api_key("$2a$10$CUSTOMKEYCUSTOMKEYCUSTOMKEYCUSTOMKEYCUSTOMKEYCUSTOMKEY");
         assert_eq!(key_source(), "settings");
         assert!(api_key().unwrap().contains("CUSTOMKEY"));
-        // 清掉覆盖 → 回到内置
+        // 清掉覆盖 → 回到环境变量 / 内置
         set_api_key("");
-        assert_eq!(key_source(), if std::env::var(KEY_ENV).is_ok() { "env" } else { "builtin" });
+        let expect = if std::env::var(KEY_ENV).map(|v| !v.trim().is_empty()).unwrap_or(false) {
+            "env"
+        } else if BUILTIN_API_KEY.trim().is_empty() {
+            "none"
+        } else {
+            "builtin"
+        };
+        assert_eq!(key_source(), expect);
+    }
+
+    /// ★★ 指纹反查的**请求体形状**是一条实测契约，两条路**正好相反**：
+    ///   官方要裸整数（`[123]`），镜像要对象数组（`[{"fingerprint":123}]`）。
+    ///   今天两边的 400 报错都抓到了原文（见下面两条断言里的字样）。
+    ///
+    ///   为什么要测试守着一个 JSON 形状：2026-09-25 之前，兜底时复用的是官方那份
+    ///   body ⇒ **"官方不通就换镜像"这条兜底 100% 返回 400**，而它
+    ///   **没有任何判据能发现** —— 只有真机打接口才看得见。
+    ///   契约写进测试之后，谁重构这里都会当场红。
+    #[test]
+    fn fingerprint_request_bodies_have_the_two_measured_shapes() {
+        let fps: [u32; 2] = [1234567890, 42];
+
+        // 官方：裸整数数组。写成对象数组会被官方拒（实测 400，报错原文见注释）。
+        let official = serde_json::to_value(CfFingerprintBody { fingerprints: &fps }).unwrap();
+        assert_eq!(official["fingerprints"][0], 1234567890, "官方那份必须是裸整数：{official}");
+        assert_eq!(official["fingerprints"][1], 42);
+        assert!(
+            official["fingerprints"][0].is_number(),
+            "官方不接受 {{\"fingerprint\":n}} 这种包装（400：无法转换成 System.UInt32）"
+        );
+
+        // 镜像：对象数组。发裸整数会被镜像拒（实测 400：invalid type: map, expected i64）。
+        let mirror =
+            serde_json::to_value(CfFingerprintBodyForMirror::new(&fps)).unwrap();
+        assert_eq!(
+            mirror["fingerprints"][0]["fingerprint"], 1234567890,
+            "镜像那份必须是对象数组：{mirror}"
+        );
+        assert_eq!(mirror["fingerprints"][1]["fingerprint"], 42);
+
+        // 两份**必须不同** —— 这是这条兜底能工作的前提
+        assert_ne!(official, mirror, "两条路的 body 形状必须不同，否则兜底必 400");
     }
 
     #[test]

@@ -38,3 +38,12 @@ instances.json
 
 # --- 图标瘦身前的原图备份（2.2 MB，只在本地留底，不入库）---
 /src/assets/_original/
+
+# --- ★ 开发记忆与外部参照：**不入库**（2026-09-25 公开化清理）---
+#   判据有两条，都不是"体积"：
+#   ① `.workbuddy/memory/` 是**本机开发过程**的记录，里面全是本机路径
+#      （`C:\Users\Administrator`、`E:\IEML`、`D:\IEML`）与实例数据 —— 属于工作台，不是产品；
+#   ② `.workbuddy/refs/` 里是 **PCL2 的反编译片段**（6 个 .xaml/.vb）。
+#      PCL2 **不开源** —— 把别人的闭源源码放进 GPL-3.0 仓库是法律风险，不只是难看。
+#   本地保留（移出跟踪用 `git rm -r --cached .workbuddy`，文件不会丢）。
+/.workbuddy/
