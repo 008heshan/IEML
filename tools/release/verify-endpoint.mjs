@@ -12,6 +12,8 @@
  */
 import { createHash, createPublicKey, verify as edVerify } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 /*
  * ★★ 2026-09-26：**代码仓与发布仓合并了**（用户要求：CNB 的代码仓直接当分发仓）。
@@ -111,9 +113,17 @@ console.log('2) 匿名下载更新包…');
  *   （手动下载那份的 sha256 与本地一致、签名也逐字相同）。
  *   所以缓存键再加上**签名指纹**：签名一变就自动换缓存文件。
  *   （教训与上面那条一样：**校验工具认错对象**是最坏的失败方式。）
+ *
+ * ★★ 2026-09-26 **缓存搬出仓库**（`tmp/` → 系统 `%TEMP%`）：
+ *   原来缓存在 `tmp/_verify-artifact-<版本>-<签名指纹>.exe`。那是个**设计冲突**：
+ *   `tools/gates/check-repo-root.mjs` 规定 `tmp/` 里**只放行 `latest.json`**
+ *   （发布流程的中间物），于是**跑完一次发布自检，门禁就红**——
+ *   而两个工具都对：错的是"自检的下载缓存居然住在仓库里"。
+ *   ⇒ 缓存挪到 `os.tmpdir()`，仓库里不再出现这个 3.4 MB 的文件。
+ *   版本号 + 签名指纹的缓存键**保留**（它防的是"拿旧包验新签名"那种假红）。
  */
 const sigFp = createHash('sha256').update(String(plat.signature ?? '')).digest('hex').slice(0, 12);
-const CACHE = `tmp/_verify-artifact-${manifest.version}-${sigFp}.exe`;
+const CACHE = join(tmpdir(), `ieml-verify-artifact-${manifest.version}-${sigFp}.exe`);
 if (!existsSync(CACHE) || statSync(CACHE).size === 0) {
   const ares = await fetch(plat.url, { redirect: 'follow' });
   if (!ares.ok) {
