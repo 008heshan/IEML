@@ -9,7 +9,7 @@
  *   先用浏览器把功能跑通，工具链到位后无缝切换。
  */
 import type { Instance, JavaRuntime } from '../domain';
-import type { RunningGameInfo } from './tauri.ts';
+import type { FolderVersion, RunningGameInfo } from './tauri.ts';
 export type { RunningGameInfo };
 
 export interface BackendInfo {
@@ -86,6 +86,16 @@ export interface Backend {
   /* --- 实例 --- */
   loadInstances(): Promise<{ instances: Instance[]; activeId: string | null }>;
   saveInstances(instances: Instance[], activeId: string | null): Promise<void>;
+
+  /**
+   * ★★ 2026-09-25（用户：「你看PCL，就是像换了个文件夹去读游戏版本，可以无缝切换」）：
+   *   **当前游戏文件夹里有哪几个版本**（真读盘扫 `versions/*`，不看账本、不看网络清单）。
+   *
+   *   它是「版本列表」与「启动页」的数据源：换文件夹 = 换一份游戏数据。
+   *   放在这一层（而不是 `launcher.*`）是因为**全局只用这一份**：
+   *   版本列表的行、启动页能启动的版本、侧栏角标、筛选里的"全部 N"都从它派生。
+   */
+  folderVersions(): Promise<FolderVersion[]>;
   /**
    * ★ 删除一个实例的**磁盘目录**（存档 / Mod / 配置 / natives）。
    *

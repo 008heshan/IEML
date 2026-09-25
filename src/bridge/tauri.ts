@@ -1229,41 +1229,6 @@ export const launcher = {
   deleteDataRoot: (path: string) => call<number>('delete_data_root', { path }),
   /** 查哪些实例的版本文件已不在磁盘上（只读，不删条目） */
   instanceHealth: () => call<Array<{ id: string; version_missing: boolean }>>('instance_health'),
-
-  /**
-   * ★★ 2026-09-25（用户给了两张 PCL 截图：「你看 PCL，就是像换了个文件夹去读游戏版本，
-   *   可以无缝切换」）：**当前游戏文件夹里有哪几个版本**。
-   *
-   *   真读盘（`versions/*` 的目录 + 各自的版本 JSON），**不看账本、不看网络清单** ——
-   *   这是「版本列表」的数据源：换文件夹 = 换一份游戏数据，列表跟着变。
-   *   账本（实例清单）只用来给这些版本补上"你给它起的名字 / 设置"，
-   *   不再决定"列表里有哪些行"。
-   *
-   * ★ 字段映射**必须显式写**：Rust 侧是 snake_case（`has_json`），而这个接口对外
-   *   承诺的是 camelCase（`hasJson`）。偷懒直接透传的话，`v.hasJson` 会是 `undefined`
-   *   ⇒ 每一份版本都被当成"没有 JSON"，列表一个都不显示 —— 这个坑本轮真踩过一次
-   *   （现象是"后端明明返回了 3 个版本，界面上 0 行"）。
-   */
-  folderVersions: async () => {
-    const raw = await call<
-      Array<{
-        dir: string;
-        id: string;
-        inherits: string;
-        mc_version: string;
-        loader_name: string | null;
-        has_json: boolean;
-      }>
-    >('folder_versions');
-    return raw.map((r) => ({
-      dir: r.dir,
-      id: r.id,
-      inherits: r.inherits,
-      mcVersion: r.mc_version,
-      loaderName: r.loader_name,
-      hasJson: r.has_json,
-    }));
-  },
 };
 
 /**
@@ -1532,6 +1497,32 @@ export function createTauriBackend(): Backend {
         'list_instances',
       );
       return { instances: store.instances ?? [], activeId: store.active_id ?? null };
+    },
+
+    /**
+     * ★★ 2026-09-25（PCL 的文件夹逻辑）：当前游戏文件夹里有哪几个版本。
+     *   真读盘（`folder_versions`），字段映射**必须显式写** —— 见 `launcher.folderVersions`
+     *   上面的说明（snake_case ↔ camelCase 偷懒透传，本轮踩过一次）。
+     */
+    async folderVersions() {
+      const raw = await call<
+        Array<{
+          dir: string;
+          id: string;
+          inherits: string;
+          mc_version: string;
+          loader_name: string | null;
+          has_json: boolean;
+        }>
+      >('folder_versions');
+      return raw.map((r) => ({
+        dir: r.dir,
+        id: r.id,
+        inherits: r.inherits,
+        mcVersion: r.mc_version,
+        loaderName: r.loader_name,
+        hasJson: r.has_json,
+      }));
     },
 
     async saveInstances(instances, activeId) {

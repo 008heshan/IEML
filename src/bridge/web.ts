@@ -255,6 +255,31 @@ export function createWebBackend(): Backend {
       return { instances, activeId };
     },
 
+    /**
+     * ★★ 2026-09-25（PCL 的文件夹逻辑）：浏览器演示里没有真实文件系统 ——
+     * 按演示数据里那几个实例**编一份版本清单**出来，让"文件夹里的版本"这条路
+     * 在演示模式下也能走通（否则版本列表会以为这个文件夹是空的）。
+     * ★ 编的依据是演示实例们的 mcVersion/loader，与真实实现同一套字段。
+     */
+    async folderVersions() {
+      const seen = new Set<string>();
+      const out = [];
+      for (const i of instances) {
+        const dir = i.loader ? `${i.loader.kind}-loader-${i.mcVersion}` : i.mcVersion;
+        if (seen.has(dir)) continue;
+        seen.add(dir);
+        out.push({
+          dir,
+          id: dir,
+          inherits: i.loader ? i.mcVersion : '',
+          mcVersion: i.mcVersion,
+          loaderName: i.loader ? i.loader.kind : null,
+          hasJson: true,
+        });
+      }
+      return out;
+    },
+
     async saveInstances(next, nextActive) {
       savePersisted({ instances: next, activeId: nextActive });
     },

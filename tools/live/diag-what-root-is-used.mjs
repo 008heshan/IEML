@@ -39,6 +39,15 @@ for (const h of health.slice(0, 3)) {
   console.log('  ' + JSON.stringify(h));
 }
 
+/* ★ 2026-09-25：当前文件夹里的版本 —— 前端"0 个版本"时，先看后端到底读到了几个 */
+const fv = await invokeOn(ev, 'folder_versions', {});
+console.log('\n【后端 folder_versions】');
+if (fv.err) console.log('  失败：' + fv.err);
+else {
+  console.log('  读到 ' + (fv.ok ?? []).length + ' 个：');
+  for (const v of (fv.ok ?? []).slice(0, 5)) console.log('    ' + JSON.stringify(v));
+}
+
 const li = (await invokeOn(ev, 'list_instances', {}))?.ok ?? {};
 const first = (li.instances ?? [])[0];
 console.log('\n【后端 list_instances】条目数 = ' + (li.instances ?? []).length);
@@ -98,5 +107,35 @@ for (const page of ['启动', '版本列表', '设置', '关于']) {
     for (const l of lines.slice(0, 4)) console.log('      ← ' + l.trim().slice(0, 120));
   }
 }
+
+/* ---------- ★ 计数三处 + 列表行（"版本列表的计数不是实时更新的"那件事） ---------- */
+await clickNav(ev, '版本列表');
+await sleep(1400);
+const info = await ev(
+  `(() => {
+     const head = (document.querySelector('.page-desc') || {}).innerText || '';
+     const badge = (document.querySelector('.nav-item .nav-badge') || {}).textContent || '';
+     const seg = [...document.querySelectorAll('button')].map((b) => (b.textContent || '').trim())
+       .find((t) => t.startsWith('全部')) || '';
+     const rows = [...document.querySelectorAll('.ver-item')].map((r) => (r.querySelector('.ver-title-name')||{}).textContent || '');
+     const empty = !![...document.querySelectorAll('.ver-empty')].length;
+     return { head: head.trim(), badge: badge.trim(), seg, rows, empty };
+   })()`,
+);
+console.log('\n【版本列表的计数与列表】');
+console.log('  页头：' + info.head);
+console.log('  侧栏角标：' + (info.badge || '(无)') + '　筛选：' + info.seg);
+console.log('  列出的行：' + JSON.stringify(info.rows));
+console.log('  空状态：' + info.empty);
+
+await clickNav(ev, '启动');
+await sleep(1200);
+const launchRows = await ev(
+  `[...document.querySelectorAll('.launch-card, .ver-item, .lc-name')].map((r) => (r.textContent || '').trim().slice(0, 40))`,
+);
+const launchTxt = await ev('document.body.innerText');
+console.log('\n【启动页】');
+console.log('  空状态「还没有可启动的版本」：' + launchTxt.includes('还没有可启动的版本'));
+console.log('  卡片/条目：' + JSON.stringify(launchRows).slice(0, 400));
 
 await app.close();

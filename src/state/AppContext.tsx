@@ -20,6 +20,8 @@ import {
   type ReactNode,
 } from 'react';
 import type { Instance, InstanceConfig, JavaRuntime } from '../domain';
+import { matchFolderVersions } from '../domain/folder-versions.ts';
+import type { FolderVersion } from '../bridge/tauri';
 import { MC_PROFILES } from '../domain/loader-caps.ts';
 import type { ModEntry, ModFilter, ModStateResult } from '../domain/mods.ts';
 // ★ 输入校验只有一份规则（与 Rust 侧逐条一致，见 domain/validate.rs）
@@ -246,17 +248,21 @@ interface AppContextValue {  state: AppState;
    */
   refreshInstances: () => Promise<void>;
 
+
   /**
-   * ★★ 2026-09-25（用户：「版本列表的计数不是实时更新的」）：
+   * ★★ 2026-09-25（用户：「主页也有同样问题」）：**当前文件夹里的版本** ——
+   *   版本列表与启动页共用这一份（PCL 的文件夹逻辑，见 `domain/folder-versions.ts`）。
    *
-   *   把"当前文件夹里有几个版本"写回全局 —— 由**版本列表页扫完盘之后**调用。
-   *
-   *   为什么需要它：这个数同时出现在三个地方（版本列表页头、侧栏角标、筛选里的
-   *   "全部 N"），而 `machine_info` 只在启动与换目录时刷新 ⇒ 装完一个版本之后
-   *   角标会停在旧数。让唯一知道最新值的地方（那一页的真读盘结果）推回来，
-   *   三处就永远是同一个数。
+   *   · `instancesInFolder`：账本里对得上当前文件夹的实例（**能启动的就是这些**）；
+   *   · `versionsWithoutInstance`：文件夹里有、还没建过实例的版本；
+   *   · `null` = 还没读到（或读失败）⇒ 界面**不筛**（读不到 ≠ 没有）。
    */
-  noteFolderVersionCount: (count: number) => void;
+  folder: {
+    versions: FolderVersion[] | null;
+    instancesInFolder: Instance[];
+    versionsWithoutInstance: FolderVersion[];
+    reload: () => Promise<void>;
+  };
 
   /**
    * ★ 偏好写盘失败的原因（null = 正常）。
@@ -1066,15 +1072,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('focus', onFocus);
   }, [refreshInstances]);
 
+
   /**
-   * ★★ 2026-09-25（用户：「版本列表的计数不是实时更新的」）。
+   * ★★ 2026-09-25（用户：「主页也有同样问题」）：**当前文件夹里的版本** ——
+   *   版本列表与启动页共用这一份（PCL 的文件夹逻辑，规则在 `domain/folder-versions.ts`）。
    *
-   *   版本列表页每次真读盘扫完当前文件夹，就把"有几个版本"告诉我们 ——
-   *   页头 / 侧栏角标 / 筛选里的"全部 N" 从此是同一个数，而且跟着盘上的事实走。
+   *   为什么放全局：这一份数据现在有**四个**出口（版本列表的行、启动页的"可启动版本"、
+   *   侧栏角标、筛选里的"全部 N"）。上一轮就是因为一个出口改了、另外两个没改，
+   *   页头显示 0、角标还显示 3 —— 数据只读一次，谁用谁取。
    */
-  const noteFolderVersionCount = useCallback((count: number) => {
-    dispatch({ type: 'machine/versionCount', count });
-  }, []);
+  const [folderVers, setFolderVers] = useState<FolderVersion[] | null>(null);
+  const reloadFolderVersions = useCallback(async () => {
+    try {
+      const list = await backend.folderVersions();
+      setFolderVers(list);
+      /* 计数跟着这一份走（页头 / 角标 / 筛选同一个数） */
+      dispatch({ type: 'machine/versionCount', count: list.filter((v) => v.hasJson).length });
+    } catch {
+      /* 读不到就不筛（`null`）——读不到 ≠ 没有；界面宁可多显示，也不要凭空藏东西 */
+      setFolderVers(null);
+    }
+  }, [backend]);
+  const folderMatch = useMemo(
+    () => matchFolderVersions(state.instances, folderVers),
+    [state.instances, folderVers],
+  );
+
+  /* 启动就读一次：启动页第一屏就要按"当前文件夹"说话（不然会列出一堆不在这个文件夹里的版本） */
+  useEffect(() => {
+    void reloadFolderVersions();
+  }, [reloadFolderVersions]);
 
   const setLaunchTarget = useCallback((id: string | null) => {
     dispatch({ type: 'instances/last', id });
@@ -1346,8 +1373,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       say('warning', '切换后刷新失败', e instanceof Error ? e.message : String(e));
       return;
     }
+    /* ★ 「当前文件夹里有哪些版本」也要重读 —— 版本列表与启动页都看这一份（2026-09-25） */
+    void reloadFolderVersions();
     void rescanJava();
-  }, [backend, rescanJava]);
+  }, [backend, rescanJava, reloadFolderVersions]);
 
   const value: AppContextValue = {
     state,
@@ -1376,7 +1405,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     refreshJava,
     reloadAfterRootChange,
     refreshInstances,
-    noteFolderVersionCount,
+    folder: {
+      versions: folderVers,
+      instancesInFolder: folderMatch.instances,
+      versionsWithoutInstance: folderMatch.withoutInstance,
+      reload: reloadFolderVersions,
+    },
     prefsSaveFailed,
     update,
     vfx: {

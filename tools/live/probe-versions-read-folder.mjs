@@ -155,7 +155,23 @@ const emptyTxt = await bodyText(ev);
 const emptyRows = await visibleRows(ev);
 console.log('③ 空文件夹：' + JSON.stringify(cnt0) + '　空状态=' + emptyTxt.includes('这个文件夹里没有可用的版本') + '　列出的行=' + JSON.stringify(emptyRows));
 
-/* ---------- ④ 从界面换回 D:\IEML ---------- */
+/* ---------- ④ 启动页也要按文件夹（用户：「主页也有同样问题」） ---------- */
+await clickNav(ev, '启动');
+await sleep(1200);
+const launchTxt = await bodyText(ev);
+const launchEmpty = launchTxt.includes('还没有可启动的版本');
+const launchGhosts = /Minecraft\s*\d/.test(launchTxt);
+console.log('④ 启动页（空文件夹）：空状态=' + launchEmpty + '　还列着版本吗=' + launchGhosts);
+
+/* ---------- ⑤ 版本列表上的「新建/切换游戏目录」按钮 + 描述已删 ---------- */
+await clickNav(ev, '版本列表');
+await sleep(1000);
+const verTxt0 = await bodyText(ev);
+const hasPickerBtn = verTxt0.includes('新建/切换游戏目录');
+const oldDescGone = !verTxt0.includes('里面找不到任何版本文件');
+console.log('⑤ 版本列表：按钮「新建/切换游戏目录」=' + hasPickerBtn + '　那段描述已删=' + oldDescGone);
+
+/* ---------- ⑥ 从界面换回 D:\IEML ---------- */
 await clickNav(ev, '设置');
 await sleep(800);
 await clickByText(ev, 'button', '新建/切换');
@@ -208,6 +224,9 @@ const c5 = nf.endsWith('\\.minecraft') && p.length > 3 && nf.startsWith(p);
 const c6 = rows2.length >= 20 && !txt2.includes('错误的版本') && head2.includes(OLD_ROOT);
 const c7 =
   existsSync(RECORD) && readFileSync(RECORD, 'utf8').trim().toLowerCase() === OLD_ROOT.toLowerCase();
+/* 启动页也按文件夹 + 版本列表上有那个按钮、旧描述已删 */
+const c8 = launchEmpty === true && launchGhosts === false;
+const c9 = hasPickerBtn === true && oldDescGone === true;
 
 console.log('\n===== 判据 =====');
 console.log(`${c1 ? '✓' : '✗'} ① 换到那个文件夹后，列表 = 文件夹里的三份版本（含账本里没有的 1.21.4）`);
@@ -217,5 +236,7 @@ console.log(`${c4 ? '✓' : '✗'} ④ 空文件夹时三处都归零：页头=$
 console.log(`${c5 ? '✓' : '✗'} ⑤ 直接指「.minecraft」会被提到上一级，并且返回里说明了（normalized_from）`);
 console.log(`${c6 ? '✓' : '✗'} ⑥ 从界面换回 D:\\IEML 后，列表当场变成那个文件夹的版本（${rows2.length} 行）`);
 console.log(`${c7 ? '✓' : '✗'} ⑦ 记账文件最后回到 ${OLD_ROOT}`);
+console.log(`${c8 ? '✓' : '✗'} ⑧ 启动页也按文件夹：空文件夹时它也说"还没有可启动的版本"、不列任何版本`);
+console.log(`${c9 ? '✓' : '✗'} ⑨ 版本列表上有按钮「新建/切换游戏目录」，且旧的那段描述已删掉`);
 if (cleanup) console.log('⚠ ' + cleanup);
-process.exit(c1 && c2 && c3 && c4 && c5 && c6 && c7 ? 0 : 1);
+process.exit(c1 && c2 && c3 && c4 && c5 && c6 && c7 && c8 && c9 ? 0 : 1);
