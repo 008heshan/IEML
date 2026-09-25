@@ -30,7 +30,15 @@ import { APP_VERSION } from '../domain/version-info';
  */
 import { describeUpdate, isUpdateProblem } from '../domain/update-copy';
 
-const REPO = 'https://github.com/Heshan001/IEML';
+/*
+ * ★★ 2026-09-26：这里原来写的是 `github.com/Heshan001/IEML` —— **一个不存在的地址**
+ *   （账号名是 `008heshan`）。用户在这一页看到"源码在 …"，点过去是 404，
+ *   而这是一句**给用户看的承诺**（"你可以自由使用、修改、再分发"得先拿得到源码）。
+ *   两个仓都指出来：CNB 是**同时用作分发仓**的那个（更新端点就在它上面），
+ *   GitHub 是镜像。★ 地址变了要顺手核一眼这个常量。
+ */
+const REPO = 'https://github.com/008heshan/IEML';
+const REPO_CNB = 'https://cnb.cool/IEML_Official/IEML';
 
 export function AboutPage() {
   const { state, update } = useApp();
@@ -143,7 +151,14 @@ export function AboutPage() {
               皮肤与披风走 Mojang 官方接口，需要正版账号；离线模式只影响"用什么名字进单人游戏"，
               不会、也不能绕过正版验证。
             </li>
-            <li>本程序按 GPL-3.0 发布，源码在 {REPO}。你可以自由使用、修改、再分发。</li>
+            <li>
+              <RichText text="本程序按 GPL-3.0 发布，源码在 **CNB** 与 **GitHub** 两个仓，内容相同。" />
+              <div className="dim mono" style={{ marginTop: 4 }}>
+                {REPO_CNB}
+                <br />
+                {REPO}
+              </div>
+            </li>
           </ul>
         </Card>
 
