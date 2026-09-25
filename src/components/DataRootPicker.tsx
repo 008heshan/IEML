@@ -112,6 +112,15 @@ export function DataRootPicker({ open, onClose, current, toast, onChanged }: Dat
           ? '这个目录里已经有游戏数据，会直接用那一份'
           : '★ 这个目录里还没有游戏数据 —— 版本列表会是空的（旧数据仍在原目录里，随时能换回来）',
         r.onSystemDrive ? '★ 它在系统盘上，游戏多了会把系统盘写满' : null,
+        /*
+         * ★★ 2026-09-25（PCL 的「添加已有文件夹」）：PCL 的"文件夹"是
+         *   `.minecraft` **本身**，IEML 的根目录是它的上一级 —— 用户从资源管理器
+         *   直接选到 `.minecraft` 时，后端会往上提一级。这件事必须说出来，
+         *   否则他看到的路径和选的不一样，会以为选错了。
+         */
+        r.normalizedFrom
+          ? `★ 你选的是 .minecraft 文件夹 —— 已按它的上级目录（${r.path}）当游戏根目录`
+          : null,
       ]
         .filter(Boolean)
         .join('；');

@@ -448,6 +448,8 @@ pub fn run() {    /*
             /* ★ 忘掉一个文件夹（只动那张列表，不碰磁盘上的东西） */
             commands_real::forget_data_root,
         commands_real::instance_health,
+        /* 当前游戏文件夹里有哪些版本（PCL 那种"换个文件夹读版本"） */
+        commands_real::folder_versions,
         commands_real::delete_data_root,
             /* -------- 账号 -------- */
             /* ★★ 正版登录的可用性（client_id 配没配）+ 配置入口 */

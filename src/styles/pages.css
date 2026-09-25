@@ -403,6 +403,61 @@
   background: var(--success-subtle);
 }
 
+/* ============================================================================
+   ★★ 2026-09-25（用户给的 PCL 截图）：版本列表按**当前文件夹**说话 ——
+      正常的版本在上、坏掉的收进下面这个可折叠的「错误的版本（N）」，
+      文件夹里有、但还没建实例的版本用 `.ver-item-new` 标出来。
+   ============================================================================ */
+.ver-item-new {
+  /* 这一行本身点不动（只有右边那个按钮能点）—— 别给手型，免得骗人 */
+  cursor: default;
+}
+.ver-item-new:hover {
+  background: var(--bg-raised);
+}
+.ver-item-new .ver-title-name {
+  font-family: var(--font-mono, monospace);
+  font-weight: 500;
+}
+/* 折叠组标题：视觉语言与资源页的分组标题（`.res-vgroup-head`）保持一致 */
+.ver-group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  margin-top: var(--space-3);
+  padding: 9px var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: var(--text-md);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.ver-group-head:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+}
+.ver-group-head svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+.ver-group-name {
+  font-weight: 600;
+}
+.ver-group-head .dim {
+  margin-left: auto;
+  font-size: var(--text-base);
+}
+/* 空文件夹时那一块空状态：不要顶着列表的边框 */
+.ver-empty {
+  padding: var(--space-2) 0;
+}
+
 /* ★ 0.1.0-beta.1：`.ver-avatar` 那一套（灰方块 / 灰层叠图）已被
    `.vi`（自绘世代方块，见 VersionIcon.tsx）取代，整块删掉不留死样式。 */
 
@@ -481,7 +536,7 @@
 .ver-main {
   flex: 1;
   min-width: 200px;
-}
+}
 .ver-name {
   font-size: var(--text-base);
   font-weight: 600;
@@ -1006,7 +1061,7 @@
   gap: var(--space-2);
   padding-top: var(--space-3);
   border-top: 1px solid var(--border-subtle);
-}
+}
 
 /* 键值事实块（启动命令预览里复用） */
 .pack-locks {
@@ -1033,7 +1088,7 @@
   font-size: var(--text-base);
   font-weight: 600;
   color: var(--text-primary);
-}
+}
 .cw-body {
   display: grid;
   grid-template-columns: 232px minmax(0, 1fr);
@@ -1234,7 +1289,7 @@
 .b-name {
   font-size: var(--text-base);
   font-weight: 600;
-}
+}
 .b-reason {
   display: flex;
   align-items: center;
@@ -1475,7 +1530,7 @@
   gap: var(--space-2);
   padding: 0 var(--space-3) var(--space-2);
   border-bottom: 1px solid var(--border-subtle);
-}
+}
 
 /* 底部常驻摘要 + 唯一的按钮 */
 .cw-foot {

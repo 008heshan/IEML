@@ -4573,6 +4573,128 @@ pub fn list_data_roots(state: State<'_, AppState>) -> Vec<crate::platform::Known
     crate::platform::list_known_roots(&state.paths().root)
 }
 
+/* ============ 当前游戏文件夹里有哪些版本（PCL 的"换个文件夹读版本"） ============ */
+
+/// 当前游戏文件夹里的**一个版本目录**（真读盘；不看账本、不看网络清单）。
+///
+/// ★★ 2026-09-25（用户给了两张 PCL 截图）：
+///   「你看 PCL，就是像换了个文件夹去读游戏版本，可以无缝切换」。
+///
+///   PCL 的版本列表**就是这个文件夹里的版本**：换文件夹 = 换一份游戏数据，
+///   列表跟着变（正常的在上、坏掉的折叠）。IEML 原来列的是**账本里的实例** ——
+///   账本住在启动器自己的家里，与文件夹无关，所以"换到 E 盘却还显示 D 盘那几条"。
+///   这个命令把"文件夹里到底有什么"如实读出来，界面据此列版本。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FolderVersion {
+    /// `versions/<这个>`：目录名（PCL 列表里显示的就是它）
+    pub dir: String,
+    /// 版本 JSON 里声明的 `id`（读不到 JSON 时与 `dir` 相同）
+    pub id: String,
+    /// 这份版本继承的父版本（加载器版本才有：`fabric-loader-0.19.5-26.2` → `26.2`）
+    pub inherits: String,
+    /// 实际算出来的 Minecraft 版本（有 `inherits` 用它，否则用 `id`）
+    pub mc_version: String,
+    /// 加载器目录的判定（**只看命名**：`…-forge-…` / `fabric-loader-…` / `quilt-loader-…`）。
+    ///
+    /// ★ 为什么不用 `detect_installed_loaders`：那个是按 **MC 版本**汇总的，
+    ///   分不清"是哪一份版本目录贡献的" —— 而这里要的正是"这一个目录是不是加载器版本"。
+    pub loader_name: Option<String>,
+    /// 版本 JSON 在不在（`false` = 这个目录是空的/坏的）
+    pub has_json: bool,
+}
+
+/// 按目录名认加载器（顺序有意：`neoforge` 里也含 `forge`，必须先判它）。
+fn loader_from_dir_name(dir: &str) -> Option<String> {
+    let d = dir.to_ascii_lowercase();
+    for (needle, name) in [
+        ("neoforge", "neoforge"),
+        ("forge", "forge"),
+        ("fabric", "fabric"),
+        ("quilt", "quilt"),
+        ("optifine", "optifine"),
+        ("liteloader", "liteloader"),
+    ] {
+        if d.contains(needle) {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+/// 扫一遍 `<shared>/versions`：**每次都真读盘**（与 `scan_version_dir` 同一条纪律）。
+pub fn scan_folder_versions(shared: &std::path::Path) -> Vec<FolderVersion> {
+    let versions = shared.join("versions");
+    let Ok(entries) = std::fs::read_dir(&versions) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for e in entries.flatten() {
+        if !e.path().is_dir() {
+            continue;
+        }
+        let dir = e.file_name().to_string_lossy().to_string();
+        // 版本 JSON：`versions/<dir>/<dir>.json` 优先；找不到就取这个目录里第一个 .json
+        let primary = e.path().join(format!("{dir}.json"));
+        let json_path = if primary.is_file() {
+            Some(primary)
+        } else {
+            std::fs::read_dir(e.path()).ok().and_then(|it| {
+                it.flatten()
+                    .map(|f| f.path())
+                    .find(|p| p.extension().map(|x| x == "json").unwrap_or(false))
+            })
+        };
+        let text = json_path.and_then(|p| std::fs::read_to_string(p).ok());
+        let parsed: Option<VersionJson> = text.as_ref().and_then(|t| serde_json::from_str(t).ok());
+        let id = parsed
+            .as_ref()
+            .map(|v| v.id.clone())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| dir.clone());
+        let inherits = parsed
+            .as_ref()
+            .and_then(|v| v.inherits_from.clone())
+            .unwrap_or_default();
+        let mc_version = if inherits.is_empty() {
+            id.clone()
+        } else {
+            inherits.clone()
+        };
+        out.push(FolderVersion {
+            dir,
+            id,
+            inherits,
+            mc_version,
+            loader_name: loader_from_dir_name(&e.file_name().to_string_lossy()),
+            has_json: text.is_some(),
+        });
+    }
+    out.sort_by(|a, b| a.dir.to_lowercase().cmp(&b.dir.to_lowercase()));
+    out
+}
+
+/// 当前游戏文件夹里有哪些版本（界面「版本列表」的数据源）。
+#[tauri::command]
+pub fn folder_versions(state: State<'_, AppState>) -> Vec<FolderVersion> {
+    scan_folder_versions(&state.paths().shared)
+}
+
+/// 把用户选的目录**规整成"根目录"**：他要是选了 `.minecraft` 本身，就用它的上一级。
+///
+/// 返回 `(根目录, 被提级的原路径)` —— 第二个用于在界面上如实说一句。
+/// ★ 抽成纯函数是为了能单测（`set_data_root` 带 `State`，测不了）。
+pub fn normalize_root_target(raw: &std::path::Path) -> (std::path::PathBuf, Option<String>) {
+    match raw.file_name() {
+        Some(n) if n.to_string_lossy().eq_ignore_ascii_case(".minecraft") => match raw.parent() {
+            Some(p) if !p.as_os_str().is_empty() => {
+                (p.to_path_buf(), Some(raw.to_string_lossy().to_string()))
+            }
+            _ => (raw.to_path_buf(), None),
+        },
+        _ => (raw.to_path_buf(), None),
+    }
+}
+
 /// 一个实例的"健康"状况（只读，不改任何东西）。
 #[derive(serde::Serialize)]
 pub struct InstanceHealth {
@@ -4732,6 +4854,13 @@ pub struct DataRootChange {
     pub restart_required: bool,
     /// 新目录里有没有已经存在的游戏数据（有 = 用户可能选到了老目录）
     pub has_existing_data: bool,
+    /// 用户选的是 `.minecraft` 目录本身、被我们**往上提了一级**时，这里是原路径。
+    ///
+    /// ★★ 2026-09-25（PCL 的「添加已有文件夹」）：PCL 的"文件夹"就是 `.minecraft`，
+    ///   而 IEML 的根目录是它的上一级。界面据此说一句"你选的是 .minecraft，
+    ///   已按它的上级目录当根目录"，免得用户以为自己选错了。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub normalized_from: Option<String>,
 }
 
 /// 新建/切换游戏根目录（2026-09-17 用户：「单独建一个根目录，源目录不删」）。
@@ -4751,9 +4880,22 @@ pub async fn set_data_root(
     path: String,
     state: State<'_, AppState>,
 ) -> Result<DataRootChange, String> {
+    let raw = std::path::PathBuf::from(path.trim());
+    /*
+     * ★★ 2026-09-25（用户给的 PCL 截图里那一栏叫「添加已有文件夹」）：
+     *
+     *   PCL 的"文件夹"就是 **`.minecraft` 目录本身**（截图里写的是
+     *   `D:\Minecraft\.minecraft\`），而 IEML 的根目录是**它的上一级**
+     *   （根里放 `.minecraft` 与 `instances`）。
+     *
+     *   所以用户从资源管理器里直接选 `.minecraft` 时不能照字面用 ——
+     *   否则会在 `D:\Minecraft\.minecraft\` 下面**再建一层** `.minecraft`，
+     *   那个文件夹里永远读不到版本（这正是"添加已有文件夹"最容易踩空的地方）。
+     *   规整逻辑是纯函数 `normalize_root_target`，有单测。
+     */
+    let (target, normalized_from) = normalize_root_target(&raw);
     let current = state.paths();
     let previous = current.root.clone();
-    let target = std::path::PathBuf::from(path.trim());
 
     // 它的错误本来就是给用户看的中文 String，直接透传（不再过 `err` 那层转换）
     crate::platform::set_data_root(&target, &previous)?;
@@ -4795,6 +4937,7 @@ pub async fn set_data_root(
         on_system_drive: crate::platform::is_on_system_drive(&target),
         restart_required: false,
         has_existing_data,
+        normalized_from,
     })
 }
 
@@ -6330,5 +6473,103 @@ mod wire_tests {
         // 认不出的（含 None）= 数据根目录
         assert_eq!(resolve_open_dir(&p, Some("what"), None), p.root);
         assert_eq!(resolve_open_dir(&p, None, None), p.root);
+    }
+
+    /// ★★ 2026-09-25（PCL 的「添加已有文件夹」那栏）：
+    ///   用户从资源管理器里指到 `.minecraft` **本身**时，根目录要取它的上一级 ——
+    ///   否则会在它下面再建一层 `.minecraft`，版本永远是空的。
+    #[test]
+    fn dot_minecraft_target_is_lifted_one_level() {
+        // Windows 盘符与大小写都要认（`.Minecraft` 也是同一个文件夹）
+        let (root, lift) = normalize_root_target(std::path::Path::new(r"D:\Minecraft\.minecraft"));
+        assert_eq!(root, std::path::PathBuf::from(r"D:\Minecraft"));
+        assert_eq!(lift.as_deref(), Some(r"D:\Minecraft\.minecraft"));
+
+        let (root2, lift2) = normalize_root_target(std::path::Path::new(r"D:\Games\.MINECRAFT"));
+        assert_eq!(root2, std::path::PathBuf::from(r"D:\Games"));
+        assert_eq!(lift2.as_deref(), Some(r"D:\Games\.MINECRAFT"));
+
+        // 普通目录**不许动**
+        let (root3, lift3) = normalize_root_target(std::path::Path::new(r"D:\IEML"));
+        assert_eq!(root3, std::path::PathBuf::from(r"D:\IEML"));
+        assert_eq!(lift3, None);
+
+        // 盘符根下的 `D:\.minecraft`：上级就是 `D:\` —— 照提（用户选的就是盘根那份）
+        let (root4, lift4) = normalize_root_target(std::path::Path::new(r"D:\.minecraft"));
+        assert_eq!(root4, std::path::PathBuf::from(r"D:\"));
+        assert_eq!(lift4.as_deref(), Some(r"D:\.minecraft"));
+
+        // 相对路径 `.minecraft`（上级是空串）**不提** —— 提了会得到空路径
+        let (root5, lift5) = normalize_root_target(std::path::Path::new(".minecraft"));
+        assert_eq!(root5, std::path::PathBuf::from(".minecraft"));
+        assert_eq!(lift5, None);
+    }
+
+    /// ★★ 2026-09-25：`folder_versions` 的判据 —— **看这个文件夹里有什么**。
+    ///   用户：「PCL 就是像换了个文件夹去读游戏版本，可以无缝切换」。
+    #[test]
+    fn folder_versions_reads_the_folder_not_the_ledger() {
+        let base = std::env::temp_dir().join(format!("ieml-folderver-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let shared = base.join(".minecraft");
+        let versions = shared.join("versions");
+
+        // ① 原版：目录名 = id，没有 inheritsFrom
+        let v1 = versions.join("26.2");
+        std::fs::create_dir_all(&v1).unwrap();
+        std::fs::write(
+            v1.join("26.2.json"),
+            r#"{"id":"26.2","mainClass":"net.minecraft.client.main.Main"}"#,
+        )
+        .unwrap();
+
+        // ② 加载器版本：id 与目录名不同、靠 inheritsFrom 指回 26.2
+        let v2 = versions.join("fabric-loader-0.19.5-26.2");
+        std::fs::create_dir_all(&v2).unwrap();
+        std::fs::write(
+            v2.join("fabric-loader-0.19.5-26.2.json"),
+            r#"{"id":"fabric-loader-0.19.5-26.2","inheritsFrom":"26.2","mainClass":"KnotClient"}"#,
+        )
+        .unwrap();
+
+        // ③ 空壳目录（没有 JSON）—— 也要出现在结果里，只是 `has_json = false`
+        std::fs::create_dir_all(versions.join("broken-one")).unwrap();
+
+        let got = scan_folder_versions(&shared);
+        assert_eq!(got.len(), 3, "三个目录都要读出来：{got:?}");
+
+        let vanilla = got.iter().find(|v| v.dir == "26.2").expect("原版那条");
+        assert_eq!(vanilla.id, "26.2");
+        assert_eq!(vanilla.mc_version, "26.2");
+        assert_eq!(vanilla.loader_name, None, "原版目录不该被认成加载器");
+        assert!(vanilla.has_json);
+
+        let fabric = got
+            .iter()
+            .find(|v| v.dir == "fabric-loader-0.19.5-26.2")
+            .expect("fabric 那条");
+        assert_eq!(fabric.inherits, "26.2");
+        assert_eq!(fabric.mc_version, "26.2", "MC 版本要取 inheritsFrom");
+        assert_eq!(fabric.loader_name.as_deref(), Some("fabric"));
+
+        let broken = got.iter().find(|v| v.dir == "broken-one").expect("空壳那条");
+        assert!(!broken.has_json);
+        assert_eq!(broken.id, "broken-one", "没有 JSON 时 id 落回目录名");
+
+        // 排序稳定（按目录名，忽略大小写）——界面顺序不该每次都不一样
+        let mut names: Vec<String> = got.iter().map(|v| v.dir.clone()).collect();
+        names.sort_by_key(|s| s.to_lowercase());
+        assert_eq!(
+            got.iter().map(|v| v.dir.clone()).collect::<Vec<_>>(),
+            names,
+            "结果要按目录名排好序"
+        );
+
+        // neoforge 不能被认成 forge（顺序错了会少一个 NeoForge 徽标）
+        assert_eq!(loader_from_dir_name("neoforge-21.1.0").as_deref(), Some("neoforge"));
+        assert_eq!(loader_from_dir_name("1.20.1-forge-47.2.0").as_deref(), Some("forge"));
+        assert_eq!(loader_from_dir_name("1.20.1").as_deref(), None);
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
