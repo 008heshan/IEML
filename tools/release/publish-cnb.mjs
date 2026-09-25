@@ -45,9 +45,53 @@ const API = 'https://api.cnb.cool';
 const DOWNLOAD = `https://cnb.cool/${REPO}/-/releases/download`;
 /** 桥接期间用：把这一版也发到旧发布仓，好让老客户端能走过来（见上面那段说明） */
 const LEGACY_REPO = 'IEML_Official/IEML-releases';
+/**
+ * ★★ 桥接版：**跨过它之后客户端就改读代码仓了**（端点编在 exe 里）。
+ *
+ *   2026-09-26 三件事做完之后，旧发布仓里**只剩这一座桥**（10 个带版本号的 release
+ *   与 21 个 tag 都已清掉），并且已经**归档**（只读）。
+ *   ★ 桥里那份 `latest.json` 是**手改过的形态**：包地址指向**旧仓自己的**
+ *     `v<桥接版>` 副本（自足、不依赖代码仓那个包），而本脚本生成的那份指向代码仓。
+ *     ⇒ **拿本脚本去刷桥 = 把"自足"改回"依赖代码仓"**，所以下面那道闸门默认拒绝重刷。
+ */
+const BRIDGE_VERSION = '0.1.0-rc.9';
 const BUNDLE = 'src-tauri/target/release/bundle';
 const upload = process.argv.includes('--upload');
 const bridge = process.argv.includes('--bridge');
+/** 只有这个开关才允许动已经冻结的桥（见下面那道闸门） */
+const republish = process.argv.includes('--bridge-republish');
+
+/**
+ * 比 semver：**有预发布标识的比同号正式版小**（`0.1.0-rc.9 < 0.1.0`），
+ * 预发布之间按点分片段比，纯数字段按数值比（`rc.9 > rc.8`，不是字符串序）。
+ * ★ 只需判断"比桥接版新 / 一样 / 更旧"，所以不做 build metadata。
+ */
+function compareVersions(a, b) {
+  const [aCore, aPre] = String(a).split('-');
+  const [bCore, bPre] = String(b).split('-');
+  const num = (s) => s.split('.').map((x) => (/^\d+$/.test(x) ? Number(x) : x));
+  const ac = num(aCore);
+  const bc = num(bCore);
+  for (let i = 0; i < 3; i++) {
+    const d = (ac[i] ?? 0) - (bc[i] ?? 0);
+    if (d) return d > 0 ? 1 : -1;
+  }
+  if (aPre === undefined && bPre === undefined) return 0;
+  if (aPre === undefined) return 1;   // 正式版 > 预发布
+  if (bPre === undefined) return -1;
+  const ap = aPre.split('.');
+  const bp = bPre.split('.');
+  for (let i = 0; i < Math.max(ap.length, bp.length); i++) {
+    if (ap[i] === undefined) return -1;
+    if (bp[i] === undefined) return 1;
+    const an = /^\d+$/.test(ap[i]);
+    const bn = /^\d+$/.test(bp[i]);
+    if (an && bn) { if (Number(ap[i]) !== Number(bp[i])) return Number(ap[i]) > Number(bp[i]) ? 1 : -1; continue; }
+    if (an !== bn) return an ? -1 : 1;  // 数字段 < 字母段
+    if (ap[i] !== bp[i]) return ap[i] > bp[i] ? 1 : -1;
+  }
+  return 0;
+}
 
 /* ---------- 令牌 ---------- */
 function token() {
@@ -260,11 +304,39 @@ console.log(`  ${DOWNLOAD}/latest/latest.json`);
  *   为什么必须有这一步：老客户端的 `latest.json` 地址是编在 exe 里的（旧发布仓），
  *   它们只会去问旧地址。冒烟测试也可以先只推这一边 —— 因为**验证端点上的地址
  *   就是客户端真正会读的那个**，而它此刻还在旧仓。等老用户更新到这一版，
- *   他们的端点才变成代码仓，此后 `--bridge` 就不需要了（那时删掉这个开关即可）。
+ *   他们的端点才变成代码仓，此后 `--bridge` 就不需要了。
  *
- *   用法：node tools/release/publish-cnb.mjs --upload --bridge
+ *   ★★ **2026-09-26：桥已冻结。** 跨过它之后客户端就改读代码仓了，所以：
+ *     · **同一版再跑一次 `--bridge`** → 直接拒绝（重刷会把桥里"自足"的包地址
+ *       改回"依赖代码仓"，那正是我们要避免的单点）；
+ *     · **版本比桥接版更新时跑 `--bridge`** → 也拒绝并提示：桥已经不需要再更新了。
+ *     真正需要重刷时（比如桥接版本的包坏了要重传），用 `--bridge-republish`，
+ *     并且刷完要回读一次桥清单，确认包地址仍然指向旧仓自己。
+ *
+ *   用法：node tools/release/publish-cnb.mjs --upload --bridge   （只在跨桥那一版用一次）
  */
 if (bridge) {
+  const cmp = compareVersions(version, BRIDGE_VERSION);
+  if (version === BRIDGE_VERSION && !republish) {
+    throw new Error(
+      `桥已冻结：${BRIDGE_VERSION} 就是桥接版，重刷会把桥清单改成"依赖代码仓"的形态。\n` +
+        `  · 只是发新版本 → 去掉 --bridge（桥不需要再更新）\n` +
+        `  · 真要重传桥接版的包 → node tools/release/publish-cnb.mjs --upload --bridge --bridge-republish`,
+    );
+  }
+  if (cmp > 0) {
+    throw new Error(
+      `桥接版是 ${BRIDGE_VERSION}，而当前版本是 ${version}（更新的版本）—— 桥不需要、也不该再更新。\n` +
+        `  · 直接发：node tools/release/publish-cnb.mjs --upload\n` +
+        `  · 确实要动桥：加 --bridge-republish 并说明理由`,
+    );
+  }
+  if (cmp < 0) {
+    throw new Error(
+      `当前版本 ${version} 比桥接版 ${BRIDGE_VERSION} 还旧 —— 往回发会造出一个"更旧的桥"。\n` +
+        `  先确认版本号（package.json / tauri.conf.json）是不是被改回去了。`,
+    );
+  }
   console.log(`\n桥接：把这一版也发到旧发布仓 ${LEGACY_REPO} …`);
   const legacyDownload = `https://cnb.cool/${LEGACY_REPO}/-/releases/download`;
   // ★ 复用参数化后的 ensureRelease（第一版我在这里另抄了一份，`uploadAsset` 却仍写死代码仓 ⇒ 404）
