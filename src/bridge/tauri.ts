@@ -1222,11 +1222,28 @@ export const launcher = {
    *   列的是**你用过的文件夹**（名字 + 路径），不是"机器上有哪些盘"。
    *   盘的列表每次都要你重新想"放哪"；这张表是"回到你去过的那个地方"。
    *
-   * ★ `suggested` 那类路径由 Rust 拼（目录名来自 `DATA_DIR_NAME`）——
+   * ★★ 2026-09-26 用户（截图）：「**默认只显示玩家安装时选择的那盘的游戏目录
+   *   文件夹**……**其余的不要**」—— 所以这张表现在**只有两个来源**：
+   *   正在用的那个 + 你自己换过的那些。以前还会扫盘把 `<盘>\IEML` 列进来
+   *   （来源标记 `found`），**那条已取消**（见 Rust 侧 `list_known_roots`）。
+   *
+   * ★ 路径全由 Rust 拼（目录名来自 `DATA_DIR_NAME`）——
    *   **前端不许自己拼 `<盘>\IEML`**：拼错的话界面说的位置和文件真正落下的位置
    *   就不是同一个地方，而且一点报错都没有。
    */
   dataRoots: () => call<DataRoot[]>('list_data_roots'),
+
+  /**
+   * ★★ 实时读「更新说明」（2026-09-26，用户：「**这个版本更新列表可以改成
+   *   实时获取吗，点进去就刷新**」）。
+   *
+   * ★ 为什么需要它：Tauri 的 updater 插件在**版本相同时返回 `null`**，
+   *   所以"我已经是最新版了，这一版改了什么"在客户端里拿不到 ——
+   *   只能看构建时打进包里的那份。这条命令直接读更新通道的清单，绕开那个限制。
+   * ★ 失败**不报错**：调用方（更新日志页）退回构建时那份，照旧能看。
+   */
+  updateNotes: () =>
+    call<{ version: string; notes: string; pubDate: string }>('fetch_update_notes'),
 
   /** 忘掉一个文件夹（目录已经没了时用）—— 只动那张列表，不碰磁盘 */
   forgetDataRoot: (path: string) => call<void>('forget_data_root', { path }),
@@ -1256,9 +1273,14 @@ export interface DataRoot {
   isCurrent: boolean;
   /** 在系统盘上 —— 提示，不是错误 */
   onSystemDrive: boolean;
-  /** `known` = 记录里用过；`found` = 在盘上扫到的同款目录 */
-  source: 'known' | 'found';
-}
+  /**
+   * 这一行从哪来：`current` = 现在正在用的那个；`known` = 玩家自己选过的。
+   *
+   * ★★ 2026-09-26：**只剩这两种**。原来的 `found`（扫盘扫到的 `<盘>\IEML`）
+   *   已按用户要求取消 —— 那张表只显示"你自己选过的目录"，见
+   *   Rust 侧 `platform::list_known_roots` 的说明。
+   */
+  source: 'current' | 'known';}
 
 /* ====================== 账号 ====================== */
 

@@ -50,6 +50,14 @@ export interface LauncherUpdate {
   checkNow: (opts?: { silent?: boolean }) => Promise<void>;
   download: () => Promise<void>;
   install: () => Promise<void>;
+  /**
+   * ★★ 实时读「更新说明」（2026-09-26，更新日志页"点进去就刷新"用）。
+   *
+   *   与 `checkNow` 不是一回事：`checkNow` 问"**有没有新版本**"（走 updater 插件，
+   *   版本相同时它什么都不返回），这个只读更新通道的清单里的说明文字 ——
+   *   所以**已经是最新版**时它照样有东西可显示。
+   */
+  refreshNotes: () => Promise<void>;
 }
 import {
   initialState,
