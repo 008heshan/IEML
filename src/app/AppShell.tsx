@@ -528,7 +528,15 @@ export function App() {
                 const current = state.page === item.id;
                 const badge =
                   item.id === 'versions'
-                    ? state.instances.length
+                    ? /*
+                       * ★★ 2026-09-25（用户：「版本列表的计数不是实时更新的」）：
+                       *   角标 = **当前文件夹里有几个版本**（`machine.versionCount`），
+                       *   与版本列表页头、那页筛选里的"全部 N"是同一个数 ——
+                       *   换目录、装完版本之后都会跟着变。
+                       *   ★ 兜底用 `instances.length`：`machine` 要等启动信息回来才在，
+                       *     那一刻之前宁可显示旧口径，也不要显示 0（0 是一句假话）。
+                       */
+                      (state.machine?.versionCount ?? state.instances.length)
                     : item.id === 'download'
                       ? state.tasks.filter(
                           (t) => t.status === 'running' || t.status === 'pending',

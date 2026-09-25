@@ -99,7 +99,7 @@ function menuLayout(anchor: DOMRect, height: number): MenuPos {
 export function VersionsPage() {
   /** 应用自己的确认弹窗（`window.confirm` 在这个壳里是坏的，见 `ui/confirm.tsx`） */
   const confirm = useConfirm();
-  const { state, go, goDownloadTab, goDownloadFor, openVersion, toast, removeInstance, duplicateInstance, renameInstance, refreshInstances, createInstance } =
+  const { state, go, goDownloadTab, goDownloadFor, openVersion, toast, removeInstance, duplicateInstance, renameInstance, refreshInstances, createInstance, noteFolderVersionCount } =
     useApp();
   const { api } = useRealApi();
   const [filter, setFilter] = useState<Filter>('all');
@@ -310,12 +310,19 @@ export function VersionsPage() {
       return;
     }
     try {
-      setFolderVers(await api.launcher.folderVersions());
+      const list = await api.launcher.folderVersions();
+      setFolderVers(list);
+      /*
+       * ★★ 2026-09-25（用户：「版本列表的计数不是实时更新的」）：
+       *   页头 / 侧栏角标 / 筛选里的"全部 N"必须是同一个数 ——
+       *   而这里才是唯一知道最新值的地方（真读盘扫出来的），所以推回全局。
+       */
+      noteFolderVersionCount(list.filter((v) => v.hasJson).length);
     } catch {
-      /* 读不到就落回"按账本 + 体检"的老路子：宁可少说，不说假话 */
+      /* 读不到就落回"按账本"的老路子：宁可少说，不说假话 */
       setFolderVers(null);
     }
-  }, [api]);
+  }, [api, noteFolderVersionCount]);
 
   useEffect(() => {
     void reloadFolderVersions();
@@ -576,7 +583,7 @@ export function VersionsPage() {
           value={filter}
           onChange={setFilter}
           options={[
-            { value: 'all', label: `全部 ${state.instances.length + newVersions.length}` },
+            { value: 'all', label: `全部 ${okRows.length + newVersions.length}` },
             { value: 'modded', label: '可装 Mod' },
             { value: 'vanilla', label: '原版' },
           ]}

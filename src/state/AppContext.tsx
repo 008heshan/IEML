@@ -247,6 +247,18 @@ interface AppContextValue {  state: AppState;
   refreshInstances: () => Promise<void>;
 
   /**
+   * ★★ 2026-09-25（用户：「版本列表的计数不是实时更新的」）：
+   *
+   *   把"当前文件夹里有几个版本"写回全局 —— 由**版本列表页扫完盘之后**调用。
+   *
+   *   为什么需要它：这个数同时出现在三个地方（版本列表页头、侧栏角标、筛选里的
+   *   "全部 N"），而 `machine_info` 只在启动与换目录时刷新 ⇒ 装完一个版本之后
+   *   角标会停在旧数。让唯一知道最新值的地方（那一页的真读盘结果）推回来，
+   *   三处就永远是同一个数。
+   */
+  noteFolderVersionCount: (count: number) => void;
+
+  /**
    * ★ 偏好写盘失败的原因（null = 正常）。
    *
    * 为什么要有它：偏好存不上时用户看到的是"改完设置、重启就没了"，
@@ -1054,6 +1066,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('focus', onFocus);
   }, [refreshInstances]);
 
+  /**
+   * ★★ 2026-09-25（用户：「版本列表的计数不是实时更新的」）。
+   *
+   *   版本列表页每次真读盘扫完当前文件夹，就把"有几个版本"告诉我们 ——
+   *   页头 / 侧栏角标 / 筛选里的"全部 N" 从此是同一个数，而且跟着盘上的事实走。
+   */
+  const noteFolderVersionCount = useCallback((count: number) => {
+    dispatch({ type: 'machine/versionCount', count });
+  }, []);
+
   const setLaunchTarget = useCallback((id: string | null) => {
     dispatch({ type: 'instances/last', id });
   }, []);
@@ -1354,6 +1376,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     refreshJava,
     reloadAfterRootChange,
     refreshInstances,
+    noteFolderVersionCount,
     prefsSaveFailed,
     update,
     vfx: {
