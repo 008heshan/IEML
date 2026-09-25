@@ -1392,9 +1392,12 @@ mod tests {
         assert!(e.contains("字符"), "要说清长度不对：{e}");
         assert!(e.contains("console.curseforge.com"), "要给出可行动的下一步：{e}");
         // 带空白（多半把说明文字一起复制了）
+        // ★ 2026-09-25：这里的样例刻意用**重复串**（CUSTOMKEY…）而不是顺序字母 ——
+        //   顺序字母那种形状与真 key 一模一样，会被 `tools/gates/check-secrets.mjs`
+        //   当成疑似的真凭据（那条门禁是对的：它按形状抓，不猜内容）。
         let e2 = save_api_key(
             &paths,
-            "$2a$10$abcdefghijklmnopqrstuvwxyz0123456789 abcdefghijklmnopqrstuvwxyz",
+            "$2a$10$CUSTOMKEYCUSTOMKEYCUSTOMKEYCUSTOMKEYCUSTOMKEYCUSTOMKEY CUSTOMKEY",
         )
         .unwrap_err()
         .to_string();
