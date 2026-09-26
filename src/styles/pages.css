@@ -895,12 +895,22 @@
 }
 
 /* 整合包卡片 */
+/*
+ * ★★★★ 2026-09-26 用户（两张截图，指着 Mod / 资源卡那种样式）：
+ *   「**资源包的图片要不然改成这样的？**」「**整合包的图片要不然改成这样的？**」
+ *
+ *   也就是说：封面不做"置顶大图"，改成**小图标在标题左边** ——
+ *   与 `.res-card`（Mod / 资源包 / 光影 / 数据包）**同一套形状**：
+ *     `.pack-head`（44px 圆角图标 + 右边标题/作者）
+ *     + 下面整宽的标签与下载量
+ *   ★ 这是这一轮第二次动它：上一轮只是把 96px 的图裁好（那时它还是"大图在上"），
+ *     现在连形状一起对齐资源卡 —— **两种卡从此长得一样**。
+ */
 .pack-card {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding: 0;
-  overflow: hidden;
+  padding: var(--card-pad);
   border-radius: var(--radius-lg);
   border: 1px solid var(--border-subtle);
   background: var(--bg-raised);
@@ -914,16 +924,27 @@
   border-color: var(--border-strong);
   transform: translateY(-1px);
 }
+/* 图标 + 标题/作者那一行（与 `.res-card-head` 同一个排法） */
+.pack-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
 .pack-cover {
-  height: 6px;
-  background: var(--bg-active);
   /*
-   * ★★ 2026-09-15（用户："封面显示位置不对"）：`<img>` 是这一轮才加进来的，
-   *   而 `.pack-cover` 本来是**一条 6px 高的色条**（`data-weight` 决定颜色，
-   *   用来表示整合包"分量"）。图进去之后没有任何尺寸约束，就按原图大小
-   *   （512×512 之类）**溢出整张卡片** —— 截图里那些糊满卡片的图就是这个。
-   *   改成：封面区固定高度、图片等比裁切填满。
+   * 图标尺寸。
+   * ★★ 2026-09-26 用户：「**整合包图片要比正常的资源卡片的图片大一些**」——
+   *   资源卡（`.res-cover`）是 44px，这里给 **56px**（大一号）。
+   *   整合包卡一行只有两个、横向更宽，图大一点才压得住版面。
+   * ★ 没有封面时它是一个同尺寸的色块（`data-weight` 决定颜色）——
+   *   仍然是"分量"的表达，但不再是那条横贯卡片的色带。
    */
+  flex: 0 0 auto;
+  width: 56px;
+  height: 56px;
+  border-radius: 10px;
+  background: var(--bg-active);
   overflow: hidden;
 }
 .pack-cover img {
@@ -947,15 +968,13 @@
   user-select: none;
 }
 /*
- * 有真封面时不再用"分量色条"那套（两者同时出现只会互相打架）。
+ * 有真封面时把底色让出来（`data-has-img` 由 JSX 给，别让样式去猜 DOM）。
  *
  * ★ 2026-09-17：这里原来写的是 `.pack-cover:has(img)`。`:has()` 需要
  *   Chromium 105+（本机 WebView2 是 153，跑得动），但那是**没必要的版本依赖** ——
  *   一个属性选择器就能表达同一件事，而且在任何内核上都成立。
- *   判据由 JSX 给（`data-has-img`），别让样式去猜 DOM 里有没有子元素。
  */
 .pack-cover[data-has-img='1'] {
-  height: 96px;
   background: var(--bg-surface);
 }
 .pack-cover[data-weight='heavy'] {
@@ -965,10 +984,10 @@
   background: var(--success);
 }
 .pack-body {
-  padding: var(--space-3) var(--space-4) var(--space-4);
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+  min-width: 0;
 }
 .pack-name {
   font-size: var(--text-md);
@@ -2455,6 +2474,15 @@
   height: 44px;
   flex: 0 0 auto;
   border-radius: 8px;
+}
+/*
+ * 整合包的骨架图标要**和结果一样大**（56px，见 `.pack-cover`）——
+ * ★ 骨架与结果不同形状，内容到位时界面会整块跳一下（这条规矩当初就是为它立的）。
+ */
+.pack-card-sk .sk-cover {
+  width: 56px;
+  height: 56px;
+  border-radius: 10px;
 }
 .sk-line {
   height: 11px;

@@ -224,6 +224,36 @@ try {
 
   /* ---------- ① 换数据来源（用户截图里那个动作） ---------- */
   /*
+   * ★★★★ 2026-09-26：**先量一次"资源卡"的图标尺寸** —— 后面要断言
+   *   「整合包图片比正常的资源卡片的图片大一些」（用户原话），
+   *   而两类卡不在同一屏（整合包在下载页、资源卡在资源页签），
+   *   所以必须**分两处量、最后比**。
+   *   ★ 不这么做的话那条判据会因为"本屏没有资源卡"而**空过** ——
+   *     "没测到"不是"通过"（这条规矩在这个仓库里写过很多次）。
+   */
+  let resCoverW = null;
+  for (const tab of ['资源包', 'Mod', '光影']) {
+    await ev(
+      `[...document.querySelectorAll('[role=tab], .tab')].find((x) => (x.textContent || '').includes(${JSON.stringify(tab)}))?.click()`,
+    );
+    await sleep(3500);
+    const w = await ev(
+      `(() => { const c = document.querySelector('.res-grid .res-cover'); return c ? Math.round(c.getBoundingClientRect().width) : null; })()`,
+    );
+    if (typeof w === 'number' && w > 0) {
+      resCoverW = w;
+      console.log(`\n参考：资源包页签里的资源卡图标 = ${w}px`);
+      break;
+    }
+  }
+  if (resCoverW === null) console.log('\n⚠ 三个资源页签都没量到资源卡图标（那条比较会跳过）—— 不算通过');
+  /* 回到整合包页签继续后面几步 */
+  await ev(
+    `[...document.querySelectorAll('[role=tab], .tab')].find((x) => (x.textContent || '').includes('整合包'))?.click()`,
+  );
+  await sleep(3500);
+
+  /*
    * ★★ 换来源：两个源的结果**一定不同**（真机实测：CF 是 ATM10 那批、Modrinth 是另一批）
    *   ⇒ 这里硬要求"结果集真的换了"。这正是用户截图那个 bug 的反面判据：
    *     旧代码切了来源却还留着上一批 ⇒ 指纹不会变。
@@ -351,6 +381,71 @@ try {
       `「${c.name}」的图标在按钮里居中`,
       `上 ${c.top} / 下 ${c.bottom}`,
     );
+  }
+
+  /* ---------- ⑥ 卡片形状：小图标在标题左边（用户给的两张截图） ---------- */
+  /*
+   * ★★★★ 2026-09-26 用户（两张截图，指着 Mod / 资源卡那种样式）：
+   *   「**资源包的图片要不然改成这样的？**」「**整合包的图片要不然改成这样的？**」
+   *   ⇒ 封面不做"置顶大图"，改成**小图标在标题左边**（与 `res-card` 同一形状）。
+   *
+   *   判据（几何，不是"看着像"）：
+   *     · 图标是**小方块**（≤ 64px，且**比资源卡的 44px 大** —— 见下）；
+   *     · 它的**垂直中心与标题基本齐平**（在同一行，而不是在卡片顶上）；
+   *     · 标题在图标**右边**；
+   *     · 矩阵档**一行只有两个**（用户：「矩阵只能是一行两个」）。
+   *
+   *   ★★ 2026-09-26 追加：「整合包图片要比正常的资源卡片的图片大一些」
+   *     ⇒ 整合包图标 **56px**（资源卡是 44px）+ **一行两列**。
+   */
+  console.log('\n⑥ 卡片形状（小图标 + 标题）');
+  const cardShape = await ev(`(() => {
+    const card = document.querySelector('.grid-cards .pack-card');
+    if (!card) return null;
+    const cover = card.querySelector('.pack-head .pack-cover');
+    const name = card.querySelector('.pack-head .pack-body .pack-name') ?? card.querySelector('.pack-name');
+    if (!cover || !name) return { missing: true, hasHead: !!card.querySelector('.pack-head') };
+    const cr = card.getBoundingClientRect();
+    const k = cover.getBoundingClientRect();
+    const nr = name.getBoundingClientRect();
+    const cy = (r) => r.top + r.height / 2;
+    const resCover = document.querySelector('.res-cover');
+    return {
+      cover: { w: Math.round(k.width), h: Math.round(k.height) },
+      resCoverW: resCover ? Math.round(resCover.getBoundingClientRect().width) : null,
+      nameLeftOf: Math.round(nr.left - k.right),
+      centerDeltaY: Math.round(Math.abs(cy(k) - cy(nr))),
+      columnsInGrid: (() => {
+        const grid = document.querySelector('.grid-cards');
+        return grid ? getComputedStyle(grid).gridTemplateColumns.split(' ').filter(Boolean).length : null;
+      })(),
+      cardsPerRow: (() => {
+        const cards = [...document.querySelectorAll('.grid-cards .pack-card')];
+        if (cards.length < 2) return cards.length;
+        const firstTop = Math.round(cards[0].getBoundingClientRect().top);
+        return cards.filter((c) => Math.round(c.getBoundingClientRect().top) === firstTop).length;
+      })(),
+    };
+  })()`);
+  if (!cardShape) {
+    console.log('  · 这一屏没有卡片，跳过');
+  } else if (cardShape.missing) {
+    check(false, '卡片里有「图标 + 标题」那一行（.pack-head）', JSON.stringify(cardShape));
+  } else {
+    console.log(`  ${JSON.stringify(cardShape)}`);
+    check(cardShape.cover.w <= 64 && cardShape.cover.h <= 64, '封面是**小图标**（≤64px）', `${cardShape.cover.w}×${cardShape.cover.h}`);
+    if (resCoverW === null) {
+      check(false, '整合包图标**比资源卡的大**（这一步没量到资源卡，不算通过）', '资源卡图标尺寸未知');
+    } else {
+      check(
+        cardShape.cover.w > resCoverW,
+        '整合包图标**比资源卡的大**',
+        `${cardShape.cover.w} vs 资源卡 ${resCoverW}`,
+      );
+    }
+    check(cardShape.nameLeftOf >= 4, '标题在图标**右边**', `间距 ${cardShape.nameLeftOf}px`);
+    check(cardShape.centerDeltaY <= 16, '图标与标题**同一行**（中心齐平）', `中心差 ${cardShape.centerDeltaY}px`);
+    check(cardShape.cardsPerRow === 2, '矩阵档**一行两个**', `实际 ${cardShape.cardsPerRow} 个（列 ${cardShape.columnsInGrid}）`);
   }
 
   /* ---------- ⑤ 分页条：间距与位置（用户：「太贴底部」） ---------- */
