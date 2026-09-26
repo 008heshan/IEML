@@ -2,9 +2,9 @@
 
 从零构建的 Minecraft 启动器。快、小、好用。
 
-**当前版本：`0.1.0-rc.12`** — 改动见 [`CHANGELOG.md`](CHANGELOG.md)。
+**当前版本：`0.1.0`** — 改动见 [`CHANGELOG.md`](CHANGELOG.md)。
 
-真实可运行的桌面应用，465 项 Rust 测试 + 前端测试，真实下载和真实启动都跑通过。
+真实可运行的桌面应用，460+ 项 Rust 测试 + 前端测试，真实下载和真实启动都跑通过。
 
 ## 快速开始
 
@@ -14,7 +14,7 @@ pnpm dev              # 浏览器开发，?demo=1 给演示实例
 pnpm desktop:dev      # 桌面版
 pnpm desktop:build    # 打包 exe + NSIS，并逐字节复制到桌面
                       #   → src-tauri/target/release/ieml.exe
-                      #   → src-tauri/target/release/bundle/nsis/IEML_0.1.0-rc.12_x64-setup.exe
+                      #   → src-tauri/target/release/bundle/nsis/IEML_0.1.0_x64-setup.exe
 pnpm verify           # 一键验证：类型 + 测试 + 端到端 + 构建 + 静态门禁
 ```
 
@@ -32,7 +32,7 @@ pnpm desktop:build
 
 ## 为什么做这个
 
-Tauri 2 + Rust + React 18。不打包 Chromium，裸 exe 9.1 MB，NSIS 安装包 3.4 MB，Rust 主进程内存 30.5 MB。
+Tauri 2 + Rust + React 18。不打包 Chromium，裸 exe 约 9.1 MB，NSIS 安装包约 3.6 MB，Rust 主进程内存 30.5 MB。
 
 数据目录默认不放在系统盘，按空闲空间挑盘。游戏数据放在 `.minecraft`，实例隔离在 `instances/<名字>/game/`。
 
@@ -69,6 +69,11 @@ UI（React）  →  桥接（一个接口两套实现）  →  领域层（TS �
 
 - **只发布 Windows**。macOS / Linux 没有实测过（没有 CI、也没有那两台机器），
   `0.1.0` 的范围就是 Windows。见 [`docs/VERSIONING.md`](docs/VERSIONING.md) 的平台口径。
+- **安装包没有买 Windows 代码签名证书**（实测：exe 与安装包的 Authenticode 状态都是
+  `NotSigned`），所以从浏览器下载后首次运行，Windows 可能提示「已保护你的电脑」或
+  「未知发布者」—— 点「更多信息 → 仍要运行」即可。**自身更新是另一套**：
+  每个更新包都带 Ed25519 签名，客户端装之前会验签（每次发布都实测过，
+  见 `tools/release/verify-endpoint.mjs`）。
 - **Java 自动下载只能走 Adoptium 官方端点** —— 它没有可用的国内镜像
   （实测：TUNA 403、NJU / BFSU / SJTU / ZJU / PKU / 阿里 404、USTC 反爬、
   BMCLAPI 302 到 Cloudflare）。所以网络不好时这一步会失败；
@@ -84,7 +89,7 @@ UI（React）  →  桥接（一个接口两套实现）  →  领域层（TS �
 
 ## 技术栈
 
-Rust · Tauri 2 · React 18 · TypeScript · Vite · 手写 CSS（无 UI 框架，前端产物约 858 kB）
+Rust · Tauri 2 · React 18 · TypeScript · Vite · 手写 CSS（无 UI 框架，前端产物约 864 kB）
 
 ## 许可
 

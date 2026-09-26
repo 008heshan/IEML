@@ -92,6 +92,29 @@ for (const b of BANNED) {
   if (b.re.test(text)) problems.push(`README 承诺了一个已不存在的机制：${b.why}`);
 }
 
+/*
+ * ---------- ④ 会漂的数字：**只许写下限，不许写精确值** ----------
+ *
+ * ★★ 2026-09-26（这一轮实测撞到的）：README 第 7 行写着「465 项 Rust 测试」，
+ *   而当天实测是 **467** —— 这是它**第三次**过期（最早 437，改 465 那次也没判据）。
+ *   原因不是马虎，是**这类数字天然只增不减**，写死就一定会漂。
+ *
+ *   ⇒ 判据：测试项数必须写成下限（`460+ 项`）。下限只会"变得更真"，
+ *     而且读者一眼就知道那不是精确值。
+ *
+ *   ★ 为什么不去跑 `cargo test --lib -- --list` 拿精确数对：
+ *     那会让一条**静态**门禁依赖编译（几十秒 + 要 MSVC 环境），
+ *     而这台机器上"门禁要能随手跑"是更前面的一条纪律（见 verify.mjs 头部）。
+ *     下限写法用一条正则就守住了同一类病，成本差两个数量级。
+ */
+const exactCount = /(\d{2,4})\s*项\s*(Rust|rust|前端|单元)?\s*测试/.exec(text);
+if (exactCount && !/\+/.test(exactCount[0])) {
+  problems.push(
+    `README 写了精确的测试项数（「${exactCount[0]}」）—— 这类数字只会涨，写死必然过期；` +
+      `改成下限写法（例如「${exactCount[1]}+ 项 Rust 测试」）`,
+  );
+}
+
 console.log(`  检查 README：${[...text.matchAll(/`[^`\n]+`/g)].length} 个行内代码 / ${scripts.size} 个 pnpm 脚本`);
 for (const p of problems) console.log(`  ✗ ${p}`);
 
