@@ -47,8 +47,7 @@ tools/
 │   └─ shot.mjs                        按 plan.json 驱动浏览器截图
 │
 ├─ probe/     ★ 打上游接口，先证明事实再写代码（要联网；结论会被固化成测试）
-│   ├─ probe-curseforge.mjs            CF：连通性 / key / 各类资源有没有结果
-│   ├─ probe-curseforge-deep.mjs       CF：classId / 加载器编号 / 指纹端点 / CDN 候选
+│   ├─ probe-cf-mirror-keyless.mjs     ★ CF：确认"不带任何 key 也全通"（镜像这一路）
 │   ├─ probe-ms-devicecode.ps1         微软设备码流程的原型探测
 │   ├─ probe-ms-clientids.ps1          ★ 哪个 client_id 真能用（带随机编造的对照组）
 │   ├─ probe-browse.mjs                ★ 空关键词"列热门"有没有内容 / 翻页重不重复
@@ -84,6 +83,7 @@ tools/
 ## 两条纪律
 
 1. **一次性脚本用完要删**：结论写进测试或文档之后，脚本本身只剩噪音
-   （本轮就删了 4 个 CurseForge 探针与 5 个引用旧绝对路径的死脚本）。
+   （本轮删了 2 个"要 key 的 CF 探针"—— 用户已定"CF 完全不用 key"，
+   它们验的那条路不存在了；更早一轮删了 4 个 CurseForge 探针与 5 个引用旧绝对路径的死脚本）。
 2. **脚本名字要回答"它回答什么问题"**：`xxx2.mjs` 这种后缀一律不许出现 ——
    它等同于"我不知道这两个有什么区别"（本轮把 `check-natives2` 之类全部改名）。
