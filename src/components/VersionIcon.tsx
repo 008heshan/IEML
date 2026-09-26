@@ -21,80 +21,25 @@
  * 不复制任何官方美术。PCL 用的是本地游戏文件里的贴图 —— 我们没有那份文件，
  * 也不该去下它。
  *
- * ## 世代判据只有一份
+ * ## ★★★★ 2026-09-26：**世代判据与分组函数搬到 `./version-family.ts` 了**
  *
- * 哪个版本算哪一代，只在这个文件的 `versionFamily()` 里判一次。
- * 界面别处（版本列表、下载页、概览）都调它 —— 否则同一条规则会出现第二份。
+ *   `versionFamily` / `VersionFamily` / `groupByFamily` 现在住在那边，
+ *   这里是**图标组件**（只负责画）。
  *
- * ★★ 2026-09-23 晚（用户看着「愚人节」那一档说「**这个分类就有点莫名其妙了**」）：
- *   "愚人节是哪些版本"这件事，`domain/loader-caps.ts` 里**已经有一份白名单**
- *   （`APRIL_FOOLS`，9 个，还写着"宁可漏一个，不可错一个"的理由）。
- *   而这里**又抄了一份**（只有 4 个），并且**排在快照规则后面**。两处后果：
- *     · `15w14a` / `1.RV-Pre1` 被快照规则 `-(pre|rc)\d*$` 吞掉 → 标成「快照」；
- *     · `24w14potato` / `25w14craftmine` 谁都不认 → 标成「其他」。
- *   于是"愚人节"档里出现了「其他 / 愚人节 / 快照」三个分组 —— 那正是用户看到的莫名其妙。
- *   现在**只留一份**：下面直接调 `isAprilFoolsVersion()`，而且**排在快照之前**判。
- *   （这就是 ADR-051 那条"同一个判据写两遍"的老毛病，第 N 次。）
+ *   为什么搬：那几个是纯逻辑，而 `.tsx` 里的东西**跑不进 `node --test`**
+ *   （Node 只剥离 `.ts`，遇到 `.tsx` 直接 `ERR_UNKNOWN_FILE_EXTENSION`）。
+ *   搬出来之后 `tests/version-groups.test.mjs` 能直接调它们 ——
+ *   而"同一世代出现两次"（用户截图：快照出现了两次）这种毛病
+ *   **不报错、只是显示乱**，正是必须有机器守的那一类。
+ *
+ *   ★ 这里**只 re-export**，让老的 import 路径（`./VersionIcon`）继续可用；
+ *     新代码请直接从 `./version-family` 拿（那边才是真源）。
  */
 
 import versionIcon from '../assets/version-icon.png';
-import { isAprilFoolsVersion } from '../domain';
+import { versionFamily } from './version-family';
 
-/** 一个版本世代：谁属于它、叫什么、用什么色 */
-export interface VersionFamily {
-  key: string;
-  /** 列表分组标题（`1.21` / `1.7 ~ 1.12` / `快照`） */
-  label: string;
-  /** 图标配色档位（CSS 里一一对应） */
-  tone: 'modern' | 'mid' | 'classic' | 'legacy' | 'snapshot' | 'april';
-  /** 分组排序用：越大越新 */
-  rank: number;
-}
-
-/**
- * 从版本号推出世代。
- *
- * ★ 规则刻意简单：只看 `主.次`，特殊形态（快照 / 愚人节版本）单独判。
- *   Minecraft 的世代边界就是"哪一年发的那条线"：
- *     1.21+     = 现代（绿）
- *     1.16~1.20 = 中期（蓝）
- *     1.13~1.15 = 海洋/村庄更新（靛）
- *     1.7~1.12  = 老 Mod 黄金期（琥珀）
- *     ≤1.6      = 更早（石）
- *   颜色不是装饰：1.12.2 与 1.20.1 的 Mod 生态完全不同，用户需要一眼分开。
- */
-export function versionFamily(version: string): VersionFamily {
-  const v = (version || '').trim();
-  /*
-   * ★★ 愚人节必须**排在快照之前**判：`15w14a` 长得就像普通快照，
-   *   `1.RV-Pre1` 还会被下面的 `-(pre|rc)\d*$` 命中 —— 先问白名单，
-   *   这两类就不会被误判成「快照」（判据只有 `isAprilFoolsVersion()` 一处）。
-   */
-  if (isAprilFoolsVersion(v)) {
-    return { key: 'april', label: '愚人节', tone: 'april', rank: 8999 };
-  }
-  // 快照：`25w14a` / `1.21.2-pre1` / `24w03a`
-  if (/^\d{2}w\d{2}[a-z]$/i.test(v) || /-(pre|rc)\d*$/i.test(v)) {
-    return { key: 'snap', label: '快照', tone: 'snapshot', rank: 9000 };
-  }
-  const m = v.match(/^(\d+)\.(\d+)/);
-  if (!m) return { key: 'other', label: '其他', tone: 'classic', rank: 0 };
-  const major = Number(m[1]);
-  const minor = Number(m[2]);
-  /*
-   * ★★ 2026-09-16（用户："比如 26.2 和 26.1，在 26.2 就显示 26.2，在 26.1 就显示 26.1"）：
-   *   这一支以前写的是 `label: v`（**整串版本号**），而 `key` 是世代。
-   *   于是分组的标题会取到组里第一行的完整 id —— `26.2-rc-2`、`26.2-pre-6`
-   *   这种当标题，看着像"这一组是 rc"，其实它和 `26.2` 是同一组。
-   *   现在**标签就用世代号**，与其它分支一致（`1.21` / `1.7` 本来就是这样）。
-   */
-  if (major >= 2) return { key: `${major}.${minor}`, label: `${major}.${minor}`, tone: 'modern', rank: 10000 + minor };
-  if (minor >= 21) return { key: `${major}.${minor}`, label: `${major}.${minor}`, tone: 'modern', rank: 10000 + minor };
-  if (minor >= 16) return { key: `${major}.${minor}`, label: `${major}.${minor}`, tone: 'mid', rank: 5000 + minor };
-  if (minor >= 13) return { key: `${major}.${minor}`, label: `${major}.${minor}`, tone: 'classic', rank: 3000 + minor };
-  if (minor >= 7) return { key: `${major}.${minor}`, label: `${major}.${minor}`, tone: 'legacy', rank: 1000 + minor };
-  return { key: 'ancient', label: '1.6 及更早', tone: 'classic', rank: 500 + minor };
-}
+export { groupByFamily, versionFamily, type VersionFamily } from './version-family';
 
 /**
  * 自绘的等距方块图标。
@@ -123,24 +68,4 @@ export function VersionIcon({
       <img src={versionIcon} width={size} height={size} alt="" style={{ borderRadius: 4 }} />
     </span>
   );
-}
-
-/**
- * 把版本号列表按世代分组（**顺序保持原样**：上游清单本来就是新→旧）。
- *
- * 为什么保持原顺序而不是自己排：清单顺序是上游给的"什么是最新"，
- * 我们重排就等于自己造了一份顺序；分组只负责"切开"，不负责"排序"。
- */
-export function groupByFamily<T>(
-  rows: T[],
-  versionOf: (row: T) => string,
-): Array<{ fam: VersionFamily; rows: T[] }> {
-  const out: Array<{ fam: VersionFamily; rows: T[] }> = [];
-  for (const r of rows) {
-    const fam = versionFamily(versionOf(r));
-    const last = out[out.length - 1];
-    if (last && last.fam.key === fam.key) last.rows.push(r);
-    else out.push({ fam, rows: [r] });
-  }
-  return out;
 }

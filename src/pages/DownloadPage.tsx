@@ -1055,10 +1055,11 @@ function ModpackTab({
         </Button>
       </div>
 
-      <div className="dim" style={{ marginTop: 'var(--space-2)' }}>
-        {/* ★ 2026-09-23：来源可切换之后这句话要**跟着来源走** —— 写死"来自 Modrinth" 是假信息 */}
-        数据来自 {packSource === 'curseforge' ? 'CurseForge' : 'Modrinth'}
-      </div>
+      {/*
+        ★★ 2026-09-26 用户：「**资源下载，数据来源可以不写了**」——
+          这一行「数据来自 Modrinth / CurseForge」删掉：
+          来源是**玩家自己点的那个开关**，再写一行字复述一遍没有新信息。
+      */}
 
       {error ? (
         <Note
