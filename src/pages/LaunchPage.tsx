@@ -123,6 +123,17 @@ export function LaunchPage() {
        */
       join_server: target.config.joinServer ?? null,
       /*
+       * ★★ 2026-09-26（A-2）：**附加组件也要传给启动侧**。
+       *
+       *   "纯原版 + OptiFine"是合法用法（ADR-003），它的产物在
+       *   `versions/<mc>-OptiFine_<版本>/`；不传这个字段的话，后端只会去找
+       *   `versions/<mc>/`（原版 JSON），于是 OptiFine 装了却完全没生效。
+       *
+       *   ★ 只传 kind：具体哪一份由后端按**盘上的痕迹**定
+       *     （`resolve_addon_version_id`），前端不维护第二套"怎么找版本"的规则。
+       */
+      addons: target.addons.map((a) => a.kind),
+      /*
        * ★ 这里原来还有一个 `java_major` 字段，**已经删掉了**。
        *
        *   他调的是本地的 `neededJavaMajor()`，只取 `split('.')[0]` 当 major，
