@@ -54,6 +54,19 @@ export const IconGrid = (p: P) => (
   </svg>
 );
 
+/**
+ * 「条形」显示（一行一个）。
+ *
+ * ★ 2026-09-26：与 `IconGrid` 配成一对，用在资源列表的"显示方式"切换上。
+ *   画的是**三条整宽横杠**（不是列表符号）—— 与矩阵的四宫格一眼能分辨。
+ */
+export const IconRows = (p: P) => (
+  <svg {...base(p)}>
+    <rect x="3" y="4" width="18" height="5" rx="1.5" />
+    <rect x="3" y="12" width="18" height="5" rx="1.5" />
+  </svg>
+);
+
 export const IconPuzzle = (p: P) => (
   <svg {...base(p)}>
     <path d="M12 3a2 2 0 0 1 2 2v1h2a2 2 0 0 1 2 2v2h1a2 2 0 1 1 0 4h-1v2a2 2 0 0 1-2 2h-2v-1a2 2 0 1 0-4 0v1H8a2 2 0 0 1-2-2v-2H5a2 2 0 1 1 0-4h1V8a2 2 0 0 1 2-2h2V5a2 2 0 0 1 2-2z" />

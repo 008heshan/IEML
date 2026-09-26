@@ -36,7 +36,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Chip, CustomSelect, Modal, Note, Segmented, Spinner } from '../ui';
-import { IconChevronRight, IconDownload, IconRefresh, IconSearch } from '../ui/Icons';
+import { IconChevronRight, IconDownload, IconGrid, IconRefresh, IconRows, IconSearch } from '../ui/Icons';
 import { groupKeyOf, useVersionGroups } from './resource-groups';
 import { useRealApi } from '../hooks/useRealApi';
 import { useApp } from '../state/AppContext';
@@ -413,6 +413,11 @@ export function ResourceCenterBody({
   const [error, setError] = useState<string | null>(null);
   /** ★ 搜哪个库（ADR-052）：两个源的结果形状一样，但内容不是同一批 */
   const [source, setSource] = useState<ResourceSourceName>('modrinth');
+  /**
+   * ★★ 显示方式（用户：「左是矩阵，右是条形」）—— 只影响 CSS 的列宽（`data-view`），
+   *   不重排 DOM、不重取数据（切换是纯显示，不该触发请求）。
+   */
+  const [view, setView] = useState<'grid' | 'list'>('grid');
   /*
    * ★ 2026-09-26：这里原来还有一个 `resultSource`（"这批结果从哪来"）——
    *   它只服务于界面上那句"数据来自 …"。用户说「资源下载，数据来源可以不写了」，
@@ -877,6 +882,23 @@ export function ResourceCenterBody({
           onChange={setSource}
           options={SOURCES.map((s) => ({ value: s.key, label: s.label }))}
         />
+        {/*
+          ★★★★ 2026-09-26 用户：「资源下载里在最多下载的右边加一个选项：
+            左是矩阵，右是条形。**显示资源 UI 的方式**」。
+            ⇒ 资源中心与整合包页**同一套**（都是"资源列表"，
+              两个地方不同款正是上一次那个 bug 的成因 —— 这次一起加）。
+            ★ 图标按钮必须带 `title`（同时进 `aria-label` 与 `title`）。
+        */}
+        <Segmented
+          label="显示方式"
+          size="sm"
+          value={view}
+          onChange={setView}
+          options={[
+            { value: 'grid', label: <IconGrid />, title: '矩阵：一行多个' },
+            { value: 'list', label: <IconRows />, title: '条形：一行一个' },
+          ]}
+        />
       </div>
 
       <div className="res-search">
@@ -937,7 +959,7 @@ export function ResourceCenterBody({
         内容到位是"填进去"，不是"换了一种布局"。
       */}
       {loading ? (
-        <div className="res-grid" aria-busy="true" aria-label="正在加载">
+        <div className="res-grid" data-view={view} aria-busy="true" aria-label="正在加载">
           {Array.from({ length: 6 }, (_, i) => (
             <div key={i} className="res-card res-card-sk">
               <div className="res-card-head">
@@ -961,7 +983,7 @@ export function ResourceCenterBody({
         </div>
       ) : null}
 
-      <div className="res-grid">
+      <div className="res-grid" data-view={view}>
         {hits.map((hit) => (
           <div key={hit.project_id} className={'res-card' + (openProject === hit.project_id ? ' open' : '')}>
             <div className="res-card-head">

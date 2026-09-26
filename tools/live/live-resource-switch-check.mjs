@@ -45,14 +45,22 @@ const check = (ok, label, extra = '') => {
   else fail += 1;
 };
 
-/** 当前整合包列表的样子：真实卡片 / 骨架 / 来源标签 */
+/** 当前整合包列表的样子：真实卡片 / 骨架 / **来源开关选中的那一个** */
 const packState = (ev) =>
   ev(`(() => {
     const cards = [...document.querySelectorAll('.pack-card')];
     const sk = cards.filter((c) => String(c.className).includes('sk')).length;
-    const label = [...document.querySelectorAll('.dim')]
-      .map((d) => (d.textContent || '').trim())
-      .find((t) => t.startsWith('数据来自')) ?? '(找不到)';
+    /*
+     * ★★ 2026-09-26：这里原来是读一句"数据来自 X"的小字 —— 而那行字**已经被删掉**
+     *   （用户："资源下载，数据来源可以不写了"）。判据不能依赖一句被删掉的文案。
+     *   ⇒ 改成读**来源分段控件里 aria-pressed 的那个按钮**：
+     *     它才是"现在选的是哪个来源"的**唯一真源**（那句小字本来就是它的复述）。
+     */
+    const seg = document.querySelector('.seg[aria-label="来源"]');
+    const label =
+      [...(seg?.querySelectorAll('button') ?? [])]
+        .find((b) => b.getAttribute('aria-pressed') === 'true')
+        ?.textContent?.trim() ?? '(找不到)';
     return { total: cards.length, skeletons: sk, real: cards.length - sk, label };
   })()`);
 
@@ -261,6 +269,64 @@ try {
   );
   const r3 = await expectNoInheritance(ev, `换加载器筛选（→ ${l.picked}）`, async () => {});
   check(r3.after.real > 0, '换加载器之后有新结果（或如实空列表）', `${r3.after.real} 张`);
+
+  /* ---------- ④ 显示方式：矩阵 / 条形（用户要求加的那个切换） ---------- */
+  /*
+   * ★★★★ 2026-09-26 用户：「资源下载里在最多下载的右边加一个选项：
+   *   左是矩阵，右是条形。**显示资源 UI 的方式**」。
+   *
+   *   判据问三件事（都在**真机**上，因为有真实数据才看得出列数）：
+   *     ① 那个切换在不在、点得动；
+   *     ② 矩阵 = **多列**、条形 = **一列**（这是"显示方式"的全部含义）；
+   *     ③ 切换**不重新取数据**（卡片数不变）—— 它是纯显示，不该触发请求。
+   */
+  console.log('\n④ 显示方式（矩阵 / 条形）');
+  const layout = async () =>
+    ev(`(() => {
+      const grid = document.querySelector('.grid-cards');
+      if (!grid) return null;
+      const cols = getComputedStyle(grid).gridTemplateColumns.split(' ').filter(Boolean).length;
+      const card = grid.querySelector('.pack-card');
+      return {
+        view: grid.getAttribute('data-view'),
+        cols,
+        cards: grid.querySelectorAll('.pack-card').length,
+        cardW: Math.round(card?.getBoundingClientRect().width ?? 0),
+        gridW: Math.round(grid.getBoundingClientRect().width),
+      };
+    })()`);
+
+  const hasToggle = await ev(
+    `!!document.querySelector('.seg[aria-label="显示方式"] button[aria-label*="条形"]')`,
+  );
+  check(hasToggle === true, '「显示方式」切换在（且有可读的名字）');
+
+  const asGrid = await layout();
+  await ev(
+    `document.querySelector('.seg[aria-label="显示方式"] button[aria-label*="条形"]')?.click(), 'list'`,
+  );
+  await sleep(700);
+  const asList = await layout();
+  await ev(
+    `document.querySelector('.seg[aria-label="显示方式"] button[aria-label*="矩阵"]')?.click(), 'grid'`,
+  );
+  await sleep(700);
+  const backToGrid = await layout();
+
+  console.log(`  矩阵 ${JSON.stringify(asGrid)}\n  条形 ${JSON.stringify(asList)}`);
+  check(asGrid?.cols > 1, '矩阵档：多列', `${asGrid?.cols} 列`);
+  check(asList?.cols === 1, '条形档：**一列**（一行一个）', `${asList?.cols} 列`);
+  check(
+    asList?.cardW >= asList?.gridW - 2,
+    '条形档：卡片占满整宽',
+    `${asList?.cardW} / ${asList?.gridW}`,
+  );
+  check(
+    asGrid?.cards === asList?.cards,
+    '切换**不重新取数据**（卡片数没变）',
+    `${asGrid?.cards} → ${asList?.cards}`,
+  );
+  check(backToGrid?.cols === asGrid?.cols, '切回矩阵与原来一致', `${backToGrid?.cols} 列`);
 } finally {
   /*
    * ★★ 只收**自己起的那个进程树** —— 三个地方都不能碰用户那份：

@@ -100,7 +100,16 @@ export function Switch({ checked, onChange, label, disabled }: SwitchProps) {
 
 export interface SegmentOption<T extends string> {
   value: T;
-  label: string;
+  /** 按钮内容：文字，或者图标（见 `title` 对无障碍的说明） */
+  label: React.ReactNode;
+  /**
+   * 这个选项叫什么 —— **label 是图标时必填**。
+   *
+   * ★ 2026-09-26（用户要求加"矩阵 / 条形"显示方式切换）：
+   *   纯图标按钮对读屏是空的（`aria-label` 拿不到东西），
+   *   所以给每个选项一个名字：它同时进 `aria-label` 与 `title`（悬停可见）。
+   */
+  title?: string;
   /** 不可用时的具体理由（禁止只说"不支持"） */
   disabledReason?: string;
 }
@@ -131,8 +140,9 @@ export function Segmented<T extends string>({
             type="button"
             className={value === o.value ? 'on' : ''}
             aria-pressed={value === o.value}
+            aria-label={o.title}
             disabled={disabled}
-            title={o.disabledReason}
+            title={o.disabledReason ?? o.title}
             onClick={() => onChange(o.value)}
           >
             {o.label}

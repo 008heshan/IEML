@@ -420,7 +420,22 @@ pub struct CfLinks {
     pub website_url: Option<String>,
 }
 
+/// CurseForge 搜索的 `pagination` 段。
+///
+/// ★★★★ 2026-09-26 修（用户：「**cf 的整合包只有一页**」）：
+///   这个结构体原来**没有 `rename_all = "camelCase"`**，而接口给的是
+///   `{"index":0,"pageSize":20,"resultCount":20,"totalCount":10000}` ——
+///   于是 `page_size` / `result_count` / `total_count` **三个字段全部落到
+///   `#[serde(default)]` 的 0**（`index` 恰好是单词所以躲过了）。
+///   后果：`total_hits` 只能取"到这一页为止的条数"（0 + 本页条数），
+///   界面算出"共 20 个" ⇒ **翻页器根本不出现**。
+///
+///   ★ 当年那条注释把原因认成了"空查询时接口不给 totalCount"——
+///     **实测接口一直给**（`mod.mcimirror.top` 空查询也回 `totalCount: 10000`）。
+///     教训：**"上游没给"与"我们没读进来"要分开验**，
+///     而跨 IPC/接口边界的字段名必须由契约测试守（这个仓库第 4 次栽在它上面）。
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CfPagination {
     #[serde(default)]
     pub index: u64,
@@ -548,12 +563,15 @@ pub async fn search(
     let at_least = pagination.index + (hits.len() as u64).max(pagination.result_count);
     Ok(modrinth::SearchResponse {
         /*
-         * ★★ **`total_count` 在"空查询"时是 0**（实测：不带 `searchFilter`
-         *   时接口回 `resultCount: 5, totalCount: 0`）。
+         * ★★★★ 2026-09-26 更正（用户：「cf 的整合包只有一页」）：
          *
-         *   直接把它当"命中总数"显示，界面就会在明明有结果时说"共 0 个结果"。
-         *   所以取"接口说的总数"与"这一页至少有多少"的较大值 ——
-         *   这是**下界**，不是估计值（我们不编数字）。
+         *   这里原来写着「**`total_count` 在"空查询"时是 0**」—— **那是错的**，
+         *   真因是 `CfPagination` 少了 `rename_all = "camelCase"`（见上面的说明），
+         *   接口给的 `totalCount` 一直没被读进来。
+         *   ⇒ 现在 `total_count` 是真的总数，`max(at_least)` 只在"上游确实没给"
+         *     或"总数比这一页还小"（不该发生，但守住不倒退）时兜底。
+         *   ★ 副作用（**是好事**）：空查询时不再会说"共 20 个"，
+         *     翻页器也能正常出现 —— 之前"空查询说共 0 个"那个症状其实同源。
          */
         total_hits: pagination.total_count.max(at_least),
         hits,
@@ -1132,6 +1150,28 @@ mod tests {
         assert_eq!(c2.len(), 2);
         assert_eq!(c2[0], "https://mediafilez.forgecdn.net/files/1234/567/x%20y.jar");
         assert!(c2[1].starts_with("https://mod.mcimirror.top/files/1234/567/"));
+    }
+
+    /// ★★★★ 2026-09-26 新增（用户：「**cf 的整合包只有一页**」）：**接口字段名契约**。
+    ///
+    ///   真机上出的事：`CfPagination` 少了 `rename_all = "camelCase"`，
+    ///   于是接口给的 `pageSize` / `resultCount` / `totalCount` **全部落到 0**，
+    ///   `total_hits` 退化成"这一页有几条" ⇒ 界面算出"共 20 个" ⇒ **翻页器根本不出现**。
+    ///   而这个错**编译器看不见、类型也对**（都是 u64），只有真机才露出来。
+    ///
+    ///   ⇒ 判据：拿**实测抄下来的那一段 JSON**（不是编的）喂给结构体，
+    ///     断言三个字段都真的读进来了。谁再动这个结构体（去掉 rename_all、
+    ///     写错字段名），这条当场红。
+    #[test]
+    fn cf_pagination_field_names_match_the_api() {
+        // ★ 真机抄的原文（`mod.mcimirror.top/curseforge/v1/mods/search`）
+        let raw = r#"{"pagination":{"index":20,"pageSize":20,"resultCount":20,"totalCount":10000},"data":[]}"#;
+        let list: CfList<CfMod> = serde_json::from_str(raw).expect("这段 JSON 应该能解析");
+        let p = list.pagination.expect("pagination 段必须被读进来");
+        assert_eq!(p.index, 20, "index 没读进来");
+        assert_eq!(p.page_size, 20, "pageSize 没读进来（rename_all 掉了？）");
+        assert_eq!(p.result_count, 20, "resultCount 没读进来");
+        assert_eq!(p.total_count, 10000, "totalCount 没读进来 —— 界面会以为只有一页");
     }
 
     #[test]

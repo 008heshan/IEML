@@ -2075,10 +2075,31 @@ tbody tr.clickable:focus-visible {
 }
 
 /* ============================ 栅格 ============================ */
+/*
+ * ★★★★ 2026-09-26（用户：「资源下载里在最多下载的右边加一个选项：
+ *   左是矩阵，右是条形。**显示资源 UI 的方式**」）：
+ *
+ *   两种显示方式**只差"一行放几个"**，卡片里有什么一个字都不变：
+ *     · 矩阵（默认）—— 按容器宽度自动排（窗口窄了自然少几列）；
+ *     · 条形 —— **一行一个、占满整宽**。
+ *   ⇒ 实现成同一个网格 + 一个列宽变量（`--card-min`），而不是两套 DOM：
+ *     两套 DOM 必然会漂移（这个仓库在"同一件事写两遍"上栽过很多次）。
+ *   ★ 列宽写成死值会在大窗口下永远只有三四列；`auto-fill + minmax`
+ *     让**容器说了算** —— 用户那句"显示资源 UI 的方式"要的就是这个。
+ */
 .grid-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(224px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(var(--card-min, 224px), 1fr));
   gap: var(--space-4);
+}
+/* 条形：一行一个（列宽给满，塌成一列） */
+.grid-cards[data-view='list'] {
+  --card-min: 100%;
+  gap: var(--space-3);
+}
+/* 矩阵：自动多列 */
+.grid-cards[data-view='grid'] {
+  --card-min: 224px;
 }
 .split {
   display: grid;
