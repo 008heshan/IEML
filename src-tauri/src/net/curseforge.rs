@@ -317,6 +317,238 @@ async fn api_post_json<B: serde::Serialize, FB: serde::Serialize, T: serde::de::
         .map_err(|e| NetError::Other(format!("解析 CurseForge 响应失败：{e}")))
 }
 
+/* ====================== CurseForge 整合包（manifest.json） ====================== */
+
+/*
+ * ## CF 整合包与 Modrinth 的 `.mrpack` 是**两种**清单格式
+ *
+ *   · `.mrpack` → 里面的 `modrinth.index.json` **直接给下载地址**（`files[].downloads[]`）；
+ *   · CF 的 `.zip` → 里面的 `manifest.json` **只给 id**（`files[].projectID` + `fileID`），
+ *     每一个都要再问一次 CF 的文件接口才拿得到地址。
+ *
+ *   这就是"CF 整合包还不能自动安装"的全部原因（C-1 只修了一半）：
+ *   不是网络问题，是这条**逐个解析**的路没写。下面就是它。
+ *
+ * ## 实测事实（2026-09-26，`tools/probe/probe-cf-modpack.mjs`）
+ *
+ *   · `classId=4471` **真的**把搜索限在整合包这一类（这一条以前是我自己记的疑点）；
+ *   · 文件对象的 `downloadUrl` **可能是 `null`**（作者禁止第三方分发）——
+ *     实测 8 个热门包里就有 1 个（COBBLEVERSE），所以必须留降级路径；
+ *   · 包体下载：API 给的 `edge.forgecdn.net` 在本机经常连不上，
+ *     `mediafilez.forgecdn.net` 与 `mod.mcimirror.top/files/…` 是能通的候选 ——
+ *     正好是 `download_candidates` 里那两条。
+ */
+
+/// CF 清单里的一条文件引用：**只有 id**，地址要再问一次接口。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct CfPackFileRef {
+    /// ★ 字段名是 `projectID` / `fileID`（大写 ID）—— 与 CF 的其它 camelCase 字段不同，
+    ///   写错就会**静默**解析成 0（那样每条都会去问 `/mods/0/files/0`，全 404）。
+    #[serde(rename = "projectID")]
+    pub project_id: u32,
+    #[serde(rename = "fileID")]
+    pub file_id: u32,
+    /// 包作者标为"可选"的文件：下不到不算失败，但要在结果里如实说
+    #[serde(default)]
+    pub required: bool,
+}
+
+/// 清单里的加载器：`id` 形如 `forge-47.2.0` / `fabric-0.15.7` / `neoforge-21.1.72` / `quilt-0.20.0`
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CfPackLoader {
+    pub id: String,
+    #[serde(default)]
+    pub primary: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CfPackMinecraft {
+    pub version: String,
+    #[serde(default)]
+    pub mod_loaders: Vec<CfPackLoader>,
+}
+
+/// CF 整合包的 `manifest.json`
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CfPackManifest {
+    /// 规范里是 `minecraftModpack`；不是这个值就别按整合包装（留判据，不猜）
+    #[serde(default)]
+    pub manifest_type: String,
+    #[serde(default)]
+    pub manifest_version: u32,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub version: String,
+    pub minecraft: CfPackMinecraft,
+    #[serde(default)]
+    pub files: Vec<CfPackFileRef>,
+    /// overrides 目录名。CF 规范默认 `overrides`，但字段是**可以改的** ——
+    /// 写死 `overrides/` 会让少数包"装完发现配置没进去"（Modrinth 那份就是这么写的）。
+    #[serde(default = "default_overrides_dir")]
+    pub overrides: String,
+}
+
+fn default_overrides_dir() -> String {
+    "overrides".to_string()
+}
+
+impl CfPackManifest {
+    /// 主机游戏版本（清单里必有）
+    pub fn mc_version(&self) -> &str {
+        &self.minecraft.version
+    }
+
+    /// 加载器 →（我们内部的 kind 名, 版本号）。
+    ///
+    /// `forge-47.2.0` → `("forge", "47.2.0")`；`fabric-0.15.7` → `("fabric", "0.15.7")`。
+    /// **按第一个 `-` 切**：版本号自己带 `-` 的情况（`neoforge-21.1.72-beta`）也不会被切碎。
+    /// 认不出的形态返回 `None`（纯原版整合包就是没有 modLoaders，那是合法的）。
+    pub fn loader(&self) -> Option<(String, String)> {
+        // 有 primary 就用 primary；没有就取第一条（CF 的包基本只列一条）
+        let picked = self
+            .minecraft
+            .mod_loaders
+            .iter()
+            .find(|l| l.primary)
+            .or_else(|| self.minecraft.mod_loaders.first())?;
+        let (kind, version) = picked.id.split_once('-')?;
+        let kind = kind.trim().to_ascii_lowercase();
+        let version = version.trim().to_string();
+        if kind.is_empty() || version.is_empty() {
+            return None;
+        }
+        Some((kind, version))
+    }
+
+    /// 要下载的文件（`required` 与可选分开，可选的下不到不算失败）
+    pub fn files_to_fetch(&self) -> impl Iterator<Item = &CfPackFileRef> {
+        self.files.iter()
+    }
+
+    /// 清单自检：**装之前**能判定"这包装不了"的，就不要装到一半才失败
+    pub fn validate(&self) -> Result<()> {
+        if !self.manifest_type.is_empty() && self.manifest_type != "minecraftModpack" {
+            return Err(NetError::Other(format!(
+                "这个压缩包不是 CurseForge 整合包（manifestType = {}）",
+                self.manifest_type
+            )));
+        }
+        if self.minecraft.version.trim().is_empty() {
+            return Err(NetError::Other(
+                "这个整合包的清单里没写游戏版本".to_string(),
+            ));
+        }
+        if self.files.is_empty() {
+            return Err(NetError::Other(
+                "这个整合包的清单里一个文件都没有（包坏了？）".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// 从**内存里的字节**解析 CF 整合包（zip 里的 `manifest.json`）。
+pub fn parse_modpack_bytes(bytes: &[u8]) -> Result<CfPackManifest> {
+    let reader = std::io::Cursor::new(bytes.to_vec());
+    let mut archive = zip::ZipArchive::new(reader)
+        .map_err(|e| NetError::Other(format!("这个整合包不是有效的压缩包：{e}")))?;
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| NetError::Other(format!("读取压缩包失败：{e}")))?;
+        /*
+         * ★ 只认**根下**的 `manifest.json`：有些包把自己的清单放进子目录（例如
+         *   `MyPack/manifest.json`），那种包 CF 自己也装不了 —— 别用 `ends_with`
+         *   把它当成合法的（会写出一个路径全错的任务表）。
+         */
+        if entry.name() == "manifest.json" {
+            use std::io::Read;
+            let mut s = String::new();
+            entry
+                .read_to_string(&mut s)
+                .map_err(|e| NetError::Other(format!("读取 manifest.json 失败：{e}")))?;
+            return serde_json::from_str(&s)
+                .map_err(|e| NetError::Other(format!("manifest.json 解析失败：{e}")));
+        }
+    }
+    Err(NetError::Other(
+        "这个压缩包里没有 manifest.json —— 不是 CurseForge 整合包？".to_string(),
+    ))
+}
+
+/// 问一次 CF 的文件接口，拿到**一个**文件的下载地址（可能为 `None`：作者禁止第三方分发）。
+///
+/// ★ 走 `api_json`（= 与搜索/文件列表同一条路：只走镜像、不带任何凭据）——
+///   别在这里另拼地址，否则"镜像"这条产品决定会在这条路径上静默失效。
+pub async fn modpack_file(project_id: u32, file_id: u32) -> Result<CfFile> {
+    let one: CfOne<CfFile> = api_json(&format!("/mods/{project_id}/files/{file_id}")).await?;
+    Ok(one.data)
+}
+
+/// 清单 + 已解析的文件信息 → **下载任务表**（纯函数，可单测）。
+///
+/// 返回 `(任务, 被跳过的路径与原因)`。跳过的**必须**交回调用方去说：
+/// 静默丢文件会让"整合包装完了但少东西"变成一个查不出来的谜（与 mrpack 那条同一规矩）。
+pub fn modpack_download_tasks(
+    manifest: &CfPackManifest,
+    resolved: &std::collections::HashMap<u32, CfFile>,
+    game_dir: &std::path::Path,
+) -> (Vec<crate::net::download::DownloadTask>, Vec<String>) {
+    let mut tasks = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+
+    for f in manifest.files_to_fetch() {
+        let Some(file) = resolved.get(&f.file_id) else {
+            skipped.push(format!("文件 {}（没查到信息）", f.file_id));
+            continue;
+        };
+        if !file.is_available {
+            skipped.push(format!("{}（上游标记为不可用）", file.display_name));
+            continue;
+        }
+        let name = if file.file_name.trim().is_empty() {
+            format!("cf-{}.jar", file.id)
+        } else {
+            file.file_name.clone()
+        };
+        /*
+         * ★ 路径闸门：CF 的文件名是**上游给的字符串**，同样可能带 `../`
+         *   （与 mrpack 的 `path` 一样不可信）。落到 `mods/<文件名>` 之前必须过闸。
+         */
+        let rel = format!("mods/{name}");
+        let Some(safe) = crate::modrinth::safe_relative_path(&rel) else {
+            skipped.push(format!("{}（文件名不合法，已拒绝）", name));
+            continue;
+        };
+        /*
+         * ★ 作者禁止第三方分发时 `downloadUrl` 是 null —— 这时**不要**硬编一个地址，
+         *   把这条如实报出来（界面据此告诉玩家"这个包有 N 个文件要自己去 CF 网站下"）。
+         */
+        let Some(url) = file.download_url.clone().filter(|u| !u.trim().is_empty()) else {
+            skipped.push(format!("{}（作者不允许第三方下载）", name));
+            continue;
+        };
+        let mut task = crate::net::download::DownloadTask::new(
+            game_dir.join(&safe),
+            url.clone(),
+            file.sha1(),
+            file.file_length,
+            name.clone(),
+        );
+        // 同一份内容的其它候选（mediafilez / 镜像）—— 与 mod 下载同一套推导
+        task.urls = download_candidates(file.id, &name, Some(&url))
+            .into_iter()
+            .skip(1)
+            .collect();
+        tasks.push(task);
+    }
+
+    (tasks, skipped)
+}
+
 /* ====================== 响应形状（只声明用得到的字段） ====================== */
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1287,5 +1519,232 @@ mod tests {
 
         // 两份**必须不同** —— 这是"以后要加回官方那条路"能工作的前提
         assert_ne!(official, mirror, "两条路的 body 形状必须不同，否则换路必 400");
+    }
+
+    /* ==================== CurseForge 整合包（manifest.json） ==================== */
+
+    /// ★ 清单的字段名是 `projectID` / `fileID`（**大写 ID**）—— 与 CF 其它 camelCase 字段不同。
+    ///   写错（写成 `projectId`）不会报错，只会**静默解析成 0**：那样每一个文件都会去问
+    ///   `/mods/0/files/0`，全 404，界面上的表现是"这个整合包一个文件都下不了"。
+    ///   所以这条判据钉的是**字段名本身**。
+    #[test]
+    fn cf_manifest_reads_the_uppercase_id_fields() {
+        let raw = r#"{
+            "minecraft": { "version": "1.12.2", "modLoaders": [ { "id": "forge-14.23.5.2860", "primary": true } ] },
+            "manifestType": "minecraftModpack",
+            "manifestVersion": 1,
+            "name": "RLCraft",
+            "version": "2.9.3",
+            "author": "Shivaxi",
+            "files": [
+                { "projectID": 238222, "fileID": 4612345, "required": true },
+                { "projectID": 1234, "fileID": 5678, "required": false }
+            ],
+            "overrides": "overrides"
+        }"#;
+        let m: CfPackManifest = serde_json::from_str(raw).unwrap();
+        assert_eq!(m.mc_version(), "1.12.2");
+        assert_eq!(m.files[0].project_id, 238222, "projectID 必须被读进来（不是 0）");
+        assert_eq!(m.files[0].file_id, 4612345, "fileID 必须被读进来（不是 0）");
+        assert!(m.files[0].required);
+        assert!(!m.files[1].required, "required 缺失/false 都要如实");
+        assert_eq!(m.overrides, "overrides");
+        assert!(m.validate().is_ok());
+    }
+
+    /// 加载器 id 按**第一个** `-` 切：`neoforge-21.1.72-beta` 的版本号自己带 `-`。
+    #[test]
+    fn cf_manifest_splits_loader_id_at_the_first_dash() {
+        let mk = |id: &str| CfPackManifest {
+            manifest_type: "minecraftModpack".into(),
+            manifest_version: 1,
+            name: "x".into(),
+            version: "1".into(),
+            minecraft: CfPackMinecraft {
+                version: "1.20.1".into(),
+                mod_loaders: vec![CfPackLoader { id: id.into(), primary: true }],
+            },
+            files: vec![CfPackFileRef { project_id: 1, file_id: 1, required: true }],
+            overrides: "overrides".into(),
+        };
+        assert_eq!(mk("forge-47.2.0").loader(), Some(("forge".into(), "47.2.0".into())));
+        assert_eq!(mk("fabric-0.15.7").loader(), Some(("fabric".into(), "0.15.7".into())));
+        assert_eq!(
+            mk("neoforge-21.1.72-beta").loader(),
+            Some(("neoforge".into(), "21.1.72-beta".into())),
+            "版本号里带 `-` 时不能被切碎"
+        );
+        // 纯原版整合包：没有 modLoaders 是**合法**的，不是错误
+        let mut vanilla = mk("forge-1");
+        vanilla.minecraft.mod_loaders.clear();
+        assert_eq!(vanilla.loader(), None);
+    }
+
+    /// 不是 CF 整合包 / 清单不完整 → **装之前**就拒绝（别装到一半才失败）。
+    #[test]
+    fn cf_manifest_rejects_what_it_cannot_install() {
+        let mut m = CfPackManifest {
+            manifest_type: "minecraftModpack".into(),
+            manifest_version: 1,
+            name: "x".into(),
+            version: "1".into(),
+            minecraft: CfPackMinecraft { version: "1.20.1".into(), mod_loaders: vec![] },
+            files: vec![CfPackFileRef { project_id: 1, file_id: 2, required: true }],
+            overrides: "overrides".into(),
+        };
+        assert!(m.validate().is_ok());
+
+        m.manifest_type = "somethingElse".into();
+        assert!(m.validate().is_err(), "manifestType 不是 minecraftModpack 必须拒绝");
+        m.manifest_type = "minecraftModpack".into();
+
+        m.minecraft.version = "  ".into();
+        assert!(m.validate().is_err(), "没写游戏版本必须拒绝");
+        m.minecraft.version = "1.20.1".into();
+
+        m.files.clear();
+        assert!(m.validate().is_err(), "一个文件都没有必须拒绝");
+    }
+
+    /// 任务生成：**全部落 `mods/`**、不可分发的**如实跳过**、坏文件名**拒绝**。
+    #[test]
+    fn cf_modpack_tasks_land_in_mods_and_report_what_is_skipped() {
+        let m = CfPackManifest {
+            manifest_type: "minecraftModpack".into(),
+            manifest_version: 1,
+            name: "x".into(),
+            version: "1".into(),
+            minecraft: CfPackMinecraft { version: "1.20.1".into(), mod_loaders: vec![] },
+            files: vec![
+                CfPackFileRef { project_id: 1, file_id: 11, required: true },
+                CfPackFileRef { project_id: 2, file_id: 22, required: true }, // 不可分发
+                CfPackFileRef { project_id: 3, file_id: 33, required: true }, // 坏文件名
+                CfPackFileRef { project_id: 4, file_id: 44, required: true }, // 没查到信息
+            ],
+            overrides: "overrides".into(),
+        };
+        let mut resolved = std::collections::HashMap::new();
+        resolved.insert(
+            11,
+            CfFile {
+                id: 11,
+                mod_id: 1,
+                is_available: true,
+                display_name: "JEI".into(),
+                file_name: "jei-1.20.1-forge-15.2.0.53.jar".into(),
+                release_type: 1,
+                file_date: String::new(),
+                file_length: 1234,
+                download_url: Some(
+                    "https://edge.forgecdn.net/files/1/11/jei-1.20.1-forge-15.2.0.53.jar".into(),
+                ),
+                game_versions: vec![],
+                hashes: vec![CfHash { value: "abc123".into(), algo: 1 }],
+            },
+        );
+        resolved.insert(
+            22,
+            CfFile {
+                id: 22,
+                mod_id: 2,
+                is_available: true,
+                display_name: "封闭分发的 Mod".into(),
+                file_name: "closed.jar".into(),
+                release_type: 1,
+                file_date: String::new(),
+                file_length: 10,
+                download_url: None, // ★ 作者禁止第三方下载
+                game_versions: vec![],
+                hashes: vec![],
+            },
+        );
+        resolved.insert(
+            33,
+            CfFile {
+                id: 33,
+                mod_id: 3,
+                is_available: true,
+                display_name: "坏名字".into(),
+                file_name: "../../evil.jar".into(),
+                release_type: 1,
+                file_date: String::new(),
+                file_length: 10,
+                download_url: Some("https://edge.forgecdn.net/files/3/33/evil.jar".into()),
+                game_versions: vec![],
+                hashes: vec![],
+            },
+        );
+
+        let game = std::path::Path::new("E:/tmp/instances/pack-x/game");
+        let (tasks, skipped) = modpack_download_tasks(&m, &resolved, game);
+        assert_eq!(tasks.len(), 1, "只有第一条能下：{tasks:?}");
+        assert!(
+            tasks[0].path.ends_with("game/mods/jei-1.20.1-forge-15.2.0.53.jar")
+                || tasks[0].path.to_string_lossy().replace('\\', "/").ends_with("mods/jei-1.20.1-forge-15.2.0.53.jar"),
+            "整合包的文件必须落进 mods/：{:?}",
+            tasks[0].path
+        );
+        assert_eq!(tasks[0].sha1, "abc123", "SHA1 要带上（下完真的校验）");
+        assert_eq!(tasks[0].size, 1234);
+        assert!(
+            tasks[0].urls.iter().any(|u| u.contains("mediafilez")),
+            "候选里要有第二条路（API 那条在本机经常连不上）：{:?}",
+            tasks[0].urls
+        );
+        assert_eq!(skipped.len(), 3, "另外三条都要如实报出来：{skipped:?}");
+        assert!(
+            skipped.iter().any(|s| s.contains("不允许第三方下载")),
+            "不可分发那条要说清原因：{skipped:?}"
+        );
+        assert!(
+            skipped.iter().any(|s| s.contains("文件名不合法")),
+            "路径穿越要拒绝：{skipped:?}"
+        );
+        assert!(
+            skipped.iter().any(|s| s.contains("没查到信息")),
+            "查不到信息那条也要报：{skipped:?}"
+        );
+    }
+
+    /// 真的做一个 zip 来验 `parse_modpack_bytes`：**根下**的清单才算，
+    /// 子目录里的那份不算（那种包 CF 自己也装不了，别写出一个路径全错的任务表）。
+    #[test]
+    fn cf_parse_modpack_bytes_only_accepts_a_root_manifest() {
+        let manifest = r#"{"minecraft":{"version":"1.20.1","modLoaders":[{"id":"forge-47.2.0","primary":true}]},"manifestType":"minecraftModpack","manifestVersion":1,"name":"测","version":"1","files":[{"projectID":1,"fileID":2,"required":true}]}"#;
+
+        let build = |name: &str| -> Vec<u8> {
+            let mut buf = Vec::new();
+            {
+                let mut w = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+                let opts: zip::write::FileOptions<'_, ()> =
+                    zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+                use std::io::Write;
+                w.start_file(name, opts).unwrap();
+                w.write_all(manifest.as_bytes()).unwrap();
+                w.finish().unwrap();
+            }
+            buf
+        };
+
+        let ok = parse_modpack_bytes(&build("manifest.json")).expect("根下的清单要能解析");
+        assert_eq!(ok.name, "测");
+        assert_eq!(ok.loader(), Some(("forge".into(), "47.2.0".into())));
+
+        let nested = build("MyPack/manifest.json");
+        assert!(
+            parse_modpack_bytes(&nested).is_err(),
+            "子目录里的 manifest.json 不算（CF 自己也装不了这种包）"
+        );
+
+        let empty: Vec<u8> = {
+            let mut buf = Vec::new();
+            {
+                let w = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+                w.finish().unwrap();
+            }
+            buf
+        };
+        assert!(parse_modpack_bytes(&empty).is_err(), "没有清单要报错，不是静默空包");
+        assert!(parse_modpack_bytes(b"not a zip").is_err(), "不是 zip 要报错");
     }
 }

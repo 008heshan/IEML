@@ -13,12 +13,14 @@ use crate::domain::loader_trace::{
 use crate::game::launch_args::{self, LaunchSpec};
 use crate::modrinth;
 use crate::net::adoptium;
+use crate::net::curseforge;
 use crate::net::download::{self, CancelToken, DownloadProgress};
 use crate::net::installer::{self, PlanInput};
 use crate::net::metadata::{self, VersionJson};
 use crate::net::mirror::{self, Source};
 use crate::net::{self, NetError};
 use crate::platform;
+use futures_util::StreamExt;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{Emitter, State};
@@ -5339,19 +5341,49 @@ pub async fn mrpack_inspect(url: String) -> Result<MrpackInfo, String> {
     })
 }
 
-/// ★★ 真正安装一个整合包 ★★
+/// 一个整合包**要装什么**（格式无关的中间结果）。
+///
+/// ★★ 2026-09-26（CF 整合包）：两种清单格式（Modrinth 的 `.mrpack` 与 CurseForge 的
+///   `manifest.json`）**后面那段流程完全一样** —— 装游戏本体+加载器、逐个下载、
+///   解压 overrides、必要时补 API 前置包、暂停语义。
+///   所以把"读清单"之后的东西收成这一个结构：每种格式各自产出一份 `PackPlan`
+///   （纯函数、可单测），执行只有一份实现（`install_pack_plan`）。
+///   ⇒ 以后再加第三种格式，只需要多一个"清单 → PackPlan"的转换。
+struct PackPlan {
+    /// 游戏版本（包作者定死的）
+    mc_version: String,
+    /// 加载器（`None` = 纯原版整合包，合法）
+    loader_kind: Option<String>,
+    loader_version: Option<String>,
+    /// 要下载的文件（已经过路径闸门、带 SHA1 与候选地址）
+    tasks: Vec<download::DownloadTask>,
+    /// 清单里指向游戏目录之外、或下不了的条目 —— **必须交回调用方去说**
+    skipped: Vec<String>,
+    /// overrides 目录名（Modrinth 固定 `overrides`；CF 由清单里的字段给）
+    overrides_dir: String,
+    /// 包**自己**带没带 Fabric API（带了就绝不动它，见 `has_fabric_api` 的说明）
+    pack_has_api_library: bool,
+}
+
+/// ★★ 真正安装一个整合包（两种清单格式共用这一份）★★
 ///
 /// 以前这里只做到 `mrpack_inspect`（读清单、报个数），界面上写着
 /// "按清单逐个下载并覆盖文件这一步即将接通" —— 也就是**做了一半的功能**。
 /// 现在补齐整条链：
 ///
-///   ① 读 `modrinth.index.json` → 游戏版本 + 加载器（由包的作者定死）
+///   ① 读清单 → `PackPlan`（**由调用方**做好：Modrinth 一份、CurseForge 一份）
 ///   ② 装游戏本体 + 加载器（复用 `install_version` 那条已经验证过的路）
 ///   ③ 按清单逐个下载 Mod / 资源包到 `instances/{slug}/game/`（带 SHA1 校验）
-///   ④ 解压包里的 `overrides/`（作者的配置、存档、光影配置都在这）
+///   ④ 解压包里的 overrides（作者的配置、存档、光影配置都在这）
 ///
 /// 进度全部通过 `modpack-progress` 事件上报（阶段 + 文件计数 + 字节数），
 /// 所以任务中心里能看到"在下第 37/120 个文件"这种真实进度。
+#[allow(clippy::too_many_arguments)]
+/// **Modrinth 的 `.mrpack`**：下载包体 → 读 `modrinth.index.json` → 交给公共安装流程。
+///
+/// ★ 与 CurseForge 那条（`cf_modpack_install`）的区别**只在"怎么读清单"**：
+///   这条的清单里**直接给下载地址**，所以 `PackPlan` 是纯本地的转换；
+///   CF 那条要拿 `projectID/fileID` 再去问接口。
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn modpack_install(
@@ -5365,6 +5397,285 @@ pub async fn modpack_install(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ModpackInstallResult, String> {
+    let src = parse_source(&source);
+    let cancel = register_task(&task_id);
+    let _ = app.emit(
+        "modpack-progress",
+        serde_json::json!({
+            "taskId": task_id, "stage": "读取整合包清单", "finishedFiles": 0,
+            "totalFiles": 1, "bytes": 0, "currentFile": name, "percent": 0,
+        }),
+    );
+    let pack_path = state.paths().cache.join(format!("mrpack-{task_id}.mrpack"));
+    let task = download::DownloadTask::new(
+        pack_path.clone(),
+        url.clone(),
+        String::new(),
+        0,
+        format!("整合包 {name}"),
+    );
+    download::download_one(&task, src, &cancel)
+        .await
+        .map_err(err)?;
+    let bytes = tokio::fs::read(&pack_path)
+        .await
+        .map_err(|e| format!("读取整合包失败：{e}"))?;
+
+    let idx = modrinth::parse_mrpack_bytes(&bytes).map_err(err)?;
+    let mc_version = idx
+        .mc_version()
+        .ok_or_else(|| "这个整合包的清单里没写游戏版本（minecraft 依赖）".to_string())?
+        .to_string();
+    let (loader_kind, loader_version) = match idx.loader() {
+        Some((k, v)) => {
+            // `fabric-loader` → `fabric`（我们内部的 kind 名）
+            let kind = k.trim_end_matches("-loader").to_string();
+            (Some(kind), Some(v.to_string()))
+        }
+        None => (None, None),
+    };
+    let game_dir = state.paths().instance_game_dir(&slug);
+    let (tasks, skipped) = modrinth::mrpack_download_tasks(&idx, &game_dir);
+    let plan = PackPlan {
+        mc_version,
+        loader_kind,
+        loader_version,
+        tasks,
+        skipped,
+        overrides_dir: "overrides".to_string(),
+        pack_has_api_library: idx.has_fabric_api(),
+    };
+    install_pack_plan(
+        plan,
+        pack_path,
+        bytes,
+        slug,
+        task_id,
+        instance_name,
+        source,
+        concurrency,
+        app,
+        state,
+    )
+    .await
+}
+
+/// **CurseForge 的 `.zip`**：下载包体 → 读 `manifest.json` → **逐个问接口**拿下载地址
+/// → 交给公共安装流程。
+///
+/// ## 为什么必须逐个问（这是它比 Modrinth 麻烦的全部原因）
+///
+///   CF 的清单里**只有 id**（`files[{projectID, fileID}]`），没有地址。
+///   所以装一个 200 个 Mod 的包要问 200 次文件接口 —— 这些请求都很小
+///   （几百字节 JSON），但**必须并发**，串行会把安装拖到几分钟。
+///
+/// ## 作者禁止第三方分发怎么办（实测存在，8 个热门包里就有 1 个）
+///
+///   那种文件 `downloadUrl` 是 `null`。这时**不许**编一个地址硬下，也不许
+///   假装成功：把这些文件如实统计出来交给界面（`unavailable_files`），
+///   让玩家知道"这个包有 N 个文件要自己去 CF 网站下"。
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn cf_modpack_install(
+    project_id: u32,
+    file_id: u32,
+    file_name: String,
+    download_url: Option<String>,
+    name: String,
+    slug: String,
+    task_id: String,
+    instance_name: String,
+    source: String,
+    concurrency: Option<usize>,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ModpackInstallResult, String> {
+    let src = parse_source(&source);
+    let cancel = register_task(&task_id);
+    let _ = app.emit(
+        "modpack-progress",
+        serde_json::json!({
+            "taskId": task_id, "stage": "读取整合包清单", "finishedFiles": 0,
+            "totalFiles": 1, "bytes": 0, "currentFile": name, "percent": 0,
+        }),
+    );
+
+    /*
+     * 包体本身也要走候选表：API 给的 `edge.forgecdn.net` 在本机经常连不上，
+     * `mediafilez` / 镜像是实测能通的两条（`download_candidates` 就是那张表）。
+     * 文件 id 与文件名都在手上，所以"从 id 拼候选"这条路能用。
+     */
+    let resolved_name = if file_name.trim().is_empty() {
+        format!("cf-pack-{file_id}.zip")
+    } else {
+        file_name.clone()
+    };
+    /*
+     * ★★ 前端给不出地址时**问一次接口**，别急着报"装不了"。
+     *
+     *   两个现实原因：
+     *     · 列表接口在作者禁止分发时给的就是 `null`，但**文件接口可能仍然给得出**
+     *       （CF 的两处口径不一定同步）；
+     *     · 界面上的列表可能是几分钟前拉的，作者刚改了分发设置。
+     *   问不到才谈"装不了" —— 那时给出的理由是**上游的**，不是我们的猜测。
+     */
+    let mut download_url = download_url.filter(|u| !u.trim().is_empty());
+    let mut resolved_name = resolved_name;
+    if download_url.is_none() {
+        match curseforge::modpack_file(project_id, file_id).await {
+            Ok(f) => {
+                download_url = f.download_url.clone().filter(|u| !u.trim().is_empty());
+                if !f.file_name.trim().is_empty() {
+                    resolved_name = f.file_name.clone();
+                }
+            }
+            Err(e) => say!("[IEML/modpack] 整合包自身的信息查不到（继续按候选表试）：{e}"),
+        }
+    }
+    let mut candidates =
+        curseforge::download_candidates(file_id, &resolved_name, download_url.as_deref());
+    if candidates.is_empty() {
+        return Err(format!(
+            "「{name}」的作者不允许第三方下载（CurseForge 没给下载地址）—— \
+             这个包装不了。可以打开它的 CurseForge 页面手动下载 zip，再拖进启动器。"
+        ));
+    }
+    let first = candidates.remove(0);
+    let pack_path = state.paths().cache.join(format!("cfpack-{task_id}.zip"));
+    let mut task = download::DownloadTask::new(
+        pack_path.clone(),
+        first,
+        String::new(),
+        0,
+        format!("整合包 {name}"),
+    );
+    task.urls = candidates;
+    download::download_one(&task, src, &cancel)
+        .await
+        .map_err(err)?;
+    let bytes = tokio::fs::read(&pack_path)
+        .await
+        .map_err(|e| format!("读取整合包失败：{e}"))?;
+
+    let manifest = curseforge::parse_modpack_bytes(&bytes).map_err(err)?;
+    manifest.validate().map_err(err)?;
+
+    // ---------- 逐个问接口拿地址（**并发**，否则 200 个文件要等几分钟） ----------
+    let refs: Vec<(u32, u32)> = manifest
+        .files_to_fetch()
+        .map(|f| (f.project_id, f.file_id))
+        .collect();
+    let total = refs.len();
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let note_every = (total / 20).max(1);
+    let resolved = futures_util::stream::iter(refs.into_iter().map(|(pid, fid)| {
+        let done = done.clone();
+        let app = app.clone();
+        let task_id = task_id.clone();
+        async move {
+            let r = curseforge::modpack_file(pid, fid).await;
+            let n = done.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            if n % note_every == 0 || n == total {
+                let _ = app.emit(
+                    "modpack-progress",
+                    serde_json::json!({
+                        "taskId": task_id,
+                        "stage": "解析整合包文件地址",
+                        "finishedFiles": n,
+                        "totalFiles": total,
+                        "bytes": 0,
+                        "currentFile": format!("第 {n}/{total} 个"),
+                        "percent": n * 100 / total.max(1),
+                    }),
+                );
+            }
+            (fid, r)
+        }
+    }))
+    .buffer_unordered(12)
+    .collect::<Vec<_>>()
+    .await;
+
+    /*
+     * ★ 查不到的条目**不阻断**：一个 200 文件的包里有一两个被上游删了很正常，
+     *   整包装不上才是坏事。查不到的进 `skipped`（由 `modpack_download_tasks` 报出来）。
+     */
+    let mut by_file: std::collections::HashMap<u32, curseforge::CfFile> =
+        std::collections::HashMap::new();
+    let mut lookup_failed = 0usize;
+    for (fid, r) in resolved {
+        match r {
+            Ok(f) => {
+                by_file.insert(fid, f);
+            }
+            Err(e) => {
+                lookup_failed += 1;
+                say!("[IEML/modpack] 文件 {fid} 的信息查不到：{e}");
+            }
+        }
+    }
+    if lookup_failed > 0 {
+        say!("[IEML/modpack] CF 整合包有 {lookup_failed} 个文件查不到信息（已如实跳过）");
+    }
+
+    let game_dir = state.paths().instance_game_dir(&slug);
+    let (tasks, skipped) = curseforge::modpack_download_tasks(&manifest, &by_file, &game_dir);
+    if tasks.is_empty() {
+        return Err(format!(
+            "「{name}」清单里的文件一个都下不了（多数是作者不允许第三方下载）—— \
+             这个包装不了。可以打开它的 CurseForge 页面手动下载 zip，再拖进启动器。"
+        ));
+    }
+    // ★ 包**自己**带没带 Fabric API：CF 的文件名就是最终落盘的 jar 名，判据与 mrpack 同一套
+    let pack_has_api_library = tasks.iter().any(|t| {
+        let name = t
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        crate::domain::mods::api_library_from_filename(&name).is_some()
+    });
+
+    let plan = PackPlan {
+        mc_version: manifest.mc_version().to_string(),
+        loader_kind: manifest.loader().map(|(k, _)| k),
+        loader_version: manifest.loader().map(|(_, v)| v),
+        tasks,
+        skipped,
+        overrides_dir: manifest.overrides.clone(),
+        pack_has_api_library,
+    };
+    install_pack_plan(
+        plan,
+        pack_path,
+        bytes,
+        slug,
+        task_id,
+        instance_name,
+        source,
+        concurrency,
+        app,
+        state,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn install_pack_plan(
+    plan: PackPlan,
+    pack_path: std::path::PathBuf,
+    pack_bytes: Vec<u8>,
+    slug: String,
+    task_id: String,
+    instance_name: String,
+    source: String,
+    concurrency: Option<usize>,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ModpackInstallResult, String> {
+    let mc_version = plan.mc_version.clone();
+    let loader_kind = plan.loader_kind.clone();
+    let loader_version = plan.loader_version.clone();
     let src = parse_source(&source);
     let cancel = register_task(&task_id);
     // ★ 整合包安装同样可暂停
@@ -5384,36 +5695,6 @@ pub async fn modpack_install(
                 "percent": if total > 0 { done * 100 / total } else { 0 },
             }),
         );
-    };
-
-    // ---------- ① 读清单 ----------
-    emit("读取整合包清单", 0, 1, 0, &name);
-    let downloaded = download::DownloadTask::new(
-        state.paths().cache.join(format!("mrpack-{task_id}.mrpack")),
-        url.clone(),
-        String::new(),
-        0,
-        format!("整合包 {name}"),
-    );
-    download::download_one(&downloaded, src, &cancel)
-        .await
-        .map_err(err)?;
-    let bytes = tokio::fs::read(&downloaded.path)
-        .await
-        .map_err(|e| format!("读取整合包失败：{e}"))?;
-
-    let idx = modrinth::parse_mrpack_bytes(&bytes).map_err(err)?;
-    let mc_version = idx
-        .mc_version()
-        .ok_or_else(|| "这个整合包的清单里没写游戏版本（minecraft 依赖）".to_string())?
-        .to_string();
-    let (loader_kind, loader_version) = match idx.loader() {
-        Some((k, v)) => {
-            // `fabric-loader` → `fabric`（我们内部的 kind 名）
-            let kind = k.trim_end_matches("-loader").to_string();
-            (Some(kind), Some(v.to_string()))
-        }
-        None => (None, None),
     };
 
     // ---------- ② 装游戏本体 + 加载器 ----------
@@ -5467,7 +5748,7 @@ pub async fn modpack_install(
      */
     if installed.paused {
         drop_task(&task_id);
-        let _ = tokio::fs::remove_file(&downloaded.path).await;
+        let _ = tokio::fs::remove_file(&pack_path).await;
         say!(
             "[IEML/modpack] 整合包安装被暂停：还剩 {} 个文件没下",
             installed.remaining_files
@@ -5496,7 +5777,7 @@ pub async fn modpack_install(
              */
             if pause.is_paused() {
                 drop_task(&task_id);
-                let _ = tokio::fs::remove_file(&downloaded.path).await;
+                let _ = tokio::fs::remove_file(&pack_path).await;
                 let stage = format!("运行 {kind} 安装器");
                 say!("[IEML/modpack] 用户已暂停，跳过 {kind} 安装器那一步");
                 return Ok(ModpackInstallResult {
@@ -5538,7 +5819,8 @@ pub async fn modpack_install(
 
     // ---------- ③ 按清单下载 Mod / 资源包 ----------
     let game_dir = state.paths().instance_game_dir(&slug);
-    let (tasks, unsafe_paths) = modrinth::mrpack_download_tasks(&idx, &game_dir);
+    // ★ 任务表与"下不了的条目"由**调用方**按各自的清单格式做好（`PackPlan`）
+    let (tasks, unsafe_paths) = (plan.tasks, plan.skipped);
     /*
      * ★★ 清单里指到游戏目录**外面**的路径必须**说出来**，不许静默丢掉。
      *
@@ -5628,9 +5910,9 @@ pub async fn modpack_install(
     }
 
     // ---------- ④ 解压 overrides ----------
-    emit("解压整合包配置", 0, 1, 0, "overrides/");
+    emit("解压整合包配置", 0, 1, 0, &plan.overrides_dir);
     let mut override_files = 0usize;
-    match modrinth::extract_overrides(&bytes, &game_dir) {
+    match modrinth::extract_overrides_dir(&pack_bytes, &plan.overrides_dir, &game_dir) {
         Ok(n) => override_files = n,
         Err(e) => {
             // overrides 里是作者的配置，缺了游戏仍能起（只是少了他的设置）——
@@ -5639,7 +5921,7 @@ pub async fn modpack_install(
         }
     }
 
-    let _ = tokio::fs::remove_file(&downloaded.path).await;
+    let _ = tokio::fs::remove_file(&pack_path).await;
 
     // ---------- ⑤ Fabric API 前置包（只在作者没带的时候补） ----------
     //
@@ -5653,7 +5935,7 @@ pub async fn modpack_install(
     let mut note: Option<String> = None;
     if let Some(kind) = loader_kind.as_deref() {
         if kind == "fabric" || kind == "quilt" {
-            if idx.has_fabric_api() {
+            if plan.pack_has_api_library {
                 note = Some(format!(
                     "整合包自带 Fabric API（{}），没有重复安装。",
                     if kind == "quilt" { "Quilted Fabric API" } else { "Fabric API" }

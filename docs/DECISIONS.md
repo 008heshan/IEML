@@ -5980,6 +5980,15 @@ if (forceOpenKey && key === forceOpenKey && collapsed[key] !== false) return tru
    （4471 是官方 Modpacks 分类 id，但它是不是 CF **搜索**接口认的那个 classId，我还没验实。）
    **判据里要加一条**：CF 结果里前几条**必须是整合包**（比如名字/分类能对上），
    而不是只验"有 20 张卡"。
+
+✅ **已验实（2026-09-26，`tools/probe/probe-cf-modpack.mjs` 第 ① 节）**：
+  `classId=4471` **真的**把结果限在整合包这一类 —— 热度前 8 条全是整合包
+  （ATM10 / DeceasedCraft / Prominence II / Better MC / COBBLEVERSE / RLCraft …），
+  每一条的 `classId` 字段都等于 4471，没有一条混进 Mod。
+  ★ 当初看到 `GeckoLib` 的那一次是**另一回事**：那是 `parse_kind` 把 `modpack`
+    解析成了 `Mod`（见下面第四十八节），也就是**我们发错了 classId**，不是接口不认。
+    两条症状长得一样（"CF 那栏出来的是模组"），根因完全不同 ——
+    所以这次的教训是"先看我们发出去的是什么"，而那次要验的是"接口认不认那个值"。
 ### 四十八、CF 出来的是模组 —— `parse_kind` 把 `modpack` 解析成了 `Mod`（2026-09-23）
 
 用户（截图）：「**怎么是模组啊**」—— CurseForge 那一栏出来的是 GeckoLib / JEI / Cloth Config…

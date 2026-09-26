@@ -26,6 +26,7 @@
 | 7b | **C-5** 整合包「点哪行装哪行」不成立 | ✅ **已修**（版本当参数传，不再依赖 state 时序） | `probe-c5-fixed.mjs` 差分判据：点 alpha.1 / alpha.2 → 装的是**各自**那个版本 |
 | 7 | **C-2 / C-3 / C-4 / C-6 / C-7** + 廉价低项 | ✅ **已修**（5 条 + C-16/C-17/C-18/C-19/C-22/C-26） | `probe-bug-repro-9.mjs` 一次跑完四条全绿；C-2 有两条 Rust 测试钉着；`cargo test --lib` 453 通过 |
 | 8 | **C-1** CF 的版本列表/安装链路 | ✅ **已修一半**（版本列表真的接上双源了；**CF 整合包的自动安装明确未做**、界面如实拒绝） | `probe-c1-fixed.mjs`：CF Mod 5 个版本 / CF 整合包 50 个版本 / 如实说明 |
+| 8j | **C-1 的另一半**：**CF 整合包的自动安装** | ✅ **已做（2026-09-26）**（`cf_modpack_install`：读 `manifest.json` → 并发逐个问文件接口拿地址 → 装本体+加载器 → 下 Mod → 解压 overrides；与 Modrinth 那条**共用** `install_pack_plan`）。作者禁止第三方下载的包**如实报出是哪几个文件**，不假装能装 | 单测 5 条：字段名（`projectID`/`fileID` 大写）、加载器 id 按第一个 `-` 切、装前自检、任务落 `mods/` + 不可分发/坏文件名如实跳过、真 zip 只认**根下**的 manifest；`cargo test --lib` **472 通过**；探针 `tools/probe/probe-cf-modpack.mjs`（★ 端到端那一步待网络——CF 的 CDN 与镜像当晚都连不上，见该探针输出） |
 | 8b | **C-8** 崩溃规则表两份（36 vs 35） | ✅ **已修**（12 条 id 对齐 + 两边共用判据表 + 进门禁） | 判据表立刻抓出 `gpu-driver` 正则**不跨行**的真缺陷（两侧都修） |
 | 8c | **C-9** Rust 说 LiteLoader「还没做」 | ✅ **已修**（改按 `addon_install_implemented` 判；顺带把**从来没实现过**的两条上游约束真的实现了） | `cargo test --lib` 454 通过；测试改成断言两处说法一致 |
 | 8d | 死代码与死 CSS | ✅ **已清理**（`rust` 对象 / 2 条 Rust 命令 / Rust 脱敏 / flows 死导出 / `.vi-*` 20 条） | `tsc` + `cargo test` + 门禁 |

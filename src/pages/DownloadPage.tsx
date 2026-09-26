@@ -674,16 +674,19 @@ function ModpackTab({
      *   「这个整合包没有可下载的版本」—— 一句把"我们没做"说成"上游没有"的假话
      *   （这个仓库为这类话栽过不止一次）。
      */
-    if (packSource === 'curseforge') {
-      toast(
-        'warning',
-        'CurseForge 的整合包还不能自动安装',
-        `${pack.name} 在 CurseForge 上。CF 用的是 manifest.json 清单格式，` +
-          `IEML 现在只会装 Modrinth 的 .mrpack —— **这一步没有做**（不是网络问题）。\n` +
-          `想看能装的版本，把上面的来源切回 Modrinth（同一个整合包通常两边都有）。`,
-      );
-      return;
-    }
+    /*
+     * ★★ 2026-09-26：**CurseForge 的整合包现在也能自动装了**（以前在这里如实拦住）。
+     *
+     *   两种包的清单格式不同，但**安装流程是同一段**：
+     *     · Modrinth 的 `.mrpack`  → `modrinth.index.json` 里**直接给下载地址**；
+     *     · CurseForge 的 `.zip`   → `manifest.json` 里**只有 id**，
+     *       后端会逐个问接口拿地址（并发 12 路），进度同样报在 `modpack-progress` 上。
+     *
+     *   ★ 作者禁止第三方分发时（CF 的 `downloadUrl` 是 null）**不假装能装**：
+     *     后端会再问一次接口，真的拿不到就返回具体原因（"这个包有 N 个文件下不了"），
+     *     这里原样显示。
+     */
+    const isCf = packSource === 'curseforge';
     setInstalling(true);
     try {
       /*
@@ -695,10 +698,37 @@ function ModpackTab({
       const file = first?.files.find((f) => f.primary) ?? first?.files[0];
       if (!file) throw new Error('这个整合包没有可下载的文件');
 
-      // 先读清单，把"要装什么"如实告诉用户，再动手
-      const info = await api.modpack.inspect(file.url);
-      if (!info.mc_version) {
-        throw new Error('这个整合包的清单里没写游戏版本，无法安装');
+      /*
+       * CF 那份清单在后端读（我们这边只有"文件 id + 文件名 + 可能为空的地址"）。
+       * ⇒ 用户看到的"要装什么"来自后端回填的 `result`；这里先把**已知的**说清楚。
+       */
+      let info: { mc_version: string | null; loader_kind: string | null; loader_version: string | null; client_file_count: number; name: string };
+      let cfIds: { projectId: number; fileId: number; fileName: string; downloadUrl: string | null } | null = null;
+      if (isCf) {
+        const projectId = Number(pack.id);
+        const fileId = Number(first?.id ?? 0);
+        if (!Number.isFinite(projectId) || !Number.isFinite(fileId) || fileId <= 0) {
+          throw new Error('这个整合包的版本信息不完整（拿不到文件 id），换个版本再试');
+        }
+        cfIds = {
+          projectId,
+          fileId,
+          fileName: file.filename,
+          downloadUrl: file.url && file.url.trim() ? file.url : null,
+        };
+        info = {
+          mc_version: '',
+          loader_kind: null,
+          loader_version: null,
+          client_file_count: 0,
+          name: pack.name,
+        };
+      } else {
+        // 先读清单，把"要装什么"如实告诉用户，再动手
+        info = await api.modpack.inspect(file.url);
+        if (!info.mc_version) {
+          throw new Error('这个整合包的清单里没写游戏版本，无法安装');
+        }
       }
       const packName = name.trim() || info.name || pack.name;
       const slug = `pack-${Date.now().toString(36).slice(-6)}`;
@@ -711,9 +741,15 @@ function ModpackTab({
             id: taskId,
             kind: 'install',
             title: `整合包 ${packName}`,
-            detail: `${info.mc_version}${
-              info.loader_kind ? ` + ${info.loader_kind} ${info.loader_version ?? ''}` : ''
-            } · ${info.client_file_count} 个文件`,
+            /*
+             * ★ CF 的清单在后端读，所以这一刻还不知道"几个文件"——
+             *   如实写"正在读清单"，不要先编一个 0（进度事件随后会把它填上）。
+             */
+            detail: isCf
+              ? 'CurseForge · 正在读清单'
+              : `${info.mc_version}${
+                  info.loader_kind ? ` + ${info.loader_kind} ${info.loader_version ?? ''}` : ''
+                } · ${info.client_file_count} 个文件`,
             status: 'running',
             percent: 0,
             finishedFiles: 0,
@@ -734,24 +770,36 @@ function ModpackTab({
        *   注册之后这两个按钮对整合包也真的能用（断点续传靠 .part）。
        */
       const doInstall = () =>
-        api.modpack.install(
-          {
-            url: file.url,
-            name: info.name,
-            slug,
-            taskId,
-            instanceName: packName,
-            source: 'bmclapi',
-          },
-          (e) => {
-            patch({
-              detail: e.stage,
-              percent: e.percent,
-              finishedFiles: e.finishedFiles,
-              currentFile: e.currentFile,
-            });
-          },
-        );
+        isCf && cfIds
+          ? api.modpack.cfInstall(
+              { ...cfIds, name: packName, slug, taskId, instanceName: packName, source: 'bmclapi' },
+              (e) => {
+                patch({
+                  detail: e.stage,
+                  percent: e.percent,
+                  finishedFiles: e.finishedFiles,
+                  currentFile: e.currentFile,
+                });
+              },
+            )
+          : api.modpack.install(
+              {
+                url: file.url,
+                name: info.name,
+                slug,
+                taskId,
+                instanceName: packName,
+                source: 'bmclapi',
+              },
+              (e) => {
+                patch({
+                  detail: e.stage,
+                  percent: e.percent,
+                  finishedFiles: e.finishedFiles,
+                  currentFile: e.currentFile,
+                });
+              },
+            );
       registerTaskReplay(taskId, () => {
         void doInstall().catch((err) => {
           patch({ status: 'failed', error: err instanceof Error ? err.message : String(err) });
@@ -895,12 +943,17 @@ function ModpackTab({
 
         <div className="dim" style={{ margin: 'var(--space-3) 0' }}>
           {packSource === 'curseforge' ? (
-            /* ★ C-1：CF 的清单格式不一样，这里**提前说清**，别让用户点下去才知道 */
+            /*
+             * ★★ 2026-09-26：CF 的整合包**能自动装了**（`cf_modpack_install`）。
+             *   所以要改的不是"能不能"，而是**提前说清它多一步什么**：
+             *   CF 的清单里只有文件编号，装的时候要逐个问接口拿地址 ——
+             *   作者禁止第三方下载的那种包会明确报出是哪几个文件。
+             */
             <>
-              下面列的是它在 CurseForge 上发布的版本。★ <b>CF 的整合包 IEML 还不能自动安装</b> ——
-              它用的是 <span className="mono">manifest.json</span>，而自动安装目前只支持 Modrinth 的{' '}
-              <span className="mono">.mrpack</span>（这一步没有做，不是网络问题）。
-              想看能装的版本，把上面的来源切回 Modrinth。
+              下面列的是它在 CurseForge 上发布的版本。装法与 Modrinth 一样是一键，
+              区别只在包里的清单：CurseForge 用 <span className="mono">manifest.json</span>，
+              里面只有文件编号，安装时要逐个去问下载地址（进度看顶栏任务中心）。
+              <b>作者不允许第三方下载的包装不了</b>，那种会明确告诉你是哪几个文件。
             </>
           ) : (
             <>
