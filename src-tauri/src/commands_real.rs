@@ -844,66 +844,25 @@ pub async fn resource_versions(
         .map_err(err)
 }
 
-/* ====================== CurseForge 的 key 管理（ADR-052） ====================== */
+/* ====================== CurseForge：没有 key 管理了 ====================== */
 
-/// 当前 CurseForge key 的状态（**界面上要如实说它从哪来**）
-#[derive(serde::Serialize)]
-pub struct CfKeyStatus {
-    /// 有没有可用的 key（内置的也算有）
-    pub configured: bool,
-    /// `settings`（你填的）/ `env`（环境变量）/ `builtin`（随程序内置）/ `none`
-    pub source: String,
-    /// 只显示前缀，**不泄漏整把 key**
-    pub hint: Option<String>,
-}
+/*
+ * ★★★★ 2026-09-26 用户：「**cf 只用镜像，我的那把 key 永远移除启动器**」。
+ *
+ *   这里原来有 `cf_key_status` / `cf_set_key`（还有一个真打接口验证 key 的命令），
+ *   以及对应的 `CfKeyStatus`。**整块删掉**：
+ *     · CurseForge 全部请求走国内镜像、不带任何凭据（见 `net::curseforge` 的文件头）；
+ *     · 界面上也就没有"填 key"这件事 —— 少一个用户根本不会用的设置项。
+ *   ★ 前端（`bridge/tauri.ts`）与设置页里的对应入口一并删除；
+ *     老版本留在盘上的 `cf_api_key.txt` 由 `net::curseforge::purge_legacy_key_files`
+ *     在启动时清掉。
+ */
 
-#[tauri::command]
-pub fn cf_key_status() -> CfKeyStatus {
-    let src = crate::net::curseforge::key_source();
-    CfKeyStatus {
-        configured: crate::net::curseforge::api_key().is_some(),
-        source: src.to_string(),
-        hint: crate::net::curseforge::key_hint(),
-    }
-}
-
-/// 保存一把自己的 key（空串 = 删掉覆盖值）。
-///
-/// ★ 2026-09-25：**"回到内置的那把"这句话不再成立** —— 内置 key 已为公开化清空
-///   （见 `net/curseforge.rs` 的 `BUILTIN_API_KEY`）。现在清空覆盖值 = 回到
-///   "没有 key"那条路，也就是**走国内镜像**（照样开箱即用）。
-#[tauri::command]
-pub fn cf_set_key(key: String, state: State<'_, AppState>) -> Result<CfKeyStatus, String> {
-    crate::net::curseforge::save_api_key(&state.paths(), &key)
-        .map_err(|e| e.to_string())?;
-    Ok(cf_key_status())
-}
-
-/// ★ 真打一次接口验证 key 是否可用（**不是"看起来对"**）。
-///
-/// 返回一句人话结论：成功时说清"能查到多少个 Mod"，
-/// 失败时区分"key 不对(403)"与"网络不通"（两者修法完全不同）。
-#[tauri::command]
-pub async fn cf_test_key() -> Result<String, String> {
-    use crate::domain::resources::ResourceKind;
-    match crate::net::curseforge::search(ResourceKind::Mod, "jei", None, None, 1, 0).await {
-        Ok(r) => Ok(format!(
-            "连接成功：能查到 CurseForge 上的 Mod（这次命中 {} 条，来源 {}）",
-            r.total_hits,
-            if r.source.is_empty() { "未知" } else { &r.source }
-        )),
-        Err(crate::net::NetError::Status { status: 403, .. }) => Err(
-            "CurseForge 拒绝了这把 key（HTTP 403）。\n\
-             可能的原因：key 复制不全、或者它已经被撤销。\n\
-             到 console.curseforge.com 的「API Keys」里重新复制一次。"
-                .to_string(),
-        ),
-        Err(e) => Err(format!(
-            "没连上 CurseForge：{e}\n\
-             （这可能是网络问题，不一定是 key 的问题 —— 我们也走了国内镜像兜底）"
-        )),
-    }
-}
+/*
+ * ★★ `cf_test_key`（真打一次接口验证 key）也一并删掉了 —— 没有 key 可验了。
+ *   但"能不能连上 CurseForge"这个问题**依然值得回答**（现在问的是镜像通不通）：
+ *   它由资源中心的搜索本身回答（失败时界面会显示具体原因），不需要单独一条命令。
+ */
 
 #[tauri::command]
 pub async fn modrinth_project(id: String) -> Result<modrinth::Project, String> {
