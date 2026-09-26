@@ -20,13 +20,14 @@ import { Button, Chip, CustomSelect, EmptyState, Note, Segmented, Spinner } from
 import { IconAlert, IconBox, IconChevronRight, IconDownload, IconLayers, IconPuzzle, IconRefresh, IconImage, IconGrid, IconRows, IconPackage, IconSearch } from '../ui/Icons';
 import { useRealApi } from '../hooks/useRealApi';
 import type { DownloadTab } from '../state/store';
+import { takePendingPack } from '../state/pending-pack';
 import { InstallComposer } from '../components/InstallComposer';
 import { ResourceCenterBody, VersionPicker } from '../components/ResourceBrowser';
 import { autoMemory, compareVersion, isSnapshotVersion, knownVersions } from '../domain';
 // ★ C-26：取消不是故障 —— 判据只有一处（见 `domain/cancel.ts` 的说明）
 import { isCancellation } from '../domain/cancel';
 import type { Instance } from '../domain';
-import type { ModrinthVersion, ResourceKindName } from '../bridge/tauri';
+import type { ModrinthVersion, ModpackInstallResult, ResourceKindName } from '../bridge/tauri';
 import { registerTaskReplay } from '../flows/install';
 
 /** 后四格页签 ↔ 资源种类（**一一对应**，界面不自己编种类） */
@@ -790,6 +791,11 @@ function ModpackTab({
                 taskId,
                 instanceName: packName,
                 source: 'bmclapi',
+                /*
+                 * ★ 把包体大小交给后端：包体是一个大文件，**没有体积就没有百分比**
+                 *   （那一段会如实停在 0%，看起来像卡住）。Modrinth 的文件信息里有 size。
+                 */
+                size: file.size,
               },
               (e) => {
                 patch({
@@ -832,57 +838,185 @@ function ModpackTab({
       }
 
       // ★ 装完才建实例（失败不会在列表里留下一个起不来的空壳）
-      const inst: Instance = {
-        id: `inst-${Date.now().toString(36)}`,
-        mcVersion: result.mc_version,
-        loader: result.loader_kind
-          ? {
-              kind: result.loader_kind as 'forge' | 'neoforge' | 'fabric' | 'quilt',
-              version: result.loader_version ?? '',
-              mcVersion: result.mc_version,
-            }
-          : null,
-        addons: [],
-        config: {
-          name: packName,
-          slug,
-          // ★ 整合包必须隔离：作者的 config 不能被别的实例污染
-          isolation: 'on',
-          memoryMb: Math.round(
-            autoMemory(
-              0,
-              result.loader_kind === 'forge' || result.loader_kind === 'neoforge'
-                ? 'modded'
-                : 'vanilla',
-              16,
-              8,
-            ).gb * 1024,
-          ),
-          memorySource: 'auto',
-          javaMode: 'auto',
-        },
-        createdAt: new Date().toISOString(),
-        lastPlayedAt: null,
-        totalPlaySeconds: 0,
-      };
-      await createInstance(inst);
-
-      patch({ status: 'done', percent: 100, detail: '安装完成' });
-      toast(
-        'ok',
-        '整合包装好了',
-        `${packName} · ${result.mc_version}${
-          result.loader_kind ? ` + ${result.loader_kind}` : ''
-        } · ${result.mod_files} 个文件 + ${result.override_files} 个配置`,
-      );
-      setSelected(null);
-      go('versions');
+      await finishPackInstall(result, patch, packName, slug);
     } catch (e) {
       /*
        * ★★ 2026-09-24（C-26 修复）：用户自己点「取消」时抛出来的是
        *   「任务被取消」（Rust）/「已取消」（浏览器桥）—— 以前一律弹**红色「安装失败」**，
        *   等于把用户自己的操作说成故障。取消 = 正常结果，说清"停下了、文件保留"。
        */
+      const why = e instanceof Error ? e.message : String(e);
+      if (isCancellation(why)) {
+        toast('info', '已取消安装', '已经下载的文件保留着，下次会从断点继续。');
+      } else {
+        toast('err', '安装失败', why);
+      }
+    } finally {
+      setInstalling(false);
+    }
+  }
+
+  /**
+   * **三条安装路径共用的收尾**：在线 `.mrpack`、CurseForge 的 zip、拖进来的本地包。
+   *
+   * ★ 抽出来的理由：这三条的前半段（怎么拿到清单、从哪拿文件地址）完全不同，
+   *   但**后半段一模一样** —— 暂停如实标记、装完才建实例、提示、跳去版本列表。
+   *   复制三份的话，以后改"暂停算不算装完"这种规矩必然漏掉一两条。
+   */
+  async function finishPackInstall(
+    result: ModpackInstallResult,
+    patch: (p: Record<string, unknown>) => void,
+    packName: string,
+    slug: string,
+  ) {
+    /*
+     * ★★ **被暂停就不算装完**（P0-3）：不许建实例、不许说"安装完成"。
+     *
+     *   老行为是：暂停之后照样往下跑、照样建实例、提示"整合包装好了"，
+     *   而 `instances.json` 里多出一个**起不来**的空壳。
+     *   现在如实标记「已暂停」，任务中心的「继续」用同一套参数接着下。
+     */
+    if (result.paused) {
+      patch({
+        status: 'paused',
+        detail:
+          result.remaining_files > 0 ? `已暂停 · 还剩 ${result.remaining_files} 个文件` : '已暂停',
+      });
+      toast(
+        'info',
+        '已暂停',
+        `${packName} 还剩 ${result.remaining_files} 个文件没下，点「继续」接着装`,
+      );
+      return;
+    }
+
+    const inst: Instance = {
+      id: `inst-${Date.now().toString(36)}`,
+      mcVersion: result.mc_version,
+      loader: result.loader_kind
+        ? {
+            kind: result.loader_kind as 'forge' | 'neoforge' | 'fabric' | 'quilt',
+            version: result.loader_version ?? '',
+            mcVersion: result.mc_version,
+          }
+        : null,
+      addons: [],
+      config: {
+        name: packName,
+        slug,
+        // ★ 整合包必须隔离：作者的 config 不能被别的实例污染
+        isolation: 'on',
+        memoryMb: Math.round(
+          autoMemory(
+            0,
+            result.loader_kind === 'forge' || result.loader_kind === 'neoforge'
+              ? 'modded'
+              : 'vanilla',
+            16,
+            8,
+          ).gb * 1024,
+        ),
+        memorySource: 'auto',
+        javaMode: 'auto',
+      },
+      createdAt: new Date().toISOString(),
+      lastPlayedAt: null,
+      totalPlaySeconds: 0,
+    };
+    await createInstance(inst);
+
+    patch({ status: 'done', percent: 100, detail: '安装完成' });
+    toast(
+      'ok',
+      '整合包装好了',
+      `${packName} · ${result.mc_version}${
+        result.loader_kind ? ` + ${result.loader_kind}` : ''
+      } · ${result.mod_files} 个文件 + ${result.override_files} 个配置`,
+    );
+    setSelected(null);
+    go('versions');
+  }
+
+  /*
+   * ★★ 2026-09-26：**把整合包 zip 拖进窗口就能装**（用户第 2 优先级的功能）。
+   *
+   *   为什么必须有它：CF 上有**作者不允许第三方下载**的包（实测 8 个热门包里 1 个），
+   *   那种包谁也自动装不了 —— 唯一诚实的出路就是"你自己去 CF 页面下 zip，拖进来"。
+   *   所以它不是锦上添花，是那条降级路径的落点。
+   *
+   *   ★ 拖放事件由 **Tauri 原生**接（`tauri.conf.json` 是 `dragDropEnabled: true`，
+   *     所以 HTML 的 `onDrop` 永远收不到东西）——AppShell 收到原生事件后
+   *     派发 `ieml:install-local-pack`，这里接住并真正装。
+   *   ★ 也正因为是**自定义事件**，探针可以派发同一个事件来验这条逻辑
+   *     （原生拖放没法在无头环境里合成）。
+   */
+  useEffect(() => {
+    const onLocalPack = (e: Event) => {
+      const detail = (e as CustomEvent<{ path: string; name?: string }>).detail;
+      if (!detail?.path) return;
+      void installLocalPack(detail.path, detail.name);
+    };
+    window.addEventListener('ieml:install-local-pack', onLocalPack);
+    /*
+     * ★ 还有"跨页交接"那一格：拖放发生在别的页面时，AppShell 把路径存在
+     *   `pending-pack` 里再切过来。这里挂载时取一次（取走即清空，不会装两遍）。
+     */
+    const pending = takePendingPack();
+    if (pending) void installLocalPack(pending.path, pending.name);
+    return () => window.removeEventListener('ieml:install-local-pack', onLocalPack);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** 装一个**已经在盘上**的整合包（拖进来的那份） */
+  async function installLocalPack(path: string, nameHint?: string) {
+    if (!api) {
+      toast('warning', '演示模式', '浏览器里无法真实安装整合包');
+      return;
+    }
+    const fileName = path.split(/[\\/]/).pop() ?? path;
+    const packName = (nameHint ?? fileName).replace(/\.(zip|mrpack)$/i, '');
+    const slug = `pack-${Date.now().toString(36).slice(-6)}`;
+    const taskId = `modpack-${Date.now().toString(36)}`;
+    window.dispatchEvent(
+      new CustomEvent('ieml:task-add', {
+        detail: {
+          id: taskId,
+          kind: 'install',
+          title: `整合包 ${packName}`,
+          detail: '本地文件 · 正在读清单',
+          status: 'running',
+          percent: 0,
+          finishedFiles: 0,
+          bytesPerSecond: 0,
+          currentFile: '',
+          etaSeconds: 0,
+        },
+      }),
+    );
+    const patch = (p: Record<string, unknown>) =>
+      window.dispatchEvent(new CustomEvent('ieml:task-patch', { detail: { id: taskId, patch: p } }));
+    const doInstall = () =>
+      api.modpack.installLocal(
+        { path, name: packName, slug, taskId, instanceName: packName, source: 'bmclapi' },
+        (e) => {
+          patch({
+            detail: e.stage,
+            percent: e.percent,
+            finishedFiles: e.finishedFiles,
+            currentFile: e.currentFile,
+          });
+        },
+      );
+    registerTaskReplay(taskId, () => {
+      void doInstall().catch((err) => {
+        patch({ status: 'failed', error: err instanceof Error ? err.message : String(err) });
+      });
+    });
+    setInstalling(true);
+    try {
+      const result = await doInstall();
+      await finishPackInstall(result, patch, packName, slug);
+    } catch (e) {
       const why = e instanceof Error ? e.message : String(e);
       if (isCancellation(why)) {
         toast('info', '已取消安装', '已经下载的文件保留着，下次会从断点继续。');

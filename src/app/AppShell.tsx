@@ -16,6 +16,8 @@
 import brandIcon from '../assets/brand-icon.png'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../state/AppContext';
+import { setPendingPack } from '../state/pending-pack';
+import { isTauri } from '../bridge';
 import type { PageId, SubPageId } from '../state/store';
 import { Button, Chip, Modal, ToastRegion } from '../ui';
 import { IconChevronRight, IconDownload, IconGear, IconGrid, IconHome, IconLayers, IconPlay, IconPuzzle, IconStop, IconTerminal, IconInfo } from '../ui/Icons';
@@ -179,6 +181,73 @@ export function App() {
   ) {
     window.dispatchEvent(new CustomEvent('ieml:toast', { detail: { kind, title, desc } }));
   }
+
+  /*
+   * ★★ 2026-09-26：**把整合包拖进窗口就能装**。
+   *
+   * ## 为什么必须用 Tauri 的原生事件，而不是 HTML 的 onDrop
+   *
+   *   `tauri.conf.json` 里 `dragDropEnabled: true`（默认值）—— 意思是**原生那层把
+   *   拖放接管了**：HTML 的 `dragover` / `drop` 一个都不会触发
+   *   （实测 `src/` 里 `onDrop` 0 命中，而界面确实拖不进东西）。
+   *   所以要用 `getCurrentWebview().onDragDropEvent()`。
+   *
+   * ## 收到之后做什么
+   *
+   *   只认整合包（`.mrpack` / CurseForge 的 `.zip`）—— 但**判据交给后端按内容判**
+   *   （扩展名可以改错，zip 里面的清单骗不了人）。这里只做两件轻活：
+   *   把用户带到下载页、把路径派发出去；真正的安装由 `DownloadPage` 跑
+   *   （它手里有任务中心、建实例、跳转那一整套）。
+   *
+   *   ★ 不是整合包的文件**不动手也不静默**：弹一句说清"只支持整合包"。
+   */
+  useEffect(() => {
+    if (!isTauri()) return;
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { getCurrentWebview } = await import('@tauri-apps/api/webview');
+        const stop = await getCurrentWebview().onDragDropEvent((event) => {
+          if (event.payload.type !== 'drop') return;
+          const paths = event.payload.paths ?? [];
+          if (paths.length === 0) return;
+          const pack = paths.find((p) => /\.(mrpack|zip)$/i.test(p));
+          if (!pack) {
+            dispatchToast(
+              'warning',
+              '这个文件拖不进来',
+              '目前只支持整合包：Modrinth 的 .mrpack，或者 CurseForge 整合包的 .zip。',
+            );
+            return;
+          }
+          go('download');
+          /*
+           * ★ 先**存下路径**再切页：`DownloadPage` 的监听器是它挂载之后才注册的，
+           *   立刻派发事件会丢（那正是"拖进去没反应"的成因）。
+           *   它挂载时会 `takePendingPack()` 取走 —— 取走即清空，不会装两遍。
+           */
+          setPendingPack(pack, pack.split(/[\\/]/).pop());
+          /* 同页拖放（已经在下载页）就直接派发，省掉一次取件 */
+          window.dispatchEvent(
+            new CustomEvent('ieml:install-local-pack', {
+              detail: { path: pack, name: pack.split(/[\\/]/).pop() },
+            }),
+          );
+        });
+        if (cancelled) stop();
+        else unlisten = stop;
+      } catch (e) {
+        /* 拿不到原生拖放不该让界面炸：如实写进控制台，用户至少还能用别的方式装 */
+        console.warn('[IEML] 注册拖放事件失败：', e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /*
    * ★★ 2026-09-24（C-7 修复）：这里原来有个「最近玩过」块 ——
