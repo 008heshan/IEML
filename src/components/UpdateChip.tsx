@@ -13,9 +13,15 @@
  *   而"玩家永远收不到更新"正是 beta.44 之前那个真实状态。
  *
  * ★ 三种状态各有各的话，**不可点时必须给出理由**（这个仓库的老规矩）：
- *   · 下载中 → 不可点，title 说"正在后台下载，下完就能一键更新"；
+ *   · 下载中 → 不可点，角标自己就写着"新版本 X · 下载中 45%"（理由在字面上）；
  *   · 已下好 → 「重启并更新」；
- *   · 下失败 → 「重试」，title 带上失败原因（不是一句"出错了"）。
+ *   · 下失败 → 「重试」。
+ *
+ * ★★ 2026-09-26 用户：「去掉所有悬停显示描述」——
+ *   四个角标上的 `title` 全删了（原来失败原因就藏在里面）。
+ *   **原因没有丢**：`describeUpdate()` 在「关于 → 启动器更新」那一行把
+ *   `state.error` 写出来（下载失败会显示"下载没成功：…"，且那一行标红）——
+ *   见 `domain/update-copy.ts` 与 `tests/update-copy.test.mjs`。
  */
 import { useApp } from '../state/AppContext';
 import { IconDownload } from '../ui/Icons';
@@ -46,7 +52,6 @@ export function UpdateChip() {
         type="button"
         className="chip chip-btn chip-neutral upd-chip"
         disabled
-        title={`正在后台下载新版本 ${v}（${pct === null ? '已开始' : `${pct}%`}）—— 下完就能一键更新`}
       >
         <IconDownload />
         <span className="truncate">
@@ -63,7 +68,6 @@ export function UpdateChip() {
         type="button"
         className="chip chip-btn chip-accent upd-chip"
         disabled
-        title="安装程序正在替换文件（静默安装），装完启动器会自己重开"
       >
         <IconDownload />
         <span className="truncate">正在更新…</span>
@@ -76,10 +80,6 @@ export function UpdateChip() {
       <button
         type="button"
         className="chip chip-btn chip-accent upd-chip"
-        title={
-          `点一下：静默安装 ${v} 并重启启动器（不会弹安装向导，装完自己回来）` +
-          (state.error ? `　上次没装成：${state.error}` : '')
-        }
         onClick={() => void update.install()}
       >
         <IconDownload />
@@ -93,7 +93,6 @@ export function UpdateChip() {
     <button
       type="button"
       className="chip chip-btn chip-warning upd-chip"
-      title={`新版本 ${v} 还没下下来，点这里重试${state.error ? `：${state.error}` : ''}`}
       onClick={() => void update.download()}
     >
       <IconDownload />
