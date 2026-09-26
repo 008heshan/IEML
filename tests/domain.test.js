@@ -75,12 +75,22 @@ test('LiteLoader 只在 1.7.10 ~ 1.12.2 出现，且只作为附加组件', () =
   }
 });
 
-test('Fabric API 版本号与 MC 版本绑定', () => {
+/*
+ * ★★ 2026-09-26 改判据（原判据："版本号以 `+<mc>` 结尾"）。
+ *
+ *   原来这里钉的是 `0.92.2+1.20.1` 这种写法 —— 可那是**编出来的数字**：
+ *   真实安装走 Modrinth 在线清单、由 `pick_default_version` 挑（正式版 > beta > alpha），
+ *   实测早就到 `0.92.12+1.20.1` 了。界面上写一个固定的旧版本号 = 对用户说假话。
+ *   ⇒ 现在版本号字段只写「最新版」，判据改成"**不许再像具体版本号**"。
+ *   （Rust 侧同名字段与判据同步改，见 `domain::loader_caps` 的
+ *    `fabric_api_version_is_not_hardcoded_any_more`。）
+ */
+test('Fabric API 不再显示写死的具体版本号', () => {
   const a = getLoaderCapabilities('1.20.1').apiLibraries.find((l) => l.kind === 'fabric-api');
   const b = getLoaderCapabilities('1.21.1').apiLibraries.find((l) => l.kind === 'fabric-api');
-  assert.match(a.version, /\+1\.20\.1$/);
-  assert.match(b.version, /\+1\.21\.1$/);
-  assert.notEqual(a.version, b.version);
+  assert.equal(a.version, '最新版');
+  assert.equal(b.version, '最新版');
+  assert.doesNotMatch(a.version, /^\d/, '版本号字段不许以数字开头（那会被读成一个具体版本）');
 });
 
 /* ====================== 组合校验 ====================== */
