@@ -883,13 +883,21 @@ mod tests {
         }
     }
 
+    /// ★★ 2026-09-26 改判据：**这条原来断言"版本号以 `+<mc>` 结尾"**，
+    ///   而现在版本号不再写具体数字了 —— 那个数字是编的
+    ///   （`0.92.2+1.20.1`，而真实安装走 Modrinth 在线清单，实测已到 `0.92.12+1.20.1`）。
+    ///   新判据守的是"**不许再出现像具体版本号的东西**"：
+    ///   界面/能力表里只写「最新版」，真实版本由 `install_api_library_for` 在线挑。
     #[test]
-    fn fabric_api_version_binds_to_mc() {
+    fn fabric_api_version_is_not_hardcoded_any_more() {
         let a = api_for_base(Some(BaseLoaderKind::Fabric), "1.20.1");
         let b = api_for_base(Some(BaseLoaderKind::Fabric), "1.21.1");
-        assert!(a[0].version.ends_with("+1.20.1"));
-        assert!(b[0].version.ends_with("+1.21.1"));
-        assert_ne!(a[0].version, b[0].version);
+        assert_eq!(a[0].version, "最新版", "不许再写死一个具体版本号");
+        assert_eq!(b[0].version, "最新版");
+        assert!(
+            !a[0].version.chars().next().unwrap().is_ascii_digit(),
+            "版本号字段不许以数字开头（那会被读成一个具体版本）"
+        );
     }
 
     #[test]
