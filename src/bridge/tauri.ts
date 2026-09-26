@@ -1388,6 +1388,55 @@ export const modpack = {
       unlisten?.();
     }
   },
+
+  /**
+   * ★★ 2026-09-26：**CurseForge 的整合包也能自动装了**。
+   *
+   * 与 `install` 的唯一区别在"读清单"那一步：CF 的 `manifest.json` 里**只有 id**
+   * （`projectID` / `fileID`），所以后端要**逐个问接口**拿下载地址 —— 这一段的进度
+   * 也会通过同一个 `modpack-progress` 事件报出来（阶段是"解析整合包文件地址"）。
+   *
+   * ★ `downloadUrl` 可以是 `null`（作者禁止第三方分发）：后端会再问一次接口，
+   *   真的拿不到才给出**具体原因**，而不是一句"下载失败"。
+   */
+  cfInstall: async (
+    opts: {
+      projectId: number;
+      fileId: number;
+      fileName: string;
+      downloadUrl: string | null;
+      name: string;
+      slug: string;
+      taskId: string;
+      instanceName: string;
+      source?: 'auto' | 'mojang' | 'bmclapi';
+      concurrency?: number;
+    },
+    onProgress?: (e: ModpackProgressEvent) => void,
+  ): Promise<ModpackInstallResult> => {
+    let unlisten: UnlistenFn | null = null;
+    if (onProgress) {
+      unlisten = await listen<ModpackProgressEvent>('modpack-progress', (ev) => {
+        if (ev.payload.taskId === opts.taskId) onProgress(ev.payload);
+      });
+    }
+    try {
+      return await call<ModpackInstallResult>('cf_modpack_install', {
+        projectId: opts.projectId,
+        fileId: opts.fileId,
+        fileName: opts.fileName,
+        downloadUrl: opts.downloadUrl,
+        name: opts.name,
+        slug: opts.slug,
+        taskId: opts.taskId,
+        instanceName: opts.instanceName,
+        source: opts.source ?? 'bmclapi',
+        concurrency: opts.concurrency ?? null,
+      });
+    } finally {
+      unlisten?.();
+    }
+  },
 };
 
 /** 整合包进度事件（`modpack-progress`） */

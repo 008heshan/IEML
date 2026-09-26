@@ -480,6 +480,9 @@ pub fn run() {    /*
             commands_real::mrpack_inspect,
             /* ★ 真正安装整合包（清单 → 本体+加载器 → Mod → overrides） */
             commands_real::modpack_install,
+            /* ★★ CurseForge 的整合包（manifest.json + 逐个问接口拿地址）——
+               与上面那条共用同一段执行流程（`install_pack_plan`） */
+            commands_real::cf_modpack_install,
             /* -------- 杂项 -------- */
             commands_real::backend_capabilities,
         ])
