@@ -2535,14 +2535,6 @@ pub async fn run_loader_installer(
      *   用户的输出照样全拿到（stdout/stderr 都被 `.output()` 接走用于
      *   判断成功失败与展示进度），只是不再挂一个空壳在屏幕上。
      */
-    let mut installer_cmd = tokio::process::Command::new(&java.path);
-    installer_cmd
-        .arg("-jar")
-        .arg(&jar)
-        .arg("--installClient")
-        .arg(target_dir)
-        .arg("--mirror")
-        .arg(&mirror_maven);
     /*
      * ★★ 安装器**会在自己的工作目录里写一个 `.log`**（`<jar 名>.log`）。
      *
@@ -2552,7 +2544,20 @@ pub async fn run_loader_installer(
      *   于是"仓库根布局"那条门禁**红了**。用户那边同样会中招：
      *   从桌面双击启动就在桌面留下一个看不懂的 `.log`。
      *   ⇒ 让它写进**我们自己缓存目录**（jar 就在旁边），名字固定、不会堆积。
+     *
+     *   ★ 这段说明放在**创建子进程之前**是有原因的：
+     *     `tools/gates/audit-spawn-windows.mjs` 要求"创建子进程后 20 行内出现
+     *     `hide_console`" —— 把长注释塞在 `Command::new` 与
+     *     `hide_console_async` 中间，那条门禁就**看不见**抑制了（会报红）。
      */
+    let mut installer_cmd = tokio::process::Command::new(&java.path);
+    installer_cmd
+        .arg("-jar")
+        .arg(&jar)
+        .arg("--installClient")
+        .arg(target_dir)
+        .arg("--mirror")
+        .arg(&mirror_maven);
     if let Some(dir) = jar.parent() {
         installer_cmd.current_dir(dir);
     }
