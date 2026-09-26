@@ -408,7 +408,9 @@ export function VersionsPage() {
    * ★ 为什么收成徽标（dev.15）：旧版在这里写整句
    *   「与实例记录不符：记录要装 Forge，盘上没有」，一屏四行里重复三遍 ——
    *   用户的原话是"有些地方文字太多，很繁杂"。信息不能丢，所以
-   *   `why` 里是完整句子（徽标 `title` 显示、概览页也有一整块对照）。
+   *   `why` 里是完整句子（概览页有一整块对照表把它写出来）。
+   *   ★★ 2026-09-26 用户：「去掉所有悬停显示描述」—— 徽标上那句 `title` 已删，
+   *     所以完整原因现在**只在概览页**。
    */
   const diskConflictOf = (
     inst: (typeof state.instances)[number],
@@ -498,7 +500,7 @@ export function VersionsPage() {
           <p className="page-desc">
             {okRows.length + newVersions.length} 个版本
             {' · 文件夹 '}
-            <span className="mono" title={state.machine?.dataDir ?? ''}>
+            <span className="mono">
               {state.machine?.dataDir ?? '未知'}
             </span>
           </p>
@@ -517,7 +519,6 @@ export function VersionsPage() {
             <Button
               size="sm"
               variant="ghost"
-              title="重新读一遍这个文件夹里的 versions/（不会重新下载）"
               onClick={() => {
                 void refreshDisk();
                 /* ★ 2026-09-25：这一页的数据源是"文件夹里有什么"，所以重探也要重扫文件夹 */
@@ -636,7 +637,7 @@ export function VersionsPage() {
           const openMenu = menuFor === inst.id;
           /*
            * ★ 盘上与实例记录的**冲突判据**（只在列表行里用，且只产出一个徽标）。
-           *   完整说明在 `title` 与概览页的「版本状态」表里 —— 列表不是讲理的地方。
+           *   完整说明在概览页的「版本状态」表里 —— 列表不是讲理的地方。
            */
           const diskLoaders = diskLoadersOf(inst.mcVersion);
           const conflict = diskConflictOf(inst, diskLoaders);
@@ -679,13 +680,12 @@ export function VersionsPage() {
                     ★ 记录与盘上不一致时**只给一个徽标**（dev.15 重构）。
                       旧版在这里写整句"与实例记录不符：记录要装 Forge，盘上没有"，
                       一屏四行里重复三遍，把名字和启动按钮都淹了。
-                      原因没有丢：`title` 里是完整句子，概览页也有一整块对照表。
+                      原因没有丢：完整句子在**概览页**那一整块对照表里。
+                      ★★ 2026-09-26 用户：「去掉所有悬停显示描述」——
+                        这里原来还挂着一句 `title`，现在只留徽标本身。
                   */}
-                  {conflict ? (
-                    <Chip tone="warning" title={conflict.why}>
-                      {conflict.short}
-                    </Chip>
-                  ) : null}                </div>
+                  {conflict ? <Chip tone="warning">{conflict.short}</Chip> : null}
+                </div>
                 <div className="ver-meta">
                   <span className="mono">{inst.mcVersion}</span>
                   <span className="dot" />
@@ -851,7 +851,6 @@ export function VersionsPage() {
                         <button
                           type="button"
                           role="menuitem"
-                          title="到下载页搜索并安装 Mod 到这个版本"
                           onClick={() => {
                             setMenuFor(null);
                             goDownloadFor('mod', inst.id);
@@ -941,7 +940,6 @@ export function VersionsPage() {
                         type="button"
                         role="menuitem"
                         className="danger"
-                        title="默认移入系统回收站；按住 Shift 点击则永久删除"
                         onClick={async (e) => {
                           setMenuFor(null);
                           const copy = describeDelete({

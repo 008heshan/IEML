@@ -1300,7 +1300,7 @@ export function InstallComposer({
                 onClick={() => setFoldOverride((o) => ({ ...o, [g.fam.key]: !folded }))}
               >
                 <IconChevronDown className={`fold-caret${folded ? ' folded' : ''}`} />
-                <VersionIcon version={g.rows[0]?.id ?? ''} size={18} title={g.fam.label} />
+                <VersionIcon version={g.rows[0]?.id ?? ''} size={18} />
                 <span>{g.fam.label}</span>
                 {/*
                   ★ 2026-09-16 用户（看图）："后面的这个详细版本就不用了，去掉即可"。
@@ -1426,7 +1426,7 @@ export function InstallComposer({
              *   原文是整句告警，四个加载器各铺两三行，右栏全是字。
              *   现在分三种，**一字不差地对应三种真实状态**：
              *     loading → 转圈（"正在查"，不是"没有"）
-             *     error   → 「查不到」（≠ 没有；整句仍挂在 title 上）
+             *     error   → 「查不到」（≠ 没有）
              *     确认没有 → 「无」
              *   把长句删掉换成"无"是可以的；把"查不到"说成"无"不行 ——
              *   那正是 ADR-050 记着的那类假话。
@@ -1443,11 +1443,12 @@ export function InstallComposer({
                    * ★★ 2026-09-16 用户："鼠标停在选项上时同一句仍在 title 里，
                    *   这个也不要，大伙都知道是什么"。
                    *
-                   *   所以 title **只在不可用时给理由**（那是"为什么点不了"，
-                   *   必须留着），可点时一律不给 —— 加载器的名字本身就说清了，
-                   *   再挂一句"老牌加载器，Mod 数量最多"是在教用户常识。
+                   *   所以 title **只在不可用时给理由**（那是"为什么点不了"）。
+                   * ★★ 2026-09-26 用户又要求「**去掉所有悬停显示描述**」——
+                   *   连"不可用时的理由"这个 title 也删了。现在状态说明只有
+                   *   下面那行看得见的短状态（`.b-reason`：正在查 / 查不到 / 无）；
+                   *   完整句子仍由 `reason` 算出来，见 `shortReason` 那段的注释。
                    */
-                  title={disabled ? reason : undefined}
                   onClick={() => {
                     setBase(o.value === '' ? null : o.value);
                     setAddons([]);
@@ -1460,11 +1461,13 @@ export function InstallComposer({
                       ★★ 2026-09-16 用户："图三这个副标题提示，可以去掉"。
                         原来选中/不可用时会在这里多铺一行说明
                         （"老牌加载器，Mod 数量最多…"）—— 删掉。
-                        **没有丢信息**：鼠标停在这个选项上时，
-                        同一句说明仍然在 `title` 里（上面那个 title 属性）。
+                        ★ 当时说"没有丢信息"是因为那句话还挂在 `title` 上；
+                          2026-09-26 用户要求「去掉所有悬停显示描述」之后，
+                          它就真的**只在短状态里**了（这是用户要的效果：
+                          加载器叫什么、能不能选，一眼就够）。
                     */}
                     {disabled && reason ? (
-                      <span className="b-reason" title={reason}>
+                      <span className="b-reason">
                         {shortReason === null ? (
                           <Spinner label="正在查在线清单…" />
                         ) : (
@@ -1614,14 +1617,19 @@ export function InstallComposer({
              *
              *   三种状态三种写法，一个都不许混：
              *     正在查 → 转圈（Windows 开机那种），因为这时**还不知道**
-             *     没查到 → 「查不到」（网络/上游问题，长句留在 title 里）
+             *     没查到 → 「查不到」（网络/上游问题）
              *     选不了 → 「无」
              *
              * ★★ 2026-09-23 晚（用户第二次说，看图）：「**2.写「无」**」。
              *   这里原本给"不兼容"单开一档显示「不兼容」—— 那是我 2026-09-15
              *   自己的想法（想在字面上区分"我们的限制"与"上游没有"）。
-             *   用户明确不要这个区分：**选不了就是「无」**，理由在 `title` 里。
-             *   ⚠️ 于是有一件事必须靠别的路径保住（见上面那张卡片的注释）：
+             *   用户明确不要这个区分：**选不了就是「无」**。
+             * ★★ 2026-09-26 用户：「去掉所有悬停显示描述」——
+             *   上面算出来的整句 `reason` 原来挂在选项的 `title` 上，
+             *   现在**没有任何出口**（用户先要"只写无"、后要"不要悬停提示"，
+             *   两条都要遵守 ⇒ 这一档就只剩「无」）。这是**有意的取舍**，
+             *   不是漏了；唯一仍把整句写出来的是下面 `removed` 那条 ——
+             *   ⚠️ 那件事必须靠别的路径保住（见上面那张卡片的注释）：
              *     **已经勾上、后来被判不兼容**的组件（`removed`）仍然把整句写出来，
              *     否则用户会以为自己的选择凭空消失。
              */
@@ -1645,7 +1653,6 @@ export function InstallComposer({
                  *   （用户报的那一屏）。不让**选**是对的；让人**取消不掉**是错的。
                  */
                 disabled={disabled && !selected}
-                title={disabled ? reason : undefined}
                 onClick={() =>
                   setAddons((prev) =>
                     prev.includes(a.kind)
@@ -1678,9 +1685,10 @@ export function InstallComposer({
                         它**说的不是同一件事**：LiteLoader 在 26.3 上被禁用，
                         原因是"这个 MC 版本没有它"，与加载器无关。
                         用户要的就是短：「无」（短状态在下面那一行，见 `shortReason`）。
-                      ★ 理由没有丢：整句仍在 `title`（悬停即见）——
-                        本项目的铁律是**禁用必须给具体理由**，
-                        只是不必把整句一直摆在脸上。
+                      ★ 理由没有丢：短状态（`shortReason`）就在上面那一行写着。
+                      ★★ 2026-09-26 用户：「去掉所有悬停显示描述」之后，
+                        整句**不再**挂在 `title` 上 —— 悬停只弹这句长文案，
+                        而禁用本身已经有短状态说明，所以按用户要求删掉。
                       ★★ 唯一例外是**已经勾上、后来被判不兼容**的那种（`removed`）：
                         下面 `removed.reason` 那一行仍然把整句写出来 ——
                         那是"你明明选了它"，只写「无」会让人以为自己的选择凭空消失。
@@ -1698,7 +1706,7 @@ export function InstallComposer({
                     </span>
                   ) : null}
                   {disabled && reason ? (
-                    <span className="a-note bad" title={reason}>
+                    <span className="a-note bad">
                       {shortReason === null ? (
                         <Spinner label="正在查版本清单…" />
                       ) : (
@@ -1771,7 +1779,7 @@ export function InstallComposer({
               <div key={lib.kind} className="api-item">
                 <span className="api-name">{lib.name}</span>
                 <span className="api-ver mono">{lib.version}</span>
-                <span className="api-desc" title={lib.description}>
+                <span className="api-desc">
                   {lib.description}
                 </span>
                 <span className="api-size mono">{formatBytes(lib.bytes)}</span>

@@ -228,7 +228,7 @@ export function DataRootPicker({ open, onClose, current, toast, onChanged }: Dat
     >
       <div className="droot-now">
         <span className="dim">现在用</span>
-        <span className="mono droot-path truncate" title={current}>
+        <span className="mono droot-path truncate">
           {current || '未知'}
         </span>
       </div>
@@ -272,7 +272,7 @@ export function DataRootPicker({ open, onClose, current, toast, onChanged }: Dat
         {roots.map((r) => (
           <div className="droot-row" key={r.path}>
             <span className="droot-name">
-              <span className="truncate" title={r.path}>
+              <span className="truncate">
                 {r.name}
               </span>
               {r.isCurrent ? <Chip tone="accent">正在用</Chip> : null}
@@ -281,7 +281,7 @@ export function DataRootPicker({ open, onClose, current, toast, onChanged }: Dat
                 <Chip tone="warning">系统盘</Chip>
               ) : null}
             </span>
-            <span className="droot-target mono truncate" title={r.path}>
+            <span className="droot-target mono truncate">
               {r.path}
             </span>
             {/*
@@ -295,7 +295,6 @@ export function DataRootPicker({ open, onClose, current, toast, onChanged }: Dat
                   variant={r.isCurrent ? 'ghost' : 'primary'}
                   disabled={r.isCurrent || busy !== null}
                   loading={busy === r.path}
-                  title={r.isCurrent ? '现在用的就是这个目录' : `把游戏根目录换成 ${r.path}`}
                   onClick={() => void apply(r.path)}
                 >
                   {r.isCurrent ? '当前' : '用这个'}
@@ -305,7 +304,8 @@ export function DataRootPicker({ open, onClose, current, toast, onChanged }: Dat
                     并明确选了 **B：连目录一起删**。
 
                   ★ 这是**不可恢复**的操作，所以：
-                    · 当前正在用的那个**不给删**（title 说明原因：先切走再删）；
+                    · 当前正在用的那个**不给删**（那一行按钮写着「当前」并置灰，
+                      先切走再删）；
                     · 点下去要**两次确认**，第一次把"删哪个路径、里面有多少东西"写清楚，
                       第二次再确认一次 —— 两句话都点"确定"才真的删。
                   ★ 后端还有另外三道闸（启动器数据目录 / 盘符根 / 必须真是目录），
@@ -315,11 +315,6 @@ export function DataRootPicker({ open, onClose, current, toast, onChanged }: Dat
                   size="sm"
                   variant="ghost"
                   disabled={r.isCurrent || busy !== null}
-                  title={
-                    r.isCurrent
-                      ? '这是现在正在用的根目录 —— 先切换到别的目录，再删它'
-                      : `删除 ${r.path}（连里面的文件一起删，不可恢复）`
-                  }
                   onClick={() => void removeDir(r.path)}
                 >
                   删除
@@ -330,7 +325,6 @@ export function DataRootPicker({ open, onClose, current, toast, onChanged }: Dat
                 size="sm"
                 variant="ghost"
                 disabled={busy !== null}
-                title="把这个目录从列表里去掉（磁盘上什么都没有动）"
                 onClick={() => void forget(r.path)}
               >
                 移除

@@ -848,15 +848,13 @@ export function ResourceCenterBody({
               className="res-filter"
               /*
                * ★ 资源包 / 光影 / 数据包这类**与加载器无关**（后端那张表里
-               *   `needs_loader_filter = false`），所以这里**不让选** ——
-               *   理由挂在能收到鼠标的**外层**上（禁用按钮自己不弹 title），
-               *   下面那行小字里也有同一句（"禁用必须给具体理由"）。
+               *   `needs_loader_filter = false`），所以这里**不让选**。
+               *
+               * ★★ 2026-09-26 用户：「去掉所有悬停显示描述」——
+               *   这句理由原来挂在外层的 `title` 上（禁用控件自己不弹提示），
+               *   现在改成同一排下面的**看得见的小字**（`.res-hint`）。
+               *   "禁用必须给具体理由"这条铁律没变，只是理由从悬停挪到了明面上。
                */
-              title={
-                current && !current.needs_loader_filter
-                  ? `${current.display}与加载器无关，游戏不按加载器读它 —— 所以不按加载器过滤。`
-                  : undefined
-              }
             >
               <CustomSelect
                 className={filterLoader ? '' : 'is-unset'}
@@ -868,9 +866,7 @@ export function ResourceCenterBody({
               />
             </div>
             {mismatch ? (
-              <Chip tone="warning" title={mismatch}>
-                与「装到」不一致
-              </Chip>
+              <Chip tone="warning">与「装到」不一致</Chip>
             ) : null}
           </div>
         ) : null}
@@ -887,7 +883,8 @@ export function ResourceCenterBody({
             左是矩阵，右是条形。**显示资源 UI 的方式**」。
             ⇒ 资源中心与整合包页**同一套**（都是"资源列表"，
               两个地方不同款正是上一次那个 bug 的成因 —— 这次一起加）。
-            ★ 图标按钮必须带 `title`（同时进 `aria-label` 与 `title`）。
+            ★ 图标按钮必须带名字（`SegmentOption.title` → `aria-label`，
+              读屏能听到"这是矩阵还是条形"）。**不挂悬停提示**（用户要求）。
         */}
         <Segmented
           label="显示方式"
@@ -900,6 +897,18 @@ export function ResourceCenterBody({
           ]}
         />
       </div>
+
+      {/*
+        ★★ 2026-09-26 用户：「去掉所有悬停显示描述」——
+          "这个筛选器为什么不能用"原来只挂在外层 `title` 上（悬停可见），
+          现在挪到明面上写成一行小字。禁用一个控件就必须说得出理由，
+          只是理由不该藏在悬停里。
+      */}
+      {gameFilters && current && !current.needs_loader_filter ? (
+        <p className="field-hint res-hint">
+          {current.display}与加载器无关，游戏不按加载器读它 —— 所以这里不按加载器过滤。
+        </p>
+      ) : null}
 
       <div className="res-search">
         <label className="res-search-box">
@@ -1019,7 +1028,6 @@ export function ResourceCenterBody({
                  */
                 onClick={() => openResource(hit, kind, source)}
                 disabled={!instance}
-                title={instance ? '打开安装页，自己挑版本' : '先选一个版本'}
               >
                 {openProject === hit.project_id ? '收起版本' : '选择版本并安装'}
               </Button>

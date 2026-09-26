@@ -46,25 +46,14 @@ export { groupByFamily, versionFamily, type VersionFamily } from './version-fami
  *
  * 三个面用同一个色相的三档明度：顶面最亮、右侧中间、左侧最暗 ——
  * 就有了"立体块"的感觉，而且**任何纯色主题下都成立**（不依赖图片资源）。
+ *
+ * ★★ 2026-09-26 用户：「**去掉所有悬停显示描述**」⇒ 这个组件原来有一个
+ *   `title` prop（悬停显示版本号/世代名），连 prop 一起删了。
  */
-export function VersionIcon({
-  version,
-  size = 34,
-  title,
-}: {
-  version: string;
-  size?: number;
-  /** 悬停提示（默认就是版本号） */
-  title?: string;
-}) {
+export function VersionIcon({ version, size = 34 }: { version: string; size?: number }) {
   const fam = versionFamily(version);
   return (
-    <span
-      className={`vi vi-${fam.tone}`}
-      style={{ width: size, height: size }}
-      title={title ?? version}
-      aria-hidden="true"
-    >
+    <span className={`vi vi-${fam.tone}`} style={{ width: size, height: size }} aria-hidden="true">
       <img src={versionIcon} width={size} height={size} alt="" style={{ borderRadius: 4 }} />
     </span>
   );

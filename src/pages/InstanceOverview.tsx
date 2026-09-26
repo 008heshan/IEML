@@ -259,7 +259,6 @@ export function InstanceOverview() {
           {inst.loader !== null ? (
             <Button
               variant="secondary"
-              title="到下载页搜索并安装 Mod 到这个版本"
               onClick={() => goDownloadFor('mod', inst.id)}
             >
               <IconPuzzle /> 安装 Mod
@@ -284,12 +283,11 @@ export function InstanceOverview() {
           variant="secondary"
           loading={busy}
           onClick={() => void checkAndRepair()}
-          title="对比官方清单，缺哪个库或资源文件就自动重下（已下好的会跳过）"
         >
           <IconRefresh /> 检查并补齐文件
         </Button>
         <span className="toolbar-sep" />
-        <Button size="sm" variant="ghost" onClick={doRename} title="只改显示名，不动目录名">
+        <Button size="sm" variant="ghost" onClick={doRename}>
           <IconBox /> 重命名
         </Button>
         <Button
@@ -297,13 +295,14 @@ export function InstanceOverview() {
           variant="ghost"
           onClick={doDuplicate}
           /*
-           * ★★ 2026-09-24：这句 title 原来写的是「配置照搬一份，**游戏文件共享**，
+           * ★★ 2026-09-24：这里原来有一句 title 写的是「配置照搬一份，**游戏文件共享**，
            *   不会多占几百 MB」—— 而实参是 `copyInstanceFiles(..., true)`，
            *   也就是**整份复制**（`duplicateInstance` 里写死 true；
            *   成功提示也写着"存档 / Mod / 配置都复制过去了（X MB）"）。
            *   按钮上的说明必须与实际行为一致：这里就是一次真复制，会占空间。
+           * ★★ 2026-09-26 用户：「去掉所有悬停显示描述」—— 那句（已改对的）title 也删了；
+           *   现在这句话只在点下去之后的确认弹窗里说（那里逐字写明会占一份空间）。
            */
-          title="把存档 / Mod / 配置整份复制到新实例（会占一份空间）"
         >
           <IconCopy /> 创建副本
         </Button>
@@ -389,7 +388,6 @@ export function InstanceOverview() {
           </p>
           <Button
             variant="danger"
-            title="默认移入系统回收站；按住 Shift 点击则永久删除"
             onClick={async (e) => {
               // ★ 具体清单比抽象警告有用（PCL2 的做法）
               const detail = state.mods.entries

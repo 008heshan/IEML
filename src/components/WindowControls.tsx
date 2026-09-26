@@ -112,7 +112,6 @@ export function WindowControls() {
         type="button"
         className="winctl-btn"
         aria-label="最小化"
-        title="最小化"
         onClick={() => void withWindow((w) => w.minimize())}
       >
         <IconMin />
@@ -121,7 +120,6 @@ export function WindowControls() {
         type="button"
         className="winctl-btn"
         aria-label={maximized ? '向下还原' : '最大化'}
-        title={maximized ? '向下还原' : '最大化'}
         onClick={() =>
           void withWindow(async (w) => {
             await w.toggleMaximize();
@@ -135,7 +133,6 @@ export function WindowControls() {
         type="button"
         className="winctl-btn danger"
         aria-label="关闭"
-        title="关闭"
         onClick={() => void withWindow((w) => w.close())}
       >
         <IconClose />
