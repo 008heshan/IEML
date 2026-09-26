@@ -413,8 +413,12 @@ export function ResourceCenterBody({
   const [error, setError] = useState<string | null>(null);
   /** ★ 搜哪个库（ADR-052）：两个源的结果形状一样，但内容不是同一批 */
   const [source, setSource] = useState<ResourceSourceName>('modrinth');
-  /** 后端如实告诉我们的"这批结果从哪来"（不靠前端猜） */
-  const [resultSource, setResultSource] = useState<string | null>(null);
+  /*
+   * ★ 2026-09-26：这里原来还有一个 `resultSource`（"这批结果从哪来"）——
+   *   它只服务于界面上那句"数据来自 …"。用户说「资源下载，数据来源可以不写了」，
+   *   那句话与分页条上的来源后缀都删了 ⇒ 这个状态没有读者，一起删掉（不留死状态）。
+   *   ★ 后端返回里的 `source` 字段还在（那是契约），只是界面不再显示它。
+   */
 
   /** 展开了哪个项目的版本列表（项目 id） */
   const [openProject, setOpenProject] = useState<string | null>(null);
@@ -635,14 +639,12 @@ export function ResourceCenterBody({
         if (mine !== seq.current) return; // 迟到的结果丢掉
         setHits((prev) => (opts.append ? [...prev, ...r.hits] : r.hits));
         setTotal(r.total_hits ?? r.hits.length);
-        setResultSource(r.source ?? opts.src);
       } catch (e) {
         if (mine !== seq.current) return;
         setError(e instanceof Error ? e.message : String(e));
         if (!opts.append) {
           setHits([]);
           setTotal(0);
-          setResultSource(null);
         }
       } finally {
         if (mine === seq.current) {
@@ -785,21 +787,6 @@ export function ResourceCenterBody({
       setInstalling(null);
     }
   }
-
-  /**
-   * 页面最下面那行小字的内容：**如实复述这一屏是按什么筛出来的**。
-   *
-   * ★ 两个下拉都显示「不限」时也要说清"没限定版本、没限定加载器"——
-   *   否则玩家看着一屏 1.7.10 的 Mod，会以为筛坏了。
-   */
-  const scopeNote = [
-    filterVersion ? `只列 ${filterVersion}` : '没限定版本',
-    current && !current.needs_loader_filter
-      ? '这一类资源与加载器无关，游戏不按加载器读它'
-      : filterLoader
-        ? `只列 ${loaderLabel}`
-        : '没限定加载器',
-  ].join('、');
 
   return (
     <div className="res-center">
@@ -1062,7 +1049,7 @@ export function ResourceCenterBody({
           <span className="pager-info">
             第 {page} / {Math.max(1, Math.ceil((total > 0 ? total : hits.length) / PAGE))} 页 · 共{' '}
             {total > 0 ? total : hits.length} 个
-            {resultSource ? ` · ${resultSource === 'curseforge' ? 'CurseForge' : 'Modrinth'}` : ''}
+            {/* ★ 2026-09-26 用户：「资源下载，数据来源可以不写了」—— 这里原来还缀着来源名，一并去掉 */}
           </span>
           {loadingMore ? (
             <Spinner label="正在加载…" />
@@ -1090,14 +1077,15 @@ export function ResourceCenterBody({
       */}
       {compactHead && current ? (
         <div className="dim res-fineprint">
-          装到 <span className="mono">{current.install_dir}/</span>，认{' '}
-          {current.extensions.join(' / ')}。
-          {gameFilters
-            ? ` ${scopeNote}。`
-            : current.needs_loader_filter
-              ? ' 只列适配当前加载器的版本。'
-              : ' 这一类资源与加载器无关，所以不按加载器过滤。'}
-          {current.install_note ? ` ${current.install_note}` : ''}
+          {/*
+            ★★ 2026-09-26 用户（截图，指着一行小字）：「**图二这个也不要**」——
+              那一行是「装到 mods/，认 .jar。 没限定版本、没限定加载器。」
+              ⇒ 整行删掉：
+                · 装到哪个目录 —— 上面「装到「X」的 mods 目录」那行已经说了；
+                · 没限定版本 / 加载器 —— 两个下拉自己就写着「不限版本 / 不限加载器」。
+              再用一句小字复述一遍，只是把界面填满。
+          */}
+          {current.install_note ? <span>{current.install_note}</span> : null}
         </div>
       ) : null}
     </div>
