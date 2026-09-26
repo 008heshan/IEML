@@ -568,7 +568,10 @@ pub fn capabilities(mc_version: &str) -> LoaderCapabilities {
 }
 
 /// API 前置包目录。
-/// ★ 版本号必须与 MC 版本绑定（形如 0.92.2+1.20.1）
+/// ★★ 2026-09-26：版本号**不再写具体数字** —— 原来写的是 `0.92.2+<mc>` /
+///   `7.4.0+0.92.2`（编出来的，实测安装时已经是 `0.92.12+1.20.1`）。
+///   真实安装走 Modrinth 在线清单、由 `pick_default_version` 挑（正式版 > beta > alpha），
+///   所以这里只写「最新版」。前端同名字段同步改（判据②：不许有假承诺）。
 pub fn all_api_libraries(mc_version: &str) -> Vec<ApiLibrary> {
     if is_snapshot(mc_version) {
         return vec![];
@@ -577,7 +580,7 @@ pub fn all_api_libraries(mc_version: &str) -> Vec<ApiLibrary> {
         ApiLibrary {
             kind: "fabric-api".into(),
             name: "Fabric API".into(),
-            version: format!("0.92.2+{mc_version}"),
+            version: "最新版".into(),
             description: "绝大多数 Fabric Mod 依赖此包，不装会导致 Mod 加载失败".into(),
             bytes: 2 * MB,
             required: true,
@@ -585,7 +588,7 @@ pub fn all_api_libraries(mc_version: &str) -> Vec<ApiLibrary> {
         ApiLibrary {
             kind: "quilted-fabric-api".into(),
             name: "Quilted Fabric API".into(),
-            version: "7.4.0+0.92.2".into(),
+            version: "最新版".into(),
             description: "已内含 Fabric API，同时支持 Fabric 与 Quilt Mod".into(),
             bytes: 3 * MB,
             required: true,

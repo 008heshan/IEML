@@ -21,7 +21,10 @@
 //!   现在跑的是"**没有任何凭据**"的那条路 —— 默认走国内镜像
 //!   （`mod.mcimirror.top`，不需要 key）。这正好让它们变成"开箱即用"的判据：
 //!   只要这组全绿，就说明**新装的用户什么都不用填**也能搜到、查到、反查到。
-//!   想验官方那条路（自备 key）就设 `IEML_CF_API_KEY`，那时走官方。
+//!
+//! ★★ 2026-09-26：**"自备 key 走官方"那条路也不存在了**（用户：「cf 完全不用 key 了」）。
+//!   `net::curseforge` 只剩 `Route::MirrorNoKey` 一条路，`IEML_CF_API_KEY` 不再被读 ——
+//!   这一组测试因此**只有一种跑法**，与有没有环境变量无关。
 
 use ieml_lib::domain::resources::ResourceKind;
 use ieml_lib::net::curseforge;

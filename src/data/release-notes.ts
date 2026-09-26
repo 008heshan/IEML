@@ -72,6 +72,26 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.1.0-rc.12',
+    date: '2026-09-26',
+    headline: '这一版修好了「纯原版加装高清修复」，顺手把安装页里一个写死的版本号改掉。',
+    groups: [
+      {
+        title: '修复了',
+        items: [
+          '修复了 纯原版加装高清修复后进游戏没有效果，现在会真的加载它。',
+          '修复了 别的版本装了高清修复时，纯原版那个版本会被带着一起用上。',
+        ],
+      },
+      {
+        title: '修改了',
+        items: [
+          '修改了 安装页里 Fabric API 的版本号：不再写一个旧版本，改成装的时候按你的游戏版本挑最新的。',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.1.0-rc.11',
     date: '2026-09-26',
     headline: '这一版把界面上所有「鼠标停上去才显示」的说明撤掉了，该说的话直接写在界面上。',

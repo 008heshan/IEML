@@ -670,8 +670,12 @@ export function bridgeFor(
  *   原设计稿把两个都列出来（"将自动安装 Fabric API + Quilted Fabric API"），
  *   是错的 —— 同时装两个会导致 Mod 重复加载。
  *
- * ★ 版本号必须与 MC 版本绑定（形如 0.92.2+1.20.1），所以按版本生成；
- *   真实实现要去 Modrinth API 查询（ADR-006），查询失败降级为警告不阻断。
+ * ★★ 2026-09-26：**这里的版本号不再是具体数字**。
+ *   原来写的是 `0.92.2+<mc>` / `7.4.0+0.92.2` —— 那是**编出来的数字**：
+ *   真实安装走 Modrinth 在线清单，由 `pick_default_version` 在**该 MC 版本的**
+ *   候选里挑（正式版 > beta > alpha），实测那时候已经到 `0.92.12+1.20.1` 了。
+ *   界面上写一个固定的旧版本号，等于对用户说一句假话（判据②那一类）。
+ *   所以这里只写"最新版"，具体哪个版本由安装时在线挑（Rust 侧同名字段同步改）。
  */
 export function apiLibrariesFor(mcVersion: string): ApiLibraryOption[] {
   if (isSnapshot(mcVersion)) return [];
@@ -679,7 +683,7 @@ export function apiLibrariesFor(mcVersion: string): ApiLibraryOption[] {
     {
       kind: 'fabric-api',
       name: 'Fabric API',
-      version: `0.92.2+${mcVersion}`,
+      version: '最新版',
       description: '绝大多数 Fabric Mod 依赖此包，不装会导致 Mod 加载失败',
       bytes: COMPONENT_BYTES['fabric-api'] ?? 0,
       required: true,
@@ -687,7 +691,7 @@ export function apiLibrariesFor(mcVersion: string): ApiLibraryOption[] {
     {
       kind: 'quilted-fabric-api',
       name: 'Quilted Fabric API',
-      version: '7.4.0+0.92.2',
+      version: '最新版',
       description: '已内含 Fabric API，同时支持 Fabric 与 Quilt Mod',
       bytes: COMPONENT_BYTES['quilted-fabric-api'] ?? 0,
       required: true,

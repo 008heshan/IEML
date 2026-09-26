@@ -5925,9 +5925,17 @@ pub fn backend_capabilities() -> serde_json::Value {
         "msaLogin": true,
         "keyring": true,
         "modrinth": true,
-        "curseforge": false,
+        /*
+         * ★★ 2026-09-26：这里原来写死 `"curseforge": false` + 理由
+         *   「CurseForge 需要 API Key，本机未配置」—— **两句都是过期的事实**：
+         *   rc.10 起 CurseForge 全部走国内镜像（`mod.mcimirror.top`），
+         *   启动器里**根本没有 key 这回事**（`net::curseforge` 只剩 `Route::MirrorNoKey`，
+         *   `api_key()` / 设置项 / 环境变量全删了）。
+         *   留着它是"活的假标志"——正是判据②要消掉的那一类。
+         */
+        "curseforge": true,
         "sources": ["mojang", "bmclapi"],
-        "note": "CurseForge 需要 API Key，本机未配置"
+        "note": "CurseForge 全部走国内镜像，不需要任何 key"
     })
 }
 
