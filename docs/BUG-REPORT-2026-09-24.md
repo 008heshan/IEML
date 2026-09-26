@@ -34,6 +34,7 @@
 | 8g | **同族**：`instance_health` / 下载页"有没有版本在用"仍在读**旧位置**的 `instances.json`；`migrate_data_root` 反向把 `java/cache/logs` 灌进游戏根目录 | ✅ **已修**（改走 `own_file_for_read`；跨根搬家只剩 `instances`，反方向新增 `adopt_own_dirs` 收养回 own_root） | `tools/live/probe-manifest-location.mjs`：旧发布版读到 `["root-only"]`（游戏根那份）→ 新构建读到 `["own-1","own-2"]`（启动器自己的家）；`cargo test --lib` 459 通过 |
 | 8h | **用户要求（非缺陷）**：ABC 全做 —— 删 C 盘残留 + 把启动器自己的家也搬到游戏盘 | ✅ **已做**（`%APPDATA%\IEML` 从 1.11 GB 降到 **2516 字节 / 5 个文件**；家 = `D:\IEML-launcher`） | `tools/live/probe-own-root-move.mjs` 六条判据（含"存回偏好写进新家、C 盘连文件都没有"）+ 删除前逐项核对"目标侧已有"；ADR 七十二 |
 | 8i | **用户报**：点侧栏切换页面时，滚动位置被上一页继承（不回顶部） | ✅ **已修**（`AppShell` 换屏时把 `.content` 滚回 0；`useLayoutEffect` + 只认"屏幕身份"那几个字段） | `tools/live/probe-page-scroll-top.mjs` 红绿对照：坏构建 设置→更新日志 停在 **906**、更新日志→设置停在 **906**；修好后都是 **0**；同一屏内拨开关不被拽回顶部；ADR 七十三 |
+| 9 | **A-2** 纯原版 + OptiFine 勾了也白勾（rc 判据①唯一开着的那条） | ✅ **已修（2026-09-26）**（`LaunchRequest.addons` + `resolve_addon_version_id()`：按盘上痕迹定位 OptiFine 版本目录，且不抢带基础加载器的目录；`instance_health` 同步） | `probe-bug-repro-6.mjs` **红绿对照**：修前 4/6 不成立（两条命令行抹掉实例路径后逐字相同、没有 tweakClass、前端 req 的 `addons` 是 `undefined`）→ 修后 6/6（主类变 launchwrapper、`--tweakClass optifine.OptiFineTweaker`、版本目录 `1.12.2-OptiFine_HD_U_G8`）+ Rust 两条新判据 |
 | 8j | **用户定格式**：更新日志正文改成「新增了 / 修复了 / 优化了 / 删除了 / 修改了」五段（必读模板） | ✅ **已定稿 + 已进门禁 + 已发布 rc.4**（`release-notes.ts` 文件头即模板、段名进类型、新增第 25 项门禁） | `tools/check-release-notes.mjs` 进 `verify.mjs`（门禁 **25 项全过**，四类规则都先证明能红）；`probe-changelog-format.mjs` 4/4 + 截图；ADR 七十四 |
 | 8k | **用户报**（截图）：任务管理器里 IEML 与 WebView2 分成两摊 —— 「一个本体，一个渲染」 | ⚠️ **结构问题无法合并**（WebView2 子进程身份由运行时定，官方旗标清单里没有可改的；Tauri issue 仍开着）+ ✅ **顺手量出并修掉一个真缺陷**：最小化后仍在烧 CPU | 真机判据：修之前 前台 **77%** / 最小化 **37%**（单核）→ 修之后 前台 **33%** / 最小化 **2%**，且 `rootClass=tab-hidden` 证明暂停生效；ADR 七十六 |
 
@@ -199,6 +200,21 @@ A-3 就是这么验的（`tools/live/probe-bug-repro-4.mjs`）。
 
 **影响**：这是一条"承诺 vs 现实"的正面冲突（ADR-041 那一类）。装上、报成功、角标都在，
 而游戏里没有 OptiFine —— 用户无法从界面上看出来。
+
+**✅ 已修（2026-09-26）**：三处机制一起补上 ——
+`LaunchRequest` 新增 `addons`（前端 `LaunchPage` 与桥接契约两处都传），
+`resolve_loader_version_id` 在 `loader_kind` 为空时不再直接落回原版，而是先走新的
+`resolve_addon_version_id()`：按 `domain::loader_trace` 的**盘上痕迹**找
+`versions/<mc>-OptiFine_<版本>/`，并**只认没有基础加载器痕迹的目录**
+（否则纯原版实例会把别的实例的 Forge 目录抢来用）。找不到才落回原版 ——
+同一 MC 版本上另一个实例装了 OptiFine 时，纯原版实例仍然启动成原版。
+`instance_health` 也一并喂 addons（判据与启动侧同一套）。
+证据：`commands_real::wire_tests` 两条新判据（四条分支：挂了/没挂/带加载器/只有 Forge+OptiFine）
++ 真机红绿对照 `tools/live/probe-bug-repro-6.mjs` ——
+**修之前 4 / 6 条不成立**（两条命令行抹掉实例路径后逐字相同、没有 tweakClass、
+前端 req 里 `addons` 是 `undefined`），修之后 6 / 6 全过（主类换成
+`net.minecraft.launchwrapper.Launch`、带 `--tweakClass optifine.OptiFineTweaker`、
+版本目录是 `1.12.2-OptiFine_HD_U_G8`）。
 
 ---
 

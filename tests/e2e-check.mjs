@@ -252,7 +252,23 @@ check('1.20.5 表里没有 OptiFine，且理由区分"没查到"与"确认没有
   const o = getLoaderCapabilities('1.20.5').addons.find((x) => x.kind === 'optifine');
   return !o.available && /确认|清单/.test(o.unavailableReason ?? '');
 })());
-check('Fabric API 版本随 MC 变化', getLoaderCapabilities('1.20.4').apiLibraries[0].version === '0.92.2+1.20.4');
+/*
+ * ★★ 2026-09-26：这条原来断言 `version === '0.92.2+1.20.4'` —— 那个数字**是编的**
+ *   （真实安装走 Modrinth 在线清单，实测那时已经是 `0.92.12+1.20.1`）。
+ *   界面写一个固定的旧版本号就是对用户说假话，所以 preview 现在只写「最新版」。
+ *   判据改成两条：① 不再出现**像具体版本号**的东西；② 两个包的写法一致。
+ */
+check(
+  'Fabric API 不再显示写死的版本号（真实版本由安装时在线挑）',
+  (() => {
+    const libs = getLoaderCapabilities('1.20.4').apiLibraries;
+    return (
+      libs.length === 2 &&
+      libs.every((l) => l.version === '最新版') &&
+      !libs.some((l) => /^\d/.test(l.version))
+    );
+  })(),
+);
 check('快照无 API 包', getLoaderCapabilities('24w45a').apiLibraries.length === 0);
 /*
  * ★ 这两条断言被改过一次，原因值得留在代码里：

@@ -483,6 +483,18 @@ export interface LaunchRequest {
    * `launch_args::parse_server_address` 统一处理（规则只有一份）。
    */
   join_server?: string | null;
+  /**
+   * 这个实例挂了哪些**附加组件**（`optifine` / `liteloader`）。
+   *
+   * ★★ 2026-09-26（A-2）：以前没有这个字段，于是"纯原版 + OptiFine"的实例
+   *   启动时读的是**原版** JSON —— 装了 OptiFine、角标也在，游戏里完全没生效。
+   *   后端拿它 + 盘上的真实痕迹一起定位版本目录（`resolve_addon_version_id`）。
+   *
+   * ★ 为什么两样都要：`versions/` 是**共享**的，同一个 MC 版本上另一个实例
+   *   装了 OptiFine 时，纯原版实例必须**仍然启动成原版** ——
+   *   只看盘上有什么就会把它带跑。
+   */
+  addons: string[];
 }
 
 export interface LaunchPreview {
@@ -1697,6 +1709,12 @@ export function createTauriBackend(): Backend {
         window_title: inst.config.windowTitle ?? null,
         // ★ 启动后自动进服（清洗由 Rust 侧统一做，前端不维护第二套规则）
         join_server: inst.config.joinServer ?? null,
+        /*
+         * ★ 附加组件（A-2）：纯原版 + OptiFine 的实例，版本目录在
+         *   `versions/<mc>-OptiFine_<版本>/`，不传的话后端会去读原版 JSON。
+         *   口径与 `LaunchPage` 的 req 一致（同一个实例两条路必须一样）。
+         */
+        addons: (inst.addons ?? []).map((a) => a.kind),
         /*
          * ★ 这里原来还有一个 `java_major` 字段，**已经删掉了**。
          *

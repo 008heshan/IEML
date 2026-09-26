@@ -2118,7 +2118,7 @@ End If
 | # | 问题 | 已知信息 | 待办 |
 |---|---|---|---|
 | 1 | OptiFine 官方列表解析 | PCL2 靠正则抓 HTML 表格；HMCL 走 BMCLAPI | ✅ **已有结论**：IEML 走 BMCLAPI 的结构化 JSON（`net/optifine.rs`），不抓 HTML —— 见 ADR 与 CHANGELOG 的 OptiFine 两轮 |
-| 2 | CurseForge API Key | 需要申请 | ✅ **已有结论**：内置一把（ADR-052），界面不提供填写入口 |
+| 2 | CurseForge API Key | 需要申请 | ✅ **已有结论**：内置一把（ADR-052），界面不提供填写入口。★★ **2026-09-26 更正**：连"内置一把"也没有了 —— 用户定「cf 完全不用 key」，CF 全部走国内镜像，启动器里没有 key 这回事 |
 | 3 | 中文别名词表来源 | PCL2/HMCL 都有本地化 | ✅ **已有结论**：**不做**（用户在 beta.38 明确「CFPA 这个先不做了」） |
 | 4 | 备份保留份数 | HMCL Draft 只管单次事务，不做长期备份 | 仍需自行设计（**注意**：项目至今没有备份/回滚实现，见 README 的已知限制） |
 | 5 | macOS 签名证书 | 两边源码均未涉及 | 0.1.0 只发 Windows，推到跨平台那一版再查 |

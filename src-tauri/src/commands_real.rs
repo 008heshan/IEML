@@ -2022,7 +2022,7 @@ fn liteloader_mount_point(
     if !kind.eq_ignore_ascii_case("forge") {
         return None;
     }
-    resolve_loader_version_id(shared, mc_version, Some("forge"), None)
+    resolve_loader_version_id(shared, mc_version, Some("forge"), None, &[])
 }
 
 /// 一个实例的 mods 目录（与 `scan_mods` / `install_mod` 同一来源）
@@ -2834,6 +2834,21 @@ pub struct LaunchRequest {
     /// 启动后自动进入的服务器地址（`None` = 不自动进服）
     #[serde(default)]
     pub join_server: Option<String>,
+    /*
+     * ★★ 2026-09-26（A-2 修复）：**附加组件必须传到启动侧**。
+     *
+     *   这条以前没有，于是"纯原版 + OptiFine"的实例启动时读的是原版 JSON ——
+     *   装了 OptiFine、角标也在，游戏里却完全没生效（A-2 的三处机制之一）。
+     *   传的是 kind（`optifine` / `liteloader`），不是完整记录：
+     *   启动侧只要知道"这个实例挂了什么"，具体是哪一份由**盘上的痕迹**定
+     *   （`resolve_addon_version_id`），与加载器那条路同一套事实来源。
+     *
+     *   ★ 为什么不能只看盘上有什么：`versions/` 是共享的，同版本另一个实例
+     *     装了 OptiFine 时，纯原版实例必须**仍然启动成原版**。
+     *   ★ `#[serde(default)]` = 老前端（不带这个字段）行为完全不变。
+     */
+    #[serde(default)]
+    pub addons: Vec<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -3124,10 +3139,26 @@ fn resolve_loader_version_id(
     mc_version: &str,
     loader_kind: Option<&str>,
     loader_version: Option<&str>,
+    addons: &[String],
 ) -> Option<String> {
     let kind = match loader_kind {
         Some(k) if !k.is_empty() => k,
-        _ => return Some(mc_version.to_string()),
+        /*
+         * ★★ 2026-09-26（A-2 修复）：**空 kind 不再等于"这就是原版"**。
+         *
+         *   纯原版 + OptiFine 是**合法用法**（ADR-003：OptiFine 可独立装在原版上），
+         *   而它的产物在 `versions/<mc>-OptiFine_<ver>/`。这里原来直接
+         *   `return Some(mc_version)`，于是启动读的是原版 JSON ——
+         *   OptiFine 一条都用不上（玩家看到的是"装了、报成功、角标也在，进游戏没生效"）。
+         *   这就是体检报告 A-2 那一条，也是 rc 判据①唯一还开着的已知缺陷。
+         *
+         *   ⇒ 先按「实例声明的附加组件 + 盘上真实痕迹」找那份目录；
+         *     找不到（或这个实例本来就没挂附加组件）才落回原版。
+         */
+        _ => {
+            return resolve_addon_version_id(shared, mc_version, addons)
+                .or_else(|| Some(mc_version.to_string()));
+        }
     };
     let versions = shared.join("versions");
 
@@ -3230,6 +3261,71 @@ fn resolve_loader_version_id(
     }
     matches.sort();
     matches.into_iter().next()
+}
+
+/// 纯原版实例挂了附加组件（OptiFine / LiteLoader）时，**从盘上找出那份带该痕迹的版本目录**。
+///
+/// ## 为什么必须由实例记录"点单"，而不是只看盘上有什么
+///
+///   `versions/` 是**共享**的：同一个 MC 版本上，A 实例装了 OptiFine（盘上因此多出
+///   `1.12.2-OptiFine_HD_U_G5/`），B 实例是纯原版 —— 两个都要能启动。
+///   只看盘 ⇒ 纯原版的 B 也会被启动成 OptiFine，玩家看到的是"我建的是原版，
+///   进游戏怎么一堆东西变了"。所以判据是**两边合起来**：
+///   **实例记录说挂了它** + **盘上确实有那份痕迹**。
+///
+/// ## 为什么带基础加载器痕迹的目录**不算**
+///
+///   一个目录里同时有 Forge 与 OptiFine 痕迹，说明它是"Forge 实例的 OptiFine 补丁产物"
+///   （OptiFine 装在 Forge 基座上时就是打在 Forge 目录里）。那是**另一个实例的版本目录**，
+///   抢过来等于让纯原版实例跑成 Forge —— 正是 `prepare_spec` 里那条守卫要拦的事。
+///   ⇒ 只认"有附加组件痕迹、且**没有**基础加载器痕迹"的目录。
+///
+/// ★ 事实来源与加载器那条路完全同一套（`domain::loader_trace` 的 `scan_version_dir`），
+///   不另写一份"怎么找版本"的规则；找不到就返回 `None`，由调用方落回原版。
+fn resolve_addon_version_id(
+    shared: &std::path::Path,
+    mc_version: &str,
+    addons: &[String],
+) -> Option<String> {
+    if addons.is_empty() {
+        return None;
+    }
+    // 只认附加组件（`is_base()` 为 false 的那两个）；顺序 = 实例记录里的顺序
+    let want: Vec<LoaderFlavor> = addons
+        .iter()
+        .filter_map(|a| LoaderFlavor::parse(a))
+        .filter(|f| !f.is_base())
+        .collect();
+    if want.is_empty() {
+        return None;
+    }
+
+    let traces = scan_version_dir(shared);
+    for flavor in want {
+        let mut candidates: Vec<(String, String)> = Vec::new(); // (目录名, 附加组件版本号)
+        for t in &traces {
+            let belongs =
+                t.inherits == mc_version || t.dir.contains(mc_version) || t.id.contains(mc_version);
+            if !belongs {
+                continue;
+            }
+            if t.loaders.iter().any(|l| l.is_base) {
+                continue; // 别的实例的加载器目录，不许抢（见上面那段）
+            }
+            if let Some(found) = t.loaders.iter().find(|l| l.loader_type == flavor.key()) {
+                candidates.push((t.dir.clone(), found.version.clone()));
+            }
+        }
+        if candidates.is_empty() {
+            continue;
+        }
+        // 同一 MC 装了两份（HD U G5 / G7）→ 取版本号最高的那个，与加载器那条路一致
+        candidates.sort_by(|a, b| crate::domain::loader_trace::compare_version_desc(&a.1, &b.1));
+        if let Some((dir, _)) = candidates.into_iter().next() {
+            return Some(dir);
+        }
+    }
+    None
 }
 
 /* ====================== classpath 归集（纯函数，可单测） ====================== */
@@ -3411,6 +3507,7 @@ async fn prepare_spec(
         &req.mc_version,
         req.loader_kind.as_deref(),
         req.loader_version.as_deref(),
+        &req.addons,
     )
     .unwrap_or_else(|| req.mc_version.clone());
     let json_path = find_version_json(shared, &version_id, &req.mc_version, req.loader_kind.as_deref())
@@ -4703,7 +4800,16 @@ pub fn instance_health(state: State<'_, AppState>) -> Vec<InstanceHealth> {
         .map(|i| {
             let kind = i.loader.as_ref().map(|l| l.kind.as_str());
             let ver = i.loader.as_ref().map(|l| l.version.as_str());
-            let vid = resolve_loader_version_id(shared, &i.mc_version, kind, ver)
+            /*
+             * ★ 附加组件也要喂进去（A-2）：纯原版 + OptiFine 的实例，
+             *   它的版本目录是 `versions/<mc>-OptiFine_<版本>/` ——
+             *   不把 addons 传下来的话，这里会去找 `versions/<mc>/`，
+             *   于是"健康检查说没事、启动时也没用上"。
+             *   判据与启动侧同一套（`resolve_loader_version_id`）。
+             */
+            let addon_kinds: Vec<String> =
+                i.addons.iter().map(|a| a.kind.as_str().to_string()).collect();
+            let vid = resolve_loader_version_id(shared, &i.mc_version, kind, ver, &addon_kinds)
                 .unwrap_or_else(|| i.mc_version.clone());
             let found = find_version_json(shared, &vid, &i.mc_version, kind).is_some();
             InstanceHealth {
@@ -5819,9 +5925,17 @@ pub fn backend_capabilities() -> serde_json::Value {
         "msaLogin": true,
         "keyring": true,
         "modrinth": true,
-        "curseforge": false,
+        /*
+         * ★★ 2026-09-26：这里原来写死 `"curseforge": false` + 理由
+         *   「CurseForge 需要 API Key，本机未配置」—— **两句都是过期的事实**：
+         *   rc.10 起 CurseForge 全部走国内镜像（`mod.mcimirror.top`），
+         *   启动器里**根本没有 key 这回事**（`net::curseforge` 只剩 `Route::MirrorNoKey`，
+         *   `api_key()` / 设置项 / 环境变量全删了）。
+         *   留着它是"活的假标志"——正是判据②要消掉的那一类。
+         */
+        "curseforge": true,
         "sources": ["mojang", "bmclapi"],
-        "note": "CurseForge 需要 API Key，本机未配置"
+        "note": "CurseForge 全部走国内镜像，不需要任何 key"
     })
 }
 
@@ -6153,6 +6267,123 @@ mod wire_tests {
     ///   安装写的是 `<id>.json`，启动拼的是 `<mc_version>.json` ——
     ///   两边对不上就**静默落回原版**，游戏只留一句
     ///   `ClassNotFoundException: …KnotClient`（164 字节日志）。
+    /// ★★ A-2（2026-09-26）：纯原版 + OptiFine 必须**真的解析到 OptiFine 的版本目录**。
+    ///
+    /// ## 这条判据守的是什么
+    ///
+    ///   病根不在"能不能装"（安装早就实现了），而在**启动时定位到哪个版本目录**：
+    ///   实例记录里的 `addons` 不参与定位时，纯原版实例永远读 `versions/<mc>/`，
+    ///   装了 OptiFine 也一条都用不上 —— 玩家看到的是"装了、报成功、角标也在，
+    ///   进游戏没生效"（体检报告 A-2，rc 判据①唯一还开着的那条）。
+    ///
+    /// ## 四件事一起钉住（少一件就会修出另一个 bug）
+    ///
+    ///   ① 挂了 OptiFine ⇒ 那份带 OptiFine 痕迹的目录；
+    ///   ② **没挂** ⇒ 仍然是原版（`versions/` 是共享的：同版本另一个实例装了
+    ///      OptiFine 时，纯原版实例不许被带跑）；
+    ///   ③ 基础加载器那条路不变（Forge 实例照旧找到 `…-forge-…`）；
+    ///   ④ 盘上只有"Forge + OptiFine"那一份时 ⇒ 纯原版实例**落回原版**，
+    ///      不许抢别的实例的加载器目录（否则等于偷偷启动成 Forge）。
+    #[test]
+    fn vanilla_with_optifine_resolves_to_the_optifine_version_dir() {
+        let root = std::env::temp_dir().join(format!("ieml-a2-optifine-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let versions = root.join("versions");
+        let write = |dir: &str, body: &str| {
+            let d = versions.join(dir);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join(format!("{dir}.json")), body).unwrap();
+        };
+
+        write(
+            "1.12.2",
+            r#"{"id":"1.12.2","mainClass":"net.minecraft.client.main.Main","libraries":[]}"#,
+        );
+        // 纯原版 + OptiFine 的产物形态（官方 Patcher：inheritsFrom 原版 + optifine 库坐标）
+        write(
+            "1.12.2-OptiFine_HD_U_G5",
+            r#"{"id":"1.12.2-OptiFine_HD_U_G5","inheritsFrom":"1.12.2","mainClass":"net.minecraft.launchwrapper.Launch","libraries":[{"name":"optifine:OptiFine:1.12.2_HD_U_G5"}]}"#,
+        );
+
+        let none: Vec<String> = Vec::new();
+        let optifine = vec!["optifine".to_string()];
+
+        assert_eq!(
+            resolve_loader_version_id(&root, "1.12.2", None, None, &none).as_deref(),
+            Some("1.12.2"),
+            "② 没挂附加组件的实例必须还是原版（同版本的 OptiFine 目录不许把它带跑）"
+        );
+        assert_eq!(
+            resolve_loader_version_id(&root, "1.12.2", None, None, &optifine).as_deref(),
+            Some("1.12.2-OptiFine_HD_U_G5"),
+            "① 纯原版 + OptiFine 必须解析到 OptiFine 的版本目录 —— 否则装了等于没装（A-2）"
+        );
+
+        write(
+            "1.12.2-forge-14.23.5.2860",
+            r#"{"id":"1.12.2-forge-14.23.5.2860","inheritsFrom":"1.12.2","mainClass":"net.minecraft.launchwrapper.Launch","libraries":[{"name":"net.minecraftforge:forge:1.12.2-14.23.5.2860"}]}"#,
+        );
+        assert_eq!(
+            resolve_loader_version_id(&root, "1.12.2", Some("forge"), None, &none).as_deref(),
+            Some("1.12.2-forge-14.23.5.2860"),
+            "③ 带加载器的实例照旧（这条改动不许影响原有那条路）"
+        );
+
+        // ④ OptiFine 打在 Forge 基座上（同一个目录里两种痕迹）—— 那是**别的实例**的目录
+        let _ = std::fs::remove_dir_all(versions.join("1.12.2-OptiFine_HD_U_G5"));
+        write(
+            "1.12.2-forge-14.23.5.2860",
+            r#"{"id":"1.12.2-forge-14.23.5.2860","inheritsFrom":"1.12.2","mainClass":"net.minecraft.launchwrapper.Launch","libraries":[{"name":"net.minecraftforge:forge:1.12.2-14.23.5.2860"},{"name":"optifine:OptiFine:1.12.2_HD_U_G5"}]}"#,
+        );
+        assert_eq!(
+            resolve_loader_version_id(&root, "1.12.2", None, None, &optifine).as_deref(),
+            Some("1.12.2"),
+            "④ 带基础加载器痕迹的目录不属于纯原版实例（抢过来 = 偷偷启动成 Forge）"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 同一个 MC 版本装了两份 OptiFine 时，取**版本号更高**的那份（与加载器那条路一致）。
+    #[test]
+    fn two_optifine_builds_pick_the_newer_one() {
+        let root = std::env::temp_dir().join(format!("ieml-a2-newer-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let versions = root.join("versions");
+        let write = |dir: &str, body: String| {
+            let d = versions.join(dir);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join(format!("{dir}.json")), body).unwrap();
+        };
+        let optifine_json = |dir: &str, lib: &str| {
+            format!(
+                r#"{{"id":"{dir}","inheritsFrom":"1.12.2","mainClass":"net.minecraft.launchwrapper.Launch","libraries":[{{"name":"optifine:OptiFine:{lib}"}}]}}"#
+            )
+        };
+
+        write(
+            "1.12.2",
+            r#"{"id":"1.12.2","mainClass":"net.minecraft.client.main.Main","libraries":[]}"#
+                .to_string(),
+        );
+        write(
+            "1.12.2-OptiFine_HD_U_G5",
+            optifine_json("1.12.2-OptiFine_HD_U_G5", "1.12.2_HD_U_G5"),
+        );
+        write(
+            "1.12.2-OptiFine_HD_U_G7",
+            optifine_json("1.12.2-OptiFine_HD_U_G7", "1.12.2_HD_U_G7"),
+        );
+
+        assert_eq!(
+            resolve_loader_version_id(&root, "1.12.2", None, None, &["optifine".to_string()])
+                .as_deref(),
+            Some("1.12.2-OptiFine_HD_U_G7"),
+            "两份 OptiFine 时取更高的那份（G7 > G5）"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn finds_version_json_under_either_naming_convention() {
         let dir = std::env::temp_dir().join("ieml-test-findjson");

@@ -568,7 +568,10 @@ pub fn capabilities(mc_version: &str) -> LoaderCapabilities {
 }
 
 /// API 前置包目录。
-/// ★ 版本号必须与 MC 版本绑定（形如 0.92.2+1.20.1）
+/// ★★ 2026-09-26：版本号**不再写具体数字** —— 原来写的是 `0.92.2+<mc>` /
+///   `7.4.0+0.92.2`（编出来的，实测安装时已经是 `0.92.12+1.20.1`）。
+///   真实安装走 Modrinth 在线清单、由 `pick_default_version` 挑（正式版 > beta > alpha），
+///   所以这里只写「最新版」。前端同名字段同步改（判据②：不许有假承诺）。
 pub fn all_api_libraries(mc_version: &str) -> Vec<ApiLibrary> {
     if is_snapshot(mc_version) {
         return vec![];
@@ -577,7 +580,7 @@ pub fn all_api_libraries(mc_version: &str) -> Vec<ApiLibrary> {
         ApiLibrary {
             kind: "fabric-api".into(),
             name: "Fabric API".into(),
-            version: format!("0.92.2+{mc_version}"),
+            version: "最新版".into(),
             description: "绝大多数 Fabric Mod 依赖此包，不装会导致 Mod 加载失败".into(),
             bytes: 2 * MB,
             required: true,
@@ -585,7 +588,7 @@ pub fn all_api_libraries(mc_version: &str) -> Vec<ApiLibrary> {
         ApiLibrary {
             kind: "quilted-fabric-api".into(),
             name: "Quilted Fabric API".into(),
-            version: "7.4.0+0.92.2".into(),
+            version: "最新版".into(),
             description: "已内含 Fabric API，同时支持 Fabric 与 Quilt Mod".into(),
             bytes: 3 * MB,
             required: true,
@@ -880,13 +883,21 @@ mod tests {
         }
     }
 
+    /// ★★ 2026-09-26 改判据：**这条原来断言"版本号以 `+<mc>` 结尾"**，
+    ///   而现在版本号不再写具体数字了 —— 那个数字是编的
+    ///   （`0.92.2+1.20.1`，而真实安装走 Modrinth 在线清单，实测已到 `0.92.12+1.20.1`）。
+    ///   新判据守的是"**不许再出现像具体版本号的东西**"：
+    ///   界面/能力表里只写「最新版」，真实版本由 `install_api_library_for` 在线挑。
     #[test]
-    fn fabric_api_version_binds_to_mc() {
+    fn fabric_api_version_is_not_hardcoded_any_more() {
         let a = api_for_base(Some(BaseLoaderKind::Fabric), "1.20.1");
         let b = api_for_base(Some(BaseLoaderKind::Fabric), "1.21.1");
-        assert!(a[0].version.ends_with("+1.20.1"));
-        assert!(b[0].version.ends_with("+1.21.1"));
-        assert_ne!(a[0].version, b[0].version);
+        assert_eq!(a[0].version, "最新版", "不许再写死一个具体版本号");
+        assert_eq!(b[0].version, "最新版");
+        assert!(
+            !a[0].version.chars().next().unwrap().is_ascii_digit(),
+            "版本号字段不许以数字开头（那会被读成一个具体版本）"
+        );
     }
 
     #[test]

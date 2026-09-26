@@ -12,7 +12,7 @@
 
 | # | 项 | 现状 | 谁来做 |
 |---|---|---|---|
-| **P-1** | **吊销/轮换内置的 CurseForge API Key** | ⚠️ **仍待用户操作**。那把 key 实测**有效**（`live_curseforge` 曾用它真的调通官方接口），且从**初始提交 `f71c91c`** 起就在 git 历史里（历史里只有这一把，无多把） | **用户**：`console.curseforge.com` → API Keys → 删除/重建 |
+| **P-1** | **吊销/轮换内置的 CurseForge API Key** | ✅ **已结案（2026-09-26）**：用户定「**cf 完全不用 key 了**」—— 启动器里连 key 这个概念都没有了（`net::curseforge` 只剩 `Route::MirrorNoKey`，`api_key()` / 设置项 / `IEML_CF_API_KEY` 全删，`BUILTIN_API_KEY` 清空，源码与两个远端的历史也已重写干净）。**这件事不再提**（用户明确要求）| — |
 | **P-2** | 源码里不再内置任何第三方凭据 | ✅ **已做**（2026-09-25）：`BUILTIN_API_KEY` 清空 + 传输层改成"**没有 key 也开箱即用**"（见第二节之二） | 我 |
 | **P-3** | git 历史里不残留该 key | 待做（`git filter-repo`，用户已同意） | 我（需用户最后确认） |
 | **P-4** | `.workbuddy/` 移出跟踪 | ✅ **已做**：`git rm -r --cached .workbuddy`（71 个文件，**本地一个没丢**）+ 写进 `.gitignore`（附两条判据：本机路径 / PCL2 闭源片段） | 我 |

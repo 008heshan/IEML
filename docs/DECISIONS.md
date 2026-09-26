@@ -1795,7 +1795,7 @@ modpack/server/    ServerModpackLocalInstallTask / ServerModpackRemoteInstallTas
 | 格式 | 扩展名 | 备注 |
 |---|---|---|
 | Modrinth | `.mrpack` | 有公开 API，实现最简单，**优先支持** |
-| CurseForge | `.zip` + `manifest.json` | 需要 API Key（开放问题） |
+| CurseForge | `.zip` + `manifest.json` | 需要 API Key（开放问题）★ 见 ADR-052 的 2026-09-26 加注：**现在完全不用 key**（走镜像），这条备注已过期 |
 | MCBBS | `.zip` | 国内社区格式 |
 | MultiMC | `.zip` | 结构复杂（`MultiMCInstancePatch` 16KB），**可延后** |
 | 服务端包 | — | `ServerModpackLocalInstallTask` / `Remote`，可延后 |
@@ -3482,6 +3482,24 @@ OptiFabric **从来就不在 Modrinth 发布** —— 我查错了平台，
 
 **日期**：2026-09-14
 **状态**：已确认（兑现 ADR-050 立下的那句话：要问"上游有没有"，就得去它自己发布的地方问）
+**★ 已被取代（2026-09-26）—— 见下面的加注**：CurseForge 现在**只走国内镜像、启动器里没有 key 这回事**。
+
+> ★★ **2026-09-26 加注（这条决定作废，但正文不改写 —— 它记的是当时的取舍）**
+>
+> 用户：「**cf 完全不用 key 了**」。现在的事实是：
+> · `net::curseforge` 只剩 `Route::MirrorNoKey` 一条路（`mod.mcimirror.top`，
+>   免 key、匿名可访问），**没有"官方 + 带 key"那条分支**；
+> · `api_key()` / `cf_key_status` / `cf_set_key` / 设置页那一项 / `IEML_CF_API_KEY`
+>   环境变量**全部删掉**，`BUILTIN_API_KEY` 清空；
+> · 源码里内置的那把 key 已从**本地与两个远端的历史**里清掉
+>   （重写 + 强推，验证见 `docs/CLEANUP-PLAN-2026-09-25.md`）；
+> · 老版本留在盘上的 `cf_api_key.txt` 由 `net::curseforge::purge_legacy_key_files` 删除。
+>
+> 下面"决定一"整段（key 优先级、设置页显示前缀、`console.curseforge.com` 申请）
+> **描述的是当时的实现**，别按它去代码里找 `api_key()` —— 那个函数不存在了。
+> 代价一栏也跟着变了：现在不再是"key 的额度记在谁名下"，而是
+> **这一路依赖第三方镜像**（它挂了 CF 就得等它回来；它也能看到查了什么）——
+> 这条已经如实写进 README 的「已知限制」。
 
 ### 背景
 
@@ -3548,7 +3566,9 @@ Modrinth 用 SHA1 反查、CurseForge 只认指纹（两个列表**按位置一�
 **相关**：ADR-001、ADR-006、ADR-019、ADR-037、ADR-050、ADR-051、
 `src-tauri/src/net/curseforge.rs`、`src-tauri/src/net/mod.rs`（带头的重试/兜底）、
 `src/components/ResourceBrowser.tsx`、`src/pages/SettingsPage.tsx`、
-`tools/probe/probe-curseforge*.mjs`、`tools/gen-curseforge-fingerprint-cases.mjs`、
+`tools/probe/probe-cf-mirror-keyless.mjs`（原 `tools/probe/probe-curseforge*.mjs`
+两个探针**已随"完全不用 key"删掉**：它们要 `IEML_CF_API_KEY`、验的是官方那条路，
+而那条路已经不存在了）、`tools/gen-curseforge-fingerprint-cases.mjs`、
 `tests/curseforge-fingerprint.cases.json`、`src-tauri/tests/live_curseforge.rs`、
 `CHANGELOG.md` 的 `0.1.0-dev.13` 一节。
 
