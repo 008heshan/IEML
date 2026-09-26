@@ -52,7 +52,18 @@ export function describeUpdate(upd: UpdateLike): string {
       // ★ 全仓库**只有这一句**允许说"已是最新版本"，而且只有这个状态能走到
       return '已是最新版本';
     case 'available':
-      return `有新版本 ${upd.version}，正在后台下载`;
+      /*
+       * ★★ 2026-09-26：`available` 其实是**两种**处境 ——
+       *   ① 刚查到新版本、马上要开始下（`error` 没有值）；
+       *   ② **下载失败退回这里**（`useLauncherUpdate` 的 catch 把 `error` 填上）。
+       *   ②的原因原来只写在顶栏角标的悬停提示里，而用户当天要求
+       *   「去掉所有悬停显示描述」⇒ 那句提示没了，原因就必须在这句**看得见**的
+       *   话里说出来，否则界面会对一个刚下失败的新版本说"正在后台下载"——
+       *   那是一句假话（本仓库最不能忍的一类 bug）。
+       */
+      return upd.error
+        ? `有新版本 ${upd.version}，下载没成功：${upd.error}`
+        : `有新版本 ${upd.version}，正在后台下载`;
     case 'downloading':
       return `正在下载新版本 ${upd.version}…`;
     case 'ready':
@@ -66,9 +77,14 @@ export function describeUpdate(upd: UpdateLike): string {
   }
 }
 
-/** 这个状态是不是"出问题了"（页面据此标红） */
-export function isUpdateProblem(phase: string): boolean {
-  return phase === 'error';
+/**
+ * 这个状态是不是"出问题了"（页面据此标红）。
+ *
+ * ★ 第二个参数是"已经翻成人话的失败原因"：`available` 带着原因 = **下载失败**，
+ *   它和 `error`（检查更新失败）一样是问题，页面也该标红。
+ */
+export function isUpdateProblem(phase: string, error?: string): boolean {
+  return phase === 'error' || (phase === 'available' && Boolean(error));
 }
 
 /**

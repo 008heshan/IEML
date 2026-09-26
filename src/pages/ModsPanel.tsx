@@ -767,11 +767,6 @@ export function ModsPanel() {
           */}
           <Button
             variant="secondary"
-            title={
-              active.loader === null
-                ? '当前是纯原版 —— 装 Mod 前要先加一个加载器（在「设置」里改）'
-                : `打开这个实例的 mods 目录（game\\mods）`
-            }
             onClick={() => {
               if (!api) {
                 toast('info', '演示模式', '桌面版才能打开目录');
@@ -779,9 +774,11 @@ export function ModsPanel() {
               }
               /*
                * ★★ 2026-09-24（C-2 修复）：这里原来传的是 `'instance'` ——
-               *   按钮写着「mods 目录」、title 写着「打开这个实例的 mods 目录（game\mods）」，
-               *   点下去打开的却是**实例根目录**。Rust 有 `"mods"` 分支（崩溃弹窗用的就是它），
-               *   所以传对参数就行。★ 按钮说的和做的不一样，用户会以为 Mod 装错了地方。
+               *   按钮写着「mods 目录」、当时的 `title` 写着「打开这个实例的 mods 目录
+               *   （game\mods）」，点下去打开的却是**实例根目录**。Rust 有 `"mods"` 分支
+               *   （崩溃弹窗用的就是它），所以传对参数就行。
+               *   ★ 按钮说的和做的不一样，用户会以为 Mod 装错了地方。
+               *   （那句 `title` 本身已在 2026-09-26"去掉所有悬停显示描述"时删掉。）
                */
               void api.launcher
                 .openDir('mods', active.config.slug)
@@ -870,7 +867,7 @@ export function ModsPanel() {
                 而下一步（检查更新）又要求先反查完 —— 那才是"点了没反应"的观感。
             */}
             {resolvingOnline ? (
-              <span className="dim" title="正在用文件哈希反查 Modrinth / CurseForge">
+              <span className="dim">
                 <Spinner label="正在核对在线库…" />
               </span>
             ) : null}
@@ -905,7 +902,6 @@ export function ModsPanel() {
                 size="sm"
                 variant="danger"
                 onClick={(e) => void bulkDelete(e)}
-                title="默认移入系统回收站；按住 Shift 点击则永久删除"
               >
                 <IconTrash /> 删除
               </Button>
@@ -1284,7 +1280,7 @@ function StateChip({ state: st, onClick }: { state: string; onClick?: () => void
   const m = map[st];
   if (!m || !m.label) return null;
   return (
-    <Chip tone={m.tone} onClick={onClick} title={onClick ? '点击查看推断依据' : undefined}>
+    <Chip tone={m.tone} onClick={onClick}>
       {m.label}
     </Chip>
   );

@@ -274,7 +274,6 @@ export function InstanceSetup() {
           <Button
             variant="danger"
             size="sm"
-            title="默认移入系统回收站；按住 Shift 点击则永久删除"
             onClick={async (e) => {
               const copy = describeDelete({
                 what: `「${active.config.name}」`,
@@ -367,7 +366,6 @@ export function InstanceSetup() {
             type="button"
             className="ss-item"
             onClick={() => jumpTo('row-memory')}
-            title="跳到内存分配"
           >
             <IconRam />
             <span className="ss-k">内存</span>
@@ -384,7 +382,6 @@ export function InstanceSetup() {
             type="button"
             className="ss-item"
             onClick={() => jumpTo('row-java')}
-            title="跳到 Java 运行时"
           >
             <IconJava />
             <span className="ss-k">Java</span>
@@ -397,7 +394,6 @@ export function InstanceSetup() {
             type="button"
             className="ss-item"
             onClick={() => jumpTo('row-isolation')}
-            title="跳到版本隔离"
           >
             <IconGrid />
             <span className="ss-k">隔离</span>
@@ -414,7 +410,6 @@ export function InstanceSetup() {
             type="button"
             className="ss-item"
             onClick={() => jumpTo('row-window')}
-            title="跳到窗口标题"
           >
             <IconTerminal />
             <span className="ss-k">窗口标题</span>

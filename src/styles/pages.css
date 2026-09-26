@@ -2433,6 +2433,15 @@
 .res-filters .cs.is-unset .cs-label {
   color: var(--text-tertiary);
 }
+/*
+ * ★★ 2026-09-26 用户：「去掉所有悬停显示描述」——
+ *   "加载器这个筛选器为什么用不了"原来只挂在悬停提示（`title`）上，
+ *   现在写成筛选器下面的一行小字。父容器 `.res-center` 已经是 flex + gap，
+ *   所以这里只要把 `<p>` 自带的上下边距清掉（字号/颜色用全局 `.field-hint`）。
+ */
+.res-hint {
+  margin: 0;
+}
 
 /* 装到哪个版本（下载页的资源页签） */
 .res-target {
