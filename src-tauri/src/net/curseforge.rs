@@ -17,14 +17,23 @@
 //! | 下载地址 | API 给的 `edge.forgecdn.net` 在**本机时好时坏**（200 / 连接失败 / 404 都见过）；`mediafilez.forgecdn.net` 与 `mod.mcimirror.top/files/…` **两次都通** → 见 `download_candidates` |
 //! | API 兜底 | `api.curseforge.com` 本机**间歇性连接超时**（10s）；`mod.mcimirror.top/curseforge/v1/…` 稳定且**不需要 key** |
 //!
-//! ## key 从哪来
+//! ## ★★★★ CurseForge **只走国内镜像，启动器里没有 key 这回事**
 //!
-//!   优先级：**设置里填的 > 环境变量 `IEML_CF_API_KEY` > 内置**。
-//!   ★ 2026-09-25：**内置那把已清空**（仓库转公开，见 `BUILTIN_API_KEY` 的注释）——
-//!   所以现在是"用户自备 key 才能用 CurseForge"，界面上也照实说这件事。
+//!   用户 2026-09-26 两句话定的调子（第二句是最终态）：
+//!     ·「要不然 cf 直接用镜像吧，国内镜像，**不要 key 的**」
+//!     ·「**cf 只用镜像，我的那把 key 永远移除启动器**」
 //!
-//! ★ 一条纪律：**任何"没配 key"的判断都要基于 `api_key()`**，
-//!   不要在别处再写一份"有没有 key"的逻辑（那种两份判据迟早打架）。
+//!   ⇒ 所以：
+//!     · 所有 CurseForge 请求都走 `mod.mcimirror.top`（实测 5/5 可用、
+//!       不需要任何凭据，见 `tools/probe/probe-cf-mirror-keyless.mjs`）；
+//!     · **不再有 key 管理** —— 内置常量、环境变量、设置页、落盘文件全部删除
+//!       （`api_key()` / `cf_key_status` / `cf_set_api_key` 这些都不存在了）。
+//!       看到任何"有 key 就怎样"的旧叙述，一律是**过时的读法**。
+//!     · 老版本在 `%APPDATA%\IEML\cf_api_key.txt` 里留下的那份，
+//!       由 [`purge_legacy_key_files`] 在启动时删掉（人已经把话说到"永远移除"）。
+//!
+//!   ★ 代价如实说：镜像挂了 = CurseForge 这一路就等它回来（Modrinth 不受影响），
+//!     而且请求经第三方转发。README 的「已知限制」里写着这件事。
 
 use super::mirror;
 use super::{api_client, NetError, Result};
@@ -32,162 +41,33 @@ use crate::domain::resources::ResourceKind;
 use crate::modrinth;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::path::Path;
 
-/* ====================== key 管理 ====================== */
+/* ====================== 老 key 的清理（没有 key 管理，只有"把它删掉"） ====================== */
 
-/// ★★ **内置 key 已于 2026-09-25 清空**（公开化清理，见 `docs/CLEANUP-PLAN-2026-09-25.md`）。
+/// 启动时把**旧版本留下的 key 文件**从盘上删掉（用户：「我的那把 key 永远移除启动器」）。
 ///
-/// 历史：ADR-052（dev.13）按"开箱即用"的取舍内置过一把 key —— 用户提供的、
-/// **只对他自己的 CurseForge 账号额度生效**。代价当时也如实写进了 ADR-052：
-/// 它留在源码树里、随时可被撤销。
-///
-/// 现在为什么必须清掉：仓库要转公开。那把 key 从**初始提交 `f71c91c`** 起就在
-/// git 历史里，而公开后任何人都能 `git log -p` 翻出来 —— 那就是一份真泄露。
-/// 处置是两步，缺一不可：① 用户去 `console.curseforge.com` 吊销/轮换它；
-/// ② 这个常量清空 + 重写 git 历史。
-///
-/// ★ 清空之后，CurseForge 相关功能**仍然可用**，只是需要用户自备 key：
-/// 优先级链（设置里填的 > 环境变量 `IEML_CF_API_KEY` > 内置）**一个字都没改**，
-/// 没有 key 时的提示也是一句可行动的话（见 `require_key`）。
-/// ★ 另外 `api.curseforge.com` 在本机本来就**间歇性超时**，而
-/// `mod.mcimirror.top/curseforge/v1/…` 稳定且**不需要 key** —— 兜底路径还在。
-const BUILTIN_API_KEY: &str = "";
-
-/// 运行期覆盖值（设置页 / 启动参数注入）
-static KEY_OVERRIDE: RwLock<Option<String>> = RwLock::new(None);
-
-/// 环境变量名（与内置值同义：优先级低于设置页、高于内置）
-pub const KEY_ENV: &str = "IEML_CF_API_KEY";
-
-/// 设一个 key（来自设置页）。空串 = 清掉覆盖值，回到内置/环境变量。
-pub fn set_api_key(key: &str) {
-    let trimmed = key.trim().to_string();
-    if let Ok(mut g) = KEY_OVERRIDE.write() {
-        *g = if trimmed.is_empty() { None } else { Some(trimmed) };
-    }
-}
-
-/// 当前生效的 key（`None` = 一个都没有，那就不该发请求）
-pub fn api_key() -> Option<String> {
-    if let Ok(g) = KEY_OVERRIDE.read() {
-        if let Some(k) = g.as_ref() {
-            if !k.trim().is_empty() {
-                return Some(k.clone());
+/// ★ 为什么要主动删而不是"不再读它就行"：文件留在盘上就是一份**长期凭据**，
+///   而启动器已经永远不会用它 —— 留着只有风险没有用处。
+///   两个位置都清：启动器自己的家（`own_root`）与旧布局的游戏根目录（A-4 之前的位置）。
+/// ★ 删不掉（只读 / 被占用）**不拦启动**：这只影响"盘上少一份文件"，
+///   不该让用户连启动器都打不开（与 `known-roots.json` 同一条纪律）。
+pub fn purge_legacy_key_files(paths: &crate::platform::AppPaths) {
+    for p in [
+        paths.own_file("cf_api_key.txt"),
+        paths.legacy_record_file("cf_api_key.txt"),
+    ] {
+        if p.is_file() {
+            match std::fs::remove_file(&p) {
+                Ok(()) => say!("[IEML/curseforge] 已删除旧版本留下的 API Key 文件：{}", p.display()),
+                Err(e) => say!(
+                    "[IEML/curseforge] 想删掉旧 Key 文件但删不动（{}）：{}（不影响使用）",
+                    p.display(),
+                    e
+                ),
             }
         }
     }
-    if let Ok(env) = std::env::var(KEY_ENV) {
-        if !env.trim().is_empty() {
-            return Some(env.trim().to_string());
-        }
-    }
-    let builtin = BUILTIN_API_KEY.trim();
-    if builtin.is_empty() {
-        None
-    } else {
-        Some(builtin.to_string())
-    }
-}
-
-/// 这个 key 是**从哪来的** —— 界面上要如实说（"内置的"与"你自己填的"不是一回事）
-pub fn key_source() -> &'static str {
-    if let Ok(g) = KEY_OVERRIDE.read() {
-        if g.as_ref().map(|k| !k.trim().is_empty()).unwrap_or(false) {
-            return "settings";
-        }
-    }
-    if std::env::var(KEY_ENV).map(|v| !v.trim().is_empty()).unwrap_or(false) {
-        return "env";
-    }
-    if BUILTIN_API_KEY.trim().is_empty() {
-        "none"
-    } else {
-        "builtin"
-    }
-}
-
-/// 只给界面看的前缀（**不泄漏完整 key**）
-pub fn key_hint() -> Option<String> {
-    api_key().map(|k| {
-        let head: String = k.chars().take(10).collect();
-        format!("{head}…（共 {} 字符）", k.chars().count())
-    })
-}
-
-/// key 落盘位置：**启动器自己的家**（`own_root`，`%APPDATA%\IEML`）下的独立文件。
-///
-/// ★★ A-4（2026-09-24）：与 `instances.json` / `prefs.json` 一起搬出**游戏根目录** ——
-///   以前它在 `paths.root` 下，用户删掉那个游戏根目录时 key 会跟着没。
-///   老位置那份由 `platform::adopt_records` 在启动时收养（只复制、不删源）。
-///
-/// ★ 为什么不塞进 `prefs.json`：那份文件是**前端**管的（`save_prefs`
-///   整份覆盖写回），而这个 key 后端随时要用 —— 放一起会出现
-///   "前端用旧值覆盖掉刚写的 key"这种竞态（`ms_client_id.txt` 同理由）。
-pub fn api_key_file(paths: &crate::platform::AppPaths) -> PathBuf {
-    paths.own_file("cf_api_key.txt")
-}
-
-/// 启动时读一次（`lib.rs` 调用）
-pub fn load_api_key_from_disk(paths: &crate::platform::AppPaths) {
-    // 读：优先 own_root，那儿没有才回退到游戏根目录的老位置（A-4）
-    let Some(store) = paths.own_file_for_read("cf_api_key.txt") else {
-        return;
-    };
-    if let Ok(text) = std::fs::read_to_string(store) {
-        let first = text.lines().next().unwrap_or("").trim().to_string();
-        if !first.is_empty() {
-            set_api_key(&first);
-            say!(
-                "[IEML/curseforge] 已载入你填的 CurseForge API Key（{}…）",
-                &first[..first.len().min(6)]
-            );
-        }
-    }
-}
-
-/// 保存并立即生效（设置页调用）。空串 = 删掉覆盖值，回到环境变量 / 内置
-/// （★ 2026-09-25：内置已清空 ⇒ 两者都没有时就是"没有 key"，那条路走国内镜像）。
-pub fn save_api_key(paths: &crate::platform::AppPaths, key: &str) -> Result<()> {
-    let trimmed = key.trim().to_string();
-    if trimmed.is_empty() {
-        let _ = std::fs::remove_file(api_key_file(paths));
-        /* ★ A-4：老位置那份也删 —— 否则下次启动会被 adopt_records 收养回来 */
-        let _ = std::fs::remove_file(paths.legacy_record_file("cf_api_key.txt"));
-        set_api_key("");
-        return Ok(());
-    }
-    /*
-     * 明显不是 key 的形状就**当场说**，别等一次失败的请求。
-     *
-     * CurseForge 的 key 长这样：`$2a$10$` 开头（bcrypt 风格的散列串）、
-     * 长度 60 上下。我们不替 CurseForge 做完整校验（格式可能变），
-     * 只挡两个**几乎一定是手滑**的情况：太短、或有空白字符。
-     */
-    if trimmed.chars().count() < 20 {
-        return Err(NetError::Other(format!(
-            "这看起来不是 CurseForge 的 API Key（只有 {} 个字符）。\n\
-             它应该是一长串（约 60 个字符，通常以 `$2a$10$` 开头）——\n\
-             到 console.curseforge.com 的「API Keys」里复制。",
-            trimmed.chars().count()
-        )));
-    }
-    if trimmed.chars().any(|c| c.is_whitespace()) {
-        return Err(NetError::Other(
-            "这段文本里有空格或换行 —— 多半是把说明文字一起复制进来了。\n\
-             只复制 key 本身（一整串、没有空格）。"
-                .to_string(),
-        ));
-    }
-    if let Some(p) = api_key_file(paths).parent() {
-        std::fs::create_dir_all(p)
-            .map_err(|e| NetError::Other(format!("创建数据目录失败：{e}")))?;
-    }
-    std::fs::write(api_key_file(paths), format!("{trimmed}\n"))
-        .map_err(|e| NetError::Other(format!("保存 API Key 失败：{e}")))?;
-    set_api_key(&trimmed);
-    Ok(())
 }
 
 /* ====================== 常量与映射（全部实测） ====================== */
@@ -273,46 +153,58 @@ pub fn loaders_of(game_versions: &[String]) -> Vec<String> {
 
 /* ====================== 请求 ======================
  *
- * ★★ 2026-09-25（公开化清理）——**这一段的形状变了，先读懂再改**：
+ * ## 为什么只剩镜像这一条路（三次演进的终点，别再往回改）
  *
- *   以前是"官方（带 key）为主，镜像兜底"，而 key 是**内置在源码里**的。
- *   仓库要转公开 ⇒ 内置凭据必须消失（它从初始提交起就在 git 历史里）。
- *   但"**开箱即用**"是用户明确的产品要求（"用户根本就不会填"）——
- *   所以不能简单地把 key 删掉让用户自己想办法。
+ *   ① 最早：**官方（内置 key）为主、镜像兜底** —— key 内置在源码里（ADR-052
+ *      的取舍："拿到 exe 就能用"）。
+ *   ② 2026-09-25 公开化清理：仓库要转公开 ⇒ 内置凭据必须消失（它从初始提交
+ *      `f71c91c` 起就在 git 历史里）。但"**开箱即用**"是硬要求（用户：
+ *      "用户根本就不会填"），所以不能删了 key 让用户自己申请 ⇒
+ *      改成"没 key 走镜像、自备 key 走官方"。
+ *   ③ ★★★★ 2026-09-26（用户："**cf 只用镜像，我的那把 key 永远移除启动器**"）：
+ *      **官方那条路整条删掉，key 管理整块删掉**。
  *
- *   实测得到的解法（`tools/probe/probe-cf-mirror-keyless.mjs`，5/5 通过）：
- *   `mod.mcimirror.top` 在**不带任何 key** 的前提下就能提供搜索 / 文件列表 /
- *   项目详情 / 分类 / **指纹反查**，返回形状与官方一致。而且 `mirror.rs`
- *   早就把 CurseForge 排成"**国内 mcimirror 首选、官方兜底**"了。
+ *   为什么"自备 key 走官方"这段该消失（它一直是问题最多的一段）：
+ *     · `api.curseforge.com` 在本机**间歇性连接超时**（实测 10s 量级）；
+ *     · 那把 key 出现过"能过鉴权、但读不到 mod 数据"（`categories` 200 /
+ *       `mods/search` 403）—— 而"有 key 就先走官方"会**把搜索整条路打死**；
+ *     · 为它专门加过两条特例（401/403 也换镜像、换镜像时不带 key），
+ *       特例越多越难说清。
+ *   而镜像那条路**不需要任何凭据、实测 5/5 可用**
+ *   （`tools/probe/probe-cf-mirror-keyless.mjs`）。
  *
- *   ⇒ 于是默认路径**不需要 key**：
- *     · 用户**没**自备 key → 走镜像（开箱即用，仓库里没有任何凭据）
- *     · 用户**自备**了 key（设置页 / `IEML_CF_API_KEY`）→ 走官方（更稳、更尊重他的配额），
- *       失败再退镜像
+ *   ⇒ 现在的形状最简单：**一个地址、不带凭据、没有兜底**。
+ *     镜像挂了就如实报错（界面把原因显示出来）—— 这是第三方镜像的代价，
+ *     README 的「已知限制」里写着，不假装没有。
  *
  *   ★★ 一个必须记住的**形状差异**（两个方向都实测过，见下面那两条函数注释）：
  *     指纹反查的请求体在两条路上**正好相反**：
  *       · 官方：`{ "fingerprints": [ 123 ] }`（**裸整数**）
  *       · 镜像：`{ "fingerprints": [ { "fingerprint": 123 } ] }`（对象数组）
- *     发错方向两边都是 400。以前镜像兜底时直接复用官方的 body ⇒
- *     **那条兜底等于没有**（必然 400），而没有任何判据能发现。
+ *     发错方向两边都是 400。现在只走镜像 ⇒ **用对象数组那一份**；
+ *     官方那份形状保留在类型与测试里（万一以后要加回官方，别又从 400 开始查）。
  */
 
-/// 一次请求走哪条路 —— 与"怎么拼 URL / 要不要带 key"绑定在一起，
-/// 免得出现"URL 是镜像的、头里还带着 key"这种自相矛盾的组合。
+/*
+ * ★ 镜像**挂了**怎么办：如实报错（`NetError`），界面把原因显示出来 ——
+ *   这正是第三方镜像的代价，README 的「已知限制」里写着，不能假装没有。
+ */
+
+/// 一次请求走哪条路 —— 现在**只有镜像这一条**。
+///
+/// ★ 以前这里有 `OfficialWithKey` / `MirrorWithKey` 两个取值
+///   （"自备 key 走官方"、"官方不通退镜像"），2026-09-26 连 key 一起删了。
+///   保留这个枚举而不是直接写死镜像，是为了让"路径"这个概念有个**一个**住处：
+///   将来真要加第二条路，改的是这里，而不是散在各处的 URL 拼接。
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Route {
-    /// 默认：国内镜像，**不带 key**（开箱即用的那条路）
+    /// 国内镜像，**不带凭据**（唯一的一条路）
     MirrorNoKey,
-    /// 用户自备了 key：走官方，带上它
-    OfficialWithKey,
-    /// 自备了 key 但官方不通：退回镜像（镜像不需要 key）
-    MirrorWithKey,
 }
 
 impl Route {
     fn is_mirror(self) -> bool {
-        matches!(self, Route::MirrorNoKey | Route::MirrorWithKey)
+        matches!(self, Route::MirrorNoKey)
     }
 }
 
@@ -320,32 +212,22 @@ impl std::fmt::Display for Route {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Route::MirrorNoKey => "镜像(无需 key)",
-            Route::OfficialWithKey => "官方(自备 key)",
-            Route::MirrorWithKey => "镜像(官方不通，自备 key 未用上)",
         })
     }
 }
 
-/// 主路：有自备 key 走官方，否则走镜像。**内置 key 已清空，所以"没有 key"是常态。**
-fn primary_route() -> Route {
-    if api_key().is_some() {
-        Route::OfficialWithKey
-    } else {
-        Route::MirrorNoKey
-    }
-}
-
-/// 兜底路：换另一条（官方 ↔ 镜像）。已经是镜像时**没有兜底**（不来回弹）。
-fn fallback_route(current: Route) -> Option<Route> {
-    match current {
-        Route::OfficialWithKey => Some(Route::MirrorWithKey),
-        Route::MirrorNoKey | Route::MirrorWithKey => None,
-    }
+/// 唯一的路径：**永远是镜像**（2026-09-26 起不再看有没有 key）。
+fn route() -> Route {
+    Route::MirrorNoKey
 }
 
 /// 主路失败之后换兜底路 —— 一次网络请求。**这是 GET 与 POST 共用的那一份**（ADR-051：
 /// 判据只能有一份；以前 GET 走 `get_text_third_party`、POST 自己手写一遍，于是 POST 那半
 /// 就漏掉了"镜像要裸整数"这个形状差异）。
+/// 一次 API 请求（GET / POST 共用这一份）。
+///
+/// ★★ 2026-09-26：**只走国内镜像、不带 key、不兜底**（见文件里那段 `Route` 的说明）。
+///   `body` 用**镜像那一份形状**（调用方给的 `fallback_body`）。
 async fn request_with_fallback(
     method: reqwest::Method,
     path_and_query: &str,
@@ -353,74 +235,35 @@ async fn request_with_fallback(
     fallback_body: Option<&str>,
 ) -> Result<String> {
     let official = format!("{API}{path_and_query}");
-    let mirror = mirror::mcimirror_url(&official);
-
-    let primary = primary_route();
-    let primary_url = if primary.is_mirror() {
-        mirror.clone().unwrap_or_else(|| official.clone())
-    } else {
-        official.clone()
+    let route = route();
+    debug_assert!(route.is_mirror(), "现在只剩镜像这一条路");
+    /*
+     * ★ 镜像地址由 `mirror::mcimirror_url` 从官方地址改写而来（**唯一的一份映射表**，
+     *   不在别处再拼一遍）。它返回 `None` = 这条地址镜像不管 ⇒ 如实报错，
+     *   不要偷偷改走官方：那会让"国内镜像"这条产品决定在某些路径上静默失效。
+     */
+    let Some(url) = mirror::mcimirror_url(&official) else {
+        return Err(NetError::Other(format!(
+            "CurseForge 这条地址没有国内镜像可用：{official}"
+        )));
     };
-    let key = api_key();
-
-    match send_once(method.clone(), &primary_url, primary_body, key.as_deref()).await {
-        Ok(t) => Ok(t),
-        Err(e) => {
-            /*
-             * ★★ 2026-09-25（真机实测逼出来的）：**鉴权类失败也要换镜像**。
-             *
-             *   情况是这么来的：用户配了一把 CurseForge key，它能过鉴权、
-             *   但**没有 mod 数据的权限** —— 实测同一把 key 下：
-             *     `categories` / `minecraft/version` → **200**
-             *     `mods/search` / `mods/{id}` / `mods/{id}/files` → **403**
-             *   而"有 key 就走官方"这条规则会让 403 直接把请求打死
-             *   （403 是"确定的结论"，本来不该换源重试）—— 于是**搜索一路全空**，
-             *   而镜像那条路**根本不需要 key**、本来能给出结果。
-             *
-             *   ⇒ 所以对 CurseForge 这里加一条特例：**401/403 照样试镜像**。
-             *     理由很硬：镜像的鉴权模型与官方不同（它自己解决），
-             *     所以"官方说这把 key 不行"**不构成**"镜像也不行"的证据。
-             *   ★ 这条只在"有 key 且官方拒绝"时才生效；没有 key 时主路本来就是镜像。
-             */
-            let auth_failed = matches!(
-                e,
-                NetError::Status { status: 401 | 403, .. }
-            );
-            // ★ 兜底**永远只有镜像这一条**（镜像自己再失败就没有下一步了，不来回弹）。
-            if fallback_route(primary).is_none() && !auth_failed {
-                return Err(e);
-            }
-            let Some(mirror_url) = mirror else {
-                return Err(NetError::Other(format!("{e}（没有可用的镜像兜底）")));
-            };
-            if auth_failed {
-                say!(
-                    "[IEML/curseforge] 官方用这把 key 拒绝了（{e}）—— 换镜像试试\
-                     （镜像不需要 key，所以「官方不认这把 key」不等于「镜像也不行」）"
-                );
-            } else {
-                say!("[IEML/curseforge] {primary_url} 失败（{e}），换 {mirror_url} 重试");
-            }
-            // ★ 换镜像时用 fallback_body —— 指纹那条路两条路的 body 形状不同
-            //   ★ 并且**不再带 key**：镜像自己解决鉴权（实测不带 key 也能用）。
-            //     带上它没有收益，反而多一个"镜像哪天开始校验 x-api-key"的失败点
-            //     —— 而这条兜底存在的全部意义就是"官方那条路不成立时还有一条路"。
-            let body = fallback_body.or(primary_body);
-            send_once(method, &mirror_url, body, None).await
-        }
-    }
+    // ★ 镜像那一份 body（指纹反查的两条路形状不同；官方那份保留在类型里备用）。
+    let body = fallback_body.or(primary_body);
+    say!("[IEML/curseforge] {route} → {url}");
+    send_once(method, &url, body).await
 }
 
 async fn send_once(
     method: reqwest::Method,
     url: &str,
     body: Option<&str>,
-    key: Option<&str>,
 ) -> Result<String> {
     let mut req = api_client().request(method, url);
-    if let Some(k) = key {
-        req = req.header("x-api-key", k);
-    }
+    /*
+     * ★★ 这里原来会给请求带上凭据（`x-api-key`）—— 2026-09-26 删掉了：
+     *   用户要求"cf 只用镜像、key 永远移除启动器"，镜像是**不需要任何凭据**的。
+     *   少一个头 = 少一个"镜像哪天开始校验它"的失败点。
+     */
     if let Some(b) = body {
         req = req
             .header(reqwest::header::CONTENT_TYPE, "application/json")
@@ -1328,46 +1171,48 @@ mod tests {
         assert!(candidates_from_url("").is_empty());
     }
 
-    /* ---------- key 优先级 ---------- */
+    /* ---------- key：**已经不存在了** ---------- */
 
+    /// ★★★★ 2026-09-26 用户：「**cf 只用镜像，我的那把 key 永远移除启动器**」。
+    ///
+    ///   这条测试守的就是"移除"这件事本身 —— 它**故意不测 key 的优先级**
+    ///   （那套逻辑已经删掉了），而是断言**它不会再回来**。
+    ///
+    ///   ★★ 两个自指陷阱（都踩过，写在这里免得下次重踩）：
+    ///     ① 判据里写**完整的关键词** ⇒ 判据自己的源码就把判据顶红；
+    ///     ② 自己写"剥注释"的解析器 ⇒ 文档注释里含 `://`（URL），
+    ///        按行截 `//` 会把注释当成代码，又假红一次。
+    ///   ⇒ 现在：关键词**拼出来**（源码里不出现完整词），扫描**整个文件**
+    ///     （注释里出现这些词是**允许的** —— 那些注释正是在解释"它为什么被删掉了"）。
     #[test]
-    fn key_priority_settings_over_env_over_builtin() {
+    fn the_api_key_is_gone_from_the_launcher_for_good() {
+        let src = include_str!("curseforge.rs");
         /*
-         * ★ 2026-09-25（公开化清理）：内置值**已清空**，所以这条测试不再假设"一定有 key"。
-         *   判据改成"跟着事实走"：内置为空 ⇒ `api_key()` 必须是 `None`（一个都没有就不该发请求）；
-         *   内置非空 ⇒ 必须拿得到它。这样以后谁再决定内置一把，这条测试也不会假绿。
+         * ★ 只查**声明与调用的形状**，不查裸词：
+         *   · 裸词 `api_key` 会命中**要保留的文件名**（清理老 key 文件用得到）；
+         *   · 注释里也必须能解释"它为什么被删掉了"。
+         *   ⇒ 判据与注释都写"形状"，两边不会互相顶。
          */
-        set_api_key("");
-        let builtin = BUILTIN_API_KEY.trim();
-        match api_key() {
-            Some(k) => {
-                assert!(!builtin.is_empty(), "没有内置 key 却拿到了一个：{k:.10}");
-                assert!(k.starts_with("$2a$10$"), "拿到的不是这把 key：{k:.10}");
-            }
-            None => {
-                assert!(builtin.is_empty(), "内置 key 非空，`api_key()` 不该返回 None");
-                assert!(
-                    std::env::var(KEY_ENV).map(|v| v.trim().is_empty()).unwrap_or(true),
-                    "环境变量里有 key，`api_key()` 不该返回 None"
-                );
-                assert_eq!(key_source(), "none", "一个 key 都没有时来源必须是 none");
-            }
+        let shapes = [
+            format!("const {}{}", "BUILTIN", "_API_KEY"),
+            format!("const {}{}", "KEY", "_ENV"),
+            format!("static {}{}", "KEY", "_OVERRIDE"),
+            format!("fn {}{}", "api", "_key"),
+            format!("fn {}{}", "set_api", "_key"),
+            format!("fn {}{}", "key", "_hint"),
+            format!("header({}{}", "\"x-api", "-key\""),
+        ];
+        for shape in shapes {
+            assert!(
+                !src.contains(&shape),
+                "源码里又出现了「{shape}」这种形状 —— 用户明确要求 key 永远从启动器里移除（只用镜像）"
+            );
         }
-
-        // 设置页填的**永远优先**（这一条与内置有没有值无关）
-        set_api_key("$2a$10$CUSTOMKEYCUSTOMKEYCUSTOMKEYCUSTOMKEYCUSTOMKEYCUSTOMKEY");
-        assert_eq!(key_source(), "settings");
-        assert!(api_key().unwrap().contains("CUSTOMKEY"));
-        // 清掉覆盖 → 回到环境变量 / 内置
-        set_api_key("");
-        let expect = if std::env::var(KEY_ENV).map(|v| !v.trim().is_empty()).unwrap_or(false) {
-            "env"
-        } else if BUILTIN_API_KEY.trim().is_empty() {
-            "none"
-        } else {
-            "builtin"
-        };
-        assert_eq!(key_source(), expect);
+        // 而"清理老 key 文件"这件事必须还在（用户那把 key 不能留在盘上）
+        assert!(
+            src.contains(&format!("fn purge_legacy{}", "_key_files")),
+            "旧 key 文件的清理不能一起删掉 —— 那是用户数据里的一份长期凭据"
+        );
     }
 
     /// ★★ 指纹反查的**请求体形状**是一条实测契约，两条路**正好相反**：
@@ -1400,36 +1245,7 @@ mod tests {
         );
         assert_eq!(mirror["fingerprints"][1]["fingerprint"], 42);
 
-        // 两份**必须不同** —— 这是这条兜底能工作的前提
-        assert_ne!(official, mirror, "两条路的 body 形状必须不同，否则兜底必 400");
-    }
-
-    #[test]
-    fn key_hint_does_not_leak_the_whole_key() {
-        set_api_key("$2a$10$SECRETSECRETSECRETSECRETSECRETSECRETSECRETSECRETSECRETSECRET");
-        let hint = key_hint().unwrap();
-        assert!(hint.contains('…'), "{hint}");
-        assert!(!hint.contains("SECRETSECRETSECRET"), "不该把整把 key 打出来：{hint}");
-        set_api_key("");
-    }
-
-    #[test]
-    fn save_api_key_rejects_obvious_mistakes() {
-        let paths = crate::platform::AppPaths::resolve();
-        // 太短：要说清"该去哪儿拿"，而不是一句"格式错误"
-        let e = save_api_key(&paths, "abc").unwrap_err().to_string();
-        assert!(e.contains("字符"), "要说清长度不对：{e}");
-        assert!(e.contains("console.curseforge.com"), "要给出可行动的下一步：{e}");
-        // 带空白（多半把说明文字一起复制了）
-        // ★ 2026-09-25：这里的样例刻意用**重复串**（CUSTOMKEY…）而不是顺序字母 ——
-        //   顺序字母那种形状与真 key 一模一样，会被 `tools/gates/check-secrets.mjs`
-        //   当成疑似的真凭据（那条门禁是对的：它按形状抓，不猜内容）。
-        let e2 = save_api_key(
-            &paths,
-            "$2a$10$CUSTOMKEYCUSTOMKEYCUSTOMKEYCUSTOMKEYCUSTOMKEYCUSTOMKEY CUSTOMKEY",
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(e2.contains("空格"), "{e2}");
+        // 两份**必须不同** —— 这是"以后要加回官方那条路"能工作的前提
+        assert_ne!(official, mirror, "两条路的 body 形状必须不同，否则换路必 400");
     }
 }
