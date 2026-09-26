@@ -72,6 +72,31 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.1.0',
+    date: '2026-09-26',
+    headline: '第一个公开稳定版：功能与上一版相同，从此不再是测试版。',
+    groups: [
+      {
+        title: '修改了',
+        items: ['修改了 版本号：从测试版转为正式版，功能与上一版相同。'],
+      },
+    ],
+  },
+  {
+    version: '0.1.0-rc.13',
+    date: '2026-09-26',
+    headline: '这一版功能与上一版一样，只把介绍里几处过期的数字改掉了。',
+    groups: [
+      {
+        title: '修改了',
+        items: [
+          '修改了 启动器介绍里几处过期的数字，改成实测值。',
+          '修改了 已知限制里补上一条：安装包没有代码签名，首次运行可能提示「未知发布者」。',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.1.0-rc.12',
     date: '2026-09-26',
     headline: '这一版修好了「纯原版加装高清修复」，顺手把安装页里一个写死的版本号改掉。',
