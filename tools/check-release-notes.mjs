@@ -57,6 +57,33 @@ const FORBIDDEN = ['你报', '我报', '报上来', '用户报', '你点出来',
  */
 const MENTIONS_AUTHOR = ['用户', '玩家报', '玩家的要求', '你要求', '你希望', '你反馈'];
 
+/*
+ * ★★ 2026-09-26 再补一条：**不写实现细节**。
+ *
+ *   用户看着 rc.10 的「新增了」那三条问了一句「**这些适合进更新日志吗**」：
+ *
+ *       新增了后端命令 fetch_update_notes：匿名读更新通道的清单…
+ *       新增了判据 tests/release-notes.test.mjs（17 条：…），并进了 verify（30 → 31 项）。
+ *       新增了真机判据 tools/live/live-update-notes-check.mjs（有启动器在跑时退出码 2…）
+ *
+ *   —— 这三条是**实现自述**：命令名、测试文件名、条数、退出码，玩家一个都用不上
+ *   （这条规矩本人早就写在 `docs/DECISIONS.md` 的「更新日志不写归属」那一条旁边：
+ *     "这是最终用户看的，不要出现技术细节"。我又犯了。）
+ *
+ *   ★★ 更要紧的是：`CHANGELOG.md` **最新那一节**会被发布脚本原文当 `notes` 推到清单，
+ *      所以写在那里 = 写在玩家看得到的更新提示里 —— 两边是同一份内容的两个住处，
+ *      **这个门禁只守得住其中一处**，改另一处时要自己记得。
+ *   ⇒ 判据：条目正文里不许出现文件名 / 路径 / 工具名 / 代码标识符 / 工程词
+ *      （判据 / 门禁 / 单元测试 / 退出码 / 后端命令 / ADR- / verify）。它们该写在
+ *      **提交信息**与**文件注释**里。
+ */
+const TECH_LEAK = [
+  ['文件名或路径', /\.(tsx|ts|mjs|js|json|rs|css|exe|key|toml|lock)\b|[A-Za-z]:\\|\/src\/|tools\//],
+  ['工具名', /\bnode\b|pnpm|cargo|tauri|npm/i],
+  ['工程词', /判据|门禁|单元测试|测试文件|退出码|后端命令|ADR-|verify\b/],
+  ['代码标识符', /\b[a-z][a-z0-9]*_[a-z0-9_]+\b/],
+];
+
 let text;
 try {
   text = readFileSync(FILE, 'utf8');
@@ -140,6 +167,15 @@ for (const v of versions) {
           );
         }
       }
+      /* ⑨ 正文里**不许出现实现细节** —— 命令名 / 测试文件名 / 条数 / 退出码，玩家用不上 */
+      for (const [label, re] of TECH_LEAK) {
+        if (re.test(it)) {
+          problems.push(
+            `[${v.version}] 这条写了实现细节（${label}）—— 更新日志只说"改了什么"，` +
+              `文件名/命令名/条数写进提交信息或注释里：${it.slice(0, 34)}…`,
+          );
+        }
+      }
     }
   }
 }
@@ -157,6 +193,16 @@ for (const bad of [...FORBIDDEN, ...MENTIONS_AUTHOR]) {
     problems.push(`正文里有归属字样（"${bad}"）：…${codeOnly.slice(Math.max(0, at - 24), at + 12).trim()}…`);
   }
 }
+/* ★ 实现细节同样要覆盖 headline 与条目（那条检查在 ⑨ 里只扫了条目，这里兜一遍全文） */
+for (const [label, re] of TECH_LEAK) {
+  const hit = re.exec(codeOnly);
+  if (hit) {
+    problems.push(
+      `正文里有实现细节（${label}：「${hit[0]}」）—— 玩家看的更新日志不写命令名/文件名：` +
+        `…${codeOnly.slice(Math.max(0, hit.index - 24), hit.index + 16).trim()}…`,
+    );
+  }
+}
 
 if (problems.length) {
   console.error(`✗ 更新日志格式不合规（${FILE}）：`);
@@ -167,5 +213,5 @@ if (problems.length) {
   process.exit(1);
 }
 console.log(
-  `✓ 更新日志格式合规：${versions.length} 个版本 / ${itemCount} 条（五段名、顺序、类别词、长度、无括号、不写归属、不提用户都过了）`,
+  `✓ 更新日志格式合规：${versions.length} 个版本 / ${itemCount} 条（五段名、顺序、类别词、长度、无括号、不写归属、不提用户、不写实现细节都过了）`,
 );
