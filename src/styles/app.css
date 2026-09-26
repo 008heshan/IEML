@@ -2136,9 +2136,23 @@ tbody tr.clickable:focus-visible {
   --card-min: 100%;
   gap: var(--space-3);
 }
-/* 矩阵：自动多列 */
+/*
+ * 矩阵：**一行两个**（用户 2026-09-26：「哦对**矩阵只能是一行两个**」）。
+ *
+ *   ★ 原来是 `auto-fill + minmax(224px, 1fr)` —— 1180 的窗口下会排成 3 列，
+ *     而整合包卡改成"小图标 + 标题"之后内容更宽（一个卡里要放得下
+ *     名字、作者、两个标签、下载量），两列才读得顺。
+ *   ★ 用固定两列而不是 `minmax(..., 1fr)` 的 auto-fill：用户要的是
+ *     **确定的两列**，不是"随窗口浮动"。
+ *   ★ 窄窗口（< 720px）退成一列：两列在那种宽度下会挤成两条。
+ */
 .grid-cards[data-view='grid'] {
-  --card-min: 224px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+@media (max-width: 720px) {
+  .grid-cards[data-view='grid'] {
+    grid-template-columns: 1fr;
+  }
 }
 .split {
   display: grid;

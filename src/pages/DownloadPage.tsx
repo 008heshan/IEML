@@ -1121,14 +1121,21 @@ function ModpackTab({
       {loading ? (
         <div className="grid-cards" data-view={view} aria-busy="true" aria-label="正在加载">
           {Array.from({ length: 6 }, (_, i) => (
+            /*
+             * ★★ 骨架要**长成结果的样子** —— 2026-09-26 卡片改成"小图标 + 标题"之后
+             *   这里也跟着改（骨架与结果不同形状，内容到位时界面会整块跳一下，
+             *   这条规矩当初就是为它立的）。
+             */
             <div key={i} className="pack-card pack-card-sk">
-              <span className="sk sk-cover-lg" />
-              <div className="pack-body">
-                <span className="sk sk-line w70" />
-                <span className="sk sk-line w45" />
-                <span className="sk sk-line w95" />
-                <span className="sk sk-line w35" />
+              <div className="pack-head">
+                <span className="sk sk-cover" />
+                <div className="pack-body">
+                  <span className="sk sk-line w70" />
+                  <span className="sk sk-line w45" />
+                </div>
               </div>
+              <span className="sk sk-line w95" />
+              <span className="sk sk-line w35" />
             </div>
           ))}
         </div>
@@ -1168,42 +1175,54 @@ function ModpackTab({
               setName(p.name);
             }}
           >
-            {/* ★ 有封面就用真封面；没有才退回按"分量"变色的方块（不再假装有图） */}
-            <div
-              className="pack-cover"
-              data-weight={p.weight}
-              /* ★ 高度判据给在 DOM 属性上，而不是让 CSS 用 `:has(img)` 去猜
-                 （理由见 pages.css 里 `.pack-cover[data-has-img]` 的注释） */
-              data-has-img={p.icon ? '1' : '0'}
-            >
-              {p.icon ? (
-                <img
-                  src={p.icon}
-                  alt=""
-                  loading="lazy"
-                  /* ★ 关掉原生拖拽：否则按住封面一拖就能把图拖到桌面去 */
-                  draggable={false}
-                  onError={(e) => {
-                    const img = e.currentTarget as HTMLImageElement;
-                    img.style.display = 'none';
-                    /*
-                     * ★ 图挂了就**退回"分量色条"**，别留一个 96px 的空灰块 ——
-                     *   高度是由 `data-has-img` 决定的，所以这里必须一起撤掉。
-                     */
-                    img.parentElement?.setAttribute('data-has-img', '0');
-                  }}
-                />
-              ) : null}
-            </div>
-            <div className="pack-body">
-              <div className="pack-name truncate">{p.name}</div>
-              <div className="pack-author">by {p.author}</div>
-              <div className="pack-tags">
-                <Chip tone="accent">{p.mc}</Chip>
-                <Chip tone="neutral">{p.loader}</Chip>
+            {/*
+              ★★★★ 2026-09-26 用户（两张截图，指着 Mod / 资源卡那种样式）：
+                「**资源包的图片要不然改成这样的？**」「**整合包的图片要不然改成这样的？**」
+                —— 也就是说：封面不做"置顶大图"，改成**小图标在标题左边**
+                （与 `res-card` 同一套：44px 圆角图标 + 右边标题/作者）。
+
+              ★ 所以把 `.pack-cover` 那层**收进 `.pack-head`**：
+                结构与资源卡对齐，两种卡片从此同一个形状。
+              ★ 图挂了仍然退回"分量色条"（`data-has-img='0'`）——
+                但现在是**图标尺寸的色块**，不再是一个 96px 的空灰条。
+            */}
+            <div className="pack-head">
+              <div
+                className="pack-cover"
+                data-weight={p.weight}
+                /* ★ 高度判据给在 DOM 属性上，而不是让 CSS 用 `:has(img)` 去猜
+                   （理由见 pages.css 里 `.pack-cover[data-has-img]` 的注释） */
+                data-has-img={p.icon ? '1' : '0'}
+              >
+                {p.icon ? (
+                  <img
+                    src={p.icon}
+                    alt=""
+                    loading="lazy"
+                    /* ★ 关掉原生拖拽：否则按住封面一拖就能把图拖到桌面去 */
+                    draggable={false}
+                    onError={(e) => {
+                      const img = e.currentTarget as HTMLImageElement;
+                      img.style.display = 'none';
+                      /*
+                       * ★ 图挂了就**退回"分量色块"**，别留一个空灰块 ——
+                       *   尺寸由 `data-has-img` 决定，所以这里必须一起撤掉。
+                       */
+                      img.parentElement?.setAttribute('data-has-img', '0');
+                    }}
+                  />
+                ) : null}
               </div>
-              <div className="pack-meta">{p.downloads} 次下载</div>
+              <div className="pack-body">
+                <div className="pack-name truncate">{p.name}</div>
+                <div className="pack-author">by {p.author}</div>
+              </div>
             </div>
+            <div className="pack-tags">
+              <Chip tone="accent">{p.mc}</Chip>
+              <Chip tone="neutral">{p.loader}</Chip>
+            </div>
+            <div className="pack-meta">{p.downloads} 次下载</div>
           </button>
         ))}
       </div>
