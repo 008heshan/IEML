@@ -1425,6 +1425,21 @@
   cursor: pointer;
   transition: background var(--dur-fast), color var(--dur-fast);
   white-space: nowrap;
+  /*
+   * ★★ 2026-09-26 用户（截图，指着那对图标）：「**图标没居中**」。
+   *
+   *   量出来的事实：按钮 25px、图标 14px，但**上留 4px、下留 7px**（偏上 5px）。
+   *   原因是按钮里的内容按**文字基线**排：SVG 是替换元素，坐在基线上，
+   *   而 13px 字体在 25px 的行盒里于下方留下 descent 段（约 5px）。
+   *   ⇒ 按钮自己做成 flex 居中（文字同样受益：只影响垂直位置，不动字号）；
+   *     `svg { display: block }` 再去掉行内元素自带的那点基线空隙。
+   */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.seg button svg {
+  display: block;
 }
 .seg button:hover:not(:disabled) {
   background: var(--bg-hover);
