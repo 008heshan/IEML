@@ -328,6 +328,31 @@ try {
   );
   check(backToGrid?.cols === asGrid?.cols, '切回矩阵与原来一致', `${backToGrid?.cols} 列`);
 
+  /*
+   * ★★ 2026-09-26 用户（截图，指着那对图标）：「**图标没居中**」。
+   *   量出来的事实：按钮 25px、图标 14px，但**上 4 / 下 7**（偏上 5px）——
+   *   按钮按**文字基线**排版，SVG 坐在基线上，而字体在下面留了 descent 段。
+   *   修法：`.seg button { display: inline-flex; align-items: center }`。
+   *   判据：图标上下留白**差不超过 1px**（不是"看着居中"）。
+   */
+  const centering = await ev(`(() =>
+    [...document.querySelectorAll('.seg[aria-label="显示方式"] button, .seg[aria-label="排序"] button')]
+      .map((b) => {
+        const br = b.getBoundingClientRect();
+        const svg = b.querySelector('svg');
+        if (!svg) return null;
+        const sr = svg.getBoundingClientRect();
+        return { name: b.getAttribute('aria-label'), top: +(sr.top - br.top).toFixed(1), bottom: +(br.bottom - sr.bottom).toFixed(1) };
+      })
+      .filter(Boolean))()`);
+  for (const c of centering ?? []) {
+    check(
+      Math.abs(c.top - c.bottom) <= 1,
+      `「${c.name}」的图标在按钮里居中`,
+      `上 ${c.top} / 下 ${c.bottom}`,
+    );
+  }
+
   /* ---------- ⑤ 分页条：间距与位置（用户：「太贴底部」） ---------- */
   /*
    * ★★ 2026-09-26 用户（截图，指着分页条）：「**太贴底部**」。
