@@ -442,9 +442,42 @@ function ModpackTab({
   const [page, setPage] = useState(0);
   const [total, setTotal] = useState(0);
 
+  /**
+   * 上一批结果属于哪一组条件（"来源 + 关键词 + 筛选 + 实例"）。
+   *
+   * ★★ 2026-09-26（用户截图：切到 CurseForge 之后，列表上面一排骨架、下面还是
+   *   **Modrinth 那 6 个结果**）：这个函数原来只是 `setLoading(true)` 就发请求，
+   *   于是**旧结果整段时间还挂在屏幕上**，而骨架同时渲染在它上面 ——
+   *   看起来就是"切了来源但内容没换"。
+   *
+   *   资源中心那份（`ResourceBrowser`）2026-09-23 就修过同一个病
+   *   （"切到资源包会继承到 Mod 的封面"），**这份是漏网的**：
+   *     · 没有"换条件先清空" ⇒ 旧结果留在屏幕上；
+   *     · 没有迟到守卫 ⇒ 慢的旧请求回来会把新结果盖掉；
+   *     · 骨架与结果网格同时渲染（那边有 `!loading` 守卫，这里没有）。
+   *   ⇒ 三处一起补齐。判据见 `tools/live/live-resource-switch-check.mjs`。
+   */
+  const lastCriteria = useRef<string | null>(null);
+  /** 上一次请求的是第几页（翻页时保留已有结果，换条件时清空） */
+  const lastPage = useRef<number | null>(null);
+  /** 只认最后一次请求的结果（慢的旧请求回来时丢掉） */
+  const seq = useRef(0);
+
   /** 从 Modrinth 拉真实整合包（project_type=modpack） */
   const load = useCallback(async () => {
     if (!api) return;
+    const mine = ++seq.current;
+    /*
+     * ★ 条件变了就**立刻清空**（"换条件"= 来源 / 关键词 / 筛选 任一变了）；
+     *   只有"翻页"（同一组条件、只换 offset）才保留已有结果 —— 那是翻页的语义。
+     *   ★ 这里没有"实例"这一项：整合包列表与实例无关（那是资源中心那边的概念）。
+     */
+    const criteria = `${packSource}|${query}|${mcFilter}|${loaderFilter}`;
+    const sameSet = lastCriteria.current === criteria;
+    lastCriteria.current = criteria;
+    const samePage = lastPage.current === page;
+    lastPage.current = page;
+    if (!sameSet || !samePage) setPacks([]);
     setLoading(true);
     setError(null);
     try {
@@ -476,6 +509,7 @@ function ModpackTab({
         // ★ 来源由用户选（Modrinth / CurseForge）—— 见上面那段说明
         source: packSource,
       });
+      if (mine !== seq.current) return; // ★ 迟到的结果丢掉（否则旧来源的结果会盖掉新的）
       setTotal(r.total_hits ?? 0);
       setPacks(
         r.hits.map((h) => ({
@@ -504,9 +538,11 @@ function ModpackTab({
         })),
       );
     } catch (e) {
+      if (mine !== seq.current) return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      /* ★ 只有"最后一次请求"才允许关掉加载态 —— 否则慢的旧请求会把新的骨架提前收掉 */
+      if (mine === seq.current) setLoading(false);
     }
   }, [api, query, page, mcFilter, loaderFilter, packSource]);
 
@@ -532,10 +568,17 @@ function ModpackTab({
     return () => window.clearTimeout(t);
   }, [selected]);
 
-  /* ★ 搜索词变了要回到第 1 页（不然会停在一个"搜出来只有 3 个"的第 7 页上） */
+  /*
+   * ★ 搜索词变了要回到第 1 页（不然会停在一个"搜出来只有 3 个"的第 7 页上）。
+   *
+   * ★★ 2026-09-26：**两个筛选器也算"换条件"** —— 原来这里只跟着 `query`，
+   *   于是在第 2 页时改「版本」或「加载器」会**停在旧页码上**：结果集换了、
+   *   页码没回零，看到的是一段对不上的结果（用户点名这两个下拉会触发问题）。
+   *   ⇒ 依赖里补上 `mcFilter` / `loaderFilter`（与"换条件清空旧结果"是同一件事的两半）。
+   */
   useEffect(() => {
     setPage(0);
-  }, [query]);
+  }, [query, mcFilter, loaderFilter]);
 
   const sorted = useMemo(() => {
     const list = [...packs];
@@ -1060,6 +1103,15 @@ function ModpackTab({
         />
       ) : null}
 
+      {/*
+        ★★ 2026-09-26：**加载中不渲染结果网格** —— 否则骨架会与上一批结果**同时**
+          出现在屏幕上（用户截图：上面一排骨架、下面还是切来源之前那 6 个）。
+          ★ 用条件渲染而不是 `hidden` 属性：`.grid-cards { display: grid }` 会盖掉
+            浏览器默认的 `[hidden] { display: none }`，那样写等于没写（这类"看起来
+            生效了其实没有"的写法，本仓库栽过不止一次）。
+          ★ 这与 `ResourceBrowser` 那边同一条规矩；两边不同款正是这个 bug 的来源。
+      */}
+      {loading ? null : (
       <div className="grid-cards">
         {sorted.map((p) => (
           <button
@@ -1116,6 +1168,7 @@ function ModpackTab({
           </button>
         ))}
       </div>
+      )}
 
       {/* ★ 翻页（原来写死前 20 个，翻不动） */}
       {!loading && total > PAGE_SIZE ? (

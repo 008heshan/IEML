@@ -141,7 +141,7 @@ export function AboutPage() {
               <RichText text="Mod、整合包、资源包、光影来自 Modrinth 与 CurseForge 的公开接口，**著作权归各自的作者**。本程序只负责下载与放进对应目录，不修改、不再分发它们。" />
             </li>
             <li>
-              <RichText text="CurseForge 的那一路走的是**第三方镜像** `mod.mcimirror.top`（这样你不需要自己申请 API Key）。请求经过它转发，它能看到你查了什么 —— 想避开就设环境变量 `IEML_CF_API_KEY` 走官方接口，或者只用 Modrinth。" />
+              <RichText text="CurseForge 的那一路**全部走国内镜像** `mod.mcimirror.top` —— 启动器里**没有 API Key 这回事**，你不需要填任何东西。请求经过它转发，它能看到你查了什么；介意的话可以只用 Modrinth。" />
             </li>
             <li>
               部分资源在 CurseForge 上被作者关掉了「允许第三方分发」，那种资源任何启动器都下不到 ——

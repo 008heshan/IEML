@@ -313,12 +313,15 @@ pub fn run() {    /*
     auth::load_client_id_from_disk(&paths);
 
     /*
-     * ★★ 载入**你填过的** CurseForge API Key（ADR-052）。
+     * ★★★★ 2026-09-26 用户：「**cf 只用镜像，我的那把 key 永远移除启动器**」。
      *
-     *   内置了一把（拿到 exe 就能用），这个文件是"用户自己的那把"——
-     *   存在就覆盖内置值。同样必须在任何网络命令之前发生。
+     *   这里原来是"载入用户填过的 CurseForge API Key"（ADR-052 的那条链）。
+     *   现在 key 管理整块删掉了（连 `api_key()` 都不存在），这一行改成
+     *   **把老版本留在盘上的 key 文件删掉** —— 用户已经把话说到"永远移除"，
+     *   留一份再也不会被使用的长期凭据在盘上，只有风险没有用处。
+     *   ★ 删不掉也不拦启动（见 `purge_legacy_key_files` 的说明）。
      */
-    net::curseforge::load_api_key_from_disk(&paths);
+    net::curseforge::purge_legacy_key_files(&paths);
 
     tauri::Builder::default()
         /*
@@ -395,10 +398,11 @@ pub fn run() {    /*
             commands_real::resource_search,
             /* ★ 取"兼容当前实例的版本"（两个源共用一条命令，ADR-052） */
             commands_real::resource_versions,
-            /* ★★ CurseForge 的 key（2026-09-25 起：**内置那把已清空**；没 key 走国内镜像，照样开箱即用） */
-            commands_real::cf_key_status,
-            commands_real::cf_set_key,
-            commands_real::cf_test_key,
+            /*
+             * ★★★★ 2026-09-26：`cf_key_status` / `cf_set_key` / `cf_test_key`
+             *   **三条命令都删了** —— 用户："cf 只用镜像，我的那把 key 永远移除启动器"。
+             *   CurseForge 全部请求走国内镜像、不带任何凭据，界面上也没有"填 key"这件事了。
+             */
             commands_real::install_resource,
             /* ★ API 前置包自动安装（Fabric API / QFAPI）—— 以前只承诺、没实现 */
             commands_real::install_api_library,

@@ -35,13 +35,30 @@ static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 ///   而 `client()` **只有连接超时、没有整体超时**（下载故意不设 —— 大文件要很久）——
 ///   于是资源列表**永远停在骨架屏**：没有报错、没有重试按钮，
 ///   用户只会以为是我们坏了。**卡住比报错更难查**，所以接口类请求必须有整体超时。
+/// ## ★★ 我们发出去的 User-Agent 是什么（2026-09-26 定死）
+///
+/// ```
+/// IEML-Launcher/<版本> (+https://github.com/008heshan/IEML)
+/// ```
+///
+///   为什么必须写规范：CurseForge / Modrinth 那一整条路走的是国内镜像
+///   `mod.mcimirror.top`（见 `net::mirror`），而镜像方**要求接入的启动器
+///   留下大名与 UA**（`mcmod-info-mirror/mcim-rust-api` issue #12，
+///   全仓库只在这一处拼 UA）；UA 的格式规范来自 **MCLF-CN/docs issue #2**：
+///   **以 `${NAME}/${VERSION}` 开头**（他们是拿它做日志统计的）。
+///   ⇒ 所以这里是 `IEML-Launcher/{版本}`，**版本从编译期的包版本取**，
+///     升版时自动跟着变（手写死版本号一定会过期 —— 原来那个写死 `0.1`）。
+///
+///   ★ 同时修掉一个**假网址**：原来写的是 `https://github.com/ieml`（不存在），
+///     而这个 UA 是发给第三方服务的 —— 对方或用户想找到我们时，点过去是 404。
+///     现在指向真实仓库（CNB 是分发仓、GitHub 是镜像，两个仓内容相同）。
 ///
 /// ★ 25 秒的取法：正常接口响应在 1 秒内，25 秒足够容忍上游抖动，
 ///   又不至于让用户对着转圈等到放弃。
 pub fn api_client() -> &'static reqwest::Client {
     API_CLIENT.get_or_init(|| {
         reqwest::Client::builder()
-            .user_agent("IEML-Launcher/0.1 (+https://github.com/ieml)")
+            .user_agent(USER_AGENT)
             .connect_timeout(Duration::from_secs(20))
             .timeout(Duration::from_secs(25))
             .pool_max_idle_per_host(8)
@@ -53,12 +70,19 @@ pub fn api_client() -> &'static reqwest::Client {
     })
 }
 
+/// 全仓库唯一的 User-Agent（两条路径共用 —— API 客户端与下载客户端）。
+///
+/// ★ 只此一处：改 UA 就该改这里。`env!("CARGO_PKG_VERSION")` 是**编译期**展开的，
+///   所以升版之后要重新构建才会变（与 `app_info` 同一个道理）。
+pub const USER_AGENT: &str =
+    concat!("IEML-Launcher/", env!("CARGO_PKG_VERSION"), " (+https://github.com/008heshan/IEML)");
+
 static API_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
 
 pub fn client() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
-            .user_agent("IEML-Launcher/0.1 (+https://github.com/ieml)")
+            .user_agent(USER_AGENT)
             .connect_timeout(Duration::from_secs(20))
             // 不设整体超时：大文件下载需要很久
             .pool_max_idle_per_host(16)
@@ -296,28 +320,140 @@ pub async fn get_text_third_party(url: &str) -> Result<String> {
 
 /// 同上，但可以带请求头（CurseForge 的 `x-api-key`）。
 ///
-/// ★ 镜像（mcimirror）**带不带 key 都能用**（实测），所以兜底那一路
-///   原样带上同样的头 —— 不为镜像单写一条分支，也就不会出现
-///   "官方和镜像的行为悄悄不一样"这种问题。
+/// ★★ 2026-09-26 用户（一次说清两条路的取向）：
+///   「**全部 cf 链路默认走镜像**，然后，**modr 那边偏向走官方，若网络不好，则走镜像**」。
+///
+///   ⇒ CurseForge 那一整条路已经改成**只走镜像**（见 `net::curseforge` 的 `Route`）；
+///     这里管的是 **Modrinth**（以及任何第三方 API）：**官方优先**，
+///     而"网络不好"现在**不只指失败，也指慢** —— 所以改成**错峰竞速**
+///     （`race_with_stagger`，PCL2 的 `DlSourceLoader` 就是这么做的）：
+///       · 官方立刻发；
+///       · 等 `OFFICIAL_PATIENCE` 还没回来 ⇒ 镜像同时发，**谁先成功用谁**；
+///       · 官方成功得够快 ⇒ 备路根本没启动（**不多花一次请求**，绝大多数情况）；
+///       · 官方**快速失败**（连不上 / 429 / 5xx）⇒ 备路立刻接手，
+///         不会白等满那 `OFFICIAL_PATIENCE`（`race_with_stagger` 里
+///         "主路失败就直接 await 备路"那一条保证的，已实测）。
+///
+///   ★ 旧的"失败才换镜像"留下的纪律一个都没丢：
+///     · **404 之类的确定结论不换源**（镜像就是同一个 API 的反代，换了还是 404）；
+///     · 镜像那一路**带同样的头**（不给它单写分支，避免两边行为悄悄不一样）；
+///     · 两路都失败时，错误信息里**两条原因都在**。
+///
+///   ★ `OFFICIAL_PATIENCE` 取 2.5 秒：正常接口 1 秒内就该回；
+///     官方在这台机器上"偶发挂住"是几秒到几十秒的量级，2.5 秒足够区分
+///     "正常"与"不好"，也不会让本来 1.5 秒能成的请求平白多开一条连接。
 pub async fn get_text_third_party_with_headers(
     url: &str,
     headers: &[(&str, &str)],
 ) -> Result<String> {
-    match get_text_with_headers(url, headers).await {
-        Ok(t) => Ok(t),
-        Err(e) if is_definitely_absent(&e) => Err(e),
-        Err(e) => {
-            let Some(mirror) = crate::net::mirror::mcimirror_url(url) else {
-                return Err(e);
-            };
-            say!("[IEML/net] {url} 失败（{e}），换 mcimirror 重试：{mirror}");
-            match get_text_with_headers(&mirror, headers).await {
-                Ok(t) => Ok(t),
-                Err(e2) => Err(NetError::Other(format!(
-                    "{e}；换 mcimirror 镜像后仍然失败：{e2}"
-                ))),
-            }
+    /// 官方多久不回就让镜像同时上（见上面那段说明）
+    const OFFICIAL_PATIENCE: Duration = Duration::from_secs(2);
+
+    let Some(mirror) = crate::net::mirror::mcimirror_url(url) else {
+        // 这个地址没有镜像可换 —— 老老实实单路（原来的行为）
+        return get_text_with_headers(url, headers).await;
+    };
+
+    let headers_owned: Vec<(String, String)> = headers
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect();
+    let url_owned = url.to_string();
+    let mirror_owned = mirror.clone();
+    let headers_for_backup = headers_owned.clone();
+
+    /*
+     * ★★ 这里**没有**直接用 `race_with_stagger`：那个原语会把主路的错误
+     *   `format!` 成字符串（`"{e1}；备路也失败：{e2}"`），而 `NetError::status()`
+     *   就丢了 —— `is_definitely_absent`（ADR-037："404 = 这个资源确实不存在"）
+     *   正是靠 `status()` 判的。拿它硬套会把"确定没有"变成一句普通错误，
+     *   调用方就会把"确实没有"当成"网络不好"再折腾一轮。
+     *   ⇒ 同一个错峰思路，**但保留状态码**：下面这一份是给第三方 API 用的。
+     */
+    let primary = tokio::spawn({
+        let url = url_owned.clone();
+        async move {
+            let refs: Vec<(&str, &str)> = headers_owned
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+            get_text_with_headers(&url, &refs).await
         }
+    });
+    let backup = tokio::spawn(async move {
+        tokio::time::sleep(OFFICIAL_PATIENCE).await;
+        say!("[IEML/net] {url_owned}：官方 {OFFICIAL_PATIENCE:?} 还没回来，镜像同时上");
+        let refs: Vec<(&str, &str)> = headers_for_backup
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        get_text_with_headers(&mirror_owned, &refs).await
+    });
+
+    let mut primary = primary;
+    let mut backup = backup;
+    tokio::select! {
+        joined = &mut primary => match joined {
+            Ok(Ok(t)) => {
+                backup.abort();
+                Ok(t)
+            }
+            /*
+             * ★ 主路给了**确定结论**（404 / 410 / 422…）⇒ 立刻返回，**不等备路**：
+             *   镜像就是同一个 API 的反代，同样的地址换过去还是同一个结论，
+             *   白等一轮只会让"这个资源确实没有"这句话晚 2 秒才说出口。
+             */
+            Ok(Err(e)) if is_definitely_absent(&e) => {
+                backup.abort();
+                Err(e)
+            }
+            Ok(Err(e1)) => {
+                if backup.is_finished() {
+                    // 备路已经在跑（主路是慢失败）⇒ 等它的结论，两条原因都留住
+                    match backup.await {
+                        Ok(Ok(t)) => Ok(t),
+                        Ok(Err(e2)) => Err(NetError::Other(format!(
+                            "{e1}；换 mcimirror 镜像后仍然失败：{e2}"
+                        ))),
+                        Err(_) => Err(e1),
+                    }
+                } else {
+                    // 主路是**快失败**（连不上 / 429 / 5xx）⇒ 别等满 patience，镜像立刻上
+                    say!("[IEML/net] {url} 失败（{e1}），立刻换 mcimirror：{mirror}");
+                    match backup.await {
+                        Ok(Ok(t)) => Ok(t),
+                        Ok(Err(e2)) => Err(NetError::Other(format!(
+                            "{e1}；换 mcimirror 镜像后仍然失败：{e2}"
+                        ))),
+                        Err(_) => Err(e1),
+                    }
+                }
+            }
+            Err(_) => match backup.await {
+                Ok(r) => r,
+                Err(e) => Err(NetError::Other(format!("第三方 API：两路都异常结束（{e}）"))),
+            },
+        },
+        joined = &mut backup => match joined {
+            Ok(Ok(t)) => {
+                primary.abort();
+                Ok(t)
+            }
+            Ok(Err(e2)) => {
+                /*
+                 * 备路先结束（且失败）—— 不把主路一棍子打死：
+                 * 主路可能只是慢，它还有机会成功（用户那句"偏向走官方"就是这个意思）。
+                 */
+                match primary.await {
+                    Ok(r) => r,
+                    Err(_) => Err(e2),
+                }
+            }
+            Err(_) => match primary.await {
+                Ok(r) => r,
+                Err(e) => Err(NetError::Other(format!("第三方 API：两路都异常结束（{e}）"))),
+            },
+        },
     }
 }
 

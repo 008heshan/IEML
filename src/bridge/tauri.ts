@@ -123,14 +123,11 @@ export type ResourceKindName = 'mod' | 'resourcepack' | 'shader' | 'datapack' | 
  */
 export type ResourceSourceName = 'modrinth' | 'curseforge';
 
-/** CurseForge API Key 的状态（`source` 说明它从哪来，不许含糊） */
-export interface CfKeyStatus {
-  configured: boolean;
-  /** `settings`（你填的）/ `env`（环境变量）/ `builtin`（随程序内置）/ `none` */
-  source: 'settings' | 'env' | 'builtin' | 'none' | string;
-  /** 只显示前缀，不泄漏整把 key */
-  hint: string | null;
-}
+/*
+ * ★★ 这里原来是 `CfKeyStatus`（key 配没配、从哪来、前缀是什么）——
+ *   2026-09-26 随 key 一起删掉了（用户："我的那把 key 永远移除启动器"）。
+ *   CurseForge 只用国内镜像，没有 key 这回事。
+ */
 
 /** 一种资源的描述（后端给，界面**不要**自己再写一张表） */
 export interface ResourceKindInfo {
@@ -785,31 +782,15 @@ export const modrinth = {
       source: opts.source ?? 'modrinth',
     }),
 
-  /* ---------- CurseForge 的 key（2026-09-25 起：**内置那把已清空**） ---------- */
-
-  /**
-   * 当前 key 的状态（**它从哪来的**会如实说明）。
+  /*
+   * ★★★★ 2026-09-26 用户：「**cf 只用镜像，我的那把 key 永远移除启动器**」。
    *
-   * ★★ 2026-09-20 更正一句**与界面不符的承诺**：这里原来写着"内置一把 + 设置页可覆盖"，
-   *   而**界面上根本没有填写入口**（当初按用户要求把那一栏删掉了，见 beta.2 与
-   *   MEMORY 里那条"假承诺"的账）。这几个命令仍然可用、也仍然注册着
-   *   （留着是给"以后要把入口加回来"用的），但**现在没有任何 tsx 调它们** ——
-   *   全仓库 grep `cfKeyStatus` / `cfSetKey` / `cfTestKey` 在 `.tsx` 里是 0 命中。
-   *   写注释就得写当下的事实，不然下一个人会照着一个不存在的入口去改。
-   *
-   * ★★ 2026-09-25（公开化清理）：**内置的那把 key 也清掉了**（见
-   *   `docs/CLEANUP-PLAN-2026-09-25.md`：它从初始提交起就在 git 历史里，
-   *   而仓库要转公开）。所以现在是"**想要 CurseForge 就得自备 key**"，
-   *   而界面没有入口 ⇒ 用户实际只有两条路：换成 Modrinth，或设环境变量
-   *   `IEML_CF_API_KEY`。后端那句提示已按这个事实改过（别再指"设置页里填"）。
+   *   `cfKeyStatus` / `cfSetKey` / `cfTestKey` 三个方法**整块删掉**了
+   *   （后端那三条命令也不存在了，见 `commands_real.rs`）。
+   *   CurseForge 全部请求走国内镜像、不带任何凭据 ——
+   *   界面上从来没有填写入口，现在连"能力"也不留（用户要的是永远移除）。
+   *   ★ 谁要再加回来：先读 `net/curseforge.rs` 文件头那段"三次演进的终点"。
    */
-  cfKeyStatus: () => call<CfKeyStatus>('cf_key_status'),
-
-  /** 保存一把自己的 key（空串 = 删除）—— 界面暂无入口，见上 */
-  cfSetKey: (key: string) => call<CfKeyStatus>('cf_set_key', { key }),
-
-  /** ★ 真打一次接口验证（不是"看起来对"）—— 界面暂无入口，见上 */
-  cfTestKey: () => call<string>('cf_test_key'),
 
   /** 下载并安装任意一种社区资源到实例里，返回落盘路径 */
   installResource: (
