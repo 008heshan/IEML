@@ -684,6 +684,27 @@ pub fn parse_mrpack_bytes(bytes: &[u8]) -> Result<MrpackIndex> {
 ///   这道闸门与**按清单下载**那条路共用 [`safe_relative_path`]（P0-2：
 ///   同一份不可信输入不许一条路拦、一条路不拦）。
 pub fn extract_overrides(bytes: &[u8], game_dir: &std::path::Path) -> Result<usize> {
+    extract_overrides_dir(bytes, "overrides", game_dir)
+}
+
+/// 同上，但**目录名由调用方给** —— CurseForge 整合包的清单里 `overrides` 字段
+/// 是可以改的（规范默认 `overrides`，但作者能写成别的名字）。
+/// 写死 `overrides/` 的后果很具体：那种包**装完发现作者的配置一个都没进去**，
+/// 而界面上一切正常（"装完了"），用户只会觉得"这整合包怎么跟我看的不一样"。
+pub fn extract_overrides_dir(
+    bytes: &[u8],
+    dir_name: &str,
+    game_dir: &std::path::Path,
+) -> Result<usize> {
+    /*
+     * ★ 前缀必须是**目录名 + `/`**：只匹配 `overrides` 会把 `overrides-old/`
+     *   也当成 overrides 解出来（作者的备份目录会被铺到游戏目录上）。
+     *   空名字直接当成"这个包没有 overrides"，不做任何事。
+     */
+    let prefix = format!("{}/", dir_name.trim().trim_end_matches('/'));
+    if prefix == "/" {
+        return Ok(0);
+    }
     let reader = std::io::Cursor::new(bytes.to_vec());
     let mut archive = zip::ZipArchive::new(reader)
         .map_err(|e| NetError::Other(format!("打开整合包失败：{e}")))?;
@@ -704,8 +725,8 @@ pub fn extract_overrides(bytes: &[u8], game_dir: &std::path::Path) -> Result<usi
             continue;
         };
         let rel_str = rel.to_string_lossy().replace('\\', "/");
-        let Some(rest) = rel_str.strip_prefix("overrides/") else {
-            continue; // 只解 overrides/，其余（如 client-overrides/）另行处理
+        let Some(rest) = rel_str.strip_prefix(&prefix) else {
+            continue; // 只解这个目录，其余（如 `client-overrides/`）另行处理
         };
         // 第二道闸门（与 mrpack_download_tasks 同一个函数）：`enclosed_name()`
         // 已经挡了 `..`，这里再挡一次盘符/绝对路径，代价是几次字符串比较
