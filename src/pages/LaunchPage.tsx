@@ -336,7 +336,7 @@ export function LaunchPage() {
             <div className="lf-item">
               <IconDrive />
               <span className="lf-k">数据目录</span>
-              <span className="lf-v mono" title={state.machine.dataDir}>
+              <span className="lf-v mono">
                 {state.machine.dataDir}
               </span>
             </div>
@@ -688,7 +688,6 @@ export function LaunchPage() {
                 type="button"
                 className="lo-card"
                 onClick={() => setLaunchTarget(i.id)}
-                title={`切到「${i.config.name}」`}
               >
                 <VersionIcon version={i.mcVersion} size={38} />
                 <span className="lo-main">
@@ -743,7 +742,7 @@ export function LaunchPage() {
           <div className="lf-item">
             <IconDrive />
             <span className="lf-k">数据目录</span>
-            <span className="lf-v mono" title={state.machine.dataDir}>
+            <span className="lf-v mono">
               {state.machine.dataDir}
             </span>
           </div>
@@ -782,7 +781,7 @@ export function LaunchPage() {
             <div className="pack-locks">
               <div className="pack-lock">
                 <span className="pl-k">Java</span>
-                <span className="pl-v mono truncate" title={preview.java}>
+                <span className="pl-v mono truncate">
                   {preview.java.split(/[\\/]/).slice(-3).join('/')}
                 </span>
               </div>
@@ -796,7 +795,7 @@ export function LaunchPage() {
               </div>
               <div className="pack-lock">
                 <span className="pl-k">本地库目录</span>
-                <span className="pl-v mono truncate" title={preview.natives_dir}>
+                <span className="pl-v mono truncate">
                   {preview.natives_dir.split(/[\\/]/).slice(-2).join('/')}
                 </span>
               </div>

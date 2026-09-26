@@ -100,14 +100,17 @@ export function Switch({ checked, onChange, label, disabled }: SwitchProps) {
 
 export interface SegmentOption<T extends string> {
   value: T;
-  /** 按钮内容：文字，或者图标（见 `title` 对无障碍的说明） */
+  /** 按钮内容：文字，或者图标（图标时见 `title`，它只喂 `aria-label`） */
   label: React.ReactNode;
   /**
    * 这个选项叫什么 —— **label 是图标时必填**。
    *
    * ★ 2026-09-26（用户要求加"矩阵 / 条形"显示方式切换）：
    *   纯图标按钮对读屏是空的（`aria-label` 拿不到东西），
-   *   所以给每个选项一个名字：它同时进 `aria-label` 与 `title`（悬停可见）。
+   *   所以给每个选项一个名字：它只进 `aria-label`。
+   * ★★ 同一天用户又要求「**去掉所有悬停显示描述**」：
+   *   这个名字**不再**变成 DOM 的 `title`（原来两处都写），
+   *   只留无障碍语义 —— 鼠标悬停什么也不弹。
    */
   title?: string;
   /** 不可用时的具体理由（禁止只说"不支持"） */
@@ -142,7 +145,6 @@ export function Segmented<T extends string>({
             aria-pressed={value === o.value}
             aria-label={o.title}
             disabled={disabled}
-            title={o.disabledReason ?? o.title}
             onClick={() => onChange(o.value)}
           >
             {o.label}
@@ -208,26 +210,30 @@ export function CardTitle({
 
 export type ChipTone = 'neutral' | 'accent' | 'success' | 'warning' | 'danger' | 'info';
 
+/*
+ * ★★ 2026-09-26 用户：「**去掉所有悬停显示描述**」——
+ *   `Chip` 原来有一个 `title` prop（悬停时显示一句说明），连 prop 一起删了。
+ *   ★ 这与"禁用必须给具体理由"**不冲突**：那条管的是按钮的
+ *     `disabledReason`（`.seg` / 选项按钮），不是这句可有可无的说明。
+ */
 export function Chip({
   tone = 'neutral',
   children,
   onClick,
-  title,
 }: {
   tone?: ChipTone;
   children: ReactNode;
   onClick?: () => void;
-  title?: string;
 }) {
   if (onClick) {
     return (
-      <button type="button" className={`chip chip-${tone} chip-btn`} onClick={onClick} title={title}>
+      <button type="button" className={`chip chip-${tone} chip-btn`} onClick={onClick}>
         {children}
       </button>
     );
   }
   return (
-    <span className={`chip chip-${tone}`} title={title}>
+    <span className={`chip chip-${tone}`}>
       {children}
     </span>
   );
@@ -395,11 +401,6 @@ export function Field({
           type="button"
           className={`src-tag src-${source}`}
           onClick={onToggleSource}
-          title={
-            source === 'inherit'
-              ? '当前跟随全局设置，点击改为单独设定'
-              : '当前已单独设定，点击恢复跟随全局'
-          }
         >
           {source === 'inherit' ? '跟随全局' : '已覆盖'}
         </button>

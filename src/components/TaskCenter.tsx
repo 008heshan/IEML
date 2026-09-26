@@ -69,7 +69,6 @@ export function TaskCenter() {
         variant="ghost"
         iconOnly
         aria-label={`任务中心，${count} 个任务`}
-        title={`任务中心 · ${count} 个进行中`}
         onClick={() => setOpen((v) => !v)}
       >
         <IconDownload />

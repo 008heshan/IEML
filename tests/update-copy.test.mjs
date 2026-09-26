@@ -51,6 +51,29 @@ test('还没查过 / 正在下载 / 正在安装：各有各的话，不冒充�
   assert.equal(isUpdateProblem('idle'), false);
 });
 
+test('★ 下载失败退回 available 时，不许说"正在后台下载"', () => {
+  /*
+   * ★★ 2026-09-26（用户要求「去掉所有悬停显示描述」那一天的连带修复）：
+   *   下载失败时 `useLauncherUpdate` 把 phase 退回 `available` 并把原因放进 `error`，
+   *   而失败原因原来**只写在顶栏角标的悬停提示里**。提示删掉之后，
+   *   这一页会对一个刚下失败的新版本说"正在后台下载" —— 一句假话。
+   *   所以这条判据盯两件事：**不许说在下载**、**必须把原因写出来**。
+   */
+  const t = describeUpdate({
+    phase: 'available',
+    version: '0.2.0',
+    error: '连不上更新服务器。检查网络后重试。',
+  });
+  assert.ok(!/正在后台下载/.test(t), '下失败了还说在下载就是假话：' + t);
+  assert.match(t, /没成功/);
+  assert.match(t, /连不上更新服务器/);
+  // 没有原因 = 真的在下载，这句照旧
+  assert.match(describeUpdate({ phase: 'available', version: '0.2.0' }), /正在后台下载/);
+  // 页面据此标红：两种"有问题"都要算上
+  assert.equal(isUpdateProblem('available', '连不上更新服务器'), true);
+  assert.equal(isUpdateProblem('available'), false);
+});
+
 test('认不出的状态如实报出它的名字（宁可难看，也不许说假话）', () => {
   assert.equal(describeUpdate({ phase: 'weird-new-phase' }), '更新状态：weird-new-phase');
 });

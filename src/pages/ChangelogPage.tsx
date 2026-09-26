@@ -92,7 +92,6 @@ export function ChangelogPage() {
             variant="secondary"
             loading={notesPhase === 'loading'}
             onClick={() => void update.refreshNotes()}
-            title="重新读取更新说明（只读说明，不会下载任何东西）"
           >
             <IconRefresh /> 刷新
           </Button>

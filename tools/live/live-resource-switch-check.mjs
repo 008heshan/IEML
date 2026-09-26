@@ -206,7 +206,7 @@ async function pickSelect(ev, ariaLabel) {
   return { current, picked };
 }
 
-const { ev, close, pid } = await launch({ exe: EXE, tag: 'rswitch' });
+const { ev, ws, pid } = await launch({ exe: EXE, tag: 'rswitch' });
 
 try {
   /* 进「下载 → 整合包」 */
@@ -492,14 +492,18 @@ try {
   }
 } finally {
   /*
-   * ★★ 只收**自己起的那个进程树** —— 三个地方都不能碰用户那份：
-   *   · `close()` **不能调**：`lib/cdp.mjs` 的 `close()` 内部会 `await killIeml()`，
+   * ★★ 只收**自己起的那个进程树** —— 两处都不能碰用户那份：
+   *   · `lib/cdp.mjs` 的 `close()` **不能调**：它内部 `await killIeml()`，
    *     而 `killIeml()` 是**按进程名全杀**（`Get-Process ieml | Stop-Process -Force`），
    *     会把用户正开着的启动器一起收掉（这个探针的设计目标就是"能与用户并存"）；
    *   · 所以自己关 WebSocket，并用 `taskkill /PID <pid> /T /F` 收自己那棵进程树。
+   *
+   * ★ 2026-09-26 修：这段注释一直是对的，**代码却调的是 `close()`**（就是那句
+   *   "不能调"的那个）—— 也就是说这个探针跑完会把用户那份启动器一起杀掉。
+   *   注释与代码不一致时，按注释写的意图改代码（注释里那句才是设计目标）。
    */
   try {
-    close();
+    ws.close();
   } catch {}
   if (pid) spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
 }

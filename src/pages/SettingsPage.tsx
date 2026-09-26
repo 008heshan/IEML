@@ -363,7 +363,7 @@ export function SettingsPage() {
                 </span>
               ) : null}
               {!vfx.capability.auraAllowed ? (
-                <span className="field-hint mono truncate" title={vfx.capability.renderer ?? '未知'}>
+                <span className="field-hint mono truncate">
                   显卡：{vfx.capability.renderer ?? '未知'}
                 </span>
               ) : null}
@@ -404,7 +404,6 @@ export function SettingsPage() {
               数据目录
               <span
                 className="field-hint mono truncate"
-                title={state.machine?.dataDir ?? '未知'}
                 style={{ maxWidth: 280 }}
               >
                 {shortPath(state.machine?.dataDir ?? '未知')}
@@ -414,6 +413,15 @@ export function SettingsPage() {
                   换目录现在**即时生效**（见 `reloadAfterRootChange`），
                   所以整块删掉了 —— 状态删了还留着 UI，就是"看得见但永远不出现"的死代码。
               */}
+              {/*
+                ★★ 2026-09-26 用户：「去掉所有悬停显示描述」——
+                  下面那个「新建/切换…」按钮在浏览器演示模式下是禁用的，
+                  理由原来挂在它的 `title` 上。提示删掉之后，理由改成这行看得见的小字。
+                  （桌面版里 `api` 永远在，所以正式版看不到这一行。）
+              */}
+              {!api ? (
+                <span className="field-hint">浏览器演示模式看不到磁盘 —— 桌面版才能换目录</span>
+              ) : null}
             </span>
             <div className="field-control">
               <Button
@@ -478,15 +486,17 @@ export function SettingsPage() {
                 size="sm"
                 variant="ghost"
                 disabled={!api}
-                /* ★ 禁用必须给具体理由（"禁用必须给具体理由"是这一页的老规矩） */
                 /*
-                 * ★★ 2026-09-24（C-16 修复）：这句 title 原来还写着
+                 * ★ 禁用必须给具体理由（"禁用必须给具体理由"是这一页的老规矩）。
+                 * ★★ 2026-09-24（C-16 修复）：这里原来有一句 title 写着
                  *   「候选盘会列出来」—— 而打开选择器列出来的是
                  *   **用过的 / 已知的**游戏目录（`list_known_roots`），
                  *   根本没有什么"候选盘"命令（`list_data_volumes` 不存在）。
                  *   界面上的承诺必须是真的。
+                 * ★★ 2026-09-26 用户：「去掉所有悬停显示描述」—— 那句（已改对的）
+                 *   title 也删了；理由现在由上面那行看得见的小字承载
+                 *   （只有浏览器演示模式才会出现，正式版里 `api` 永远在）。
                  */
-                title={api ? '换一个游戏根目录（会列出你用过的那些目录）' : '浏览器演示模式看不到磁盘 —— 桌面版才能换目录'}
                 onClick={() => setRootPicker(true)}
               >
                 新建/切换…
@@ -611,9 +621,6 @@ export function SettingsPage() {
                   variant="primary"
                   loading={busy}
                   disabled={!api}
-                  title={
-                    api ? 'IEML 会把它下到数据目录的 java/ 下' : '桌面版才能下载 Java'
-                  }
                   onClick={async () => {
                     if (!api) {
                       toast('warning', '演示模式', '桌面版才能下载 Java');
@@ -667,11 +674,14 @@ export function SettingsPage() {
                       {!j.usable ? <Chip tone="danger">无法运行</Chip> : null}
                     </div>
                     {/*
-                      ★ 只显示路径**尾部**（含文件名），完整路径在 title 里。
+                      ★ 只显示路径**尾部**（含文件名）。
                         以前整条绝对路径铺满一行（`C:\Users\…\Programs\…\bin\javaw.exe`），
                         一行就被路径吃掉，真正要看的"是哪个 Java、多大"反而看不到。
+                      ★★ 2026-09-26 用户：「去掉所有悬停显示描述」——
+                        这里原来把这个完整路径挂在 `title` 上，现在没有了；
+                        完整路径仍然看得到：删除时那个确认弹窗逐字列出 `j.path`。
                     */}
-                    <div className="java-meta mono truncate" title={j.path}>
+                    <div className="java-meta mono truncate">
                       {shortPath(j.path)} · {j.bytes > 0 ? humanBytes(j.bytes) : '体积未知'}
                     </div>
                   </div>
@@ -679,7 +689,6 @@ export function SettingsPage() {
                     <Button
                       size="sm"
                       variant="ghost"
-                      title="默认移入系统回收站；按住 Shift 点击则永久删除"
                       onClick={async (e) => {
                         const copy = describeDelete({
                           what: '这个 Java',
@@ -795,7 +804,7 @@ export function SettingsPage() {
                       </Chip>
                       {r.disabledByDefault ? <Chip tone="warning">默认禁用</Chip> : null}
                     </div>
-                    <div className="java-meta mono truncate" title={r.path}>
+                    <div className="java-meta mono truncate">
                       Java {r.major} · {r.arch} · {shortPath(r.path)}
                     </div>
                   </div>
@@ -1035,8 +1044,11 @@ export function SettingsPage() {
 /**
  * 把绝对路径压成"尾部三段"（`…\java\java-21-xxx`）。
  *
- * ★ 只用于**显示**：完整路径一律挂在 `title` 上，鼠标停一下就全看得到。
- *   判据、传参、删除用的都还是调用方手里那份完整路径 —— 这里不产生新事实。
+ * ★ 只用于**显示**：调用方手里那份完整路径才是事实来源 ——
+ *   判据、传参、删除用的都是它。
+ *   ★★ 2026-09-26 用户：「去掉所有悬停显示描述」之后，这里显示的就是全部了
+ *     （原来完整路径还挂在 `title` 上）；要看全文就去删除确认弹窗，
+ *     那里面把完整路径逐字写出来。
  */
 function shortPath(path: string): string {
   const parts = path.split(/[\\/]+/).filter(Boolean);

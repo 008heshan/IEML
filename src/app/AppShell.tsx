@@ -430,9 +430,9 @@ export function App() {
           所以用户看到它时通常已经能"一键换"了。
 
           ★ 三种可点/不可点状态各有各的话：
-            · 下载中 → **不可点**（title 给理由："正在后台下载，下完就能一键更新"）
+            · 下载中 → **不可点**（理由写在角标字面上："新版本 X · 下载中 45%"）
             · 已下好 → 「重启并更新」→ install()（静默安装 + 装完自己回来）
-            · 下失败 → 「重试」→ download()
+            · 下失败 → 「重试」→ download()（失败原因显示在「关于」页，见 UpdateChip）
         */}
         <UpdateChip />
 
@@ -466,7 +466,7 @@ export function App() {
               </button>
 
               <div className="side-inst">
-                <div className="side-inst-name truncate" title={open.config.name}>
+                <div className="side-inst-name truncate">
                   {open.config.name}
                 </div>
                 <div className="side-inst-meta">
@@ -602,7 +602,6 @@ export function App() {
                    *   位置就是他点名的这里；文案也用他的原话（三个字，不缩写成 dot）。
                    *   ★ 只在**真的有**更新时出现 —— 没有更新时这一行与以前完全一样。
                    */
-                  title={hasUpdate ? `有新版本 ${update.state.version ?? ''} 可更新` : undefined}
                 >
                   <IconInfo /> 关于
                   {hasUpdate ? (
@@ -635,7 +634,7 @@ export function App() {
                           <span className="pulse" aria-hidden="true" />
                         ) : null}
                         <div className="txt" style={{ flex: 1, minWidth: 0 }}>
-                          <div className="t truncate" title={inst.config.name}>
+                          <div className="t truncate">
                             {inst.config.name}
                           </div>
                           <div className="s">
@@ -647,7 +646,6 @@ export function App() {
                           size="sm"
                           iconOnly
                           aria-label={`停止 ${inst.config.name}`}
-                          title={`停止 ${inst.config.name}`}
                           loading={stopping}
                           onClick={() => void handleStopOne(inst.id)}
                         >
@@ -823,7 +821,6 @@ export function App() {
                   onClick={() =>
                     isLong(t.desc ?? '') && setExpanded(expanded === t.id ? null : t.id)
                   }
-                  title={isLong(t.desc ?? '') ? '点击展开 / 收起' : undefined}
                 >
                   {t.desc}
                   {isLong(t.desc ?? '') ? (

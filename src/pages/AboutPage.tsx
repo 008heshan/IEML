@@ -72,7 +72,12 @@ export function AboutPage() {
         <Card>
           <CardTitle icon={<IconRefresh />}>启动器更新</CardTitle>
           <div className="about-center">
-            <div className={`about-line${isUpdateProblem(upd.phase) ? ' about-line-err' : ''}`}>
+            {/*
+              ★★ 2026-09-26：`isUpdateProblem` 还要看 `upd.error` ——
+                「下载失败退回 available」也是问题（原因就写在这一行里），
+                只按 phase 判会把那一种漏成普通状态。
+            */}
+            <div className={`about-line${isUpdateProblem(upd.phase, upd.error) ? ' about-line-err' : ''}`}>
               {describeUpdate(upd)}
             </div>
             <Button

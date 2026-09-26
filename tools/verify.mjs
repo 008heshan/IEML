@@ -333,6 +333,21 @@ results.push([
   run('更新链路端点一致', 'node', ['tools/gates/check-update-endpoint.mjs']),
 ]);
 
+/*
+ * ★★ **界面里不许有悬停提示**（2026-09-26 用户：「去掉所有悬停显示描述」）。
+ *
+ *   这一轮删了 60 多处 `title=`（HTML 的悬停气泡），而删的过程证明"人眼守不住"：
+ *   第一遍按组件黑名单删 ⇒ 把 `EmptyState` 的**可见标题**删了（`tsc` 才发现）；
+ *   第二遍按小写标签白名单删 ⇒ `Button`（`...rest` 摊到 `<button>`）一处都没删到，
+ *   而 dry-run 打印"将删除 0 处"**看起来像成功**。
+ *   ⇒ 判据只认 DOM 侧（小写标签 + 会透传的组件），并且**自带自检**
+ *     （量法坏了先红），见 `tools/gates/check-tooltips.mjs`。
+ */
+results.push([
+  '界面无悬停提示',
+  run('界面无悬停提示', 'node', ['tools/gates/check-tooltips.mjs']),
+]);
+
 if (existsSync(join(root, 'src-tauri', 'Cargo.toml'))) {
   results.push([
     'Rust 领域测试（含 Java 判据表）',
