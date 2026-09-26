@@ -1706,11 +1706,48 @@ mod tests {
         );
     }
 
+    /// ★★ 拿**真实的** CF 清单当判据（`tests/cf-modpack.cases.json`）。
+    ///
+    ///   来源：`tools/probe/probe-cf-modpack.mjs` 从镜像**真的下了一个包**
+    ///   （SkyFactory 4 4.0.7，18.7 MB），把里面的 `manifest.json` 原样存下来。
+    ///   为什么要存真件：上面那几条判据的字段名是我**照着 CF 文档**写的，
+    ///   而"文档说的"与"上游给的"在这个仓库里已经分叉过好几次
+    ///   （CF 翻页的 `totalCount` 就是活例子 —— 那次是字段名大小写没对上，
+    ///   界面以为永远只有一页）。真件进仓库，解析器就再也漂不掉了。
+    #[test]
+    fn cf_manifest_matches_a_real_pack_manifest() {
+        const RAW: &str = include_str!("../../../tests/cf-modpack.cases.json");
+        let m: CfPackManifest = serde_json::from_str(RAW).expect("真件必须能解析");
+        m.validate().expect("真件必须通过装前自检");
+
+        // 这几条是**真件里的事实**，不是我从文档抄的期望值
+        assert_eq!(m.manifest_type, "minecraftModpack");
+        assert_eq!(m.manifest_version, 1);
+        assert_eq!(m.mc_version(), "1.12.2");
+        assert_eq!(m.overrides, "overrides");
+        assert_eq!(
+            m.loader(),
+            Some(("forge".to_string(), "14.23.5.2838".to_string())),
+            "真件里的加载器 id 是 forge-14.23.5.2838"
+        );
+        assert_eq!(m.files.len(), 204, "真件里有 204 条文件");
+        assert!(
+            m.files.iter().all(|f| f.project_id > 0 && f.file_id > 0),
+            "每一条都必须读出 id —— 全读到 0 说明字段名又对不上了（会全 404）"
+        );
+        assert!(
+            m.files.iter().all(|f| f.required),
+            "真件里 204 条全是 required"
+        );
+        // 第一条（真件里的第一条，用于盯住 id 的数量级）
+        assert_eq!(m.files[0].project_id, 319466);
+        assert_eq!(m.files[0].file_id, 2706079);
+    }
+
     /// 真的做一个 zip 来验 `parse_modpack_bytes`：**根下**的清单才算，
     /// 子目录里的那份不算（那种包 CF 自己也装不了，别写出一个路径全错的任务表）。
     #[test]
-    fn cf_parse_modpack_bytes_only_accepts_a_root_manifest() {
-        let manifest = r#"{"minecraft":{"version":"1.20.1","modLoaders":[{"id":"forge-47.2.0","primary":true}]},"manifestType":"minecraftModpack","manifestVersion":1,"name":"测","version":"1","files":[{"projectID":1,"fileID":2,"required":true}]}"#;
+    fn cf_parse_modpack_bytes_only_accepts_a_root_manifest() {        let manifest = r#"{"minecraft":{"version":"1.20.1","modLoaders":[{"id":"forge-47.2.0","primary":true}]},"manifestType":"minecraftModpack","manifestVersion":1,"name":"测","version":"1","files":[{"projectID":1,"fileID":2,"required":true}]}"#;
 
         let build = |name: &str| -> Vec<u8> {
             let mut buf = Vec::new();

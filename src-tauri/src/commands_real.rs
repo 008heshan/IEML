@@ -61,6 +61,65 @@ fn register_pause(id: &str) -> download::PauseToken {
     p
 }
 
+/// 取一个任务**当前**的暂停令牌（`register_task` 刚放进去的那个）。
+///
+/// ★ 给安装流程的**中间段**用，与 `register_pause` 的区别是"复用"而不是"换新的"。
+fn pause_of(id: &str) -> download::PauseToken {
+    let mut t = pause_tokens().lock().unwrap();
+    t.entry(id.to_string())
+        .or_insert_with(download::PauseToken::new)
+        .clone()
+}
+
+/// 取一个任务的**取消 + 暂停**令牌：已经有就复用，没有才新建。
+///
+/// ★★ 为什么安装流程的中间段必须用这个、而不是再来一次 `register_task`
+///   （2026-09-27 真机判据抓到的缺陷）：
+///
+///   两个令牌都是**按 taskId** 打进来的（`pause_install` / `cancel_task` 只认 taskId）。
+///   整合包安装分成好几段：下包体 → 逐个解析文件地址 → 装本体/加载器 → 下 Mod。
+///   以前每一段开头都 `register_task` —— 那是**换了一个新令牌**，用户在前一段
+///   点下的暂停/取消于是一直被打进旧令牌里，**被悄悄丢掉**：
+///   界面上一秒还写着「正在暂停…」，下一段照样跑起来。
+///   实测：204 个文件的整合包在「解析整合包文件地址」那一段点暂停，进到下一段就复活继续装。
+///
+///   ★ 命令**入口**仍然用 `register_task`（要的是"干净的一次开始"，尤其是重试时
+///     不能继承上一次留下的取消标记）；只有中间段用本函数。
+fn tokens_for(id: &str) -> (CancelToken, download::PauseToken) {
+    let cancel = {
+        let mut t = tokens().lock().unwrap();
+        t.entry(id.to_string()).or_insert_with(CancelToken::new).clone()
+    };
+    (cancel, pause_of(id))
+}
+
+/// 「这一段被暂停了」的如实回执：**不建实例、不说完成**。
+///
+/// 字段语义同 `ModpackInstallResult` 上的注释：`remaining_files` 是**还没下的文件数**，
+/// `paused_stage` 点名停在哪一步（界面据此显示"还剩 N 个文件 · X 还没做完"）。
+fn paused_pack_result(
+    instance_name: String,
+    mc_version: String,
+    loader_kind: Option<String>,
+    loader_version: Option<String>,
+    stage: &str,
+    remaining_files: usize,
+) -> ModpackInstallResult {
+    ModpackInstallResult {
+        mc_version,
+        loader_kind,
+        loader_version,
+        mod_files: 0,
+        override_files: 0,
+        total_bytes: 0,
+        instance_name,
+        api_library: None,
+        paused: true,
+        remaining_files,
+        paused_stage: Some(stage.to_string()),
+    }
+}
+
 fn drop_task(id: &str) {
     tokens().lock().unwrap().remove(id);
     pause_tokens().lock().unwrap().remove(id);
@@ -2484,6 +2543,19 @@ pub async fn run_loader_installer(
         .arg(target_dir)
         .arg("--mirror")
         .arg(&mirror_maven);
+    /*
+     * ★★ 安装器**会在自己的工作目录里写一个 `.log`**（`<jar 名>.log`）。
+     *
+     *   不设 `current_dir` 时它写的是**启动器进程的当前目录** ——
+     *   实测（2026-09-27 真机判据）：从仓库根启动时，装一次 Forge 1.12.2 就在
+     *   仓库根留下 `forge-1.12.2-14.23.5.2860-installer.jar.log`（43 KB），
+     *   于是"仓库根布局"那条门禁**红了**。用户那边同样会中招：
+     *   从桌面双击启动就在桌面留下一个看不懂的 `.log`。
+     *   ⇒ 让它写进**我们自己缓存目录**（jar 就在旁边），名字固定、不会堆积。
+     */
+    if let Some(dir) = jar.parent() {
+        installer_cmd.current_dir(dir);
+    }
     crate::platform::hide_console_async(&mut installer_cmd);
     let output = installer_cmd
         .output()
@@ -5365,6 +5437,168 @@ struct PackPlan {
     pack_has_api_library: bool,
 }
 
+/// 盘上**已经写出的**包体字节数（`.part` 与分片 `.part.N` 都算）。
+///
+/// ★ 为什么按盘上算，而不是问网络层：批量下载器的进度是**按文件**报的
+///   （`finished_bytes += task.size` 只在某个文件**下完**时发生），
+///   而包体是**一个**大文件 —— 190 MB 的包在下完之前一个进度事件都没有，
+///   界面上就是"0% 停几分钟"。盘上写出的字节数是**真实**的，
+///   用它给出"真的在下、下了多少"。
+async fn part_bytes(path: &std::path::Path) -> u64 {
+    let (Some(parent), Some(name)) = (
+        path.parent(),
+        path.file_name().map(|n| n.to_string_lossy().to_string()),
+    ) else {
+        return 0;
+    };
+    let Ok(mut rd) = tokio::fs::read_dir(parent).await else {
+        return 0;
+    };
+    let part = format!("{name}.part");
+    let mut total = 0u64;
+    while let Ok(Some(entry)) = rd.next_entry().await {
+        let fname = entry.file_name().to_string_lossy().to_string();
+        if fname == part || fname.starts_with(&format!("{part}.")) {
+            if let Ok(md) = entry.metadata().await {
+                total += md.len();
+            }
+        }
+    }
+    total
+}
+
+/// 体积文案（进度里给用户看的那一句）
+fn size_text(bytes: u64) -> String {
+    const MB: f64 = 1024.0 * 1024.0;
+    if bytes >= 1024 * 1024 * 1024 {
+        format!("{:.2} GB", bytes as f64 / (MB * 1024.0))
+    } else {
+        format!("{:.1} MB", bytes as f64 / MB)
+    }
+}
+
+/// 下整合包的**包体**（那一个 zip）：走批量下载器，于是**有进度、能暂停、能取消、能换源重试**。
+///
+/// 返回 `Ok(true)` = 用户在这一段按了暂停（**没下完**：`.part` 留在盘上，
+/// 点「继续」会从断点接着下，不用从头再来）。
+///
+/// ## 为什么不是 `download_one`（这是 2026-09-27 真机判据量出来的）
+///
+///   包体以前走 `download_one` —— 单文件、**没有进度回调**、**只吃取消令牌**。两个后果：
+///     · 200 MB 的包在界面上停在 0% 好几分钟，"读取整合包清单"看起来像卡死；
+///     · 这一段点「暂停」**完全没有反应**（只能取消）—— 与"暂停 ≠ 取消"的承诺不符。
+///   换成批量下载器（只放一个任务）后，暂停、断点续传、多源重试
+///   与整合包后面那几段**完全同源**，不再有"这一段特殊"。
+///
+/// ## 进度为什么还要单独"看盘"（`expected_total`）
+///
+///   批量下载器的进度是按文件算的，一个文件下完才 +1 —— 包体只有一个文件，
+///   于是它在下载过程中**一个事件都不发**。这里每 400 ms 量一次盘上写出的字节，
+///   拿**接口给的体积**（CF 的文件接口有 `fileLength`，Modrinth 的文件也有 size）
+///   算百分比。★ 体积未知时**不编百分比**（停在 0），只如实报"已下载 X MB"。
+async fn download_pack_body(
+    task: download::DownloadTask,
+    src: Source,
+    cancel: &CancelToken,
+    pause: &download::PauseToken,
+    task_id: &str,
+    app: &tauri::AppHandle,
+    expected_total: u64,
+) -> Result<bool, String> {
+    let app2 = app.clone();
+    let tid = task_id.to_string();
+    let label = task.label.clone();
+    let pack_path = task.path.clone();
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let watcher = {
+        let app3 = app.clone();
+        let tid3 = task_id.to_string();
+        let stop3 = stop.clone();
+        let path = pack_path.clone();
+        tokio::spawn(async move {
+            let mut last = u64::MAX;
+            while !stop3.load(std::sync::atomic::Ordering::Relaxed) {
+                let got = part_bytes(&path).await;
+                if got != last {
+                    last = got;
+                    let percent = if expected_total > 0 {
+                        (got * 100 / expected_total).min(99)
+                    } else {
+                        0
+                    };
+                    let text = if expected_total > 0 {
+                        format!("已下载 {} / {}", size_text(got), size_text(expected_total))
+                    } else {
+                        format!("已下载 {}", size_text(got))
+                    };
+                    let _ = app3.emit(
+                        "modpack-progress",
+                        serde_json::json!({
+                            "taskId": tid3,
+                            "stage": "下载整合包",
+                            "finishedFiles": 0,
+                            "totalFiles": 1,
+                            "bytes": got,
+                            "currentFile": text,
+                            "percent": percent,
+                        }),
+                    );
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+            }
+        })
+    };
+
+    let outcome = download::download_batch(
+        vec![task],
+        download::BatchOptions {
+            concurrency: 1,
+            source: src,
+            cancel: cancel.clone(),
+            pause: Some(pause.clone()),
+            on_progress: Arc::new(move |p: DownloadProgress| {
+                /*
+                 * ★ 这是**一个**大文件，所以百分比按字节算 ——
+                 *   按文件数算的话它会一直停在 0%，直到下完才跳到 100。
+                 */
+                let _ = app2.emit(
+                    "modpack-progress",
+                    serde_json::json!({
+                        "taskId": tid,
+                        "stage": "下载整合包",
+                        "finishedFiles": p.finished_files,
+                        "totalFiles": p.total_files,
+                        "bytes": p.finished_bytes,
+                        "currentFile": p.current_file,
+                        "percent": if p.total_bytes > 0 {
+                            p.finished_bytes * 100 / p.total_bytes
+                        } else {
+                            0
+                        },
+                        "failedFiles": p.failed_files,
+                    }),
+                );
+            }),
+        },
+    )
+    .await;
+
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = watcher.await;
+    let outcome = outcome.map_err(err)?;
+
+    if outcome.paused {
+        say!("[IEML/modpack] 用户已暂停（包体还没下完）：{label}");
+        return Ok(true);
+    }
+    if !outcome.failed.is_empty() {
+        let (n, e) = &outcome.failed[0];
+        return Err(format!("整合包包体下载失败（换源重试后仍不行）：{n}：{e}"));
+    }
+    Ok(false)
+}
+
 /// ★★ 真正安装一个整合包（两种清单格式共用这一份）★★
 ///
 /// 以前这里只做到 `mrpack_inspect`（读清单、报个数），界面上写着
@@ -5394,6 +5628,11 @@ pub async fn modpack_install(
     instance_name: String,
     source: String,
     concurrency: Option<usize>,
+    /*
+     * `size` = 包体大小（Modrinth 的文件接口给的就是这个数）——**只用来算进度百分比**。
+     * 拿不到就传 0：进度会如实停在 0%、只报"已下载 X MB"，不编一个假的百分比。
+     */
+    size: Option<u64>,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ModpackInstallResult, String> {
@@ -5407,16 +5646,34 @@ pub async fn modpack_install(
         }),
     );
     let pack_path = state.paths().cache.join(format!("mrpack-{task_id}.mrpack"));
+    let pack_size = size.unwrap_or(0);
     let task = download::DownloadTask::new(
         pack_path.clone(),
         url.clone(),
         String::new(),
-        0,
+        pack_size,
         format!("整合包 {name}"),
     );
-    download::download_one(&task, src, &cancel)
-        .await
-        .map_err(err)?;
+    if download_pack_body(
+        task,
+        src,
+        &cancel,
+        &pause_of(&task_id),
+        &task_id,
+        &app,
+        pack_size,
+    )
+    .await?
+    {
+        return Ok(paused_pack_result(
+            instance_name,
+            String::new(),
+            None,
+            None,
+            "下载整合包",
+            1,
+        ));
+    }
     let bytes = tokio::fs::read(&pack_path)
         .await
         .map_err(|e| format!("读取整合包失败：{e}"))?;
@@ -5521,16 +5778,23 @@ pub async fn cf_modpack_install(
      */
     let mut download_url = download_url.filter(|u| !u.trim().is_empty());
     let mut resolved_name = resolved_name;
-    if download_url.is_none() {
-        match curseforge::modpack_file(project_id, file_id).await {
-            Ok(f) => {
+    /*
+     * ★ 无论前端给没给地址，都问一次文件接口 —— 要的是 `fileLength`：
+     *   包体是一个大文件，**没有体积就没有百分比**（进度条只能停在 0%）。
+     *   顺手也能把文件名/地址校正成接口里的那一份。
+     */
+    let mut pack_size = 0u64;
+    match curseforge::modpack_file(project_id, file_id).await {
+        Ok(f) => {
+            if download_url.is_none() {
                 download_url = f.download_url.clone().filter(|u| !u.trim().is_empty());
-                if !f.file_name.trim().is_empty() {
-                    resolved_name = f.file_name.clone();
-                }
             }
-            Err(e) => say!("[IEML/modpack] 整合包自身的信息查不到（继续按候选表试）：{e}"),
+            if !f.file_name.trim().is_empty() {
+                resolved_name = f.file_name.clone();
+            }
+            pack_size = f.file_length;
         }
+        Err(e) => say!("[IEML/modpack] 整合包自身的信息查不到（继续按候选表试）：{e}"),
     }
     let mut candidates =
         curseforge::download_candidates(file_id, &resolved_name, download_url.as_deref());
@@ -5546,21 +5810,86 @@ pub async fn cf_modpack_install(
         pack_path.clone(),
         first,
         String::new(),
-        0,
+        pack_size,
         format!("整合包 {name}"),
     );
     task.urls = candidates;
-    download::download_one(&task, src, &cancel)
-        .await
-        .map_err(err)?;
+    /*
+     * ★★ 包体这一段**可暂停**（以前只能取消）。暂停时**不删**已经下到一半的 `.part`：
+     *   点「继续」时同一个路径会被复用，断点续传直接接上。
+     */
+    if download_pack_body(
+        task,
+        src,
+        &cancel,
+        &pause_of(&task_id),
+        &task_id,
+        &app,
+        pack_size,
+    )
+    .await?
+    {
+        return Ok(paused_pack_result(
+            instance_name,
+            String::new(),
+            None,
+            None,
+            "下载整合包",
+            1,
+        ));
+    }
     let bytes = tokio::fs::read(&pack_path)
         .await
         .map_err(|e| format!("读取整合包失败：{e}"))?;
 
     let manifest = curseforge::parse_modpack_bytes(&bytes).map_err(err)?;
     manifest.validate().map_err(err)?;
+    let pause = pause_of(&task_id);
+    let Some(plan) = cf_plan_from_manifest(&manifest, &slug, &task_id, &app, &state, &pause).await?
+    else {
+        // 解析到一半被暂停：**一个文件都还没下**，别建实例
+        drop_task(&task_id);
+        return Ok(paused_pack_result(
+            instance_name,
+            manifest.mc_version().to_string(),
+            manifest.loader().map(|(k, _)| k),
+            manifest.loader().map(|(_, v)| v),
+            "解析整合包文件地址",
+            manifest.files_to_fetch().count(),
+        ));
+    };
+    install_pack_plan(
+        plan,
+        pack_path,
+        bytes,
+        slug,
+        task_id,
+        instance_name,
+        source,
+        concurrency,
+        app,
+        state,
+    )
+    .await
+}
 
-    // ---------- 逐个问接口拿地址（**并发**，否则 200 个文件要等几分钟） ----------
+/// 从一份 CF 清单做出 `PackPlan`：**并发逐个问接口**拿每个文件的地址。
+///
+/// ★ 抽成函数是因为有**两条路**要用它：在线装（`cf_modpack_install`）与
+///   **拖进来的本地 zip**（`pack_install_local`）—— 后者只是"包体已经在手上"，
+///   文件地址照样得问接口。两条路共用这一份，免得改一处漏一处。
+///
+/// ★★ 返回 `Ok(None)` = **用户在这一段按了暂停**（不是在报错）。
+///   204 个文件要逐个问接口，就是几十秒到几分钟 —— 这期间点暂停必须真的停下：
+///   `take_while` 让**还没开始的请求不再发出**，剩下的交回给调用方如实报"已暂停"。
+async fn cf_plan_from_manifest(
+    manifest: &curseforge::CfPackManifest,
+    slug: &str,
+    task_id: &str,
+    app: &tauri::AppHandle,
+    state: &AppState,
+    pause: &download::PauseToken,
+) -> Result<Option<PackPlan>, String> {
     let refs: Vec<(u32, u32)> = manifest
         .files_to_fetch()
         .map(|f| (f.project_id, f.file_id))
@@ -5571,7 +5900,7 @@ pub async fn cf_modpack_install(
     let resolved = futures_util::stream::iter(refs.into_iter().map(|(pid, fid)| {
         let done = done.clone();
         let app = app.clone();
-        let task_id = task_id.clone();
+        let task_id = task_id.to_string();
         async move {
             let r = curseforge::modpack_file(pid, fid).await;
             let n = done.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
@@ -5592,9 +5921,22 @@ pub async fn cf_modpack_install(
             (fid, r)
         }
     }))
+    .take_while(|_| futures_util::future::ready(!pause.is_paused()))
     .buffer_unordered(12)
     .collect::<Vec<_>>()
     .await;
+
+    /*
+     * ★ 暂停了就不再往下做计划：这时候做出来的是一份**残缺**的计划
+     *   （只解析了一部分文件），拿它去报"还剩 N 个文件"是在说假话。
+     */
+    if pause.is_paused() {
+        say!(
+            "[IEML/modpack] 解析文件地址时被暂停：已问过 {} / {total} 个",
+            resolved.len()
+        );
+        return Ok(None);
+    }
 
     /*
      * ★ 查不到的条目**不阻断**：一个 200 文件的包里有一两个被上游删了很正常，
@@ -5618,13 +5960,15 @@ pub async fn cf_modpack_install(
         say!("[IEML/modpack] CF 整合包有 {lookup_failed} 个文件查不到信息（已如实跳过）");
     }
 
-    let game_dir = state.paths().instance_game_dir(&slug);
-    let (tasks, skipped) = curseforge::modpack_download_tasks(&manifest, &by_file, &game_dir);
+    let game_dir = state.paths().instance_game_dir(slug);
+    let (tasks, skipped) = curseforge::modpack_download_tasks(manifest, &by_file, &game_dir);
     if tasks.is_empty() {
-        return Err(format!(
-            "「{name}」清单里的文件一个都下不了（多数是作者不允许第三方下载）—— \
-             这个包装不了。可以打开它的 CurseForge 页面手动下载 zip，再拖进启动器。"
-        ));
+        return Err(
+            "这个整合包清单里的文件一个都下不了 —— 多数是作者不允许第三方下载。\n\
+             处理办法：打开它在 CurseForge 上的页面，手动下载整合包 zip，\
+             再把这个 zip **拖进启动器窗口**即可安装。"
+                .to_string(),
+        );
     }
     // ★ 包**自己**带没带 Fabric API：CF 的文件名就是最终落盘的 jar 名，判据与 mrpack 同一套
     let pack_has_api_library = tasks.iter().any(|t| {
@@ -5636,7 +5980,7 @@ pub async fn cf_modpack_install(
         crate::domain::mods::api_library_from_filename(&name).is_some()
     });
 
-    let plan = PackPlan {
+    Ok(Some(PackPlan {
         mc_version: manifest.mc_version().to_string(),
         loader_kind: manifest.loader().map(|(k, _)| k),
         loader_version: manifest.loader().map(|(_, v)| v),
@@ -5644,10 +5988,133 @@ pub async fn cf_modpack_install(
         skipped,
         overrides_dir: manifest.overrides.clone(),
         pack_has_api_library,
+    }))
+}
+
+/// **拖进来的整合包**（本地文件）：`.mrpack` 与 CurseForge 的 `.zip` 都认。
+///
+/// ## 为什么要单独一条命令
+///
+///   上面两条命令是"给地址、我来下"；拖进来的那条**包体已经在盘上**了 ——
+///   所以既不下载、也不做"下载失败"的重试，直接读清单往下走。
+///   ★ 与在线那两条共用 `install_pack_plan`：装本体、下 Mod、解压 overrides、
+///     暂停语义、补 API 前置包**全是同一份实现**。
+///
+/// ## 两种格式怎么分辨：**按内容，不按扩展名**
+///
+///   两个扩展名（`.zip` / `.mrpack`）用户都可能改错，而里面装的是什么骗不了人：
+///   先按 Modrinth 的 `modrinth.index.json` 认，认不出再按 CF 的 `manifest.json` 认。
+///   两个都不是就如实说"这不是整合包"。
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn pack_install_local(
+    path: String,
+    name: String,
+    slug: String,
+    task_id: String,
+    instance_name: String,
+    source: String,
+    concurrency: Option<usize>,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ModpackInstallResult, String> {
+    /*
+     * ★ 本地包**不需要下载包体**，所以这里不解析 source —— 下游
+     *   `install_pack_plan` 自己会按 `source` 参数决定游戏文件与各个 Mod 走哪条源，
+     *   "拖动装"与"在线装"因此在**同一条**下游上。
+     */
+    let _ = register_task(&task_id);
+    let _ = app.emit(
+        "modpack-progress",
+        serde_json::json!({
+            "taskId": task_id, "stage": "读取整合包清单", "finishedFiles": 0,
+            "totalFiles": 1, "bytes": 0, "currentFile": name, "percent": 0,
+        }),
+    );
+
+    let local = std::path::PathBuf::from(path.trim());
+    if !local.is_file() {
+        return Err(format!("找不到这个文件：{}", local.display()));
+    }
+    let bytes = tokio::fs::read(&local)
+        .await
+        .map_err(|e| format!("读取整合包失败：{e}"))?;
+
+    /*
+     * ★★ 先把文件**拷进缓存**再往下走：`install_pack_plan` 结尾会删掉 `pack_path`
+     *   （那是在线那条路留下的临时下载）。直接传用户那份的路径 = **把用户的文件删了**。
+     *   拷贝的代价（几十 MB）远小于"装个整合包结果把原文件弄丢"。
+     */
+    let work_path = state.paths().cache.join(format!("localpack-{task_id}.zip"));
+    tokio::fs::write(&work_path, &bytes)
+        .await
+        .map_err(|e| format!("暂存整合包失败：{e}"))?;
+
+    let plan = if let Ok(idx) = modrinth::parse_mrpack_bytes(&bytes) {
+        let mc_version = idx
+            .mc_version()
+            .ok_or_else(|| "这个整合包的清单里没写游戏版本（minecraft 依赖）".to_string())?
+            .to_string();
+        let (loader_kind, loader_version) = match idx.loader() {
+            Some((k, v)) => (Some(k.trim_end_matches("-loader").to_string()), Some(v.to_string())),
+            None => (None, None),
+        };
+        let game_dir = state.paths().instance_game_dir(&slug);
+        let (tasks, skipped) = modrinth::mrpack_download_tasks(&idx, &game_dir);
+        PackPlan {
+            mc_version,
+            loader_kind,
+            loader_version,
+            tasks,
+            skipped,
+            overrides_dir: "overrides".to_string(),
+            pack_has_api_library: idx.has_fabric_api(),
+        }
+    } else {
+        let manifest = curseforge::parse_modpack_bytes(&bytes).map_err(|_| {
+            format!(
+                "「{}」既不是 Modrinth 整合包（缺 modrinth.index.json）\
+                 也不是 CurseForge 整合包（缺 manifest.json）—— 拖进来的是整合包吗？",
+                local
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| name.clone())
+            )
+        })?;
+        manifest.validate().map_err(err)?;
+        /*
+         * ★ 拖进来的包在这一段（逐个问接口拿地址）同样可以暂停 ——
+         *   令牌取自 `register_task` 放进表里的那一个，中间段一律复用（见 `tokens_for`）。
+         */
+        match cf_plan_from_manifest(
+            &manifest,
+            &slug,
+            &task_id,
+            &app,
+            &state,
+            &pause_of(&task_id),
+        )
+        .await?
+        {
+            Some(p) => p,
+            None => {
+                drop_task(&task_id);
+                let _ = tokio::fs::remove_file(&work_path).await;
+                return Ok(paused_pack_result(
+                    instance_name,
+                    manifest.mc_version().to_string(),
+                    manifest.loader().map(|(k, _)| k),
+                    manifest.loader().map(|(_, v)| v),
+                    "解析整合包文件地址",
+                    manifest.files_to_fetch().count(),
+                ));
+            }
+        }
     };
+
     install_pack_plan(
         plan,
-        pack_path,
+        work_path,
         bytes,
         slug,
         task_id,
@@ -5677,9 +6144,13 @@ async fn install_pack_plan(
     let loader_kind = plan.loader_kind.clone();
     let loader_version = plan.loader_version.clone();
     let src = parse_source(&source);
-    let cancel = register_task(&task_id);
-    // ★ 整合包安装同样可暂停
-    let pause = register_pause(&task_id);
+    /*
+     * ★★ 这两行以前是 `register_task` / `register_pause` —— 也就是**换新令牌**。
+     *   后果：用户在上一段（下包体 / 解析文件地址）点下的暂停与取消，
+     *   到了这一段就被丢掉了，界面还写着「正在暂停…」而任务照样跑。
+     *   现在复用同一个令牌：**跨阶段点下的暂停/取消都算数**。
+     */
+    let (cancel, pause) = tokens_for(&task_id);
     let app2 = app.clone();
     let tid = task_id.clone();
     let emit = move |stage: &str, done: usize, total: usize, bytes: u64, current: &str| {
@@ -5698,6 +6169,22 @@ async fn install_pack_plan(
     };
 
     // ---------- ② 装游戏本体 + 加载器 ----------
+    /*
+     * ★★ 进这一段之前先看暂停：上一段点下的暂停必须在**这里**生效，
+     *   而不是进了新的一段就复活（真机判据 ③ 就是钉这一条）。
+     */
+    if pause.is_paused() {
+        drop_task(&task_id);
+        say!("[IEML/modpack] 用户已暂停，停在装游戏本体之前");
+        return Ok(paused_pack_result(
+            instance_name,
+            mc_version,
+            loader_kind,
+            loader_version,
+            "安装游戏本体与加载器",
+            plan.tasks.len(),
+        ));
+    }
     emit("安装游戏本体与加载器", 0, 1, 0, &mc_version);
     let plan_input = build_plan_input(
         &mc_version,
@@ -7109,5 +7596,91 @@ mod wire_tests {
         assert_eq!(loader_from_dir_name("1.20.1").as_deref(), None);
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /*
+     * ---------- 暂停/取消**跨阶段**不许丢（2026-09-27 真机判据的单元版） ----------
+     *
+     * 真机上量到的缺陷：整合包安装分好几段，而"暂停/取消"只认 taskId。
+     * 每段开头若重新注册令牌，用户在上一段点下的暂停就落进旧令牌、被悄悄丢掉 ——
+     * 界面写着「正在暂停…」，进到下一段任务照样跑起来。
+     * 这个测试把"复用"这条规矩钉住（`tokens_for` / `pause_of`）。
+     */
+
+    #[test]
+    fn pause_pressed_in_an_earlier_stage_is_not_lost() {
+        let id = "wire-test-pause-across-stages";
+        let _ = register_task(id); // 命令入口：干净的一次开始
+        let pause_first_stage = pause_of(id);
+        assert!(!pause_first_stage.is_paused(), "刚起任务时不该是暂停态");
+
+        // 用户在"解析整合包文件地址"那一段点下暂停
+        assert_eq!(pause_install(id.to_string()).unwrap(), true);
+
+        // 进下一段：必须拿到**同一个**令牌，于是暂停还在
+        let (_cancel, pause_next_stage) = tokens_for(id);
+        assert!(
+            pause_next_stage.is_paused(),
+            "跨阶段之后暂停丢了 —— 界面会显示已暂停，而任务其实还在跑"
+        );
+        // 「继续」也走同一个令牌
+        assert_eq!(resume_install(id.to_string()).unwrap(), false);
+        assert!(!pause_next_stage.is_paused(), "继续之后必须真的抬起暂停");
+
+        drop_task(id);
+        assert!(
+            pause_install(id.to_string()).is_err(),
+            "任务结束之后的暂停必须如实报错，而不是假称已暂停"
+        );
+    }
+
+    #[test]
+    fn cancel_pressed_in_an_earlier_stage_is_not_lost() {
+        let id = "wire-test-cancel-across-stages";
+        let cancel_entry = register_task(id);
+        // 用户在"下载整合包"那一段点了取消
+        cancel_entry.cancel();
+        let (cancel_next_stage, _pause) = tokens_for(id);
+        assert!(
+            cancel_next_stage.is_cancelled(),
+            "跨阶段之后取消丢了 —— 用户点了取消，任务却继续往下装"
+        );
+        drop_task(id);
+    }
+
+    /*
+     * ---------- 整合包包体的"看盘"进度（`part_bytes` / `size_text`） ----------
+     *
+     * 包体是一个大文件，批量下载器的进度是**按文件**报的 —— 过程中一个事件都没有，
+     * 所以那一段的百分比是每 400ms 量一次盘上写出的字节算出来的。
+     * 量错一个字节都会让进度撒谎，所以这里把边界钉住。
+     */
+
+    #[tokio::test]
+    async fn part_bytes_counts_only_this_pack() {
+        let dir = std::env::temp_dir().join(format!("ieml-partbytes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("cfpack-t.zip");
+        std::fs::write(dir.join("cfpack-t.zip.part"), vec![0u8; 1500]).unwrap();
+        std::fs::write(dir.join("cfpack-t.zip.part.0"), vec![0u8; 500]).unwrap();
+        // 隔壁那个包的残留、以及这个包的**成品**，都不算"正在下的量"
+        std::fs::write(dir.join("cfpack-other.zip.part"), vec![0u8; 9999]).unwrap();
+        std::fs::write(&target, vec![0u8; 4242]).unwrap();
+
+        assert_eq!(
+            part_bytes(&target).await,
+            2000,
+            "`.part` 与分片 `.part.N` 都要算，别的文件一个字节都不许算进来"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn size_text_is_readable_in_both_units() {
+        assert_eq!(size_text(0), "0.0 MB");
+        assert_eq!(size_text(1024 * 1024 * 3 / 2), "1.5 MB");
+        assert_eq!(size_text(2 * 1024 * 1024 * 1024), "2.00 GB");
     }
 }

@@ -483,6 +483,8 @@ pub fn run() {    /*
             /* ★★ CurseForge 的整合包（manifest.json + 逐个问接口拿地址）——
                与上面那条共用同一段执行流程（`install_pack_plan`） */
             commands_real::cf_modpack_install,
+            /* ★★ 拖进来的整合包（本地 .mrpack / CF .zip，按内容分辨格式） */
+            commands_real::pack_install_local,
             /* -------- 杂项 -------- */
             commands_real::backend_capabilities,
         ])

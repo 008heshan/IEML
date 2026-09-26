@@ -1365,6 +1365,12 @@ export const modpack = {
       instanceName: string;
       source?: 'auto' | 'mojang' | 'bmclapi';
       concurrency?: number;
+      /**
+       * 包体大小（Modrinth 的文件信息里就有）——**只用来算进度百分比**。
+       * ★ 不传也不会出错：那一段会如实停在 0%、只报"已下载 X MB"，
+       *   而不会编一个看起来在动的百分比。
+       */
+      size?: number;
     },
     onProgress?: (e: ModpackProgressEvent) => void,
   ): Promise<ModpackInstallResult> => {
@@ -1383,6 +1389,7 @@ export const modpack = {
         instanceName: opts.instanceName,
         source: opts.source ?? 'bmclapi',
         concurrency: opts.concurrency ?? null,
+        size: opts.size ?? null,
       });
     } finally {
       unlisten?.();
@@ -1426,6 +1433,48 @@ export const modpack = {
         fileId: opts.fileId,
         fileName: opts.fileName,
         downloadUrl: opts.downloadUrl,
+        name: opts.name,
+        slug: opts.slug,
+        taskId: opts.taskId,
+        instanceName: opts.instanceName,
+        source: opts.source ?? 'bmclapi',
+        concurrency: opts.concurrency ?? null,
+      });
+    } finally {
+      unlisten?.();
+    }
+  },
+
+  /**
+   * ★★ 2026-09-26：**装一个已经在盘上的整合包**（拖进窗口的那份）。
+   *
+   * 与上面两条的区别：包体**不下载**（用户已经下好了）。格式**按内容分辨**：
+   * 先认 Modrinth 的 `modrinth.index.json`，认不出再认 CF 的 `manifest.json`。
+   *
+   * ★ 这也是 CF 那条降级路径的落点：作者不允许第三方下载的包，
+   *   玩家自己去 CF 页面下 zip，拖进来就能装 —— 文件地址照样由后端问接口拿。
+   */
+  installLocal: async (
+    opts: {
+      path: string;
+      name: string;
+      slug: string;
+      taskId: string;
+      instanceName: string;
+      source?: 'auto' | 'mojang' | 'bmclapi';
+      concurrency?: number;
+    },
+    onProgress?: (e: ModpackProgressEvent) => void,
+  ): Promise<ModpackInstallResult> => {
+    let unlisten: UnlistenFn | null = null;
+    if (onProgress) {
+      unlisten = await listen<ModpackProgressEvent>('modpack-progress', (ev) => {
+        if (ev.payload.taskId === opts.taskId) onProgress(ev.payload);
+      });
+    }
+    try {
+      return await call<ModpackInstallResult>('pack_install_local', {
+        path: opts.path,
         name: opts.name,
         slug: opts.slug,
         taskId: opts.taskId,
