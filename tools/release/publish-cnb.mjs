@@ -134,9 +134,18 @@ const tag = `v${version}`;
 
 // bundle/ 里会攒下历次构建的产物，绝不能"取第一个匹配"——否则可能把旧包当成新版本发出去。
 // 规则：只认文件名带当前版本号的；一个都没有才退回按修改时间最新的，并且大声警告。
+//
+// ★★ 2026-09-26（发 `0.1.0` 当场撞到的）：判据原来写的是 `basename(f).includes(version)` ——
+//   而**正式版的版本号是每个 rc 的前缀**（`0.1.0` ⊂ `0.1.0-rc.13`），于是它一次匹配到
+//   6 个文件（rc.9~rc.13 + 正式版），脚本拒绝继续。这不是"历史产物太多"的问题，
+//   是判据太松：版本号必须**整段相等**。所以改成"前后都是边界"：
+//     · 前面是 `_` / `-` / 开头；后面是 `_` / `.` / 结尾（**不认 `-`** ——
+//       `0.1.0-rc.13` 里的 `-` 正说明那个 `0.1.0` 只是前缀，不是这个版本）。
 function pick(suffix) {
   const hit = files.filter((f) => f.endsWith(suffix));
-  const exact = hit.filter((f) => basename(f).includes(version));
+  const esc = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const wholeVersion = new RegExp(`(^|[_-])${esc}(?=[_.]|$)`);
+  const exact = hit.filter((f) => wholeVersion.test(basename(f)));
   if (exact.length === 1) return exact[0];
   if (exact.length > 1) {
     console.error(`✗ ${suffix} 匹配到多个 ${version} 的文件，无法确定发哪个：`);
