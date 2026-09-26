@@ -1088,7 +1088,7 @@
   font-size: var(--text-base);
   font-weight: 600;
   color: var(--text-primary);
-}
+}
 .cw-body {
   display: grid;
   grid-template-columns: 232px minmax(0, 1fr);
@@ -2352,6 +2352,12 @@
   align-items: center;
   gap: var(--space-2);
   flex-wrap: wrap;
+  /*
+   * ★★ 2026-09-26 用户（截图：「**贴的太近**」）：搜索框与下面那排卡片之间
+   *   原来**一点间距都没有**（这条规则只有内部 `gap`，没有下边距）。
+   *   补一行下边距，让"筛选 → 搜索 → 结果"三段的节奏一致。
+   */
+  margin-bottom: var(--space-4);
 }
 .res-search-box {
   display: flex;
@@ -2593,9 +2599,19 @@
 /* 卡片网格：宽屏两列，窄屏一列 */
 .res-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  /*
+   * ★★ 与 `.grid-cards` 同一套变量（2026-09-26 加"矩阵 / 条形"切换）：
+   *   条形档下这个变量是 100% ⇒ 一行一个，两种资源列表的切换语义完全一致。
+   */
+  grid-template-columns: repeat(auto-fill, minmax(var(--card-min, 340px), 1fr));
   gap: var(--space-3);
   align-content: start;
+}
+.res-grid[data-view='list'] {
+  --card-min: 100%;
+}
+.res-grid[data-view='grid'] {
+  --card-min: 340px;
 }
 .res-card {
   display: flex;

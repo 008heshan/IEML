@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../state/AppContext';
 import { Button, Chip, CustomSelect, EmptyState, Note, Segmented, Spinner } from '../ui';
-import { IconAlert, IconBox, IconChevronRight, IconDownload, IconLayers, IconPuzzle, IconRefresh, IconImage, IconGrid, IconPackage, IconSearch } from '../ui/Icons';
+import { IconAlert, IconBox, IconChevronRight, IconDownload, IconLayers, IconPuzzle, IconRefresh, IconImage, IconGrid, IconRows, IconPackage, IconSearch } from '../ui/Icons';
 import { useRealApi } from '../hooks/useRealApi';
 import type { DownloadTab } from '../state/store';
 import { InstallComposer } from '../components/InstallComposer';
@@ -407,6 +407,13 @@ function ModpackTab({
   const { createInstance, state } = useApp();
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<'hot' | 'new' | 'downloads'>('hot');
+  /**
+   * ★★ 显示方式（用户：「在最多下载的右边加一个选项：左是矩阵，右是条形」）。
+   *   默认**矩阵**（原来的样子）；条形 = 一行一个、占满整宽。
+   *   ★ 只影响 CSS 的列宽（`data-view`），**不重排 DOM、不重取数据** ——
+   *     切换是纯显示，不该触发任何请求。
+   */
+  const [view, setView] = useState<'grid' | 'list'>('grid');
   /*
    * ★★ 2026-09-23（C3）：整合包也要图三那排筛选。
    *   空串 = **不限**（后端只有收到 null 才真的不筛，见 ResourceBrowser 里那段说明）。
@@ -1033,8 +1040,33 @@ function ModpackTab({
             { value: 'downloads', label: '最多下载' },
           ]}
         />
+        {/*
+          ★★★★ 2026-09-26 用户：「**资源下载里在最多下载的右边加一个选项：
+            左是矩阵，右是条形。显示资源 UI 的方式**」。
+            ⇒ 就是这一排：左格矩阵（默认）、右格条形。
+            ★ 与排序那一排**同一套 `Segmented`**（同一个控件、同一套样式），
+              不新写一个"图标开关"——两套控件会漂移。
+            ★ 选项只有图标，所以每个都带 `title`：它同时进 `aria-label`
+              与 `title`（读屏与悬停都能听到"这是矩阵还是条形"）。
+        */}
+        <Segmented
+          label="显示方式"
+          size="sm"
+          value={view}
+          onChange={setView}
+          options={[
+            { value: 'grid', label: <IconGrid />, title: '矩阵：一行多个' },
+            { value: 'list', label: <IconRows />, title: '条形：一行一个' },
+          ]}
+        />
       </div>
 
+      {/*
+        ★★ 2026-09-26 用户（截图）：「**贴的太近**」——
+          搜索框和下面那排卡片之间原来一点间距都没有（`.res-search` 只有内部 gap，
+          没有下边距），而上面那排靠的是容器自己的行间距。
+          ⇒ 给它补一行下边距，与"筛选 / 搜索 / 结果"三段之间的节奏一致。
+      */}
       <div className="res-search">
         <label className="res-search-box">
           <IconSearch />
@@ -1077,12 +1109,17 @@ function ModpackTab({
       ) : null}
 
       {/*
-        ★ 骨架要**长成卡片的样子**（与资源中心同一条规矩）：
-          原来这里是 `<Skeleton rows={4} height={110}/>` —— 四条通栏长条，
-          加载完却是一格一格的卡片，用户看到的就是"大长条"。
+        ★★ 2026-09-26：**加载中不渲染结果网格** —— 否则骨架会与上一批结果**同时**
+          出现在屏幕上（用户截图：上面一排骨架、下面还是切来源之前那 6 个）。
+          ★ 用条件渲染而不是 `hidden` 属性：`.grid-cards { display: grid }` 会盖掉
+            浏览器默认的 `[hidden] { display: none }`，那样写等于没写（这类"看起来
+            生效了其实没有"的写法，本仓库栽过不止一次）。
+          ★ 这与 `ResourceBrowser` 那边同一条规矩；两边不同款正是这个 bug 的来源。
+          ★ 骨架那一排也带上 `data-view`：条形档下骨架也跟着变成整宽的一条，
+            否则"等待"和"结果"又是两种形状（这条规矩当初就是为骨架立的）。
       */}
       {loading ? (
-        <div className="grid-cards" aria-busy="true" aria-label="正在加载">
+        <div className="grid-cards" data-view={view} aria-busy="true" aria-label="正在加载">
           {Array.from({ length: 6 }, (_, i) => (
             <div key={i} className="pack-card pack-card-sk">
               <span className="sk sk-cover-lg" />
@@ -1113,7 +1150,8 @@ function ModpackTab({
           ★ 这与 `ResourceBrowser` 那边同一条规矩；两边不同款正是这个 bug 的来源。
       */}
       {loading ? null : (
-      <div className="grid-cards">
+      /* ★ `data-view` 驱动列宽（矩阵 / 条形）—— 见 `app.css` 里 `.grid-cards` 那段 */
+      <div className="grid-cards" data-view={view}>
         {sorted.map((p) => (
           <button
             key={p.id}
