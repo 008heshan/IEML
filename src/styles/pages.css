@@ -2584,12 +2584,18 @@
   align-items: center;
   justify-content: center;
   gap: var(--space-3);
-  margin: var(--space-5) 0 var(--space-3);
+  /*
+   * ★★ 2026-09-26 用户（截图）：「**太贴底部**」。
+   *   `.content` 自己有 `padding-bottom: 40px`，但分页条**离卡片的间距只有 20px**、
+   *   离内容底又只靠那 40px —— 滚到底时它挤在视窗下沿，看着就是"贴住了"。
+   *   ⇒ 上边距给足（与卡片之间留一口气），下边距也加一档。
+   */
+  margin: var(--space-6) 0 var(--space-5);
   padding-top: var(--space-3);
   border-top: 1px solid var(--border-subtle);
 }
 .pager-info {
-  font-size: var(--text-xs);
+  font-size: var(--text-sm);
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
   min-width: 148px;

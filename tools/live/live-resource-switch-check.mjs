@@ -327,6 +327,49 @@ try {
     `${asGrid?.cards} → ${asList?.cards}`,
   );
   check(backToGrid?.cols === asGrid?.cols, '切回矩阵与原来一致', `${backToGrid?.cols} 列`);
+
+  /* ---------- ⑤ 分页条：间距与位置（用户：「太贴底部」） ---------- */
+  /*
+   * ★★ 2026-09-26 用户（截图，指着分页条）：「**太贴底部**」。
+   *   `.content` 自己有 40px 底部内边距，所以"贴底"更多是**视觉上挤在视窗下沿**：
+   *   分页条离卡片只有 20px、离内容底也近。修法是把上边距加到 24px、下边距 20px。
+   *   判据：滚到底之后，分页条**上下都要有可见的留白**。
+   */
+  console.log('\n⑤ 分页条（间距）');
+  const pager = await ev(`(() => {
+    const p = document.querySelector('.pager');
+    if (!p) return null;
+    const content = document.querySelector('.content');
+    const pr = p.getBoundingClientRect();
+    const cr = content.getBoundingClientRect();
+    const cs = getComputedStyle(p);
+    // 上一排内容的底部（卡片网格）
+    const grid = document.querySelector('.grid-cards');
+    const gr = grid?.getBoundingClientRect();
+    return {
+      marginTop: cs.marginTop,
+      marginBottom: cs.marginBottom,
+      gapAbove: gr ? Math.round(pr.top - gr.bottom) : null,
+      belowInContent: Math.round(cr.bottom - pr.bottom),
+      text: (p.textContent || '').trim().slice(0, 40),
+    };
+  })()`);
+  if (!pager) {
+    console.log('  · 这一屏没有分页条（结果不到一页），跳过');
+  } else {
+    console.log(`  ${JSON.stringify(pager)}`);
+    check(!!pager.text, '分页条在（说得清第几页/共几个）', pager.text);
+    check(
+      Number.parseFloat(pager.marginTop) >= 24 && Number.parseFloat(pager.marginBottom) >= 20,
+      '分页条上下都留了余量（不再贴底）',
+      `上 ${pager.marginTop} / 下 ${pager.marginBottom}`,
+    );
+    check(
+      pager.gapAbove === null || pager.gapAbove >= 20,
+      '与上面的卡片之间留了一口气',
+      `间距 ${pager.gapAbove}px`,
+    );
+  }
 } finally {
   /*
    * ★★ 只收**自己起的那个进程树** —— 三个地方都不能碰用户那份：
