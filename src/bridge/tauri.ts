@@ -1488,6 +1488,95 @@ export const modpack = {
   },
 };
 
+/*
+ * ====================== 实例备份与回滚（ADR-014） ======================
+ *
+ * ★ 这一组只是**搬运**：备份什么、留几份、回滚前要不要先备份 ——
+ *   规则全在后端 `crate::backup` 里（那边有 8 条单测）。前端不许自己
+ *   拼"哪些文件算备份内容"，否则界面上写的范围会和实际备份的对不上。
+ *
+ * ★ `created_secs` 是 **epoch 秒**：目录名也是它。
+ *   界面**必须用本地时间显示**（`new Date(secs * 1000)`），
+ *   于是"目录名 / 界面显示 / 排序"三者永远一致。
+ */
+export interface BackupItem {
+  kind: 'dir' | 'file';
+  rel: string;
+  files: number;
+  bytes: number;
+  /** `false` = 做这次备份时盘上本来就没有它（新实例还没进过游戏） */
+  present: boolean;
+}
+
+export interface BackupModEntry {
+  name: string;
+  sha1: string;
+  bytes: number;
+}
+
+export interface BackupManifest {
+  schema: number;
+  id: string;
+  slug: string;
+  name: string;
+  mc_version: string;
+  created_secs: number;
+  /** `手动` / `启动前自动` / `回滚前自动` */
+  reason: string;
+  items: BackupItem[];
+  /** ★ 只有清单，没有 jar 本体（ADR-014） */
+  mods: BackupModEntry[];
+  total_bytes: number;
+  /** 读不了 / 拒绝备份的东西（如实记） */
+  skipped: string[];
+}
+
+export interface BackupRestoreReport {
+  from_id: string;
+  /** ★★ 回滚前自动存的那一份 —— 后悔了可以用它回到"回滚之前" */
+  pre_rollback_id: string;
+  restored: BackupItem[];
+  /** 备份里没有、当前盘上有的文件（**保留没删**） */
+  kept_extra_files: string[];
+  /** 清单里有、盘上没有的 Mod（要重新获取，我们不假装补齐） */
+  mods_missing: string[];
+  /** 盘上有、清单里没有的 Mod（已挪进那份备份的 mods-extra/） */
+  mods_moved_out: string[];
+}
+
+export const backup = {
+  list: (slug: string) => call<BackupManifest[]>('backup_list', { slug }),
+
+  create: (opts: {
+    slug: string;
+    name: string;
+    mcVersion?: string;
+    reason?: string;
+    keep?: number;
+  }) =>
+    call<BackupManifest>('backup_create', {
+      slug: opts.slug,
+      name: opts.name,
+      mcVersion: opts.mcVersion ?? null,
+      reason: opts.reason ?? null,
+      keep: opts.keep ?? null,
+    }),
+
+  restore: (opts: { slug: string; name: string; mcVersion?: string; id: string; keep?: number }) =>
+    call<BackupRestoreReport>('backup_restore', {
+      slug: opts.slug,
+      name: opts.name,
+      mcVersion: opts.mcVersion ?? null,
+      id: opts.id,
+      keep: opts.keep ?? null,
+    }),
+
+  remove: (slug: string, id: string) => call<void>('backup_remove', { slug, id }),
+
+  openFolder: (slug: string, id?: string) =>
+    call<string>('backup_open_folder', { slug, id: id ?? null }),
+};
+
 /** 整合包进度事件（`modpack-progress`） */
 export interface ModpackProgressEvent {
   taskId: string;
