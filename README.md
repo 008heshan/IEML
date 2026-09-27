@@ -69,10 +69,12 @@ UI（React）  →  桥接（一个接口两套实现）  →  领域层（TS �
 这一节是**如实清单**，不是免责声明 —— 写在这里的事，界面上也能看到对应的说法。
 
 - **只发布 Windows**。macOS / Linux 没有实测过，也没有那两台真机。
-  CI 配置已写好（`.github/workflows/ci.yml`：Windows 全量 + Linux 只跑可移植子集），
-  但**到这一版为止它一次都没跑过** —— 往 GitHub 推 `.github/workflows/` 需要凭据带
-  `workflow` 权限，本机那把没有（GitHub 原话见 `CHANGELOG.md`）。
-  ⇒ 在那之前，"Windows 全量 / Linux 子集"是**计划**，不是已证事实。
+  CI 只落地了**一半**：CNB 上有 `.cnb.yml`（push 即跑可移植子集：类型检查 /
+  前端测试 / 门禁 / 前端构建），GitHub 那份（`.github/workflows/ci.yml`：
+  Windows 全量 + Linux 子集）**推不上去** —— 往 GitHub 推 workflow 文件需要
+  凭据带 `workflow` 权限，本机那把没有（GitHub 原话见 `CHANGELOG.md`）。
+  ⇒ 在那之前，"Windows 全量 + Linux 子集"是**计划**；而且 CNB 的构建结果
+  本机凭据也读不到（没有构建查询权限），要看只能去 CNB 仓库的「构建」页。
   平台口径见 [`docs/VERSIONING.md`](docs/VERSIONING.md)。
 - **安装包没有买 Windows 代码签名证书**（实测：exe 与安装包的 Authenticode 状态都是
   `NotSigned`），所以从浏览器下载后首次运行，Windows 可能提示「已保护你的电脑」或

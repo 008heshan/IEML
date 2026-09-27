@@ -19,11 +19,16 @@
 * 修改了 备份里的 Mod：只记文件名与校验值，不把 jar 拷进备份 ——
   一个整合包几百 MB，五份备份就能把盘吃光。
 
-> 这一轮还写了 CI 配置（`.github/workflows/ci.yml`：Windows 全量 + Linux 可移植子集），
-> 但它**一次都没跑过** —— 推 workflow 文件需要凭据带 `workflow` 权限，本机那把没有
-> （GitHub 原话：`refusing to allow an OAuth App to create or update workflow
-> .github/workflows/ci.yml without workflow scope`）。
-> ⇒ 平台口径里"没有 CI"这一条**暂时仍然成立**，见 `README.md` 与 `docs/VERSIONING.md` 的加注。
+> 这一轮的 CI：**CNB 上已经落地** —— `.cnb.yml`，push 即跑
+> `node tools/verify.mjs --skip-rust`（类型检查 / 前端测试 / 静态门禁 / 前端构建）。
+> GitHub 那份（`.github/workflows/ci.yml`：Windows 全量 + Linux 子集）**还没推上去**：
+> 推 workflow 文件需要凭据带 `workflow` 权限，本机那把没有（GitHub 原话
+> `refusing to allow an OAuth App to create or update workflow .github/workflows/ci.yml
+> without workflow scope`）。
+> ★ 连 CNB 的**构建结果我也读不到**（那把凭据没有构建查询权限：
+> `NO_RIGHT Token scope not match`）—— 所以"CNB 上跑过了"这句话的证据在
+> CNB 仓库的「构建」页上，不在本仓库里。⇒ README 的平台口径里"没有 CI"
+> 这一条**暂时仍然成立**（已在原处加注）。
 
 ---
 
