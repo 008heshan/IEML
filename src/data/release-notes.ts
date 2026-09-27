@@ -72,6 +72,19 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.4.3',
+    date: '2026-09-27',
+    headline: '这一版功能与上一版相同，定下了版本号以后怎么走。',
+    groups: [
+      {
+        title: '修改了',
+        items: [
+          '修改了 版本号规则：以后小修小改是 1.0.x，大修大改是 1.x.0，下一个大版本是 x.0.0。',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.4.2',
     date: '2026-09-27',
     headline: '这一版功能与上一版相同：修的是"新克隆下来能不能跑测试"这类问题。',
