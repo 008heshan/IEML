@@ -704,7 +704,16 @@ export function VersionsPage() {
                   {inst.config.isolation !== 'auto' ? (
                     <>
                       <span className="dot" />
-                      <span>{inst.config.isolation === 'on' ? '已隔离' : '共享目录'}</span>
+                      {/*
+                       * ★★ 2026-09-27：这里原来写的是 `'已隔离' : '共享目录'` ——
+                       *   **两个分支里有一个是假的**：启动路径永远用
+                       *   `instances/<slug>/game`，"关闭隔离"这个选择**还没有接上**
+                       *   （见 `domain/isolation.ts` 与 `InstanceSetup.tsx` 里那段说明）。
+                       *   说成"共享目录"会让用户以为自己的存档已经跟别的实例混在一起了。
+                       */}
+                      <span>
+                        {inst.config.isolation === 'on' ? '已隔离' : '不隔离（还没生效）'}
+                      </span>
                     </>
                   ) : null}
                   {/*
