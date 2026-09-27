@@ -349,6 +349,25 @@ results.push([
 ]);
 
 /*
+ * ★★ 前端生产构建**必须排在 Rust 那两项之前**（2026-09-27，CI 抓出来的真依赖）。
+ *
+ *   `src-tauri/src/lib.rs` 里有 `tauri::generate_context!()`，它在**编译期**
+ *   把 `dist/`（`tauri.conf.json` 的 `frontendDist: "../dist"`）嵌进二进制。
+ *   `dist/` 是构建产物、不进仓库 ⇒ **全新 clone 里根本没有它**，
+ *   于是 `cargo test --lib` 会直接死在：
+ *
+ *       error: proc macro panicked
+ *         = help: message: The `frontendDist` configuration is set to `"../dist"`
+ *           but this path doesn't exist
+ *
+ *   ★ 为什么以前没暴露：开发机上 `dist/` 早就在那儿了（谁没构建过前端呢），
+ *     而**第一次在干净环境里跑（CI / 新克隆）就必然红** —— 这正是
+ *     "只有别人的机器才会红"的那类问题，CI 一上来就把它抓出来了。
+ *   ★ 顺手也是更好的顺序：先花两秒构建前端，再花几分钟编译 Rust。
+ */
+results.push(['前端生产构建', run('前端生产构建', 'pnpm', ['exec', 'vite', 'build'])]);
+
+/*
  * ★★ `--skip-rust`：给 **CI 的 Linux 作业**留的唯一一个口子（2026-09-27 加）。
  *
  *   下面那两项走 `powershell tools/env/cargo.ps1`（Windows 的 MSVC 环境），
@@ -384,7 +403,6 @@ if (skipRust) {
       '--lib',
     ]),
   ]);
-
   /*
    * ★★ 2026-09-20 新增：**所有测试目标都要能编译**。
    *
@@ -414,7 +432,10 @@ if (skipRust) {
   ]);
 }
 
-results.push(['前端生产构建', run('前端生产构建', 'pnpm', ['exec', 'vite', 'build'])]);
+/*
+ * （前端生产构建已经挪到 Rust 那两项**之前** —— 见上面那段说明：
+ *   `tauri::generate_context!()` 在编译期要 `dist/`，干净 clone 里没有它。）
+ */
 
 /*
  * ★★ 2026-09-24（rc.4）：**更新日志的格式**也要进门禁。

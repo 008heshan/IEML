@@ -57,7 +57,7 @@ const slug = (title) =>
 function anchorsOf(file) {
   const text = readFileSync(file, 'utf8');
   const set = new Set();
-  for (const line of text.split('\n')) {
+  for (const line of text.split(/\r?\n/)) {
     const m = /^#{1,6}\s+(.*)$/.exec(line);
     if (m) set.add(slug(m[1]));
   }
@@ -75,7 +75,17 @@ let checked = 0;
 
 for (const file of files) {
   const text = readFileSync(file, 'utf8');
-  const lines = text.split('\n');
+  /*
+   * ★★ `\r?\n`：**CRLF 检出**（Windows 上 `core.autocrlf=true` 的默认克隆）
+   *   曾经让这条门禁**满屏假红** —— 12 个"死锚点"，而在 LF 的工作区里它们都是活的。
+   *
+   *   原因很小、后果很大：JS 的 `.` **不匹配 `\r`**，于是行尾那个 `\r`
+   *   让 `/^#{1,6}\s+(.*)$/` 根本匹配不上 —— 一份文档的标题锚点集变成**空的**，
+   *   所有指向它的链接全部被判成"点进去是空气"。
+   *   ⇒ 门禁**不许**依赖检出时的换行符：先在读入处归一化。
+   *     （顺带也加了 `.gitattributes` 钉 `eol=lf`，两处都做，谁少了一层都不至于假红。）
+   */
+  const lines = text.split(/\r?\n/);
   const own = anchorsOf(file);
   // 缓存：别的 md 的锚点集合（按需算）
   const cache = new Map([[file, own]]);
