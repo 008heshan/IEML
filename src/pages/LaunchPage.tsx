@@ -43,10 +43,30 @@ import { VersionIcon } from '../components/VersionIcon';
 import { launchFailureOf, type LaunchPreview, type LaunchRequest } from '../bridge/tauri';
 
 export function LaunchPage() {
-  const { state, target, go, goDownloadTab, backend, toast, setLaunchTarget, openVersion, folder } = useApp();
+  const { state, target, go, goDownloadTab, backend, toast, setLaunchTarget, openVersion, folder, refreshMachine } = useApp();
   const { api, isDesktop } = useRealApi();
   /** 要启动的那个实例的隔离判定（后端算的结论，ADR-005；读不到时 null） */
   const launchIsolation = target ? state.isolation[target.config.slug] ?? null : null;
+
+  /**
+   * ★★ **可用内存是活的**（2026-09-28）。
+   *
+   *   这一页写着"可用 12 GB"，而那是**启动那一刻**的读数 —— 用户开个浏览器、
+   *   开个视频，半小时后回来照这个数选内存，游戏就起不来（或者被系统换页拖死）。
+   *
+   *   所以只要这一页**挂在屏幕上**，就按节奏重读：
+   *     · 进页面立刻读一次（可能在别处待了很久才回来）；
+   *     · 之后每 15 秒一次；
+   *     · 离开这一页（组件卸载）就停 —— 别的页面不显示这个数，白读。
+   *
+   *   ★ 15 秒是**权衡**：sysinfo 那次读盘本身很便宜，但"每秒一次"对一个
+   *     只是显示数字的界面来说是浪费；而人做决定的时间尺度是"十几秒"。
+   */
+  useEffect(() => {
+    void refreshMachine();
+    const t = window.setInterval(() => void refreshMachine(), 15000);
+    return () => window.clearInterval(t);
+  }, [refreshMachine]);
 
   const [launching, setLaunching] = useState(false);
   const [preview, setPreview] = useState<LaunchPreview | null>(null);

@@ -221,8 +221,13 @@ export interface AppState {
    */
   running: Record<string, { startedAt: number; pid: number | null }>;
 
-  /* --- 弹窗 --- */
-  createOpen: boolean;
+  /* --- 弹窗 --- */  /*
+   * ★★ 2026-09-28：这里原来有一个 `createOpen` 字段与 `create/open` / `create/close`
+   *   两个 action —— **全仓库没有任何地方读它**（`CreateInstanceModal` 用的是它自己的
+   *   `useState`，入口走 `ieml:create` 事件）。
+   *   一份没人读的状态比没有状态更糟：它会让人以为"弹窗开着"这件事在 store 里。
+   *   ⇒ 删掉。弹窗的开合只由它自己和那个事件决定。
+   */
   /** 崩溃/日志弹窗内容（null = 关闭） */
   crashReport: string | null;
 
@@ -303,7 +308,6 @@ export const initialState: AppState = {
   toasts: [],
   running: {},
 
-  createOpen: false,
   crashReport: null,
 
   prefs: {
@@ -433,8 +437,6 @@ export type Action =
   | { type: 'toast/leaving'; id: string }
   | { type: 'toast/remove'; id: string }
   /* 弹窗 */
-  | { type: 'create/open' }
-  | { type: 'create/close' }
   | { type: 'crash/show'; report: string }
   | { type: 'crash/hide' }
   /* 偏好 */
@@ -717,11 +719,7 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, toasts: state.toasts.filter((t) => t.id !== action.id) };
 
     /* ---------- 弹窗 ---------- */
-    case 'create/open':
-      return { ...state, createOpen: true };
-
-    case 'create/close':
-      return { ...state, createOpen: false };
+    /* ★ `create/open` 与 `create/close` 已删（没人读那份状态，见字段那段的说明） */
 
     case 'crash/show':
       return { ...state, crashReport: action.report };
