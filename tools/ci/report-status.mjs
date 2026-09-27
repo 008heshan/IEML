@@ -25,6 +25,8 @@
  * ★ 它**不打印任何凭据**：token 只从环境变量取、只放进请求头。
  */
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const arg = (name, dflt = null) => {
   const i = process.argv.indexOf(name);
@@ -92,7 +94,13 @@ const status = {
   failures: failures(logPath),
 };
 
-const file = 'tmp/ci-status.json';
+/*
+ * ★ 产物**写在仓库之外**（默认系统临时目录）。
+ *   第一版写的是仓库里的 `tmp/ci-status.json`，结果"仓库根布局"那条门禁当场红了 ——
+ *   `tmp/` 在白名单里，但**只允许空着**（它是给本地临时文件用的，不许攒东西）。
+ *   门禁是对的：仓库根就是公开仓的门面，CI 的临时文件不该落在里面。
+ */
+const file = arg('--out', join(tmpdir(), 'ci-status.json'));
 writeFileSync(file, JSON.stringify(status, null, 2), 'utf8');
 
 const summary = `${ok ? '✓ 通过' : '✗ 失败'}｜sha=${status.sha_short || status.sha.slice(0, 8) || '?'}｜${status.branch || '?'}`;

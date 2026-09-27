@@ -24,6 +24,12 @@
 #   那等于给自己放行）：直接重定向到日志文件，失败就当场红；
 #   日志尾巴由 endStages 上报，红了同样看得到。
 #
+# ★ 两条与"仓库根要干净"有关的细节（第一版就是被它们红的，门禁是对的）：
+#   · `pnpm install --store-dir …`：容器里 pnpm 默认会把 store 建在**工作区里**
+#     （第一版：仓库根多了一个 `.pnpm-store/`），必须指到仓库外；
+#   · 日志与状态文件写 `/tmp`，**不写仓库里的 `tmp/`** ——
+#     `tmp/` 在白名单里但只允许空着（见 `tools/gates/check-repo-root.mjs`）。
+#
 # ★ 镜像钉版本：本机是 Node 24.9.0 / pnpm 10.34.5，这里显式装 10.34.5
 #   （与 `.github/workflows/ci.yml` 一致），`--frozen-lockfile` 才不会白设。
 
@@ -40,38 +46,34 @@ main:
             corepack enable
             corepack prepare pnpm@10.34.5 --activate
             pnpm -v
-        - name: 装依赖
+        - name: 装依赖（store 指到仓库外）
           script: |
-            pnpm install --frozen-lockfile
+            pnpm install --frozen-lockfile --store-dir /tmp/pnpm-store
         - name: 可移植子集（node tools/verify.mjs --skip-rust）
           script: |
-            mkdir -p tmp
-            node tools/verify.mjs --skip-rust > tmp/ci-verify.log 2>&1
-            tail -40 tmp/ci-verify.log
+            node tools/verify.mjs --skip-rust > /tmp/ci-verify.log 2>&1
+            tail -40 /tmp/ci-verify.log
       endStages:
         - name: 把结果与日志尾部写成可读的产物（成功/失败都写）
           script: |
-            mkdir -p tmp
-            node tools/ci/report-status.mjs --status "${CNB_PIPELINE_STATUS}" --log tmp/ci-verify.log \
+            node tools/ci/report-status.mjs --status "${CNB_PIPELINE_STATUS}" --log /tmp/ci-verify.log \
               || echo "[ci] 状态上报没成功（不影响判定：判定看的是上面那一步的退出码）"
   pull_request:
     - name: 可移植子集（PR 同样要过）
       docker:
         image: node:24
       stages:
-        - name: 装依赖
+        - name: 装依赖（store 指到仓库外）
           script: |
             corepack enable
             corepack prepare pnpm@10.34.5 --activate
-            pnpm install --frozen-lockfile
+            pnpm install --frozen-lockfile --store-dir /tmp/pnpm-store
         - name: 可移植子集（node tools/verify.mjs --skip-rust）
           script: |
-            mkdir -p tmp
-            node tools/verify.mjs --skip-rust > tmp/ci-verify.log 2>&1
-            tail -40 tmp/ci-verify.log
+            node tools/verify.mjs --skip-rust > /tmp/ci-verify.log 2>&1
+            tail -40 /tmp/ci-verify.log
       endStages:
         - name: 把结果与日志尾部写成可读的产物（成功/失败都写）
           script: |
-            mkdir -p tmp
-            node tools/ci/report-status.mjs --status "${CNB_PIPELINE_STATUS}" --log tmp/ci-verify.log \
+            node tools/ci/report-status.mjs --status "${CNB_PIPELINE_STATUS}" --log /tmp/ci-verify.log \
               || echo "[ci] 状态上报没成功（不影响判定）"
