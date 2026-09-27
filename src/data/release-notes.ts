@@ -84,6 +84,26 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.5.0',
+    date: '2026-09-27',
+    headline: '这一版崩溃分析能认出八种"Java 用错了"，并直接告诉你换哪一版。',
+    groups: [
+      {
+        title: '新增了',
+        items: [
+          '新增了 崩溃分析能认出八种 Java 用错的情况，并告诉你该换哪一版 Java。',
+        ],
+      },
+      {
+        title: '修复了',
+        items: [
+          '修复了 聊天里提到某个错误就被当成崩溃原因的情况。',
+          '修复了 游戏刚退出就读日志、可能读到还没写完那一段的问题。',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.4.5',
     date: '2026-09-27',
     headline: '这一版把两处不成立的界面说明改成了实话。',
