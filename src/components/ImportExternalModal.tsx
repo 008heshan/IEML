@@ -104,7 +104,7 @@ export function ImportExternalModal() {
       const r = await api.external.import(req.path, slug, layer, backupFirst);
       const copiedFiles = r.copied.reduce((n, c) => n + c.files, 0);
       const copiedBytes = r.copied.reduce((n, c) => n + c.bytes, 0);
-      const extra: string[] = [`原目录里的东西**没有删**（${req.path}）。`];
+      const extra: string[] = [`原目录里的东西没有删（${req.path}）。`];
       if (r.backup_id) extra.push(`已先备份这个实例一份（${r.backup_id}）`);
       if (r.skipped_existing.length > 0) {
         extra.push(
@@ -186,7 +186,7 @@ export function ImportExternalModal() {
 
           {scan.launcher === 'unknown' ? (
             <p className="wz-hint">
-              <IconAlert /> 这个目录里没有能搬的游戏数据 —— 请选到**游戏目录**那一层
+              <IconAlert /> 这个目录里没有能搬的游戏数据 —— 请选到游戏目录那一层
               （里面有 saves / mods / config 的那一层）。
             </p>
           ) : (
@@ -258,10 +258,10 @@ export function ImportExternalModal() {
 
               <p className="wz-hint">
                 <IconDownload /> 一共 {files} 个文件 · {formatBytes(bytes)}。
-                游戏本体（versions / libraries / assets）不搬 —— 那些是同一份官方文件。
+              游戏本体（versions / libraries / assets）不搬 —— 那些是同一份官方文件。
               </p>
               <p className="wz-hint">
-                同名文件**不会覆盖**：目标里已经有的会被跳过，并在完成后列出来。
+                同名文件不会覆盖：目标里已经有的会被跳过，并在完成后列出来。
               </p>
             </>
           )}

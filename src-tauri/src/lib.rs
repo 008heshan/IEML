@@ -510,6 +510,9 @@ pub fn run() {    /*
             /* ★★ 导入别的启动器（官方 / PCL / HMCL / Prism）留下的游戏数据 */
             commands_real::scan_external_launcher,
             commands_real::import_external_data,
+            /* ★★ 导出整合包（ADR-024：两张黑名单 + 登录凭据红线） */
+            commands_real::scan_modpack_export,
+            commands_real::export_modpack,
             /* -------- 杂项 -------- */
             commands_real::backend_capabilities,
         ])
