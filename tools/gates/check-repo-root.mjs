@@ -33,6 +33,9 @@ const ALLOWED_FILES = new Set([
   '.gitignore',
   '.npmrc',
   '.editorconfig',
+  // ★ 2026-09-27：CNB 的云原生构建配置。它**必须**在仓库根（平台约定，改名就失效）——
+  //   这是"每次推送都真的跑一遍"的落地处，见该文件头部的说明。
+  '.cnb.yml',
   'package.json',
   'pnpm-lock.yaml',
   'tsconfig.json',
