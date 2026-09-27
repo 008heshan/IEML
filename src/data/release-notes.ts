@@ -72,6 +72,20 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.4.2',
+    date: '2026-09-27',
+    headline: '这一版功能与上一版相同：修的是"新克隆下来能不能跑测试"这类问题。',
+    groups: [
+      {
+        title: '修改了',
+        items: [
+          '修改了 全新克隆下来的仓库可以直接跑测试，不必先手动构建一次前端。',
+          '修改了 Windows 上克隆下来的换行符不再被自动改成另一种。',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.4.1',
     date: '2026-09-27',
     headline: '这一版功能与上一版相同，改的是每次推送都会自动跑一遍检查。',
