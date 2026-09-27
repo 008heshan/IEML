@@ -528,7 +528,8 @@ export function getLoaderCapabilities(
      * 附加组件的版本清单：
      *   * OptiFine —— **有在线清单**（BMCLAPI 的 `/optifine/versionList`，
      *     `InstallComposer` 会拉真实版本），所以这里的静态值只是离线兜底；
-     *   * LiteLoader —— 没有在线清单，且安装未实现，静态值仅供展示。
+     *   * LiteLoader —— 没有在线清单，静态值仅供展示（**安装是做了的**，
+     *     见 `net::liteloader`；这里只是没有"在线版本清单"可拉）。
      */
     /*
      * ★★ 理由的**顺序**：先说"我们没做"，再说"上游有没有"。

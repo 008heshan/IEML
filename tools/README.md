@@ -23,6 +23,19 @@ tools/
 │   ├─ cargo-manual-msvc.ps1           回退路径：自己拼 MSVC 环境（版本号自动发现）
 │   └─ deploy-desktop.ps1              构建产物 → 桌面，并用 SHA256 证明一致
 │
+├─ net/       本机网络那点事（一次性调优用，不进交付链）
+│   ├─ net-latency-tune.ps1            按实测调 TCP 参数
+│   ├─ disable-hvci.ps1 / disable-vbs.ps1   关掉拖慢虚拟化的两个开关
+│
+├─ release/   发布链（升版 → 清单 → 上传 → 按客户端方式复验）
+│   ├─ publish-cnb.mjs                 打包 + 生成 latest.json（--upload 才真传）
+│   ├─ verify-manifest.mjs             上传前自检：签名/公钥/地址三者自洽
+│   ├─ verify-endpoint.mjs             匿名拉线上清单 + 下载 + 用内置公钥验签
+│   └─ check-exe-wiring.mjs            证明"更新能力真的编进了 exe"
+│
+├─ ci/        给 CI 用的上报（把流水线结果写成公开可读的一份产物）
+│   └─ report-status.mjs               CNB 的 endStages 调它；本地无 token 时只打印
+│
 ├─ live/      ★ 真机验证：要桌面版 / 要联网 / 要看真实 DOM（默认手动跑）
 │   ├─ live-ui-check.mjs               用 WebView2 的 CDP 读真实 DOM 并跑断言
 │   ├─ live-inuse-check.mjs            「盘上有」与「有版本在用」是不是分开说的

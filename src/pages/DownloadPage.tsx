@@ -663,22 +663,7 @@ function ModpackTab({
       return;
     }
     /*
-     * ★★ 2026-09-24（C-1）：**CurseForge 的整合包还不能自动安装** —— 必须在这里如实拦住。
-     *
-     *   两种包的清单格式不同：
-     *     · Modrinth 的 `.mrpack`  → 里面有 `modrinth.index.json`（`mrpack_inspect` 会读它）；
-     *     · CurseForge 的 `.zip`   → 里面是 `manifest.json` + `files[{projectID,fileID}]`，
-     *       每个文件都要再去问一次 CF 的文件接口才拿得到下载地址。
-     *
-     *   后者**没有实现**（不是网络问题、也不是"上游没发布文件"）。
-     *   以前这一页在 CF 来源下会拿 CF 的数字 id 去问 Modrinth，报出
-     *   「这个整合包没有可下载的版本」—— 一句把"我们没做"说成"上游没有"的假话
-     *   （这个仓库为这类话栽过不止一次）。
-     */
-    /*
-     * ★★ 2026-09-26：**CurseForge 的整合包现在也能自动装了**（以前在这里如实拦住）。
-     *
-     *   两种包的清单格式不同，但**安装流程是同一段**：
+     * ★★ 两种包的清单格式不同，但**安装流程是同一段**：
      *     · Modrinth 的 `.mrpack`  → `modrinth.index.json` 里**直接给下载地址**；
      *     · CurseForge 的 `.zip`   → `manifest.json` 里**只有 id**，
      *       后端会逐个问接口拿地址（并发 12 路），进度同样报在 `modpack-progress` 上。
@@ -686,6 +671,12 @@ function ModpackTab({
      *   ★ 作者禁止第三方分发时（CF 的 `downloadUrl` 是 null）**不假装能装**：
      *     后端会再问一次接口，真的拿不到就返回具体原因（"这个包有 N 个文件下不了"），
      *     这里原样显示。
+     *
+     * ★ 2026-09-27（清理）：这上面原来还留着 2026-09-24 那一段**现在时**的
+     *   「CurseForge 的整合包**还不能自动安装**……后者**没有实现**」。
+     *   它早被下面这段推翻了（0.2.0 实装），但整段留在原地 ——
+     *   读代码的人先读到的是假话，然后才读到更正。
+     *   ⇒ 删掉旧段，只保留今天成立的说法。
      */
     const isCf = packSource === 'curseforge';
     setInstalling(true);
