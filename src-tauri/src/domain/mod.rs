@@ -8,6 +8,8 @@ pub mod combination;
 pub mod crash;
 /// ★ 拖进来的文件**是什么**（按内容判，ADR-015 的判定顺序）—— 纯判定，不碰盘、不知道实例在哪
 pub mod dropped;
+/// ★ 别人的目录是**谁的**（官方 / PCL / HMCL / Prism…）—— 只认形状，不碰盘（导入见命令层）
+pub mod external;
 pub mod java;
 /// ★★ 版本隔离（ADR-005 三段判定）—— **规则只在这一份**，平台层与界面都读它的结论
 pub mod isolation;

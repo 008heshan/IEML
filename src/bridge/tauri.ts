@@ -1703,6 +1703,50 @@ export const isolation = {
     call<MigrationResult>('apply_isolation_migration', { slug, toMode, backupFirst }),
 };
 
+/**
+ * ★★ **导入别的启动器留下的数据**（官方 / PCL2 / HMCL / Prism-MultiMC）。
+ *
+ * 老玩家换启动器时手上是一整个游戏目录：存档、Mod、配置全在里面。
+ * 这一步只做一件事：**把它们复制过来**（游戏本体不搬 —— `versions/`、`libraries/`、
+ * `assets/` 是同一份官方文件，搬过来只是白占几个 GB）。
+ *
+ * ★ 三条规矩与"切换隔离时的迁移"完全一致：**只复制不删源**、**永不覆盖**
+ *   （跳过的逐条报出来）、可**先备份一份**。判定"这是谁的目录"在 Rust 侧
+ *   （`domain::external`，有单测），前端只负责显示它给的依据。
+ */
+export interface ExternalLayer {
+  /** 传回 `import` 用的取值（空串 = 根目录那一层） */
+  key: string;
+  label: string;
+  items: MigrationItem[];
+}
+
+export interface ExternalScan {
+  picked: string;
+  /** 实际当游戏目录用的那一层（可能是 `picked`、`picked/minecraft`…） */
+  game_dir: string;
+  launcher: 'official' | 'pcl' | 'hmcl' | 'prism' | 'generic' | 'unknown';
+  launcher_name: string;
+  /** 凭什么这么认（盘上看见了什么） */
+  evidence: string[];
+  items: MigrationItem[];
+  versions: number;
+  /** 带游戏数据的版本目录（PCL/HMCL 的"版本隔离"把存档放在这里） */
+  version_layers: ExternalLayer[];
+  note: string | null;
+}
+
+export const external = {
+  /** 只读：这是谁的目录、能搬什么 */
+  scan: (path: string) => call<ExternalScan>('scan_external_launcher', { path }),
+  /**
+   * 复制进某个实例（`layer` 空 = 从根那一层搬）。
+   * `backupFirst` = 先给这个实例做一份备份（ADR-014）。
+   */
+  import: (path: string, slug: string, layer: string, backupFirst: boolean) =>
+    call<MigrationResult>('import_external_data', { path, slug, layer, backupFirst }),
+};
+
 /** 拖进来一个**目录**：里面装成了哪些、跳过了哪些（各带理由） */export interface DroppedDirReport {
   /** 真正装进去的（一个文件一条） */
   installed: DroppedFileInfo[];
