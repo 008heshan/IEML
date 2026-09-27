@@ -21,6 +21,9 @@ pub mod auth;
 ///   于是"jar 一个字节都不许进备份""回滚前必须先备份当前状态"这些规矩
 ///   能用普通单测钉死（见该文件尾部的测试）。
 pub mod backup;
+/// ★★ **单次操作的原子性**（ADR-023 的 Draft 事务）：搬到一半失败就逆序回滚，
+/// 保证"要么全做完、要么与动手之前一模一样"。
+pub mod draft;
 pub mod commands;
 pub mod commands_real;
 pub mod domain;

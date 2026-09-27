@@ -5015,46 +5015,46 @@ pub async fn apply_isolation_migration(
 
     let from = std::path::PathBuf::from(&plan.from);
     let to = std::path::PathBuf::from(&plan.to);
-    let mut raw: Vec<(String, u64, u64)> = Vec::new();
-    let mut skipped_existing = Vec::new();
-    let mut failed = Vec::new();
+    /*
+     * ★★ 一次操作 = 一个 **Draft 事务**（ADR-023），与"导入别人的数据"同一套：
+     *   中途失败就逆序回滚，绝不留下"搬了一半"的实例目录。
+     */
+    let mut draft = crate::draft::Draft::open(&to).map_err(|e| format!("开事务失败：{e}"))?;
     for item in &plan.items {
-        copy_tree_no_overwrite(
-            &from.join(&item.name),
-            &to.join(&item.name),
-            &item.name,
-            &mut raw,
-            &mut skipped_existing,
-            &mut failed,
-        );
+        draft
+            .plan(crate::draft::Op::CopyTree {
+                from: from.join(&item.name),
+                to: item.name.clone(),
+                skip_existing: true,
+            })
+            .map_err(|e| format!("这一步不合法：{e}"))?;
     }
+    let report = draft
+        .commit()
+        .map_err(|e| format!("{e}（已经按逆序回滚，目标目录与动手之前一致）"))?;
 
-    // 按条目汇总（`saves/a/b.dat` → `saves`）
-    let mut copied: Vec<MigrationItem> = Vec::new();
-    for (rel, files, bytes) in raw {
-        let top = rel.split('/').next().unwrap_or(&rel).to_string();
-        match copied.iter_mut().find(|c| c.name == top) {
-            Some(c) => {
-                c.files += files;
-                c.bytes += bytes;
-            }
-            None => copied.push(MigrationItem {
-                name: top,
-                files,
-                bytes,
-            }),
-        }
-    }
+    let mut copied: Vec<MigrationItem> = report
+        .per_op
+        .iter()
+        .filter(|(_, files, _)| *files > 0)
+        .map(|(rel, files, bytes)| MigrationItem {
+            name: rel.trim_end_matches('/').to_string(),
+            files: *files,
+            bytes: *bytes,
+        })
+        .collect();
+    copied.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut skipped_existing = report.skipped_existing.clone();
+    skipped_existing.sort();
     say!(
-        "[IEML/isolation] 「{slug}」切到 {to_mode}：复制 {} 项，跳过 {} 个已存在的文件，失败 {} 个",
+        "[IEML/isolation] 「{slug}」切到 {to_mode}：复制 {} 项，跳过 {} 个已存在的文件",
         copied.len(),
-        skipped_existing.len(),
-        failed.len()
+        skipped_existing.len()
     );
     Ok(MigrationResult {
         copied,
         skipped_existing,
-        failed,
+        failed: Vec::new(),
         backup_id,
     })
 }
@@ -5260,45 +5260,52 @@ pub async fn import_external_data(
         say!("[IEML/import] 导入前已备份：{backup_id}");
     }
 
-    let mut raw: Vec<(String, u64, u64)> = Vec::new();
-    let mut skipped_existing = Vec::new();
-    let mut failed = Vec::new();
+    /*
+     * ★★ 一次操作 = 一个 **Draft 事务**（ADR-023）：中途失败（磁盘满、权限、
+     *   目标里有个同名的**文件**挡路）就逆序回滚 —— 而不是留下一半内容，
+     *   让用户对着一句"已复制 N 个"发呆。
+     */
+    let mut draft = crate::draft::Draft::open(&target).map_err(|e| format!("开事务失败：{e}"))?;
     for item in &items {
-        copy_tree_no_overwrite(
-            &source.join(&item.name),
-            &target.join(&item.name),
-            &item.name,
-            &mut raw,
-            &mut skipped_existing,
-            &mut failed,
-        );
+        draft
+            .plan(crate::draft::Op::CopyTree {
+                from: source.join(&item.name),
+                to: item.name.clone(),
+                // ★ 永不覆盖（用户自己的东西不许被顶掉）——与 ADR-024 的同一条纪律
+                skip_existing: true,
+            })
+            .map_err(|e| format!("这一步不合法：{e}"))?;
     }
-    let mut copied: Vec<MigrationItem> = Vec::new();
-    for (rel, files, bytes) in raw {
-        let top = rel.split('/').next().unwrap_or(&rel).to_string();
-        match copied.iter_mut().find(|c| c.name == top) {
-            Some(c) => {
-                c.files += files;
-                c.bytes += bytes;
-            }
-            None => copied.push(MigrationItem {
-                name: top,
-                files,
-                bytes,
-            }),
-        }
-    }
+    let report = draft.commit().map_err(|e| {
+        // ★ 报错时说清"已经回滚了"，不然用户会以为东西搬了一半
+        format!("{e}（已经按逆序回滚，目标目录与动手之前一致）")
+    })?;
+
+    let copied: Vec<MigrationItem> = report
+        .per_op
+        .iter()
+        .filter(|(_, files, _)| *files > 0)
+        .map(|(rel, files, bytes)| MigrationItem {
+            name: rel.trim_end_matches('/').to_string(),
+            files: *files,
+            bytes: *bytes,
+        })
+        .collect();
+    let mut skipped_existing = report.skipped_existing.clone();
+    skipped_existing.sort();
+    let mut copied = copied;
+    copied.sort_by(|a, b| a.name.cmp(&b.name));
+
     say!(
-        "[IEML/import] 从「{}」导入到「{slug}」：复制 {} 项，跳过 {} 个已存在的文件，失败 {} 个",
+        "[IEML/import] 从「{}」导入到「{slug}」：复制 {} 项，跳过 {} 个已存在的文件",
         source.display(),
         copied.len(),
-        skipped_existing.len(),
-        failed.len()
+        skipped_existing.len()
     );
     Ok(MigrationResult {
         copied,
         skipped_existing,
-        failed,
+        failed: Vec::new(),
         backup_id,
     })
 }
