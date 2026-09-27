@@ -224,6 +224,34 @@ pub fn count_log_lines(log_path: &PathBuf) -> usize {
     BufReader::new(f).lines().count()
 }
 
+/// 等日志**写完**再分析（ADR-011 ⑥ 的"延迟 2 秒"，这里做成"稳定即走、最多 2 秒"）。
+///
+/// ★ 为什么不是死等 2 秒：游戏刚退出时它自己的日志句柄可能还没 flush 完，
+///   这**正是**那 2 秒要解决的问题；但多数情况下文件早就写完了，
+///   死等只会让"游戏已关闭"的那条 toast 凭空晚两秒。
+///   ⇒ 每 200 ms 看一次长度，**连续两次没变**就当写完了；最多等 2 秒。
+///
+/// ★ 判据：`crash_rules_cases_match_both_sides` 之外，两条单元测试钉住这个函数
+///   （`log_settle_returns_when_file_stops_growing` 与 `..._respects_the_cap`）。
+fn wait_for_log_settle(log_path: &Path, cap: std::time::Duration) {
+    let started = std::time::Instant::now();
+    let mut last = std::fs::metadata(log_path).map(|m| m.len()).unwrap_or(0);
+    let mut stable = 0;
+    while started.elapsed() < cap {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let now = std::fs::metadata(log_path).map(|m| m.len()).unwrap_or(0);
+        if now == last {
+            stable += 1;
+            if stable >= 2 {
+                return; // 连续两次没变 → 写完了
+            }
+        } else {
+            stable = 0;
+            last = now;
+        }
+    }
+}
+
 /// 盯着一个游戏进程直到它结束，然后：
 ///   ① 算出游玩时长与是否崩溃；② 写退出标记文件；③ **把事件推给前端**。
 ///
@@ -301,7 +329,17 @@ pub fn watch_game_exit(
          *   现在：退出码 + 游戏自己的崩溃声明 + 秒退，三者合一；
          *   离线身份传进去，日志里那句必然出现的 401 会被排除掉。
          */
-        let tail = read_log_tail(&log_path, 256 * 1024);
+        let tail = {
+            /*
+             * ★★ 2026-09-27（ADR-011 ⑥）：**等日志写完再判**。
+             *
+             *   游戏刚退出时，它自己的日志句柄可能还在 flush —— 立刻读会拿到**截断**的日志，
+             *   于是"崩没崩"和"因为什么"都可能判错（尤其崩溃报告写在最后几百行的情况）。
+             *   ADR 原话是"延迟 2 秒再分析"；这里做成"稳定即走、最多 2 秒"（见 `wait_for_log_settle`）。
+             */
+            wait_for_log_settle(&log_path, std::time::Duration::from_millis(2000));
+            read_log_tail(&log_path, 256 * 1024)
+        };
         let verdict = crate::domain::crash::judge_crash(
             code,
             false, // 这条路径都是"游戏自己退出的"；用户点停止走 stop_minecraft
@@ -460,6 +498,49 @@ mod tests {
     fn log_tail_handles_missing_file() {
         let p = std::env::temp_dir().join("definitely-not-here.log");
         assert_eq!(read_log_tail(&p, 100), "");
+    }
+
+    /*
+     * `wait_for_log_settle`（ADR-011 ⑥ 的"延迟 2 秒再分析"）—— 两条判据，一正一反：
+     * 文件不再变时要**立刻**返回（别凭空让 toast 晚两秒），一直在变时到上限就返回（别永远等）。
+     */
+
+    #[test]
+    fn log_settle_returns_when_file_stops_growing() {
+        let p = std::env::temp_dir().join(format!("ieml-settle-{}.log", std::process::id()));
+        std::fs::write(&p, "hello").unwrap();
+        let t0 = std::time::Instant::now();
+        wait_for_log_settle(&p, std::time::Duration::from_millis(2000));
+        let el = t0.elapsed();
+        assert!(
+            el < std::time::Duration::from_millis(1500),
+            "文件没在变时不该等满 2 秒（实测 {el:?}）"
+        );
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn log_settle_respects_the_cap() {
+        let p = std::env::temp_dir().join(format!("ieml-settle-cap-{}.log", std::process::id()));
+        std::fs::write(&p, "x").unwrap();
+        let writer = {
+            let p = p.clone();
+            std::thread::spawn(move || {
+                for i in 0..40 {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    let _ = std::fs::write(&p, "y".repeat(i + 2));
+                }
+            })
+        };
+        let t0 = std::time::Instant::now();
+        wait_for_log_settle(&p, std::time::Duration::from_millis(800));
+        let el = t0.elapsed();
+        assert!(
+            el >= std::time::Duration::from_millis(700) && el < std::time::Duration::from_millis(1800),
+            "文件一直在长时应在 cap 附近返回（实测 {el:?}）"
+        );
+        let _ = writer.join();
+        let _ = std::fs::remove_file(&p);
     }
 
     /* ---------- 秒退检测（★ 真机踩过：游戏死了却报"已启动"） ---------- */

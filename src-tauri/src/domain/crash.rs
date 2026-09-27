@@ -70,6 +70,54 @@ struct Rule {
 
 /// 规则库。9 大类，覆盖启动器最常见的失败场景。
 const RULES: &[Rule] = &[
+    /*
+     * ---------- JVM / Java 环境（★ 2026-09-27 补：ADR-011 点名"必须全覆盖"的那一类） ----------
+     *
+     * 与 `src/domain/crash.ts` 里的这一批**逐条对应**（id、正则、结论、动作都一样），
+     * 由 `tests/crash-rules.cases.json` 两侧共用的样例钉住 —— 改一边不改另一边会红。
+     *
+     * ★ 排在最前是有意的：这一类的共同点是"**能当场给出修复动作**"（Java 是我们自己管的），
+     *   而 `java-version-mismatch` 是个笼统兜底（任何 UnsupportedClassVersionError 都命中）。
+     */
+    Rule { id: "openj9", category: CrashCategory::Java,
+        pattern: r"(?i)OpenJ9|IBM J9|j9vm|Eclipse OpenJ9",
+        conclusion: "当前用的是 OpenJ9（IBM 那套 Java），Minecraft 与多数 Mod 在它上面跑不起来",
+        fix: Some(("换成 Adoptium 的 Java", FixKind::SwitchJava)) },
+    Rule { id: "java-32bit", category: CrashCategory::Java,
+        /*
+         * ★★ 只认"能证明是 32 位"的痕迹，不认 `Could not reserve enough space` 那句话：
+         *   那句在"64 位 Java + 内存填得比物理内存还大"时**同样**出现，而两种情况的
+         *   处置完全相反（换 Java vs 调小内存）。既有规则 `memory-too-large` 按后一种解释，
+         *   端到端判据也钉着这个标记属于 memory 类 ⇒ 本条锚定**位数证据**。
+         */
+        pattern: r"(?i)Java HotSpot\(TM\) Client VM|windows-x86[ )]|linux-x86[ )]|32-Bit",
+        conclusion: "现在用的是 32 位 Java，最多只能用到 1.5 GB 左右内存",
+        fix: Some(("换成 64 位 Java", FixKind::SwitchJava)) },
+    Rule { id: "java-need-jdk11", category: CrashCategory::Java,
+        pattern: r"(?i)requires Java 11|class file version 55\.0",
+        conclusion: "这个版本或 Mod 需要 Java 11",
+        fix: Some(("改用 Java 11", FixKind::SwitchJava)) },
+    Rule { id: "java-need-newer", category: CrashCategory::Java,
+        // ★ 只认"明说要几"的写法；`class file version 6x` 由下面的 java-version-mismatch 负责
+        pattern: r"(?i)requires Java 1[6-9]|requires Java 2[0-9]",
+        conclusion: "这个版本或 Mod 需要更新的 Java",
+        fix: Some(("换用合适的 Java", FixKind::SwitchJava)) },
+    Rule { id: "java-too-old", category: CrashCategory::Java,
+        pattern: r"(?i)Unsupported class file major version \d+",
+        conclusion: "游戏或 Mod 编译用的 Java 比现在这个新，当前 Java 太旧",
+        fix: Some(("换用更新的 Java", FixKind::SwitchJava)) },
+    Rule { id: "java-module-system", category: CrashCategory::Java,
+        pattern: r"(?i)Unable to make .{0,40} accessible|module java\.base does not .{0,10}opens|InaccessibleObjectException",
+        conclusion: "当前 Java 太新（9 及以上），这一代 Forge 或 OptiFine 还没适配它的模块系统",
+        fix: Some(("改用 Java 8", FixKind::SwitchJava)) },
+    Rule { id: "modlauncher-8", category: CrashCategory::Java,
+        pattern: r"(?i)cpw\.mods\.modlauncher|ModLauncher .{0,20}(failed|error)",
+        conclusion: "加载器（ModLauncher）没能起来，通常是 Java 版本对不上",
+        fix: Some(("换用合适的 Java", FixKind::SwitchJava)) },
+    Rule { id: "macos-jdk-8u261", category: CrashCategory::Environment,
+        pattern: r"(?i)1\.8\.0_261|8u261",
+        conclusion: "macOS 上的 Java 8u261 有一个已知的崩溃问题，换一个小版本就好",
+        fix: Some(("换用合适的 Java", FixKind::SwitchJava)) },
     // ---------- Java ----------
     Rule { id: "java-version-mismatch", category: CrashCategory::Java,
         pattern: r"(?i)UnsupportedClassVersionError|class file version \d+",
@@ -287,6 +335,20 @@ pub fn analyze_crash_log(raw: &str) -> CrashAnalysis {
     analyze_crash_log_with(raw, AnalyzeOptions::default())
 }
 
+/// 把聊天行剔掉（`[CHAT]`）—— 只给"匹配规则"用，不改原日志。
+///
+/// ★ 判据（ADR-011 ⑤）：聊天行里的关键词不是崩溃原因。
+///   实测形态：`[12:00:00] [Client thread/INFO]: [CHAT] <Steve> 是不是 java.lang.OutOfMemoryError`
+fn strip_chat_lines(raw: &str) -> String {
+    if raw.is_empty() {
+        return String::new();
+    }
+    raw.split('\n')
+        .filter(|line| !line.contains("[CHAT]"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// 同上，但带上**环境事实**（目前只有"是不是离线启动"）。
 ///
 /// 分两个入口是为了不破坏既有调用点：不知道环境的地方传默认值（= 不排除
@@ -294,22 +356,34 @@ pub fn analyze_crash_log(raw: &str) -> CrashAnalysis {
 pub fn analyze_crash_log_with(raw: &str, opts: AnalyzeOptions) -> CrashAnalysis {
     let mut all: Vec<CrashMatch> = Vec::new();
 
+    /*
+     * ★★ 2026-09-27（ADR-011 ⑤）：**先把聊天行剔掉再匹配**。
+     *
+     *   玩家在游戏里说一句 "java.lang.OutOfMemoryError 是什么" 会原样进日志的
+     *   `[CHAT]` 行 —— 那不是崩溃原因，但按关键词匹配的规则会当成命中，
+     *   结论于是变成"内存不够"，而真正的原因在别处。
+     *
+     *   ★ 只剔**用于匹配的文本**：下面的 `excerpt` 从这份文本里取，
+     *     而 `raw`（返回给前端的原始日志）一个字符都不动。
+     */
+    let text = strip_chat_lines(raw);
+
     for rule in RULES {
         let Ok(re) = Regex::new(rule.pattern) else {
             continue;
         };
-        if let Some(m) = re.find(raw) {
-            let start = raw[..m.start()].char_indices().rev().nth(80).map(|(i, _)| i).unwrap_or(0);
-            let end = raw[m.end()..]
+        if let Some(m) = re.find(&text) {
+            let start = text[..m.start()].char_indices().rev().nth(80).map(|(i, _)| i).unwrap_or(0);
+            let end = text[m.end()..]
                 .char_indices()
                 .nth(80)
                 .map(|(i, _)| m.end() + i)
-                .unwrap_or(raw.len());
+                .unwrap_or(text.len());
             all.push(CrashMatch {
                 rule_id: rule.id.to_string(),
                 category: rule.category,
                 conclusion: rule.conclusion.to_string(),
-                excerpt: raw[start..end].trim().to_string(),
+                excerpt: text[start..end].trim().to_string(),
             });
         }
     }
@@ -861,6 +935,33 @@ mod tests {
             bad.is_empty(),
             "这些日志片段 Rust 侧判错了（说明两份规则表漂移了）：\n    {}",
             bad.join("\n    ")
+        );
+    }
+
+    /// 聊天行里的关键词**不是**崩溃原因（ADR-011 ⑤）—— 与 TS 侧同一判据。
+    ///
+    /// ★ 为什么这条值得单独一个测试：玩家在游戏里问一句 "OutOfMemoryError 是什么"
+    ///   会原样进日志的 `[CHAT]` 行，而按关键词匹配的规则会把它当成"内存不足" ——
+    ///   结论错了，用户照着去调内存，真正的原因还在别处。
+    #[test]
+    fn chat_lines_do_not_trigger_rules() {
+        let chat = "[12:00:00] [Client thread/INFO]: [CHAT] <Steve> java.lang.OutOfMemoryError 是什么\n\
+                    [12:00:01] [Client thread/INFO]: [CHAT] <Alex> Unsupported class file major version 65";
+        let a = analyze_crash_log_with(chat, AnalyzeOptions { offline: false });
+        assert!(
+            a.matches.is_empty(),
+            "聊天行不该命中任何规则：{:?}",
+            a.matches.iter().map(|m| &m.rule_id).collect::<Vec<_>>()
+        );
+
+        // ★ 反面对照：同样的话出现在**日志正文**里，必须命中（否则上面那条等于把规则关了）
+        let real = "java.lang.OutOfMemoryError: Java heap space";
+        assert!(
+            analyze_crash_log_with(real, AnalyzeOptions { offline: false })
+                .matches
+                .iter()
+                .any(|m| m.rule_id == "out-of-memory-heap"),
+            "非聊天行的同样关键词必须命中"
         );
     }
 

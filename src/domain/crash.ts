@@ -63,6 +63,98 @@ export const CATEGORY_LABEL: Record<CrashCategory, string> = {
 /* ====================== 规则库（按类别） ====================== */
 
 export const CRASH_RULES: CrashRule[] = [
+  /*
+   * ---------- 0. JVM / Java 环境（★ 2026-09-27 补：ADR-011 点名"必须全覆盖"的那一类） ----------
+   *
+   * 为什么把这一批**排在最前**：这一类的共同点是"**我们能当场给出修复动作**"——
+   * Java 是启动器自己管的（能装、能换），所以这些崩溃不该只告诉用户"崩了"。
+   * 排在 `java-version-mismatch` 之前也是有意的：那条是个**笼统**的兜底
+   * （任何 `UnsupportedClassVersionError` 都命中），
+   * 而这些条能说出**到底要 Java 几**、或者"用的根本不是 HotSpot"。
+   *
+   * ★ 每条都配了 `tests/crash-rules.cases.json` 里的真实日志片段（两侧共用）。
+   */
+  {
+    id: 'openj9',
+    category: 'java',
+    pattern: /OpenJ9|IBM J9|j9vm|Eclipse OpenJ9/i,
+    conclusion: '当前用的是 OpenJ9（IBM 那套 Java），Minecraft 与多数 Mod 在它上面跑不起来',
+    fix: { label: '换成 Adoptium 的 Java', kind: 'switch-java' },
+    detail: '日志里出现 OpenJ9 / J9VM 就说明不是 HotSpot。换一份普通 Java 8 / 17 即可。',
+  },
+  {
+    id: 'java-32bit',
+    category: 'java',
+    /*
+     * ★★ 只认"**能证明是 32 位**"的痕迹，不认 `Could not reserve enough space` 那句话。
+     *
+     *   为什么（这条差点写错）：`Could not reserve enough space for object heap` 我一开始
+     *   当成 32 位 Java 的铁证，可它**同样**出现在"64 位 Java + 把内存填得比物理内存还大"时
+     *   —— 而结论里的动作完全不同（换 Java vs 调小内存）。仓库里既有的
+     *   `memory-too-large` 正是按后一种解释写的，端到端判据（`tests/e2e-check.mjs`）
+     *   也钉着这个标记属于 memory 类。
+     *   ⇒ 本条改成锚定**位数证据**：JVM 横幅里的 `Client VM`、hs_err 头里的
+     *     `windows-x86` / `linux-x86`（不带 `_64`）、或明确的 `32-Bit` 字样。
+     */
+    pattern: /Java HotSpot\(TM\) Client VM|windows-x86[ )]|linux-x86[ )]|32-Bit/i,
+    conclusion: '现在用的是 32 位 Java，最多只能用到 1.5 GB 左右内存',
+    fix: { label: '换成 64 位 Java', kind: 'switch-java' },
+    detail:
+      '32 位 Java 无论内存条多大都开不了大堆 —— 装了 8 GB 也会在启动时报"内存不足"（日志里那句 Could not reserve enough space 就是它的典型表现）。',
+  },
+  {
+    id: 'java-need-jdk11',
+    category: 'java',
+    pattern: /requires Java 11|class file version 55\.0/i,
+    conclusion: '这个版本或 Mod 需要 Java 11',
+    fix: { label: '改用 Java 11', kind: 'switch-java' },
+    detail: '1.17 附近的一些版本用 Java 11 才正常。',
+  },
+  {
+    id: 'java-need-newer',
+    category: 'java',
+    /*
+     * ★ 只认"**明说要几**"的那种写法（`requires Java 17`）。
+     *   不写 `class file version 6x` —— 那句由下面的 `java-version-mismatch` 统一负责，
+     *   两条都匹配的话，具体的那条会把它抢走，而它给出的答案并不比笼统那条更准。
+     */
+    pattern: /requires Java 1[6-9]|requires Java 2[0-9]/i,
+    conclusion: '这个版本或 Mod 需要更新的 Java',
+    fix: { label: '换用合适的 Java', kind: 'switch-java' },
+    detail: '日志里会直接写要几（例如 "requires Java 17"）；class file version 61 表示 Java 17、65 表示 Java 21。',
+  },
+  {
+    id: 'java-too-old',
+    category: 'java',
+    pattern: /Unsupported class file major version \d+/i,
+    conclusion: '游戏或 Mod 编译用的 Java 比现在这个新，当前 Java 太旧',
+    fix: { label: '换用更新的 Java', kind: 'switch-java' },
+    detail: '这句的意思是"当前 Java 读不懂这些 class 文件"—— 换新版本的 Java 就好。',
+  },
+  {
+    id: 'java-module-system',
+    category: 'java',
+    pattern: /Unable to make .{0,40} accessible|module java\.base does not .{0,10}opens|InaccessibleObjectException/i,
+    conclusion: '当前 Java 太新（9 及以上），这一代 Forge 或 OptiFine 还没适配它的模块系统',
+    fix: { label: '改用 Java 8', kind: 'switch-java' },
+    detail: '1.16.5 及更早的 Forge / OptiFine 只能配 Java 8。',
+  },
+  {
+    id: 'modlauncher-8',
+    category: 'java',
+    pattern: /cpw\.mods\.modlauncher|ModLauncher .{0,20}(failed|error)/i,
+    conclusion: '加载器（ModLauncher）没能起来，通常是 Java 版本对不上',
+    fix: { label: '换用合适的 Java', kind: 'switch-java' },
+    detail: 'Forge 1.17 起的 ModLauncher 要求 Java 16 以上（新版本要 17 / 21）。',
+  },
+  {
+    id: 'macos-jdk-8u261',
+    category: 'environment',
+    pattern: /1\.8\.0_261|8u261/i,
+    conclusion: 'macOS 上的 Java 8u261 有一个已知的崩溃问题，换一个小版本就好',
+    fix: { label: '换用合适的 Java', kind: 'switch-java' },
+    detail: '这一版 JDK 在 macOS 上会让游戏启动即崩，而日志里看不出别的原因。',
+  },
   /* ---------- 1. Java ---------- */
   {
     id: 'java-version-mismatch',
@@ -404,7 +496,17 @@ const OFFLINE_NOISE_WHY =
  *   （照实展示、不参与结论）—— 见 P0-6 的说明。
  */
 export function analyzeCrashLog(raw: string, opts: AnalyzeOptions = {}): CrashAnalysis {
-  const text = raw ?? '';
+  /*
+   * ★★ 2026-09-27（ADR-011 ⑤）：**先把聊天行剔掉再分析**。
+   *
+   *   玩家在游戏里说一句 "java.lang.OutOfMemoryError 是什么" 会原样进日志的
+   *   `[CHAT]` 行 —— 那**不是崩溃原因**，但按关键词匹配的规则会当成命中，
+   *   于是结论变成"内存不足"，而真正的原因在别处。
+   *   实测里最容易被这么带偏的正是这批 Java / 内存规则。
+   *
+   *   ★ 只剔**用于匹配的文本**：`raw`（原样返回给弹窗展示）一个字符都不动。
+   */
+  const text = stripChatLines(raw ?? '');
   const all: Array<{ rule: CrashRule; excerpt: string }> = [];
 
   for (const rule of CRASH_RULES) {
@@ -463,6 +565,20 @@ export function analyzeCrashLog(raw: string, opts: AnalyzeOptions = {}): CrashAn
     raw: text,
     heuristic: true,
   };
+}
+
+/**
+ * 把聊天行剔掉（`[CHAT]`）—— 只给"匹配规则"用，不改原日志。
+ *
+ * ★ 判据（ADR-011 ⑤）：聊天行里的关键词不是崩溃原因。
+ *   实测形态：`[12:00:00] [Client thread/INFO]: [CHAT] <Steve> 是不是 java.lang.OutOfMemoryError`
+ */
+function stripChatLines(raw: string): string {
+  if (!raw) return '';
+  return raw
+    .split(/\r?\n/)
+    .filter((line) => !/\[CHAT\]/.test(line))
+    .join('\n');
 }
 
 function heuristicGuess(text: string): {

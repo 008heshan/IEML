@@ -70,3 +70,30 @@ test('② cases 里每段日志，TS 必须判出期望的 rule id', () => {
   assert.deepEqual(bad, [], '这些日志片段 TS 侧判错了：\n    ' + bad.join('\n    '));
   console.log(`  ${casesFile.cases.length} 条片段全部命中期望规则`);
 });
+
+/*
+ * ③ 聊天行里的关键词**不是**崩溃原因（ADR-011 ⑤）。
+ *
+ *   为什么值得单独一条：玩家在游戏里问一句 "OutOfMemoryError 是什么" 会原样进日志的
+ *   `[CHAT]` 行，而按关键词匹配的规则会把它当成"内存不足" —— 结论错了，
+ *   用户照着去调内存，真正的原因还在别处。Rust 侧有同名判据（`chat_lines_do_not_trigger_rules`）。
+ */
+test('③ 聊天行（[CHAT]）不参与匹配，但正文里的同样关键词照常命中', () => {
+  const chatOnly = [
+    '[12:00:00] [Client thread/INFO]: [CHAT] <Steve> java.lang.OutOfMemoryError 是什么',
+    '[12:00:01] [Client thread/INFO]: [CHAT] <Alex> 我这边报 Unsupported class file major version 65',
+  ].join('\n');
+  const a = analyzeCrashLog(chatOnly, { offline: false });
+  assert.deepEqual(
+    a.matches.map((m) => m.rule.id),
+    [],
+    '聊天行不该命中任何规则',
+  );
+  // ★ 反面对照：同样的话出现在日志正文里，必须命中（否则等于把规则关了）
+  const real = analyzeCrashLog('java.lang.OutOfMemoryError: Java heap space', { offline: false });
+  assert.ok(
+    real.matches.some((m) => m.rule.id === 'out-of-memory-heap'),
+    '非聊天行的同样关键词必须命中',
+  );
+  console.log('  聊天行被剔除、正文照常命中');
+});

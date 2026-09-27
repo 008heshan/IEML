@@ -14,6 +14,38 @@
   },
   "cases": [
     {
+      "rule": "openj9",
+      "log": "openjdk version \"1.8.0_392\"\nEclipse OpenJ9 VM (build 2.14.0, JRE 1.8.0 Windows)\nJVMJ9VM007E Command-line option unrecognised"
+    },
+    {
+      "rule": "java-32bit",
+      "log": "# A fatal error has been detected by the Java Runtime Environment\n# Java VM: Java HotSpot(TM) Client VM (25.392-b08 mixed mode windows-x86 )\n# There is insufficient memory for the Java Runtime Environment to continue.\nCould not reserve enough space for 1048576KB object heap"
+    },
+    {
+      "rule": "java-need-jdk11",
+      "log": "java.lang.UnsupportedClassVersionError: net/minecraftforge/server/ServerMain has been compiled by a more recent version of the Java Runtime (class file version 55.0), this version only recognizes up to 52.0\nrequires Java 11"
+    },
+    {
+      "rule": "java-need-newer",
+      "log": "Caused by: java.lang.UnsupportedClassVersionError: mod/example/Mod has been compiled by a more recent version of the Java Runtime (class file version 61.0)\n\trequires Java 17 or newer"
+    },
+    {
+      "rule": "java-too-old",
+      "log": "java.lang.UnsupportedClassVersionError: fi/dy/masa/litematica/Litematica has been compiled by a more recent version of the Java Runtime\njava.lang.IllegalArgumentException: Unsupported class file major version 65"
+    },
+    {
+      "rule": "java-module-system",
+      "log": "java.lang.reflect.InaccessibleObjectException: Unable to make field private final java.lang.String java.io.File.path accessible: module java.base does not \"opens java.io\" to unnamed module"
+    },
+    {
+      "rule": "modlauncher-8",
+      "log": "[12:00:01] [main/ERROR] [cpw.mods.modlauncher.Launcher/MODLAUNCHER]: ModLauncher failed to launch: java.lang.IllegalStateException: Missing Java 17 features"
+    },
+    {
+      "rule": "macos-jdk-8u261",
+      "log": "java version \"1.8.0_261\"\nJava(TM) SE Runtime Environment (build 1.8.0_261-b12)\n# A fatal error has been detected by the Java Runtime Environment"
+    },
+    {
       "rule": "java-version-mismatch",
       "log": "java.lang.UnsupportedClassVersionError: net/minecraft/client/main/Main has been compiled by a more recent version of the Java Runtime (class file version 61.0)"
     },
