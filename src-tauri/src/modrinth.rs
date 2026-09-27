@@ -40,6 +40,16 @@ pub struct SearchResponse {
     /// 也让"搜索结果页"能把来源如实写在标题旁边，而不是含糊其辞。
     #[serde(default)]
     pub source: String,
+    /// ★★ **中文别名命中时**的一句话（ADR-016）：`「物品管理器」是中文叫法，按 jei 搜的`。
+    ///
+    /// `None` = 这次搜索**没有**经过别名表（用户输的是英文，或者中文没能命中词表）。
+    /// ★ `skip_deserializing`：这是**我们**加的字段，平台的 JSON 里没有它 ——
+    ///   不能让它被反序列化覆盖（那会让这个字段永远是空）。
+    #[serde(default, skip_deserializing)]
+    pub query_alias: Option<String>,
+    /// 这次**实际**拿去搜的词（可能不是用户输入的那个 —— 见 `query_alias`）
+    #[serde(default, skip_deserializing)]
+    pub term_used: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

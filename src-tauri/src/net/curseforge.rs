@@ -810,6 +810,12 @@ pub async fn search(
         offset: pagination.index,
         limit: pagination.page_size,
         source: "curseforge".to_string(),
+        /*
+         * ★ 中文别名那两个字段由**命令层**填（`resource_search` 按顺序试候选词时
+         *   才知道最后用的是哪个）。这一层只负责把 CurseForge 的结果翻成我们的形状。
+         */
+        query_alias: None,
+        term_used: None,
     })
 }
 

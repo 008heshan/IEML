@@ -236,6 +236,17 @@ export interface ModrinthSearch {
   limit: number;
   /** 这批结果从哪来：`modrinth` / `curseforge` */
   source?: string;
+  /**
+   * ★★ **中文别名命中时**的一句话（ADR-016）：
+   *   `「物品管理器」是中文叫法，按 jei 搜的`。
+   *
+   *   `null` / 缺省 = 这次搜索没经过别名表（英文查询，或中文没命中词表）。
+   *   界面据此说清楚"我拿什么去搜的" —— 不说的话，用户会以为搜索框里的中文
+   *   被当成关键词原样提交了，而结果其实是另一个词搜出来的。
+   */
+  query_alias?: string | null;
+  /** 这次**实际**拿去搜的词（可能和用户输入的不一样） */
+  term_used?: string | null;
 }
 
 export interface ModrinthVersion {

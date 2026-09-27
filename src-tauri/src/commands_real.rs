@@ -808,31 +808,100 @@ pub async fn resource_search(
         None
     };
 
-    if wanted == ResourceSource::CurseForge {
-        return crate::net::curseforge::search(
-            k,
-            &query,
-            mc_version.as_deref(),
-            loader_for_query,
-            limit.unwrap_or(20),
-            offset.unwrap_or(0),
-        )
-        .await
-        .map_err(err);
+    /*
+     * ★★ 中文搜 Mod（ADR-016 的第 ① 步）：命中别名表就**改用英文关键词**。
+     *
+     *   为什么要"按顺序试多个候选"而不是只试第一个：同一个 Mod 在两个平台上的
+     *   slug 经常不一样（`industrialcraft` 与 `ic2`），只试一个等于放弃一半；
+     *   而"先试最可能的、空了再试下一个"既省时间又不会漏。
+     *
+     *   ★ 全部候选都空 ⇒ 返回**最后一次的空结果**，并在 `query_alias` 里如实
+     *     说明"按 xx 搜过" —— 界面据此说"没找到，试试英文名"（ADR-016 第 ③ 步）。
+     */
+    let alias = crate::domain::alias::lookup(&query);
+    let queries: Vec<String> = match &alias {
+        Some(hit) => hit.terms.clone(),
+        None => vec![query.clone()],
+    };
+    let mut used_term = queries.first().cloned().unwrap_or_default();
+    let mut last_resp: Option<modrinth::SearchResponse> = None;
+
+    for (i, q) in queries.iter().enumerate() {
+        let resp = if wanted == ResourceSource::CurseForge {
+            crate::net::curseforge::search(
+                k,
+                q,
+                mc_version.as_deref(),
+                loader_for_query,
+                limit.unwrap_or(20),
+                offset.unwrap_or(0),
+            )
+            .await
+            .map_err(err)?
+        } else {
+            modrinth::search_with_facets(
+                q,
+                k.modrinth_project_type(),
+                mc_version.as_deref(),
+                loader_for_query,
+                // ★★ 数据包靠这个分类区分（Modrinth 没有 datapack 这个项目类型）
+                k.extra_category(),
+                limit.unwrap_or(20),
+                offset.unwrap_or(0),
+            )
+            .await
+            .map_err(err)?
+        };
+        used_term = q.clone();
+        let empty = resp.hits.is_empty();
+        last_resp = Some(resp);
+        if !empty || i + 1 == queries.len() {
+            break;
+        }
+        say!(
+            "[IEML/alias] 「{}」按「{q}」搜是空的，换下一个候选（{}）",
+            query,
+            alias.as_ref().map(|h| h.key.clone()).unwrap_or_default()
+        );
     }
 
-    let mut resp = modrinth::search_with_facets(
-        &query,
-        k.modrinth_project_type(),
-        mc_version.as_deref(),
-        loader_for_query,
-        // ★★ 数据包靠这个分类区分（Modrinth 没有 datapack 这个项目类型）
-        k.extra_category(),
-        limit.unwrap_or(20),
-        offset.unwrap_or(0),
-    )
-    .await
-    .map_err(err)?;
+    let mut resp = last_resp.ok_or_else(|| "搜索没有返回任何响应".to_string())?;
+    /*
+     * ★★ **slug 完全相同的那一条提到最前面**（2026-09-27，真机探针逼出来的）。
+     *
+     *   实测：按 `projecte`（等价交换在 CurseForge 上的 slug）搜，前八条全是**附属**
+     *   （`projecte-integration`、`projecte-charms`…），正主在第八条开外；
+     *   Modrinth 那边同样如此。原因是平台的排序按"名字/简介命中"打分，
+     *   而正主的**名字**往往和 slug 不一样（`ProjectE` vs `projecte`）。
+     *
+     *   而"slug 一模一样"这件事是**最强的证据**：用户要的就是它。
+     *   ⇒ 把它稳稳放在第一条，其余顺序不动（不破坏平台的相关性排序）。
+     *
+     *   ★ 只在**别名路径**上做这件事（用户输的是中文，排序本来就轮不到他关心），
+     *     英文查询一个字节都不动 —— 那是用户自己会看排序的场景。
+     */
+    if alias.is_some() {
+        let terms_lower: Vec<String> = queries.iter().map(|q| q.to_lowercase()).collect();
+        if let Some(pos) = resp
+            .hits
+            .iter()
+            .position(|h| terms_lower.contains(&h.slug.to_lowercase()))
+        {
+            if pos > 0 {
+                let hit = resp.hits.remove(pos);
+                resp.hits.insert(0, hit);
+            }
+        }
+    }
+    /*
+     * ★ `term_used` **无论有没有别名都要填**：界面靠它说"这页结果是从哪个词来的"，
+     *   而"和输入一样"本身也是一条要如实告诉用户的信息
+     *   （第一版只在命中别名时才填，于是英文查询那里是 null —— 探针抓到的）。
+     */
+    resp.term_used = Some(used_term);
+    if let Some(hit) = &alias {
+        resp.query_alias = Some(crate::domain::alias::explain(hit));
+    }
 
     /*
      * ★ 数据包要做**二次过滤**：`categories:datapack` 是 Modrinth 给的
