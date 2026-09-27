@@ -26,6 +26,36 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SHAPE = /^\d+\.\d+\.\d+(?:-(dev|alpha|beta|rc)\.\d+)?$/;
 
 /**
+ * 按 `docs/VERSIONING.md` §3.2.1 算下一个版本号（用户 2026-09-27 定的规则）。
+ *
+ * ```text
+ *   小修小改        → 修订位 +1    1.0.0 → 1.0.1 → … → 1.0.10
+ *   大修大改        → 次版本 +1    1.0.7 → 1.1.0（修订位归零）
+ *   下一个大版本    → 主版本 +1    1.4.2 → 2.0.0（后两位归零）
+ * ```
+ *
+ * ★ 为什么要有个函数而不是手写：手算最常见的事故是**多进一位**
+ *   （`1.0.9 → 1.1.0` 看着顺眼，其实按规则该是 `1.0.10`）。
+ *   ★ 位数不封顶：`1.0.10`、`1.12.0`、`1.0.123` 都是正常积累，不许补零、不许跳号。
+ *   ★ 带阶段后缀的（`0.1.0-rc.3`）按"同一位"处理：`--bump patch` 走序号 +1
+ *     （`0.1.0-rc.3 → 0.1.0-rc.4`），因为那个阶段里"一位"指的就是阶段序号。
+ *     正式去掉后缀那一步**不由这个函数做**（那是人决定"这个候选就是正式版"）。
+ */
+function nextVersion(current, kind) {
+  const m = current.match(/^(\d+)\.(\d+)\.(\d+)(?:-(dev|alpha|beta|rc)\.(\d+))?$/);
+  if (!m) return null;
+  const [maj, min, pat] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  if (m[4]) {
+    // 阶段内：动的是阶段序号
+    return `${maj}.${min}.${pat}-${m[4]}.${Number(m[5]) + 1}`;
+  }
+  if (kind === 'patch') return `${maj}.${min}.${pat + 1}`;
+  if (kind === 'minor') return `${maj}.${min + 1}.0`;
+  if (kind === 'major') return `${maj + 1}.0.0`;
+  return null;
+}
+
+/**
  * 所有需要版本号的地方。
  *
  * 约定：`find` 必须**捕获组 1 = 版本号本身**。
@@ -128,9 +158,32 @@ function reportMismatch(found, headline) {
 }
 
 function main() {
-  const arg = process.argv[2];
+  const argv = process.argv.slice(2);
+  const arg = argv[0];
   const check = arg === '--check';
   const docsOnly = arg === '--docs';
+
+  /*
+   * `--bump patch|minor|major`：按规则算出下一个号（见 `nextVersion` 的说明）。
+   * ★ 算出来的号一样要过形状校验与 `--check`，没有"因为是脚本算的就免检"这回事。
+   */
+  if (arg === '--bump') {
+    const kind = argv[1];
+    if (!['patch', 'minor', 'major'].includes(kind)) {
+      console.error('用法：node tools/set-version.mjs --bump patch|minor|major');
+      console.error('  规则见 docs/VERSIONING.md §3.2.1（小修小改→修订位；大修大改→次版本；下一个大版本→主版本）');
+      process.exit(1);
+    }
+    const cur = readVersionAt(TARGETS[0]);
+    const next = nextVersion(cur ?? '', kind);
+    if (!next) {
+      console.error(`✗ 从当前版本号 ${cur} 算不出下一个（形状不认识）`);
+      process.exit(1);
+    }
+    console.log(`按规则：${cur} --${kind}--> ${next}`);
+    process.argv[2] = next; // 复用下面的写入路径（一处实现）
+    return main();
+  }
 
   /* ---------- ① 只查文档口径（verify.mjs 里的「文档版本口径一致」） ---------- */
   if (docsOnly) {
@@ -174,9 +227,10 @@ function main() {
 
   if (!arg) {
     console.error('用法：node tools/set-version.mjs <版本号>');
+    console.error('      node tools/set-version.mjs --bump patch|minor|major   # 按规则算下一个号');
     console.error('      node tools/set-version.mjs --check   只校验一致性（verify 里会跑）');
     console.error('      node tools/set-version.mjs --docs    只校验文档口径（README / CHANGELOG）');
-    console.error('  版本号规则见 docs/VERSIONING.md');
+    console.error('  版本号规则见 docs/VERSIONING.md（§3.2.1：小修小改→修订位，大修大改→次版本，下一个大版本→主版本）');
     process.exit(1);
   }
   if (!SHAPE.test(arg)) {
