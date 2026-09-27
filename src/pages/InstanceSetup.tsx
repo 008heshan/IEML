@@ -406,7 +406,11 @@ export function InstanceSetup() {
                   ? '强制隔离'
                   : '已关闭'}
             </span>
-            <span className="ss-src">{isolation.isolated ? '独立目录' : '共享目录'}</span>
+            {/* ★ 2026-09-27：原来是 `isolation.isolated ? '独立目录' : '共享目录'` —— 后半是假的
+                （共享模式没接上，所有实例都还是各自独立的目录）。 */}
+            <span className="ss-src">
+              {isolation.isolated ? '独立目录' : '独立目录（「不隔离」还没生效）'}
+            </span>
           </button>
           <button
             type="button"

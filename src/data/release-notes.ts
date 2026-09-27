@@ -72,6 +72,20 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.4.5',
+    date: '2026-09-27',
+    headline: '这一版把两处不成立的界面说明改成了实话。',
+    groups: [
+      {
+        title: '修复了',
+        items: [
+          '修复了 「不隔离」这个选项：它还没实现，界面却按已生效描述，现在如实说明。',
+          '修复了 关于页里"退出登录会删掉令牌"的说法，界面上并没有退出登录。',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.4.4',
     date: '2026-09-27',
     headline: '这一版功能与上一版相同，清掉的是一批已经不成立的说法。',

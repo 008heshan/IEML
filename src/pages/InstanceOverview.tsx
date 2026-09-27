@@ -357,7 +357,8 @@ export function InstanceOverview() {
               ? '自动判定'
               : inst.config.isolation === 'on'
                 ? '已强制开启'
-                : '已关闭（共享目录）'}
+                : /* ★ 2026-09-27：原来是"已关闭（共享目录）"—— 假的，见 VersionsPage 同处的说明 */
+                  '已关闭（还没生效）'}
           </span>
           <span />
         </div>
