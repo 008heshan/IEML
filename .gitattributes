@@ -1,0 +1,38 @@
+# 换行符与文本属性：**钉死在 LF**。
+#
+# ★★ 为什么必须有这个文件（2026-09-27，CI 抓出来的真问题）：
+#
+#   Windows 上 git 的默认配置是 `core.autocrlf=true` —— 于是**任何人克隆下来**
+#   得到的都是 CRLF 工作区，而维护者本机那份是 LF。两边跑同一套门禁，
+#   结果一边绿一边红：
+#
+#     · `tools/gates/check-doc-anchors.mjs` 在 CRLF 检出下报了 **12 个死锚点**，
+#       而在 LF 工作区里它们全是活的。根因是 JS 的 `.` 不匹配 `\r`，
+#       于是 `/^#{1,6}\s+(.*)$/` 一行都匹配不上，标题锚点集变成空的。
+#       （那条门禁自己也已经改成按 `\r?\n` 切分 —— 两处都做，少一层也不假红。）
+#
+#   这条规矩的价值不在"好看"：**CI 上的红必须与代码有关**。
+#   一份"只有别人克隆才会红"的门禁，会让下一个人学会"忽略它"。
+#
+# ★ 二进制文件必须排除：不排除的话 git 会尝试做行尾转换并可能损坏它们
+#   （本仓库目前没有 .png/.jar 入库，但这条规矩要提前立着）。
+#
+# ★ `.ps1` 例外吗？不例外：PowerShell 不关心换行符，而仓库有单独一条门禁
+#   管它们的 **BOM**（`tools/gates/check-ps1-encoding.mjs`），两者互不干扰。
+
+* text=auto eol=lf
+
+# 二进制：一个字节都别动
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.jar binary
+*.zip binary
+*.exe binary
+*.dll binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
