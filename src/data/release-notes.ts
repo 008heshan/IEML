@@ -84,6 +84,30 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.13.0',
+    date: '2026-09-27',
+    headline: '这一版让你在版本设置里选的 Java 真的会被用上（以前只存不用）。',
+    groups: [
+      {
+        title: '新增了',
+        items: ['新增了 你选的 Java 与这个版本的要求对不上时会提醒一句。'],
+      },
+      {
+        title: '修复了',
+        items: [
+          '修复了 手动指定 Java 却仍然用别的 Java 启动的问题，现在启动用的就是你选的那一个。',
+          '修复了 指定区间那一档不生效的问题，现在按你填的区间挑 Java。',
+          '修复了 「实例文件夹」那一档永远报"没找到 Java"的问题，整合包自带的那份现在能用上。',
+          '修复了 指定的 Java 文件不在了的时候偷偷改用别的 Java 的问题，现在会如实报错。',
+        ],
+      },
+      {
+        title: '修改了',
+        items: ['修改了 若干启动器底层事项。'],
+      },
+    ],
+  },
+  {
     version: '0.12.0',
     date: '2026-09-27',
     headline: '这一版把两处"界面说的和真实情况对不上"修掉了：可用内存与新建版本入口。',

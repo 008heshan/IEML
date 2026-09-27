@@ -301,6 +301,7 @@ fn instance_actually_launches() {
         window_title: None,
         join_server: None,
         notice: None,
+        java_note: None,
     };
     let cmd = launch_args::build_command(&spec);
 

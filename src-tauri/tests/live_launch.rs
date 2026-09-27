@@ -313,6 +313,7 @@ async fn live_install_and_launch_minecraft() {
         window_title: None,
         join_server: None,
         notice: None,
+        java_note: None,
     };
 
     let cmd = launch_args::build_command(&spec);
