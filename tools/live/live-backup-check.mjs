@@ -249,9 +249,35 @@ try {
     const btn = [...last.querySelectorAll('button')].find((b) => (b.textContent || '').trim() === '回滚');
     if (!btn) return { ok: false, reason: '弹窗里没有「回滚」按钮', text: (last.innerText || '').slice(0, 160) };
     btn.click();
-    return { ok: true, text: (last.innerText || '').slice(0, 200) };
+    return { ok: true, text: (last.innerText || '').slice(0, 400) };
   })()`);
   console.log(`  点「回滚」：${JSON.stringify(restoreClick)}  确认弹窗：${JSON.stringify(confirmClick)}`);
+  /*
+   * ★★ 确认框里必须是**算出来的真实差异**（ADR-014：先预览差异再确认）。
+   *   这一段钉的是"数字真不真"：我们刚把一个存档从 LEVEL-V1 改成了 LEVEL-BROKEN，
+   *   所以"与现在不同"的计数必须**恰好是 1**。写死一句"会覆盖当前状态"不算数 ——
+   *   那正是这个仓库反复修的那种"看起来说了、其实什么都没说"。
+   */
+  const dialogText = String(confirmClick?.text ?? '');
+  const diffMatch = dialogText.match(/写回\s*(\d+)\s*个文件，其中\s*(\d+)\s*个与现在不同/);
+  console.log(
+    `  差异预览：${diffMatch ? `写回 ${diffMatch[1]} 个，其中 ${diffMatch[2]} 个不同` : '（没解析到）'}`,
+  );
+  check(
+    !!diffMatch,
+    '★ 确认框里给了**真实差异**（写回 N 个 / 其中 M 个不同）',
+    diffMatch ? diffMatch[0] : dialogText.slice(0, 120),
+  );
+  check(
+    diffMatch?.[2] === '1',
+    '★★ 「与现在不同」的数字是真的（刚改坏 1 个存档 → 恰好 1 个）',
+    `实测 ${diffMatch?.[2]}`,
+  );
+  check(
+    dialogText.includes('不会被删除'),
+    '★ 确认框写明"备份里没有、盘上有的文件不会被删"',
+    dialogText.includes('不会被删除') ? '有' : '没有',
+  );
   await sleep(6000);
   const levelNow = readFileSync(path.join(GAME, 'saves', 'World1', 'level.dat'), 'utf8');
   check(levelNow === 'LEVEL-V1', '★★ 回滚之后存档回到备份时的内容', levelNow);

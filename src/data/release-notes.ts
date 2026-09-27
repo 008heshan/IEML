@@ -72,6 +72,21 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.4.0',
+    date: '2026-09-27',
+    headline: '这一版回滚之前先告诉你它会动哪些文件。',
+    groups: [
+      {
+        title: '新增了',
+        items: ['新增了 回滚前先算出差异：写回多少文件、多少与现在不同、哪些会被保留。'],
+      },
+      {
+        title: '修改了',
+        items: ['修改了 回滚的确认提示，改成算出来的真实数字，算不出来就如实说。'],
+      },
+    ],
+  },
+  {
     version: '0.3.0',
     date: '2026-09-27',
     headline: '这一版给每个版本加了备份：存档与配置能存一份，也能回滚回去。',

@@ -30,7 +30,7 @@ import { useConfirm } from '../ui/confirm';
 import { useRealApi } from '../hooks/useRealApi';
 import { useApp } from '../state/AppContext';
 import { formatBytes } from '../domain';
-import type { BackupManifest, BackupRestoreReport } from '../bridge/tauri';
+import type { BackupManifest, BackupRestorePreview, BackupRestoreReport } from '../bridge/tauri';
 
 /** epoch 秒 → 本地时间（与备份目录名同源，见文件头第 2 条） */
 function localTime(secs: number): string {
@@ -108,20 +108,48 @@ export function BackupPanel({
   const doRestore = async (b: BackupManifest) => {
     if (!api) return;
     /*
-     * ★★ 确认框必须说清两件事（ADR-014）：
-     *   · 回滚**之前**会自动再备份一次当前状态 —— 所以这个动作可反悔；
-     *   · 备份里没有的文件**不会被删**（多出来的 Mod 会移出 mods/）。
-     *   少写第二句，用户会以为"回滚 = 回到当时的样子"，而其实今天新建的世界还在。
+     * ★★ 先算差异，再确认（ADR-014 原文："点击可**预览差异**（哪些存档文件会变化）
+     *   再确认回滚"）。算差异只读文件、一个字节都不动 —— 而回滚是这个功能里
+     *   **唯一会覆盖现有数据**的动作，所以"会动哪些文件"必须在动手之前说出来。
+     *
+     * ★ 算不出来就**如实说算不出来**，并把确认框的措辞退回"不知道会动什么" ——
+     *   不许假装算过了（那正是这个仓库反复修的假话）。
      */
+    let preview: BackupRestorePreview | null = null;
+    let previewErr: string | null = null;
+    try {
+      preview = await api.backup.preview(slug, b.id);
+    } catch (e) {
+      previewErr = e instanceof Error ? e.message : String(e);
+    }
+    const diff = preview
+      ? [
+          '会用这一份备份里的存档与配置**覆盖当前状态**：',
+          `· 写回 ${preview.will_write} 个文件，其中 ${preview.will_change} 个与现在不同` +
+            (preview.will_add > 0 ? `（${preview.will_add} 个是现在还没有的）` : ''),
+          preview.sample_write.length > 0
+            ? `  ${preview.sample_write.slice(0, 4).join('、')}` +
+              (preview.will_change > 4 ? ` …等共 ${preview.will_change} 个` : '')
+            : null,
+          `· 备份里没有、现在盘上有的 ${preview.kept_extra} 个文件**不会被删除**`,
+          preview.mods_extra.length > 0
+            ? `· ${preview.mods_extra.length} 个多余的 Mod 会被移出 mods/（挪进 mods-extra/，没删）`
+            : null,
+          preview.mods_missing.length > 0
+            ? `· ★ 清单里有 ${preview.mods_missing.length} 个 Mod 现在不在盘上（${preview.mods_missing
+                .slice(0, 3)
+                .join('、')}）—— 回滚之后需要你自己重新获取`
+            : null,
+        ]
+          .filter(Boolean)
+          .join('\n')
+      : `★ 这次的差异**没算出来**（${previewErr ?? '未知原因'}）—— 所以"回滚会覆盖什么、` +
+        `保留什么"我给不了数字，点下去之前你我都不知道。`;
     const ok = await confirm({
       title: `回滚到 ${localTime(b.created_secs)} 的备份`,
       danger: true,
       confirmText: '回滚',
-      message:
-        `会用这一份备份里的存档与配置**覆盖当前状态**（${contentsOf(b)}）。\n\n` +
-        `· 回滚之前会先自动备份一次当前状态，所以后悔了还能回到现在；\n` +
-        `· 备份里没有的文件不会被删除；\n` +
-        `· 备份里没有的 Mod 会被移出 mods/（挪到那份备份的 mods-extra/，没有删掉）。`,
+      message: `${diff}\n\n· 回滚之前会先自动备份一次当前状态，所以后悔了还能回到现在。`,
     });
     if (!ok) return;
     setBusy(b.id);

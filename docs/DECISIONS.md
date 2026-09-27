@@ -971,6 +971,17 @@ mods/ 的清单     只存文件名+SHA1 清单，不存 jar 本体（jar 可从
 一律当**开**（`auto_backup_defaults_to_on_and_only_explicit_false_turns_it_off`）。
 备份失败**不拦启动** —— 但一定在日志里留痕（`say!`）。
 
+**★ 2026-09-27 补：回滚前的差异预览**（ADR-014 的 UI 原文："点击可预览差异
+（哪些存档文件会变化）再确认回滚"）。`backup::preview_restore` **只读地**算一遍
+"会写回多少文件 / 其中多少与现在不同 / 多少是新增 / 保留多少 / 哪些 Mod 会移走或缺失"，
+确认框里显示的是**这些真实数字**；算不出来时如实说算不出来
+（不退回一句"会覆盖当前状态"充数）。
+判据三条：`preview_separates_added_overwritten_and_unchanged`（含"预览不许动文件"）、
+`preview_lists_mods_that_will_move_out_and_ones_that_are_missing`、
+`preview_ignores_mtime_only_differences`（★ 只改 mtime **不算**变化 ——
+否则会吓唬用户说"你的存档被动过"）。真机判据在 `live-backup-check.mjs` ③：
+刚改坏 1 个存档时，确认框里的"与现在不同"必须**恰好是 1**。
+
 ---
 
 ## ADR-015　资源包 / 光影包管理

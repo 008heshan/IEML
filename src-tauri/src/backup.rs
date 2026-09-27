@@ -593,6 +593,203 @@ pub async fn restore(
     Ok(report)
 }
 
+/// 回滚**之前**给用户看的差异（ADR-014 的 UI 要求：先预览差异，再确认回滚）。
+///
+/// ★★ 为什么要有它（而不是"直接点回滚"）：
+///   ADR-014 写的是"点击可**预览差异**（哪些存档文件会变化）再确认回滚"。
+///   回滚会**覆盖**用户当前的存档 —— 这是这个功能里唯一一个会动现有数据的动作，
+///   而"会动哪些文件"完全可以在动手之前算出来。算出来给用户看，
+///   与"点下去之后才知道"是两种完全不同的东西。
+///
+/// ★ 只报**计数 + 样例**，不把几百条路径全塞给界面：
+///   存档动辄上千个文件（region/*.mca），界面上列不下，列了也没人看。
+///   样例最多 [`PREVIEW_SAMPLE`] 条，界面照实说"还有 N 条"。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RestorePreview {
+    pub from_id: String,
+    pub created_secs: u64,
+    pub reason: String,
+    /// 备份里有的文件（会被写回）
+    pub will_write: usize,
+    /// 其中**内容与现在不同**的（新增 + 覆盖）
+    pub will_change: usize,
+    /// 其中现在盘上还没有的（纯新增）
+    pub will_add: usize,
+    /// 现在盘上有、备份里没有的（**不会被删**，如实列出来）
+    pub kept_extra: usize,
+    /// 会被移进那份备份的 `mods-extra/` 的 Mod
+    pub mods_extra: Vec<String>,
+    /// 清单里有、盘上没有的 Mod（要用户自己重新获取）
+    pub mods_missing: Vec<String>,
+    pub total_bytes: u64,
+    pub sample_write: Vec<String>,
+    pub sample_kept: Vec<String>,
+}
+
+/// 预览里最多列几条路径（界面据此说"还有 N 条"）
+const PREVIEW_SAMPLE: usize = 8;
+
+/// 两个文件内容是否相同：**先比大小，再逐块比字节**（早退）。
+///
+/// ★ 为什么不比 mtime：解压、回滚、换机器都会改 mtime，而内容没变 ——
+///   那会让预览说"这些文件都会变"，而实际上一个字节都没动。
+/// ★ 不用 SHA1：这里只需要"相同/不同"，逐块比可以**一发现不同就返回**，
+///   比整份哈希更省。
+/// ★ 读不了（权限/被杀软锁住）时返回 `false`，也就是**当成"会变化"** ——
+///   宁可多报一处变化，也不要漏报一处。
+fn files_equal(a: &Path, b: &Path) -> bool {
+    use std::io::Read;
+    let (Ok(ma), Ok(mb)) = (std::fs::metadata(a), std::fs::metadata(b)) else {
+        return false;
+    };
+    if ma.len() != mb.len() {
+        return false;
+    }
+    let (Ok(mut fa), Ok(mut fb)) = (std::fs::File::open(a), std::fs::File::open(b)) else {
+        return false;
+    };
+    let mut ba = [0u8; 64 * 1024];
+    let mut bb = [0u8; 64 * 1024];
+    loop {
+        let (na, nb) = match (fa.read(&mut ba), fb.read(&mut bb)) {
+            (Ok(x), Ok(y)) => (x, y),
+            _ => return false,
+        };
+        if na != nb {
+            return false;
+        }
+        if na == 0 {
+            return true;
+        }
+        if ba[..na] != bb[..nb] {
+            return false;
+        }
+    }
+}
+
+/// 算一遍"回滚会做什么"（**只读，不动任何文件**）。
+pub fn preview_restore(paths: &AppPaths, slug: &str, id: &str) -> Result<RestorePreview, String> {
+    let root = backups_root(paths, slug);
+    let Some(src) = safe_join(&root, id) else {
+        return Err("备份 id 不合法".into());
+    };
+    let text = std::fs::read_to_string(src.join("backup.json"))
+        .map_err(|e| format!("读不到这份备份的清单（{id}）：{e}"))?;
+    let manifest: BackupManifest =
+        serde_json::from_str(&text).map_err(|e| format!("这份备份的清单读不了：{e}"))?;
+
+    let game_dir = paths.instance_game_dir(slug);
+    let mut will_write = 0usize;
+    let mut will_change = 0usize;
+    let mut will_add = 0usize;
+    let mut kept_extra = 0usize;
+    let mut sample_write: Vec<String> = Vec::new();
+    let mut sample_kept: Vec<String> = Vec::new();
+
+    for item in &manifest.items {
+        let rel = item.rel.as_str();
+        let from = src.join(rel);
+        if item.kind == "file" {
+            if !item.present || !from.is_file() {
+                continue;
+            }
+            will_write += 1;
+            let Some(to) = safe_join(&game_dir, rel) else {
+                continue;
+            };
+            if !to.is_file() {
+                will_add += 1;
+                will_change += 1;
+                if sample_write.len() < PREVIEW_SAMPLE {
+                    sample_write.push(format!("{rel}（新增）"));
+                }
+            } else if !files_equal(&from, &to) {
+                will_change += 1;
+                if sample_write.len() < PREVIEW_SAMPLE {
+                    sample_write.push(format!("{rel}（覆盖）"));
+                }
+            }
+            continue;
+        }
+        if item.kind != "dir" || !item.present || !from.is_dir() {
+            continue;
+        }
+        let mut in_backup = Vec::new();
+        walk_rel(&from, &from, &mut in_backup);
+        let set: std::collections::HashSet<&str> = in_backup.iter().map(|s| s.as_str()).collect();
+        for r in &in_backup {
+            will_write += 1;
+            let cur = game_dir.join(rel).join(r.replace('/', std::path::MAIN_SEPARATOR_STR));
+            if !cur.is_file() {
+                will_add += 1;
+                will_change += 1;
+                if sample_write.len() < PREVIEW_SAMPLE {
+                    sample_write.push(format!("{rel}/{r}（新增）"));
+                }
+            } else if !files_equal(&from.join(r.replace('/', std::path::MAIN_SEPARATOR_STR)), &cur)
+            {
+                will_change += 1;
+                if sample_write.len() < PREVIEW_SAMPLE {
+                    sample_write.push(format!("{rel}/{r}（覆盖）"));
+                }
+            }
+        }
+        // 现在盘上有、备份里没有的 —— 回滚**不会删**它们
+        let mut on_disk = Vec::new();
+        let cur_dir = game_dir.join(rel);
+        if cur_dir.is_dir() {
+            walk_rel(&cur_dir, &cur_dir, &mut on_disk);
+        }
+        for f in on_disk {
+            if !set.contains(f.as_str()) {
+                kept_extra += 1;
+                if sample_kept.len() < PREVIEW_SAMPLE {
+                    sample_kept.push(format!("{rel}/{f}"));
+                }
+            }
+        }
+    }
+
+    // Mod 对账：只读目录名，不算 SHA1（预览要快；真正回滚时才算）
+    let mut on_disk_mods: Vec<String> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(paths.instance_mods_dir(slug)) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.to_ascii_lowercase().ends_with(".jar") {
+                on_disk_mods.push(name);
+            }
+        }
+    }
+    let want: std::collections::HashSet<&str> =
+        manifest.mods.iter().map(|m| m.name.as_str()).collect();
+    let have: std::collections::HashSet<&str> = on_disk_mods.iter().map(|s| s.as_str()).collect();
+    let mods_missing: Vec<String> = manifest
+        .mods
+        .iter()
+        .filter(|m| !have.contains(m.name.as_str()))
+        .map(|m| m.name.clone())
+        .collect();
+    let mods_extra: Vec<String> = on_disk_mods
+        .into_iter()
+        .filter(|n| !want.contains(n.as_str()))
+        .collect();
+
+    Ok(RestorePreview {
+        from_id: manifest.id.clone(),
+        created_secs: manifest.created_secs,
+        reason: manifest.reason.clone(),
+        will_write,
+        will_change,
+        will_add,
+        kept_extra,
+        mods_extra,
+        mods_missing,
+        total_bytes: manifest.total_bytes,
+        sample_write,
+        sample_kept,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -828,8 +1025,7 @@ mod tests {
 
     /// 删一份备份：认得出是备份才删；id 想越界一律拒绝
     #[tokio::test]
-    async fn remove_refuses_anything_that_is_not_a_backup() {
-        let (paths, slug) = fake_instance("remove");
+    async fn remove_refuses_anything_that_is_not_a_backup() {        let (paths, slug) = fake_instance("remove");
         let m = create(&paths, &slug, "测试实例", "1.20.1", "手动", 1_758_000_000)
             .await
             .unwrap();
@@ -840,6 +1036,89 @@ mod tests {
         );
         assert!(remove(&paths, &slug, &m.id).is_ok());
         assert!(list(&paths, &slug).is_empty());
+        cleanup(&paths);
+    }
+
+    /*
+     * ---------- 回滚前的差异预览（ADR-014 的 UI 要求） ----------
+     *
+     * 预览是"回滚"这个动作**唯一**的刹车：它必须在动手之前把"会动哪些文件、
+     * 会保留哪些、缺哪些 Mod"说准。所以这里把三种情况分别钉住：
+     * 纯新增、内容不同（覆盖）、内容相同（**不算变化** —— 不能吓唬用户）。
+     */
+
+    #[tokio::test]
+    async fn preview_separates_added_overwritten_and_unchanged() {
+        let (paths, slug) = fake_instance("preview");
+        let first = create(&paths, &slug, "测试实例", "1.20.1", "手动", 1_758_000_000)
+            .await
+            .unwrap();
+        let game = paths.instance_game_dir(&slug);
+
+        // 没有动过任何东西 → 一个都不会"变化"
+        // （备份里有 4 个文件：saves/World1/level.dat、config/jei.toml、options.txt、servers.dat）
+        let p0 = preview_restore(&paths, &slug, &first.id).unwrap();
+        assert_eq!(p0.will_write, 4, "备份里有 4 个文件：{p0:?}");
+        assert_eq!(p0.will_change, 0, "什么都没改时不该报变化：{p0:?}");
+        assert_eq!(p0.will_add, 0);
+
+        // ① 改一个（内容不同 → 覆盖）② 删一个（→ 新增回来）③ 加一个备份里没有的（→ 保留）
+        std::fs::write(game.join("saves/World1/level.dat"), b"LEVEL-DATA-V2").unwrap();
+        std::fs::remove_file(game.join("config/jei.toml")).unwrap();
+        std::fs::write(game.join("config/new.toml"), b"later").unwrap();
+
+        let p = preview_restore(&paths, &slug, &first.id).unwrap();
+        assert_eq!(p.will_write, 4, "{p:?}");
+        assert_eq!(p.will_add, 1, "config/jei.toml 被删了 → 会新增回来：{p:?}");
+        assert_eq!(p.will_change, 2, "level.dat 覆盖 + jei.toml 新增 = 2：{p:?}");
+        assert_eq!(p.kept_extra, 1, "config/new.toml 备份里没有 → 会保留：{p:?}");
+        assert!(
+            p.sample_write.iter().any(|s| s.contains("level.dat")),
+            "样例里要能看见那个被改过的存档：{p:?}"
+        );
+        assert!(p.sample_kept.iter().any(|s| s.contains("new.toml")), "{p:?}");
+        // ★ 预览**不许动任何文件**（它是只读的）
+        assert_eq!(
+            std::fs::read(game.join("saves/World1/level.dat")).unwrap(),
+            b"LEVEL-DATA-V2",
+            "预览把手改了 —— 那是回滚才该做的事"
+        );
+        cleanup(&paths);
+    }
+
+    #[tokio::test]
+    async fn preview_lists_mods_that_will_move_out_and_ones_that_are_missing() {
+        let (paths, slug) = fake_instance("previewmods");
+        let first = create(&paths, &slug, "测试实例", "1.20.1", "手动", 1_758_000_000)
+            .await
+            .unwrap();
+        let game = paths.instance_game_dir(&slug);
+        std::fs::write(game.join("mods/create.jar"), vec![1u8; 64]).unwrap();
+        std::fs::remove_file(game.join("mods/sodium.jar")).unwrap();
+
+        let p = preview_restore(&paths, &slug, &first.id).unwrap();
+        assert_eq!(p.mods_extra, vec!["create.jar".to_string()], "{p:?}");
+        assert_eq!(p.mods_missing, vec!["sodium.jar".to_string()], "{p:?}");
+        cleanup(&paths);
+    }
+
+    /// 预览里"内容相同"必须**真的**按字节判：改 mtime 不算变化
+    #[tokio::test]
+    async fn preview_ignores_mtime_only_differences() {
+        let (paths, slug) = fake_instance("previewmtime");
+        let first = create(&paths, &slug, "测试实例", "1.20.1", "手动", 1_758_000_000)
+            .await
+            .unwrap();
+        let game = paths.instance_game_dir(&slug);
+        // 内容一个字节不改，只是重写了一遍（mtime 变了）
+        let same = std::fs::read(game.join("saves/World1/level.dat")).unwrap();
+        std::fs::write(game.join("saves/World1/level.dat"), &same).unwrap();
+
+        let p = preview_restore(&paths, &slug, &first.id).unwrap();
+        assert_eq!(
+            p.will_change, 0,
+            "只改了 mtime 就不该说'会变化' —— 那会让用户以为存档被动过：{p:?}"
+        );
         cleanup(&paths);
     }
 }
