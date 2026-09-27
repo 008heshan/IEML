@@ -17,6 +17,10 @@
 #[macro_use]
 pub mod logx;
 pub mod auth;
+/// ★ 实例的备份与回滚（ADR-014）—— 独立一层：它只碰盘、不碰 Tauri，
+///   于是"jar 一个字节都不许进备份""回滚前必须先备份当前状态"这些规矩
+///   能用普通单测钉死（见该文件尾部的测试）。
+pub mod backup;
 pub mod commands;
 pub mod commands_real;
 pub mod domain;
@@ -378,6 +382,12 @@ pub fn run() {    /*
             commands::delete_instance_files,
             /* ★ 复制实例目录（审计补：以前"创建副本"只克隆记录、不建目录） */
             commands::copy_instance_files,
+            /* ★★ 实例备份与回滚（ADR-014）：规则在 `crate::backup`，这一层只做转换 */
+            commands::backup_list,
+            commands::backup_create,
+            commands::backup_restore,
+            commands::backup_remove,
+            commands::backup_open_folder,
             commands::installed_versions,
             /* -------- 真实网络：版本清单与加载器 -------- */
             commands_real::fetch_version_manifest,

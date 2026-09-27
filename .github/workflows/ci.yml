@@ -1,0 +1,141 @@
+# IEML 的 CI：两道门，各自把「守到哪一步」说清楚。
+#
+# ★ 为什么是两条作业，而不是一条跑两遍
+#   `tools/verify.mjs` 里有两项**只能在 Windows 上跑**：它们 spawn `powershell` +
+#   `tools/env/cargo.ps1` 去编译 Rust 并链接 MSVC。另有一项（exe 内嵌前端一致性）
+#   要先有 `src-tauri/target/release/ieml.exe` 才跑 —— 全新 clone 没有，脚本自己会
+#   打印「跳过」。所以 CI **不该为了它去打包 exe**（打包是发布流程的事，要 NSIS）。
+#   ⇒ windows 作业跑全量（真门禁）；linux 作业只跑可移植子集（`--skip-rust`）。
+#
+# ★ 看绿之前先看清哪一条绿了
+#   linux 作业**不覆盖 Rust**（不编译、也不跑 Rust 领域测试），脚本会自己打印它跳过
+#   了哪几项；它的用途只有一条：前端 / 规则 / 文档这几层在**大小写敏感、分隔符不同**
+#   的文件系统上也不炸 —— 这些在 Windows 开发机上永远暴露不出来。
+#   平台口径（只发 Windows）见 docs/VERSIONING.md。
+#
+# ★ 这里不设任何「失败也放行」的开关：任何一项失败都必须让作业红。
+#   一个会给自己放行的门禁等于没有门禁；红了先怀疑量法、再怀疑代码 ——
+#   这是这个仓库的老规矩。
+#
+# ★ 不写 paths-ignore：文档本身就在门禁里（文档锚点、README 与事实一致、更新日志
+#   格式都是会红的检查），所以改 docs/ 或 CHANGELOG 同样要跑。
+
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# 同一个 ref 上连推两次 ⇒ 取消旧的那次：省 runner，也让「最新一次」就是结论。
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# 这两条作业只读代码（门禁只读不写），给最小权限。
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: 全量（Windows · 含 Rust 编译与领域测试）
+    runs-on: windows-latest
+    # 首次编译 tauri + reqwest 那一大坨是长尾（CI 上没有增量缓存）。
+    # 60 分钟不是「预计要跑这么久」，而是「超过它就不是慢，是卡住了」。
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # ★ 顺序不能换：setup-node 的 pnpm 缓存需要先有 pnpm（它要跑 `pnpm store path`）。
+      # ★ 版本必须在这里给死：package.json 里**没有** packageManager 字段，action 不会
+      #   自己知道用哪一版；而 10.34.5 正是产出 pnpm-lock.yaml（lockfileVersion 9.0）
+      #   的那一版 —— 换一版可能顺手改写锁文件，`--frozen-lockfile` 就白设了。
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      # ★ 为什么需要这一步：`tools/env/cargo.ps1` 先找
+      #   `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\...\vcvars64.bat`，
+      #   找不到就回退到 `cargo-manual-msvc.ps1` → `msvc-env.ps1`，而后者默认**也是**
+      #   那条 2022 BuildTools 路径。托管 runner 上装的不是它（windows-latest 已换成
+      #   Windows Server 2025 + Visual Studio 2026），于是两条默认路径都不在。
+      #   `msvc-env.ps1` 自己留了逃生口 `IEML_VS_ROOT`（第 26 行；同一脚本第 27 行还有
+      #   `IEML_WINSDK_ROOT`，但 Windows SDK 在标准位置、各镜像一致，所以那里不猜），
+      #   仓库的 ADR-053 也写着「版本号不写死：按目录名挑最新的一个」—— 所以用 vswhere
+      #   现场问出实际位置，而不是把某个版本号抄进 YAML。问不到就什么都不写（脚本会自己
+      #   打印找不到 MSVC 的原因）；这一步**不会**让作业红，免得把「探测失败」伪装成
+      #   「代码失败」。
+      #
+      # ★ 脚本正文故意只用 ASCII，而且**必须**走 pwsh（不能是 powershell）：这段正文
+      #   会被 runner 落成一个 UTF-8（无 BOM）的 .ps1 再交给解释器，而 Windows PowerShell
+      #   5.1 按系统 ANSI 代码页解码它 —— 正是本仓库 `tools/gates/check-ps1-encoding.mjs`
+      #   记了三次的那个坑（中文被读坏 → 报错指向一个无辜的 `}`）。本机实测：
+      #   同一段带中文的正文在 5.1 下直接语法错。注释写在 YAML 里，永远是 UTF-8，安全。
+      # ★ 往 GITHUB_ENV 写的那一行用 `[IO.File]::AppendAllText(...UTF8Encoding($false))`，
+      #   而不是 `Out-File -Encoding utf8`：后者在 PowerShell 5.1 下会写进 UTF-8 BOM
+      #   （本机实测前 3 字节 EF BB BF），而带 BOM 的 GITHUB_ENV 会让第一个变量名变成
+      #   `\ufeffIEML_VS_ROOT` —— 表现是这一步「成功」了、后面却在报「找不到 MSVC」。
+      #   显式不写 BOM，两种 PowerShell 下都对。
+      - name: 探测 MSVC 位置（喂给仓库自己的 cargo.ps1）
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = ''
+          if (Test-Path -LiteralPath $vswhere) {
+            $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1
+          }
+          if ($vs) {
+            [System.IO.File]::AppendAllText($env:GITHUB_ENV, "IEML_VS_ROOT=$vs`n", (New-Object System.Text.UTF8Encoding($false)))
+            Write-Output "[ci] IEML_VS_ROOT=$vs"
+          } else {
+            Write-Output '[ci] vswhere reported no MSVC: tools/env/cargo.ps1 keeps its own default path'
+          }
+          exit 0
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 全量验证（node tools/verify.mjs）
+        run: node tools/verify.mjs
+
+  linux:
+    name: 可移植子集（Linux · Rust 两项不跑）
+    runs-on: ubuntu-latest
+    # 类型检查 + 前端构建在本机合计不到一分钟；给 30 分钟是为了别让「runner 慢」变成假红。
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      # ★ 先把「这一条不覆盖什么」印在日志与作业摘要的最前面。
+      #   这里绿的含金量就是「不含 Rust」—— 不能让读者以为整套都过了。
+      #   （`--skip-rust` 自己也会打印它跳过了哪几项，这里再说一遍是有意的：
+      #     摘要页上只看得到结果，看不到中间那几行。）
+      - name: 声明本作业不覆盖的范围（Rust 两项没有运行）
+        run: |
+          tee -a "$GITHUB_STEP_SUMMARY" <<'EOF'
+          ## ⚠️ 本作业只跑「可移植子集」
+
+          `node tools/verify.mjs --skip-rust` —— **Rust 的两项（`cargo test --lib`、
+          `cargo check --tests`）在本作业上没有运行**：它们要 `powershell` +
+          `tools/env/cargo.ps1`，只在 windows 作业里跑。
+
+          ⇒ 本作业绿了**不等于** Rust 侧绿了，也不等于「应用能在 Linux 上跑」。
+          EOF
+
+      - name: 可移植子集（node tools/verify.mjs --skip-rust）
+        run: node tools/verify.mjs --skip-rust

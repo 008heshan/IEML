@@ -377,7 +377,11 @@ UI 分为两个明确分组
 > | 架构 | x64 + arm64 双架构 | ⚠️ 实际只出 **x64**（`tauri.conf.json` 的 `bundle.targets` 只有 `nsis`；arm64 只体现在**库文件过滤**上，不是平台支持） |
 >
 > 另外本文后面还有几处"设计稿时期"的说法已经不准（都在对应位置标了）：
-> `.github/workflows/`（**这个目录不存在**，全仓没有 CI）、安全清单里的
+> `.github/workflows/`（★ **2026-09-27 更正：这个目录现在存在了**
+> ——`ci.yml`：Windows 跑全量 `verify`、Linux 跑 `--skip-rust` 的可移植子集；
+> **但它一次都还没跑过**：往 GitHub 推 `.github/workflows/` 需要凭据带 `workflow` 权限，
+> 本机那把没有，GitHub 明确拒绝（原文见 `CHANGELOG.md`）。所以"有 CI"目前只是**配置到位**，
+> 不是"CI 在跑"）、安全清单里的
 > "CI 里跑 `cargo audit` + `npm audit`"、风险表里的"CI 三平台视觉回归"
 > 与"GitHub Actions 签名流水线"、以及 OptiFine 的应对方式（实际走 BMCLAPI 的结构化 JSON，
 > 不抓 HTML 表格）。

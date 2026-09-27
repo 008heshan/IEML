@@ -2,7 +2,7 @@
 
 从零构建的 Minecraft 启动器。快、小、好用。
 
-**当前版本：`0.2.0`** — 改动见 [`CHANGELOG.md`](CHANGELOG.md)。
+**当前版本：`0.3.0`** — 改动见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 真实可运行的桌面应用，460+ 项 Rust 测试 + 前端测试，真实下载和真实启动都跑通过。
 
@@ -14,7 +14,7 @@ pnpm dev              # 浏览器开发，?demo=1 给演示实例
 pnpm desktop:dev      # 桌面版
 pnpm desktop:build    # 打包 exe + NSIS，并逐字节复制到桌面
                       #   → src-tauri/target/release/ieml.exe
-                      #   → src-tauri/target/release/bundle/nsis/IEML_0.2.0_x64-setup.exe
+                      #   → src-tauri/target/release/bundle/nsis/IEML_0.3.0_x64-setup.exe
 pnpm verify           # 一键验证：类型 + 测试 + 端到端 + 构建 + 静态门禁
 ```
 
@@ -59,6 +59,7 @@ UI（React）  →  桥接（一个接口两套实现）  →  领域层（TS �
 - 自动下载 Java（Adoptium），多来源 Java 探测
 - 整合包（.mrpack）、Mod 管理、崩溃分析与脱敏导出
 - 下载引擎：单连接 + 失败换源 + 429 退避 + 校验自愈 + 真暂停
+- 实例备份与回滚（存档 / 配置 / 游戏设置 / 服务器列表；Mod 只记清单，启动前自动备份，默认留 5 份）
 - 微软设备码登录（离线模式可用）
 - 多开实例、单实例（再双击一次是"调起在跑的"）
 - 启动器自身的更新：CNB 公开发布仓 + Ed25519 验签（设置页 →「检查启动器更新」）
@@ -67,8 +68,12 @@ UI（React）  →  桥接（一个接口两套实现）  →  领域层（TS �
 
 这一节是**如实清单**，不是免责声明 —— 写在这里的事，界面上也能看到对应的说法。
 
-- **只发布 Windows**。macOS / Linux 没有实测过（没有 CI、也没有那两台机器），
-  `0.1.0` 的范围就是 Windows。见 [`docs/VERSIONING.md`](docs/VERSIONING.md) 的平台口径。
+- **只发布 Windows**。macOS / Linux 没有实测过，也没有那两台真机。
+  CI 配置已写好（`.github/workflows/ci.yml`：Windows 全量 + Linux 只跑可移植子集），
+  但**到这一版为止它一次都没跑过** —— 往 GitHub 推 `.github/workflows/` 需要凭据带
+  `workflow` 权限，本机那把没有（GitHub 原话见 `CHANGELOG.md`）。
+  ⇒ 在那之前，"Windows 全量 / Linux 子集"是**计划**，不是已证事实。
+  平台口径见 [`docs/VERSIONING.md`](docs/VERSIONING.md)。
 - **安装包没有买 Windows 代码签名证书**（实测：exe 与安装包的 Authenticode 状态都是
   `NotSigned`），所以从浏览器下载后首次运行，Windows 可能提示「已保护你的电脑」或
   「未知发布者」—— 点「更多信息 → 仍要运行」即可。**自身更新是另一套**：

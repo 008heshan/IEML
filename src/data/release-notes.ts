@@ -72,6 +72,24 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.3.0',
+    date: '2026-09-27',
+    headline: '这一版给每个版本加了备份：存档与配置能存一份，也能回滚回去。',
+    groups: [
+      {
+        title: '新增了',
+        items: [
+          '新增了 版本备份与回滚：存档、配置、游戏设置、服务器列表都能存一份并回滚。',
+          '新增了 启动游戏前自动备份，默认开着，保留最近五份。',
+        ],
+      },
+      {
+        title: '修改了',
+        items: ['修改了 备份里的 Mod 只记文件名与校验值，不把 Mod 文件拷进备份。'],
+      },
+    ],
+  },
+  {
     version: '0.2.0',
     date: '2026-09-27',
     headline: '这一版能装 CurseForge 的整合包了，整合包文件也可以直接拖进窗口。',
