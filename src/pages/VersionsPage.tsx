@@ -554,6 +554,21 @@ export function VersionsPage() {
               <IconDownload /> 导入其他启动器
             </Button>
           ) : null}
+          {/*
+            ★★ 2026-09-28：**新建版本**（弹窗）的入口。
+              这个弹窗（`CreateInstanceModal`）一直存在、却只在"一个实例都没有"的
+              空状态里能被打开 —— 也就是说**已经装了东西的用户根本找不到它**
+              （这是他建第二个版本时最自然的动作）。
+              它和下载页的「安装游戏」是同一件事（同一个 `InstallComposer`），
+              所以这里只是给同一件事补一个顺手的位置。
+          */}
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => window.dispatchEvent(new CustomEvent('ieml:create'))}
+          >
+            <IconPlus /> 新建版本
+          </Button>
           {api ? (
             <Button
               size="sm"

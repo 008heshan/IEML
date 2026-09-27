@@ -34,6 +34,19 @@
 >   Prism / 没有标记但有数据的 / 只有游戏本体的），
 >   真机判据 31 条见 `tools/live/live-import-check.mjs`。
 >   游戏本体（`versions/` `libraries/` `assets`）**不搬**：那是同一份官方文件。
+> · **★★ Java 的「四模式」目前是装饰**（2026-09-28 查清，尚未修）：
+>   实例设置页能选「自动 / 区间 / 实例文件夹 / 手动指定」，`instances.json` 里也**存着**
+>   （`javaMode` / `javaPath` / `javaRange`），但**启动时没人用它**：
+>   · `src/domain/java.ts` 的 `pickJava()`（四模式的挑选实现）**全仓库没有一个调用方**
+>     （只有 `tests/domain.test.js` 在测它）；
+>   · Rust 侧 `java_mode` **只在 `domain/types.rs` 的结构体里出现**，没有任何逻辑读它；
+>   · 「实例文件夹」那一档还有第二处缺口：`platform::scan_java_with_extra` 扫了 7 处
+>     （JAVA_HOME / PATH / 注册表 / 官方运行时 / 别的启动器 / 自己下载的 / 常见目录），
+>     **从来不扫 `<实例>/java`** —— 所以 `source == "instance"` 的运行时一个都不会有，
+>     那一档必然报「实例文件夹里没有找到 Java」。
+>   ⇒ 真修法是"把模式接到启动路径上"（Rust 侧按模式选 java，并由真机探针验启动命令里
+>     用的就是那个 java），**不是**只补一处扫描。这一条留在这里，别只修一半。
+
 > · **M6.5 的"约 70 条崩溃规则"是 PCL2 的规模**，IEML 自己现在是 9 大类 **44 条**
 >   （界面上的条数由 `RULE_STATS.total` 数出来）。
 >   ★ **2026-09-27 决定不追这个数字**（用户把这件事交给实现方斟酌）：改成按"哪一类能真正

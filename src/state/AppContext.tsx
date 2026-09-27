@@ -266,6 +266,18 @@ interface AppContextValue {  state: AppState;
    */
   refreshIsolation: () => Promise<void>;
 
+  /**
+   * ★★ **重新读一次机器信息**（可用内存 / 总内存）。
+   *
+   * 为什么需要它：`machineInfo` 原来只在**启动那一刻**读一次，而"可用内存"是
+   * 一个**一直在变**的数（用户开个浏览器就少 2 GB）。界面上写着"可用 12 GB"
+   * 而那是三小时前的读数 —— 用户照它选内存，然后游戏起不来。
+   * 启动页显示这个数，所以它在那儿按节奏重读（见 `LaunchPage`）。
+   *
+   * ★ 读失败时**保持原值**（不写 0、也不清空）：一个旧的数字比一个假的 0 好。
+   */
+  refreshMachine: () => Promise<void>;
+
 
   /**
    * ★★ 2026-09-25（用户：「主页也有同样问题」）：**当前文件夹里的版本** ——
@@ -1118,6 +1130,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [backend]);
 
+  /**
+   * ★★ 重读机器信息（可用内存 / 总内存）。
+   *
+   * 只换 `machine` 这一格（`machine/set` 本来就是这个语义）——
+   * 换游戏根目录之后也是它把新路径带回来的（见 `reloadAfterRootChange`）。
+   */
+  const refreshMachine = useCallback(async () => {
+    try {
+      const m = await backend.machineInfo();
+      dispatch({ type: 'machine/set', machine: m });
+    } catch (e) {
+      /* 读失败就保持原值 —— 一个旧数字比一个假的 0 好 */
+      console.error('[IEML] 重读机器信息失败（保持原值）：', e);
+    }
+  }, [backend]);
+
   useEffect(() => {
     const onFocus = () => void refreshInstances();
     window.addEventListener('focus', onFocus);
@@ -1464,6 +1492,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     reloadAfterRootChange,
     refreshInstances,
     refreshIsolation,
+    refreshMachine,
     folder: {
       versions: folderVers,
       instancesInFolder: folderMatch.instances,

@@ -84,6 +84,24 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.12.0',
+    date: '2026-09-27',
+    headline: '这一版把两处"界面说的和真实情况对不上"修掉了：可用内存与新建版本入口。',
+    groups: [
+      {
+        title: '修复了',
+        items: [
+          '修复了 启动页显示的可用内存一直是启动那一刻的读数，现在它会自己跟着变。',
+          '修复了 已经装了版本的玩家找不到「新建版本」入口的问题，版本列表右上角现在有它。',
+        ],
+      },
+      {
+        title: '修改了',
+        items: ['修改了 若干启动器底层事项。'],
+      },
+    ],
+  },
+  {
     version: '0.11.0',
     date: '2026-09-27',
     headline: '这一版让"搬家"这类操作要么全做完、要么一点都不动 —— 不会再留下半份。',
