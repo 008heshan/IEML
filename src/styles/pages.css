@@ -2088,6 +2088,62 @@
   stroke: var(--danger);
 }
 
+/*
+ * 切换隔离时那个"要不要搬过去"的弹窗（ADR-005 的迁移提示）。
+ *
+ * 排版的目标只有一个：**让"从哪到哪、搬什么、多大"在一屏里看清** ——
+ * 这是一个"点下去就换目录"的动作，用户得先看明白再点。
+ */
+.iso-move {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-bottom: var(--space-3);
+  font-size: var(--text-sm);
+}
+.iso-move-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+.iso-move-k {
+  flex: 0 0 auto;
+  width: 2em;
+  color: var(--text-secondary);
+}
+.iso-move-row .mono {
+  word-break: break-all;
+}
+.iso-move-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: var(--space-2) 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  font-size: var(--text-sm);
+}
+.iso-move-item {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+/* 弹窗里的复选框行：勾选与说明在同一行，说明可换行 */
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: var(--space-2) 0;
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  cursor: pointer;
+}
+.check-row input {
+  margin-top: 3px;
+  flex: 0 0 auto;
+}
+
 /* ============================ 内存控件 ============================ */
 .ram-head {
   display: flex;

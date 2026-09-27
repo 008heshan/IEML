@@ -161,21 +161,109 @@ impl AppPaths {
     ///   （启动 / 扫 Mod / 装 Mod），而其中两处写的是 `instance_dir`
     ///   而不是 `instance_dir/game` —— 结果是 Mod 下到了一个游戏永远不读的目录。
     ///   路径只允许有一个来源。
+    ///
+    ///   ★★ **这是"物理上的"目录，不是"这个实例实际用的"目录**：
+    ///     开了「不隔离」的实例，游戏读的是共享的 `.minecraft` ——
+    ///     要那个请用 [`AppPaths::game_dir_of`]（它先做 ADR-005 的判定）。
+    ///     凡是**游戏会读/写**的东西（saves、mods、config、logs、资源包…）都必须走
+    ///     `game_dir_of`；只有 `natives/`、实例自己的日志与备份清单才用这个。
     pub fn instance_game_dir(&self, slug: &str) -> PathBuf {
         self.instance_dir(slug).join("game")
     }
 
+    /* ============ 隔离判定（ADR-005）：游戏目录到底在哪 ============ */
+
+    /// 启动器自己的一个 JSON 记录（`instances.json` / `prefs.json`）。
+    ///
+    /// ★ 读不到、读坏了、不是对象 —— 一律 `None`。调用方必须**按缺证据处理**，
+    ///   而不是当成"空对象"继续往下猜（这个仓库已经因为"把读不到当没有"栽过）。
+    pub fn own_json(&self, name: &str) -> Option<serde_json::Value> {
+        let p = self.own_file_for_read(name)?;
+        let text = std::fs::read_to_string(p).ok()?;
+        serde_json::from_str::<serde_json::Value>(&text).ok()
+    }
+
+    /// 账本里这个实例那一条（`instances[].config.slug == slug`）
+    pub fn instance_json(&self, slug: &str) -> Option<serde_json::Value> {
+        let ledger = self.own_json("instances.json")?;
+        ledger
+            .get("instances")?
+            .as_array()?
+            .iter()
+            .find(|i| {
+                i.get("config")
+                    .and_then(|c| c.get("slug"))
+                    .and_then(|s| s.as_str())
+                    == Some(slug)
+            })
+            .cloned()
+    }
+
+    /// 这个实例**自己的**游戏目录里已经有内容了吗（ADR-005 第 ② 段的证据）。
+    ///
+    /// ★ 判据是 `mods/` 或 `saves/` **存在且非空**：空目录不算"有内容" ——
+    ///   启动器自己会在装资源包时把 `mods/` 建出来，把"目录在"当成"用户在用"
+    ///   会让第 ② 段永远成立（等于自动判定失效，用户再也共享不了）。
+    fn instance_game_dir_has_content(&self, slug: &str) -> bool {
+        let game = self.instance_game_dir(slug);
+        ["mods", "saves"].iter().any(|d| {
+            std::fs::read_dir(game.join(d))
+                .map(|mut it| it.next().is_some())
+                .unwrap_or(false)
+        })
+    }
+
+    /// **这个实例的隔离判定**（ADR-005）—— 界面显示的就是它，路径也按它算。
+    ///
+    /// 三份证据：账本里的 `config.isolation`、实例目录里有没有内容、
+    /// `prefs.json` 的 `globalIsolation`。
+    pub fn isolation_verdict(&self, slug: &str) -> crate::domain::isolation::Verdict {
+        use crate::domain::types::IsolationMode;
+        let inst = self.instance_json(slug);
+        let readable = inst.is_some();
+        let mode = inst
+            .as_ref()
+            .and_then(|i| i.get("config"))
+            .and_then(|c| c.get("isolation"))
+            .and_then(|m| m.as_str())
+            .map(|m| match m {
+                "on" => IsolationMode::On,
+                "off" => IsolationMode::Off,
+                _ => IsolationMode::Auto,
+            })
+            .unwrap_or(IsolationMode::Auto);
+        let global = self
+            .own_json("prefs.json")
+            .and_then(|p| p.get("globalIsolation").and_then(|x| x.as_str()).map(String::from))
+            .unwrap_or_else(|| "isolated".to_string());
+        crate::domain::isolation::resolve(mode, self.instance_game_dir_has_content(slug), &global, readable)
+    }
+
+    /// ★★ **这个实例实际使用的游戏目录** —— 全仓库唯一的那个答案。
+    ///
+    ///   隔离 → `instances/<slug>/game`；不隔离 → 共享的 `.minecraft`。
+    ///   `--gameDir`、`mods/`、`saves/`、`config/`、资源包、数据包、备份、
+    ///   「打开 mods 目录」—— 全部走这一个方法，否则就会出现
+    ///   "界面说装好了、游戏读不到"（这个仓库最不能接受的那种错）。
+    pub fn game_dir_of(&self, slug: &str) -> PathBuf {
+        if self.isolation_verdict(slug).isolated {
+            self.instance_game_dir(slug)
+        } else {
+            self.shared.clone()
+        }
+    }
+
     /// 实例的 mods 目录（属于游戏目录，不是实例目录）
     pub fn instance_mods_dir(&self, slug: &str) -> PathBuf {
-        self.instance_game_dir(slug).join("mods")
+        self.game_dir_of(slug).join("mods")
     }
 
     /// ★★ **任意一种社区资源的安装目录**（Mod / 资源包 / 光影 / 数据包）。
     ///
     /// 与 `instance_mods_dir` 同源（都在**游戏目录**下，不是实例目录下）——
     /// 这是唯一会让"装好了但游戏读不到"出错的点：
-    /// 游戏进程的工作目录是 `instances/{slug}/game`，
-    /// 它只会在 `<gameDir>/resourcepacks` 里找资源包，别处一律看不见。
+    /// 游戏进程的工作目录是 `instances/{slug}/game`（或者开了「不隔离」时的共享
+    /// `.minecraft`），它只会在 `<gameDir>/resourcepacks` 里找资源包，别处一律看不见。
     ///
     /// `kind` 用 `domain::resources::ResourceKind`，目录名由它给
     /// （**只有一份**描述，见那个模块的说明）。
@@ -184,7 +272,7 @@ impl AppPaths {
         slug: &str,
         kind: crate::domain::resources::ResourceKind,
     ) -> PathBuf {
-        self.instance_game_dir(slug).join(kind.install_dir())
+        self.game_dir_of(slug).join(kind.install_dir())
     }
 
     /* ============ 启动器自己的文件（★★ A-4 修复：搬出游戏根目录） ============ */

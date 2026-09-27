@@ -45,6 +45,8 @@ import { launchFailureOf, type LaunchPreview, type LaunchRequest } from '../brid
 export function LaunchPage() {
   const { state, target, go, goDownloadTab, backend, toast, setLaunchTarget, openVersion, folder } = useApp();
   const { api, isDesktop } = useRealApi();
+  /** 要启动的那个实例的隔离判定（后端算的结论，ADR-005；读不到时 null） */
+  const launchIsolation = target ? state.isolation[target.config.slug] ?? null : null;
 
   const [launching, setLaunching] = useState(false);
   const [preview, setPreview] = useState<LaunchPreview | null>(null);
@@ -489,7 +491,13 @@ export function LaunchPage() {
                   {target.loader?.version ? <span className="mono">{target.loader.version}</span> : null}
                   {target.addons.length > 0 ? ' · ' : ''}
                   {target.addons.map((a) => (a.kind === 'optifine' ? 'OptiFine' : 'LiteLoader')).join(' · ')}
-                  {target.config.isolation !== 'off' ? ' · 已隔离' : ''}
+                  {/*
+                    ★★ 2026-09-27（0.7.0）：这一格以前写的是 `isolation !== 'off' ? ' · 已隔离' : ''` ——
+                      它按**用户选的那个模式**说话，而不是按**最终结论**：
+                      选「自动」而全局默认是共享时，启动页会说"已隔离"，游戏其实读共享目录。
+                      现在只在**后端判定为隔离**时才说这句（结论来自 `state.isolation`）。
+                  */}
+                  {launchIsolation?.isolated ? ' · 已隔离' : ''}
                 </span>
               </div>
               <div className="lh-sub">

@@ -3593,8 +3593,16 @@ async fn prepare_spec(
     repair: bool,
 ) -> Result<LaunchSpec, LaunchError> {    let shared = &state.paths().shared;
     let instance_dir = state.paths().instance_dir(&req.instance_slug);
-    // 游戏工作目录：saves / mods / config 都在这里（与 scan_mods / install_mod 同一来源）
-    let game_dir = state.paths().instance_game_dir(&req.instance_slug);
+    /*
+     * ★★ 游戏工作目录：saves / mods / config 都在这里 —— 而且它**由隔离判定决定**
+     *   （ADR-005）：隔离的实例用 `instances/<slug>/game`，选了「不隔离」的实例
+     *   用共享的 `.minecraft`。
+     *
+     *   ★ 这一行以前写死成 `instance_game_dir(slug)` —— 那正是"「不隔离」选了也白选"
+     *     的成因：界面上三档选择器、后端一条没人调用的判定，而真正决定游戏读哪个
+     *     目录的就是这一行。
+     */
+    let game_dir = state.paths().game_dir_of(&req.instance_slug);
     let natives_dir = instance_dir.join("natives");
 
     // 读版本 JSON（加载器版本优先）
@@ -4606,6 +4614,382 @@ pub struct RunningGameInfo {
     pub started_at: u64,
 }
 
+/* ====================== 版本隔离（ADR-005） ====================== */
+
+/// 一个实例的隔离判定结果（界面显示的就是它，路径也按它算）
+///
+/// ★ 为什么要有这条命令、而不是让前端自己算一遍：
+///   ADR-006 —— 规则只写一次，且写在 Rust 侧。以前前端 `domain/isolation.ts`
+///   与后端 `resolve_isolation` 各有一份，措辞还不一样；而真正决定游戏目录的
+///   那一行（`prepare_spec`）**两份都不看** —— 于是"不隔离"选了等于没选。
+#[derive(serde::Serialize)]
+pub struct IsolationInfo {
+    pub slug: String,
+    /// 最终是否隔离（true = 用实例自己的 game/；false = 用共享的 .minecraft）
+    pub isolated: bool,
+    /// `user` / `content` / `global` / `unknown`
+    pub source: String,
+    /// 一句话依据
+    pub reason: String,
+    /// 关闭隔离时的后果警告
+    pub warning: Option<String>,
+    /// ★ **游戏真正在用的那个目录**（`--gameDir`）—— 界面直接显示它，
+    ///   省得用户自己去猜"存档到底在哪儿"
+    pub game_dir: String,
+}
+
+fn isolation_info(paths: &crate::platform::AppPaths, slug: &str) -> IsolationInfo {
+    let v = paths.isolation_verdict(slug);
+    IsolationInfo {
+        slug: slug.to_string(),
+        isolated: v.isolated,
+        source: v.source_str().to_string(),
+        reason: v.reason,
+        warning: v.warning,
+        game_dir: paths.game_dir_of(slug).to_string_lossy().to_string(),
+    }
+}
+
+/// 所有实例的隔离判定（列表页那一栏、概览页那一格都用它）
+#[tauri::command]
+pub fn isolation_verdicts(state: State<'_, AppState>) -> Vec<IsolationInfo> {
+    let paths = state.paths();
+    let ledger = paths.own_json("instances.json");
+    let slugs: Vec<String> = ledger
+        .as_ref()
+        .and_then(|l| l.get("instances"))
+        .and_then(|i| i.as_array())
+        .map(|list| {
+            list.iter()
+                .filter_map(|i| {
+                    i.get("config")
+                        .and_then(|c| c.get("slug"))
+                        .and_then(|s| s.as_str())
+                        .map(String::from)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    slugs.iter().map(|s| isolation_info(&paths, s)).collect()
+}
+
+/// 单个实例的隔离判定（改完设置立刻回读一次，界面不自己算）
+#[tauri::command]
+pub fn isolation_of(slug: String, state: State<'_, AppState>) -> IsolationInfo {
+    isolation_info(&state.paths(), slug.trim())
+}
+
+/// 迁移计划里的一项（"这个目录里有几个文件、多大"）
+#[derive(serde::Serialize)]
+pub struct MigrationItem {
+    /// 相对游戏目录的名字（`saves` / `mods` / `options.txt`…）
+    pub name: String,
+    pub files: u64,
+    pub bytes: u64,
+}
+
+/// 切换隔离前后要做的迁移（**提示用**：让用户在点之前就知道会动什么）
+#[derive(serde::Serialize)]
+pub struct IsolationMigration {
+    pub from: String,
+    pub to: String,
+    /// 源目录里**有内容的**那些条目（空的就不列了）
+    pub items: Vec<MigrationItem>,
+    /// 不做这一步会怎样
+    pub consequence: String,
+    /// 源目录里同名文件会不会被覆盖（现在是**永不覆盖**，这条如实告诉用户）
+    pub overwrite: bool,
+}
+
+/// 迁移时按这个清单看源目录（与 `domain::isolation::SHARED_DIRS` 同源 + 一个存档外的设置文件）
+fn migrate_entries() -> Vec<&'static str> {
+    let mut v: Vec<&'static str> = crate::domain::isolation::SHARED_DIRS.to_vec();
+    v.push("options.txt");
+    v
+}
+
+/// 数一个目录里有几个文件、共多少字节（`options.txt` 这种单文件也走这里）
+fn count_tree(path: &std::path::Path) -> (u64, u64) {
+    if path.is_file() {
+        let bytes = path.metadata().map(|m| m.len()).unwrap_or(0);
+        return (1, bytes);
+    }
+    let mut files = 0u64;
+    let mut bytes = 0u64;
+    let Ok(rd) = std::fs::read_dir(path) else {
+        return (0, 0);
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            let (f, b) = count_tree(&p);
+            files += f;
+            bytes += b;
+        } else {
+            files += 1;
+            bytes += p.metadata().map(|m| m.len()).unwrap_or(0);
+        }
+    }
+    (files, bytes)
+}
+
+/// 把源游戏目录里"有内容的那几样"列出来（迁移提示与执行共用这一份判断）
+fn migration_items(from: &std::path::Path) -> Vec<MigrationItem> {
+    migrate_entries()
+        .into_iter()
+        .filter_map(|name| {
+            let p = from.join(name);
+            if !p.exists() {
+                return None;
+            }
+            let (files, bytes) = count_tree(&p);
+            if files == 0 {
+                return None; // 空目录不算"有东西"，列出来只会让提示变吵
+            }
+            Some(MigrationItem {
+                name: name.to_string(),
+                files,
+                bytes,
+            })
+        })
+        .collect()
+}
+
+/// 切换隔离**之前**给用户看的提示：会从哪儿搬到哪儿、搬什么、不搬会怎样。
+///
+/// ★ `to_mode` 只认 `"on"` / `"off"`：`auto` 不是一个"目标状态"
+///   （它的结果取决于目录里有没有内容），要迁移就得先明确告诉我们要去哪边。
+#[tauri::command]
+pub fn plan_isolation_migration(
+    slug: String,
+    to_mode: String,
+    state: State<'_, AppState>,
+) -> Result<IsolationMigration, String> {
+    migration_plan(&state.paths(), slug.trim(), &to_mode)
+}
+
+/// 上面那条命令的实现（`apply` 也要用同一份计划 —— 抽出来，别复制一份判断）
+fn migration_plan(
+    paths: &crate::platform::AppPaths,
+    slug: &str,
+    to_mode: &str,
+) -> Result<IsolationMigration, String> {
+    if paths.instance_json(slug).is_none() {
+        return Err(format!("实例清单里没有「{slug}」这个实例"));
+    }
+    let to_isolated = match to_mode {
+        "on" => true,
+        "off" => false,
+        other => return Err(format!("不认识的目标模式：{other}（只认 on / off）")),
+    };
+    /*
+     * ★★ 方向**只看目标**，不去比"现在是不是已经是这个模式了"。
+     *
+     *   为什么：改设置那一下是**先写账本、再问用户要不要搬**（不然界面得自己存一份
+     *   "刚才是什么模式"）。所以计划被算出来的时候，账本里已经是**新模式**了 ——
+     *   拿它做"已经就是这个模式了"的判断，永远成立 ⇒ 迁移功能等于没有。
+     *   （第一版就是这么写的，探针当场抓到：`plan` 返回空对象、`apply` 报
+     *   "现在就已经是这个模式了，不需要迁移"。）
+     *
+     *   ⇒ 方向由目标定：要隔离就把共享目录里的东西搬进实例；要共享就把实例的搬出去。
+     *     源目录里没有内容时 `items` 为空 —— 那不是错误，是"没什么可搬的"，
+     *     界面据此直接跳过这一问。
+     */
+    let (from, to) = if to_isolated {
+        (paths.shared.clone(), paths.instance_game_dir(slug))
+    } else {
+        (paths.instance_game_dir(slug), paths.shared.clone())
+    };
+    let items = migration_items(&from);
+    let consequence = if items.is_empty() {
+        "源目录里没有存档 / Mod / 配置 —— 直接切过去就行（不会丢东西）".to_string()
+    } else if to_isolated {
+        format!(
+            "不复制的话，这个实例看到的会是一份**全新的**游戏目录 —— \
+             共享目录里那 {} 项还在，只是它不读它们了",
+            items.len()
+        )
+    } else {
+        format!(
+            "不复制的话，这个实例原来的 {} 项内容留在自己的目录里，\
+             而游戏从现在起读共享目录 —— 看起来就像刚装好的一样",
+            items.len()
+        )
+    };
+    Ok(IsolationMigration {
+        from: from.to_string_lossy().to_string(),
+        to: to.to_string_lossy().to_string(),
+        items,
+        consequence,
+        // ★ 永不覆盖：目标里已经有同名文件就跳过并报出来（用户自己的东西不许被顶掉）
+        overwrite: false,
+    })
+}
+
+/// 迁移结果
+#[derive(serde::Serialize)]
+pub struct MigrationResult {
+    /// 每个条目：名字 → 复制了几个文件 / 多少字节
+    pub copied: Vec<MigrationItem>,
+    /// 因为"目标里已经有"而**跳过**的（每一条都带相对路径）
+    pub skipped_existing: Vec<String>,
+    /// 复制失败的（带原因）
+    pub failed: Vec<String>,
+    /// 备份 id（没做备份时为空）
+    pub backup_id: String,
+}
+
+/// 递归复制，**已存在的一律跳过**（不覆盖用户的东西）
+fn copy_tree_no_overwrite(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    rel: &str,
+    copied: &mut Vec<(String, u64, u64)>,
+    skipped: &mut Vec<String>,
+    failed: &mut Vec<String>,
+) {
+    if src.is_file() {
+        if let Some(parent) = dst.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                failed.push(format!("{rel}：建目录失败（{e}）"));
+                return;
+            }
+        }
+        if dst.exists() {
+            skipped.push(rel.to_string());
+            return;
+        }
+        match std::fs::copy(src, dst) {
+            Ok(n) => copied.push((rel.to_string(), 1, n)),
+            Err(e) => failed.push(format!("{rel}：复制失败（{e}）")),
+        }
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(src) else {
+        failed.push(format!("{rel}：读不了这个目录"));
+        return;
+    };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        copy_tree_no_overwrite(
+            &e.path(),
+            &dst.join(&name),
+            &format!("{rel}/{name}"),
+            copied,
+            skipped,
+            failed,
+        );
+    }
+}
+
+/// 真的把内容复制过去（**只复制，不删源**）。
+///
+/// ## 为什么是复制而不是移动
+///
+///   移动是**不可逆**的，而这一步是用户为了一个设置项顺手做的 ——
+///   万一他其实不想换（或者换回去），移动过的东西就回不来了。
+///   复制的代价是占一份磁盘，但"原目录还留着"让这件事永远可逆。
+///   界面上会如实告诉他：原目录里的东西没删，确认没问题后可以自己删。
+///
+/// ## `backup_first`
+///
+///   为 true 时先按 ADR-014 做一份备份（备份只记清单、不搬 jar）。
+///   这是那句"迁移/备份提示"落到实处的一半：**迁移前的后悔药**。
+#[tauri::command]
+pub async fn apply_isolation_migration(
+    slug: String,
+    to_mode: String,
+    backup_first: bool,
+    state: State<'_, AppState>,
+) -> Result<MigrationResult, String> {
+    let paths = state.paths();
+    let slug = slug.trim().to_string();
+    let plan = migration_plan(&paths, &slug, &to_mode)?;
+
+    /*
+     * ★ 源目录里什么都没有 ⇒ 没有什么可搬的：直接回一份空结果。
+     *   这不是失败（用户只是切了个模式），所以**不报错**、也不做备份。
+     */
+    if plan.items.is_empty() {
+        say!("[IEML/isolation] 「{slug}」切到 {to_mode}：源目录里没有内容，无需迁移");
+        return Ok(MigrationResult {
+            copied: Vec::new(),
+            skipped_existing: Vec::new(),
+            failed: Vec::new(),
+            backup_id: String::new(),
+        });
+    }
+
+    let mut backup_id = String::new();
+    if backup_first {
+        let name = instance_display_name(&paths, &slug);
+        let mc = paths
+            .instance_json(&slug)
+            .and_then(|i| i.get("mcVersion").and_then(|v| v.as_str()).map(String::from))
+            .unwrap_or_default();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let man = crate::backup::create(
+            &paths,
+            &slug,
+            &name,
+            &mc,
+            "切换隔离前自动备份",
+            now,
+        )
+        .await?;
+        backup_id = man.id;
+        say!("[IEML/isolation] 切换前已备份：{backup_id}");
+    }
+
+    let from = std::path::PathBuf::from(&plan.from);
+    let to = std::path::PathBuf::from(&plan.to);
+    let mut raw: Vec<(String, u64, u64)> = Vec::new();
+    let mut skipped_existing = Vec::new();
+    let mut failed = Vec::new();
+    for item in &plan.items {
+        copy_tree_no_overwrite(
+            &from.join(&item.name),
+            &to.join(&item.name),
+            &item.name,
+            &mut raw,
+            &mut skipped_existing,
+            &mut failed,
+        );
+    }
+
+    // 按条目汇总（`saves/a/b.dat` → `saves`）
+    let mut copied: Vec<MigrationItem> = Vec::new();
+    for (rel, files, bytes) in raw {
+        let top = rel.split('/').next().unwrap_or(&rel).to_string();
+        match copied.iter_mut().find(|c| c.name == top) {
+            Some(c) => {
+                c.files += files;
+                c.bytes += bytes;
+            }
+            None => copied.push(MigrationItem {
+                name: top,
+                files,
+                bytes,
+            }),
+        }
+    }
+    say!(
+        "[IEML/isolation] 「{slug}」切到 {to_mode}：复制 {} 项，跳过 {} 个已存在的文件，失败 {} 个",
+        copied.len(),
+        skipped_existing.len(),
+        failed.len()
+    );
+    Ok(MigrationResult {
+        copied,
+        skipped_existing,
+        failed,
+        backup_id,
+    })
+}
+
 #[derive(serde::Serialize)]
 pub struct StopInfo {
     pub played_seconds: u64,
@@ -4780,7 +5164,12 @@ pub(crate) fn resolve_open_dir(
         "cache" => paths.cache.clone(),
         "instance" => paths.instance_dir(slug.unwrap_or("")),
         "mods" => paths.instance_mods_dir(slug.unwrap_or("")),
-        "game-dir" => paths.instance_game_dir(slug.unwrap_or("")),
+        /*
+         * ★ 「打开游戏目录」打开的必须是**游戏真的在用的那个**目录：
+         *   开了「不隔离」的实例，游戏读的是共享 `.minecraft` —— 打开实例自己的
+         *   空目录会让用户以为"我的存档不见了"（ADR-005）。
+         */
+        "game-dir" => paths.game_dir_of(slug.unwrap_or("")),
         _ => paths.root.clone(),
     }
 }
@@ -5810,7 +6199,7 @@ pub async fn modpack_install(
         }
         None => (None, None),
     };
-    let game_dir = state.paths().instance_game_dir(&slug);
+    let game_dir = state.paths().game_dir_of(&slug);
     let (tasks, skipped) = modrinth::mrpack_download_tasks(&idx, &game_dir);
     let plan = PackPlan {
         mc_version,
@@ -6079,7 +6468,7 @@ async fn cf_plan_from_manifest(
         say!("[IEML/modpack] CF 整合包有 {lookup_failed} 个文件查不到信息（已如实跳过）");
     }
 
-    let game_dir = state.paths().instance_game_dir(slug);
+    let game_dir = state.paths().game_dir_of(slug);
     let (tasks, skipped) = curseforge::modpack_download_tasks(manifest, &by_file, &game_dir);
     if tasks.is_empty() {
         return Err(
@@ -6178,7 +6567,7 @@ pub async fn pack_install_local(
             Some((k, v)) => (Some(k.trim_end_matches("-loader").to_string()), Some(v.to_string())),
             None => (None, None),
         };
-        let game_dir = state.paths().instance_game_dir(&slug);
+        let game_dir = state.paths().game_dir_of(&slug);
         let (tasks, skipped) = modrinth::mrpack_download_tasks(&idx, &game_dir);
         PackPlan {
             mc_version,
@@ -6735,7 +7124,7 @@ async fn install_pack_plan(
     }
 
     // ---------- ③ 按清单下载 Mod / 资源包 ----------
-    let game_dir = state.paths().instance_game_dir(&slug);
+    let game_dir = state.paths().game_dir_of(&slug);
     // ★ 任务表与"下不了的条目"由**调用方**按各自的清单格式做好（`PackPlan`）
     let (tasks, unsafe_paths) = (plan.tasks, plan.skipped);
     /*

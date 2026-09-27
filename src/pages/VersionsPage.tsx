@@ -103,6 +103,8 @@ export function VersionsPage() {
   const { state, goDownloadTab, goDownloadFor, openVersion, toast, removeInstance, duplicateInstance, renameInstance, refreshInstances, createInstance, folder, reloadAfterRootChange } =
     useApp();
   const { api } = useRealApi();
+  /** 隔离判定（ADR-005）：后端算好的结论，列表里只显示 */
+  const isolationOf = (slug: string) => state.isolation[slug] ?? null;
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
   /** 「新建/切换游戏目录」弹窗（2026-09-25 用户：把它做到版本列表这一页，按钮样式） */
@@ -701,18 +703,25 @@ export function VersionsPage() {
                   </span>
                   <span className="dot" />
                   <span className="mono">{Math.round(inst.config.memoryMb / 1024)} GB</span>
+                  {/*
+                    ★★ 2026-09-27（0.7.0）：这一格显示的是**后端算出来的结论**
+                      （ADR-005 三段判定；判定只在 Rust 侧实现一份，ADR-006）。
+
+                    ★ 历史：这里先后写过两句不成立的话 ——
+                      "共享目录"（那时共享模式根本没接上）与
+                      "不隔离（还没生效）"（那时它是实话，但功能确实缺着）。
+                      现在共享真的生效了（判定决定 `--gameDir`），所以显示结论；
+                      结论还没读到（演示模式 / 读不到账本）时只说模式，不宣称结果。
+                  */}
                   {inst.config.isolation !== 'auto' ? (
                     <>
                       <span className="dot" />
-                      {/*
-                       * ★★ 2026-09-27：这里原来写的是 `'已隔离' : '共享目录'` ——
-                       *   **两个分支里有一个是假的**：启动路径永远用
-                       *   `instances/<slug>/game`，"关闭隔离"这个选择**还没有接上**
-                       *   （见 `domain/isolation.ts` 与 `InstanceSetup.tsx` 里那段说明）。
-                       *   说成"共享目录"会让用户以为自己的存档已经跟别的实例混在一起了。
-                       */}
                       <span>
-                        {inst.config.isolation === 'on' ? '已隔离' : '不隔离（还没生效）'}
+                        {isolationOf(inst.config.slug) === null
+                          ? '隔离判定读取中'
+                          : isolationOf(inst.config.slug)?.isolated
+                            ? '独立目录'
+                            : '共享目录'}
                       </span>
                     </>
                   ) : null}

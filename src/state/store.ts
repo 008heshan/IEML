@@ -25,7 +25,7 @@ import type {
   ModStateResult,
   ReleaseType,
 } from '../domain';
-import type { RunningGameInfo } from '../bridge/tauri';
+import type { RunningGameInfo, IsolationInfo } from '../bridge/tauri';
 import { DEFAULT_THEME, type ThemeId } from '../ui/theme';
 import type { ModFilter } from '../domain/mods.ts';
 
@@ -196,6 +196,17 @@ export interface AppState {
   java: JavaState;
   mods: ModsState;
 
+  /**
+   * ★★ **每个实例的隔离判定**（ADR-005）—— 按 slug 索引，**结论来自后端**。
+   *
+   *   为什么不让前端自己算：ADR-006（规则只写一次，写在 Rust 侧）。
+   *   以前 `domain/isolation.ts` 有一份、`commands.rs::resolve_isolation` 有另一份、
+   *   而真正决定游戏目录的 `prepare_spec` **两份都不看** —— 于是「不隔离」
+   *   选了等于没选（界面写着会共享，游戏其实还在自己的目录里）。
+   *   现在：判定在 `domain::isolation`，界面只负责显示 `reason` / `warning` / `game_dir`。
+   */
+  isolation: Record<string, IsolationInfo>;
+
   /* --- 运行时 --- */
   tasks: TaskItem[];
   toasts: ToastItem[];
@@ -284,6 +295,9 @@ export const initialState: AppState = {
 
   java: { runtimes: [], scanning: false },
   mods: { ...EMPTY_MODS },
+
+  /* 隔离判定：启动时由 AppContext 拉一次（空表 = 还没拉到，界面显示"读取中"而不是猜） */
+  isolation: {},
 
   tasks: [],
   toasts: [],
@@ -424,7 +438,9 @@ export type Action =
   | { type: 'crash/show'; report: string }
   | { type: 'crash/hide' }
   /* 偏好 */
-  | { type: 'prefs/patch'; patch: Partial<AppState['prefs']> };
+  | { type: 'prefs/patch'; patch: Partial<AppState['prefs']> }
+  /* ★★ 隔离判定（ADR-005）：整批换掉 —— 它是后端算的结论，前端不许自己拼 */
+  | { type: 'isolation/set'; list: IsolationInfo[] };
 
 /* ====================== Reducer ====================== */
 
@@ -716,6 +732,13 @@ export function reducer(state: AppState, action: Action): AppState {
     /* ---------- 偏好 ---------- */
     case 'prefs/patch':
       return { ...state, prefs: { ...state.prefs, ...action.patch } };
+
+    /* ★★ 隔离判定整批换（后端算的结论；空列表也是有效结论，不是"没读到"） */
+    case 'isolation/set':
+      return {
+        ...state,
+        isolation: Object.fromEntries(action.list.map((i) => [i.slug, i])),
+      };
 
     default:
       return state;

@@ -61,6 +61,8 @@ export function InstanceOverview() {
     closeVersion,
   } = useApp();
   const { api } = useRealApi();
+  /** 隔离判定（ADR-005）：后端算好的结论（读不到时 null → 只说模式，不宣称结果） */
+  const iso = inst ? state.isolation[inst.config.slug] ?? null : null;
   /** 检查 / 补齐共用一个忙碌位：它们是同一件事的两步，界面上也只有一个按钮 */
   const [busy, setBusy] = useState(false);
   const [verifyResult, setVerifyResult] = useState<{ ok: boolean; text: string } | null>(null);
@@ -353,13 +355,15 @@ export function InstanceOverview() {
         <div className="fact">
           <span className="fact-k">版本隔离</span>
           <span className="fact-v">
-            {inst.config.isolation === 'auto'
-              ? '自动判定'
-              : inst.config.isolation === 'on'
-                ? '已强制开启'
-                : /* ★ 2026-09-27：原来是"已关闭（共享目录）"—— 假的，见 VersionsPage 同处的说明 */
-                  '已关闭（还没生效）'}
-          </span>
+            {/*
+              ★★ 2026-09-27（0.7.0）：结论来自后端（ADR-005 三段判定）。
+                历史：这里先后写过"已关闭（共享目录）"与"已关闭（还没生效）" ——
+                前一句是假的（共享没接上），后一句当时是真的。
+                现在共享真的生效了，所以显示后端算出来的目录归属。
+            */}
+            {iso === null
+              ? `${modeLabel(inst.config.isolation)}（判定读取中）`
+              : `${modeLabel(inst.config.isolation)} · ${iso.isolated ? '独立目录' : '共享目录'}`}          </span>
           <span />
         </div>
         <div className="fact">
@@ -499,4 +503,16 @@ function formatSize(bytes: number): string {
   if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
   if (bytes >= 1024 * 1024) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
   return `${Math.round(bytes / 1024)} KB`;
+}
+
+/**
+ * 隔离模式怎么念。
+ *
+ * ★ 这里只把**模式**翻译成人话，不判断"最终到底隔不隔离"—— 那是后端的结论
+ *   （ADR-005/ADR-006：规则只写一次，写在 Rust 侧），页面显示的是 `state.isolation`。
+ */
+function modeLabel(mode: string): string {
+  if (mode === 'on') return '强制隔离';
+  if (mode === 'off') return '不隔离';
+  return '自动判定';
 }

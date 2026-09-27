@@ -10,7 +10,7 @@ import { validateCombination, addonCompatibility, optifineSuitsForge } from '../
 import { getLoaderCapabilities, bridgeFor } from '../src/domain/loader-caps.ts';
 import { autoMemory, gearToGb, gbToGear, snapToGear, maxGear, memoryBar, memoryReasoning } from '../src/domain/memory.ts';
 import { resolveJavaRequirement, pickJava, validateJavaRangeText, inJavaRange, displayJavaMajor } from '../src/domain/java.ts';
-import { resolveIsolation } from '../src/domain/isolation.ts';
+/* ★ 版本隔离的判定不在这里测：它只有一份实现，在 Rust 侧（见下面那段说明） */
 import {
   isEnabled, toggledName, displayNameOf, scanMods, findDuplicates, judgeModState,
   availableFilters, hashCacheKey, oldFilesToDrop,
@@ -793,40 +793,18 @@ test('Java 四模式：找不到时给出可行动的说明', () => {
   assert.match(pick.reason, /Java 21/);
 });
 
-/* ====================== 版本隔离三段判定 ====================== */
-
-test('隔离：用户显式设置优先级最高', () => {
-  const on = resolveIsolation({ mode: 'on', hasContent: false, globalDefault: 'shared' });
-  assert.equal(on.isolated, true);
-  assert.equal(on.source, 'user');
-  const off = resolveIsolation({ mode: 'off', hasContent: true, globalDefault: 'isolated' });
-  assert.equal(off.isolated, false);
-  assert.equal(off.source, 'user');
-});
-
-test('隔离：自动模式按目录内容判定，并说出依据', () => {
-  const r = resolveIsolation({ mode: 'auto', hasContent: true, globalDefault: 'shared' });
-  assert.equal(r.isolated, true);
-  assert.equal(r.source, 'content');
-  assert.match(r.reason, /mods\/|saves\//);
-});
-
-test('隔离：目录为空时跟随全局默认', () => {
-  const r = resolveIsolation({ mode: 'auto', hasContent: false, globalDefault: 'isolated' });
-  assert.equal(r.source, 'global');
-  assert.equal(r.isolated, true);
-});
-
-test('隔离：强制关闭必须给出污染后果警告', () => {
-  const r = resolveIsolation({ mode: 'off', hasContent: true, globalDefault: 'shared' });
-  assert.ok(r.warning);
-  assert.match(r.warning, /污染|无法启动/);
-});
-
-test('隔离：整合包实例一律隔离', () => {
-  const r = resolveIsolation({ mode: 'auto', hasContent: false, globalDefault: 'shared', fromModpack: true });
-  assert.equal(r.isolated, true);
-});
+/*
+ * ★★ 版本隔离那五条测试**搬去 Rust 了**（2026-09-27，ADR-005 实现记录）。
+ *
+ *   原来这里测的是 `src/domain/isolation.ts` 里的 `resolveIsolation` —— 前端自己
+ *   算一份判定。而 ADR-006 说的是"规则只写一次，且写在 Rust 侧"：真机上
+ *   后端另有一份 `resolve_isolation`，而**真正决定游戏目录的那一行两份都不看**，
+ *   于是「不隔离」选了等于没选。
+ *
+ *   现在判定只有一份（`src-tauri/src/domain/isolation.rs`），等价的五条单测在那边：
+ *   显式设置优先 / auto 按内容 / 空的跟全局 / 关隔离必须警告 / 读不到账本保持隔离。
+ *   这里删掉不是"少测了"，而是**不再让两份规则同时存在**。
+ */
 
 /* ====================== Mod 状态（核心源码事实） ====================== */
 
