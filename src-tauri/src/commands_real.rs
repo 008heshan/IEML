@@ -4990,6 +4990,250 @@ pub async fn apply_isolation_migration(
     })
 }
 
+/* ====================== 导入别的启动器的数据 ====================== */
+
+/// 扫一个目录：**这是谁的、能不能搬、能搬什么**（只读，不动盘）。
+#[derive(serde::Serialize)]
+pub struct ExternalScan {
+    /// 用户选的那个目录（原样回报，界面显示用）
+    pub picked: String,
+    /// 实际当游戏目录用的那一层（`picked` / `picked/minecraft` / `picked/.minecraft`）
+    pub game_dir: String,
+    /// `official` / `pcl` / `hmcl` / `prism` / `generic` / `unknown`
+    pub launcher: String,
+    pub launcher_name: String,
+    /// **凭什么这么认**（盘上看见了什么）—— 与隔离判定同一条纪律
+    pub evidence: Vec<String>,
+    /// 根这一层能搬的东西（有内容的才列）
+    pub items: Vec<MigrationItem>,
+    /// `versions/` 里有几个版本目录
+    pub versions: u64,
+    /// **带游戏数据的版本目录**（PCL/HMCL 的"版本隔离"会把存档/Mod 放在这里）
+    pub version_layers: Vec<ExternalLayer>,
+    /// 一句如实的话（认不出来时说明为什么）
+    pub note: Option<String>,
+}
+
+/// 可选的"从哪一层搬"（根目录，或者某个版本目录）
+#[derive(serde::Serialize)]
+pub struct ExternalLayer {
+    /// 传回来给导入命令用的取值（空串 = 根目录）
+    pub key: String,
+    pub label: String,
+    pub items: Vec<MigrationItem>,
+}
+
+/// 数一个目录里的顶层条目名（认形状用）
+fn top_names(dir: &std::path::Path) -> Vec<String> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    rd.flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect()
+}
+
+/// **别的启动器的数据能不能搬过来**（ADR-015 之外的另一半：拖拽导入）
+///
+/// ★ 只读、不写；判定与"能搬什么"全在 `domain::external`（有单测）与这里的一层读盘。
+#[tauri::command]
+pub fn scan_external_launcher(path: String) -> Result<ExternalScan, String> {
+    let picked = std::path::PathBuf::from(path.trim());
+    if !picked.is_dir() {
+        return Err(format!("这不是一个目录：{}", picked.display()));
+    }
+    let names = top_names(&picked);
+    let sub = crate::domain::external::resolve_game_dir(&names, |s| picked.join(s).is_dir());
+    let Some(sub) = sub else {
+        return Ok(ExternalScan {
+            picked: picked.to_string_lossy().to_string(),
+            game_dir: picked.to_string_lossy().to_string(),
+            launcher: crate::domain::external::LauncherKind::Unknown.key().to_string(),
+            launcher_name: crate::domain::external::LauncherKind::Unknown.display().to_string(),
+            evidence: Vec::new(),
+            items: Vec::new(),
+            versions: 0,
+            version_layers: Vec::new(),
+            note: Some(
+                "这个目录里没有游戏数据（saves / mods / config 一个都没有），\
+                 也没看到 minecraft/ 或 .minecraft/ 子目录 —— 请选到**游戏目录**那一层"
+                    .to_string(),
+            ),
+        });
+    };
+    let game = if sub.is_empty() {
+        picked.clone()
+    } else {
+        picked.join(&sub)
+    };
+    let game_names = if sub.is_empty() {
+        names.clone()
+    } else {
+        top_names(&game)
+    };
+    /*
+     * ★★ "这是谁的目录"要在**两层上都看**，因为两家的身份证放的位置不一样：
+     *   · 官方启动器：`launcher_profiles.json` 在 `<选中的>/.minecraft/` 里；
+     *   · Prism 实例：`instance.cfg` / `mmc-pack.json` 在**选中的那一层**，
+     *     而游戏目录是它里面的 `minecraft/`。
+     *   先看用户选的那一层（他的意图在那儿），认不出再看游戏目录那一层。
+     */
+    let (kind, mut evidence) = crate::domain::external::detect(&names);
+    let (kind, game_evidence) = if matches!(kind, crate::domain::external::LauncherKind::Unknown) {
+        crate::domain::external::detect(&game_names)
+    } else {
+        (kind, Vec::new())
+    };
+    for e in game_evidence {
+        evidence.push(format!("（游戏目录那一层）{e}"));
+    }
+    let items = migration_items(&game);
+
+    // `versions/` 里那些**带游戏数据**的版本目录（PCL/HMCL 的"版本隔离"就在这里）
+    let mut version_layers = Vec::new();
+    let mut versions = 0u64;
+    if let Ok(rd) = std::fs::read_dir(game.join("versions")) {
+        for e in rd.flatten() {
+            if !e.path().is_dir() {
+                continue;
+            }
+            versions += 1;
+            if version_layers.len() >= 20 {
+                continue; // 只列前 20 个（界面是给人看的，不是清单导出）
+            }
+            let its = migration_items(&e.path());
+            if !its.is_empty() {
+                version_layers.push(ExternalLayer {
+                    key: e.file_name().to_string_lossy().to_string(),
+                    label: e.file_name().to_string_lossy().to_string(),
+                    items: its,
+                });
+            }
+        }
+    }
+    version_layers.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
+
+    let note = match kind {
+        crate::domain::external::LauncherKind::Unknown => Some(
+            "认不出这是哪个启动器留下的，但里面有游戏数据 —— 照样可以搬过来".to_string(),
+        ),
+        _ => None,
+    };
+    Ok(ExternalScan {
+        picked: picked.to_string_lossy().to_string(),
+        game_dir: game.to_string_lossy().to_string(),
+        launcher: kind.key().to_string(),
+        launcher_name: kind.display().to_string(),
+        evidence,
+        items,
+        versions,
+        version_layers,
+        note,
+    })
+}
+
+/// 把外部目录里挑中的东西**复制**进某个实例的游戏目录。
+///
+/// ## 规则与"切换隔离时的迁移"完全一致（同一套硬规矩）
+///
+///   * **只复制、不删源** —— 用户在旧启动器里那套东西不许被动一个字节；
+///   * **永不覆盖** —— 目标里已有同名文件就跳过，并在结果里逐条报出来；
+///   * `backup_first` 时可以**先备份一份**这个实例（ADR-014 的后悔药）。
+///
+/// `layer` 空 = 从游戏目录根那一层搬；否则从 `<game>/versions/<layer>/` 搬
+/// （PCL/HMCL 的版本隔离把存档放在那里）。
+#[tauri::command]
+pub async fn import_external_data(
+    path: String,
+    slug: String,
+    layer: Option<String>,
+    backup_first: bool,
+    state: State<'_, AppState>,
+) -> Result<MigrationResult, String> {
+    let scan = scan_external_launcher(path)?;
+    let paths = state.paths();
+    let slug = slug.trim().to_string();
+    if paths.instance_json(&slug).is_none() {
+        return Err(format!("实例清单里没有「{slug}」这个实例"));
+    }
+    let layer = layer.unwrap_or_default();
+    let source = if layer.trim().is_empty() {
+        std::path::PathBuf::from(&scan.game_dir)
+    } else {
+        // ★ 只认 `scan` 报过的那些层：路径来自界面，不能直接拼（`..` 能跳出游戏目录）
+        if !scan.version_layers.iter().any(|l| l.key == layer) {
+            return Err(format!("「{layer}」不在这次扫描的结果里，请重新扫一次"));
+        }
+        std::path::PathBuf::from(&scan.game_dir)
+            .join("versions")
+            .join(&layer)
+    };
+    let items = migration_items(&source);
+    if items.is_empty() {
+        return Err("这一层里没有可搬的游戏数据（saves / mods / config…）".to_string());
+    }
+    let target = paths.game_dir_of(&slug);
+
+    let mut backup_id = String::new();
+    if backup_first {
+        let name = instance_display_name(&paths, &slug);
+        let mc = paths
+            .instance_json(&slug)
+            .and_then(|i| i.get("mcVersion").and_then(|v| v.as_str()).map(String::from))
+            .unwrap_or_default();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let man = crate::backup::create(&paths, &slug, &name, &mc, "导入别人的数据前自动备份", now)
+            .await?;
+        backup_id = man.id;
+        say!("[IEML/import] 导入前已备份：{backup_id}");
+    }
+
+    let mut raw: Vec<(String, u64, u64)> = Vec::new();
+    let mut skipped_existing = Vec::new();
+    let mut failed = Vec::new();
+    for item in &items {
+        copy_tree_no_overwrite(
+            &source.join(&item.name),
+            &target.join(&item.name),
+            &item.name,
+            &mut raw,
+            &mut skipped_existing,
+            &mut failed,
+        );
+    }
+    let mut copied: Vec<MigrationItem> = Vec::new();
+    for (rel, files, bytes) in raw {
+        let top = rel.split('/').next().unwrap_or(&rel).to_string();
+        match copied.iter_mut().find(|c| c.name == top) {
+            Some(c) => {
+                c.files += files;
+                c.bytes += bytes;
+            }
+            None => copied.push(MigrationItem {
+                name: top,
+                files,
+                bytes,
+            }),
+        }
+    }
+    say!(
+        "[IEML/import] 从「{}」导入到「{slug}」：复制 {} 项，跳过 {} 个已存在的文件，失败 {} 个",
+        source.display(),
+        copied.len(),
+        skipped_existing.len(),
+        failed.len()
+    );
+    Ok(MigrationResult {
+        copied,
+        skipped_existing,
+        failed,
+        backup_id,
+    })
+}
+
 #[derive(serde::Serialize)]
 pub struct StopInfo {
     pub played_seconds: u64,

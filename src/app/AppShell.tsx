@@ -37,6 +37,7 @@ import { LogsPanel } from '../pages/LogsPanel';
 import { CreateInstanceModal } from '../pages/CreateInstanceModal';
 import { CrashModal } from '../pages/CrashModal';
 import { TaskCenter } from '../components/TaskCenter';
+import { ImportExternalModal } from '../components/ImportExternalModal';
 import { AccountPanel } from '../components/AccountPanel';
 import { AccountMenu } from '../components/AccountMenu';
 import { WindowControls } from '../components/WindowControls';
@@ -282,6 +283,23 @@ export function App() {
         continue;
       }
       if (info.kind === 'unknown') {
+        /*
+         * ★★ 认不出来的**目录**，先问一句"这是不是别的启动器的游戏目录"：
+         *   老玩家换启动器时手上是一整个 `.minecraft`，直接说"没有能装的文件"
+         *   就等于把他最想搬的东西挡在门外（M3.5 的"其他启动器目录"那一半）。
+         *   文件（不是目录）还是按原来的方式如实说原因。
+         */
+        try {
+          const scan = await api.external.scan(p);
+          if (scan.launcher !== 'unknown') {
+            window.dispatchEvent(
+              new CustomEvent('ieml:import-external', { detail: { path: p } }),
+            );
+            continue;
+          }
+        } catch {
+          /* 扫不了就按普通"认不出来"处理（下面那句才是给用户的答案） */
+        }
         problems.push(info.reason || `${info.file_name}：认不出来`);
         continue;
       }
@@ -864,6 +882,8 @@ export function App() {
 
       <CreateInstanceModal />
       <CrashModal />
+      {/* ★ 导入别的启动器的数据（拖一个游戏目录进来，或从版本列表点按钮） */}
+      <ImportExternalModal />
 
       {/*
         ★★ 光影装了、但这个实例用不了 → **问一句**（ADR-015 的原话是

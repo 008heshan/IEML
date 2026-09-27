@@ -507,6 +507,9 @@ pub fn run() {    /*
             commands_real::isolation_of,
             commands_real::plan_isolation_migration,
             commands_real::apply_isolation_migration,
+            /* ★★ 导入别的启动器（官方 / PCL / HMCL / Prism）留下的游戏数据 */
+            commands_real::scan_external_launcher,
+            commands_real::import_external_data,
             /* -------- 杂项 -------- */
             commands_real::backend_capabilities,
         ])

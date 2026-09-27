@@ -22,6 +22,7 @@ import { IconCopy, IconPencil, IconTrash } from '../ui/Icons';
 import {
   IconAlert,
   IconBox,
+  IconDownload,
   IconFolder,
   IconInfo,
   IconMore,
@@ -522,6 +523,37 @@ export function VersionsPage() {
           <Button size="sm" variant="secondary" onClick={() => setRootPicker(true)}>
             <IconFolder /> 新建/切换游戏目录
           </Button>
+          {/*
+            ★★ 2026-09-27（0.8.0）：**导入别的启动器的数据**（官方 / PCL2 / HMCL / Prism）。
+              老玩家换启动器时手上是一整个 `.minecraft`，让他自己在文件管理器里拷存档
+              是最容易出错的一步（拷错层、拷漏、覆盖掉新存档）。
+              这个按钮与"把一个游戏目录拖进窗口"走**同一个弹窗**。
+          */}
+          {api ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={async () => {
+                try {
+                  const { open: openDialog } = await import('@tauri-apps/plugin-dialog');
+                  const picked = await openDialog({
+                    directory: true,
+                    multiple: false,
+                    title: '选一个别的启动器的游戏目录（里面有 saves / mods 的那一层）',
+                  });
+                  if (typeof picked === 'string') {
+                    window.dispatchEvent(
+                      new CustomEvent('ieml:import-external', { detail: { path: picked } }),
+                    );
+                  }
+                } catch (e) {
+                  toast('err', '打不开目录选择器', e instanceof Error ? e.message : String(e));
+                }
+              }}
+            >
+              <IconDownload /> 导入其他启动器
+            </Button>
+          ) : null}
           {api ? (
             <Button
               size="sm"

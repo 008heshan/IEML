@@ -255,8 +255,8 @@ pub fn classify_dir(dir: &std::path::Path) -> DroppedKind {
         if dir.join("versions").is_dir() || dir.join("launcher_profiles.json").is_file() {
             return DroppedKind::Unknown(format!(
                 "「{name}」看起来是一个**完整的游戏目录**（官方启动器或别的启动器留下的）—— \
-                 这一版还不能整个导入它；想搬 Mod 的话把它里面的 mods 目录拖进来，\
-                 存档要自己在文件管理器里复制到目标的 saves/ 里"
+                 这里没有能直接装的文件，但可以把里面的存档与 Mod **导入**过来\
+                 （界面会问你搬到哪个版本）"
             ));
         }
         if !known.is_empty() {
@@ -610,8 +610,10 @@ mod tests {
         match &k {
             DroppedKind::Unknown(why) => {
                 assert!(why.contains("游戏目录"), "{why}");
-                assert!(why.contains("还不能整个导入"), "不能假装能导：{why}");
-                assert!(why.contains("mods"), "要给出能立刻做的那一步：{why}");
+                // ★ 0.8.0 起这句话变了：以前是"还不能整个导入"（那时真的不能），
+                //   现在**能导入了**（`scan_external_launcher` + 导入弹窗）——
+                //   所以判据也跟着改成"要说得出下一步是导入"。
+                assert!(why.contains("导入"), "要给出能立刻做的那一步：{why}");
             }
             other => panic!("不该认出类别：{other:?}"),
         }
