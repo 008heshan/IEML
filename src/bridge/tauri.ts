@@ -1514,9 +1514,16 @@ export interface BackupModEntry {
   bytes: number;
 }
 
+/**
+ * 一份备份的清单（`backup.json` 的原样形状）。
+ *
+ * ★★ 这些字段名是 **snake_case**，与 Rust 的 `backup::BackupManifest` **逐字对应** ——
+ *   那个结构体**故意没有** `#[serde(rename_all = "camelCase")]`（本仓库大多数结构体有）。
+ *   改名会**静默**炸：前端全读成 undefined，界面显示"0 个文件、0 字节"，而不报任何错。
+ *   有判据守着：Rust 侧 `backup::tests::payload_field_names_match_the_bridge`。
+ */
 export interface BackupManifest {
-  schema: number;
-  id: string;
+  schema: number;  id: string;
   slug: string;
   name: string;
   mc_version: string;

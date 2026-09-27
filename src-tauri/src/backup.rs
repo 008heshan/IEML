@@ -1121,4 +1121,65 @@ mod tests {
         );
         cleanup(&paths);
     }
+
+    /*
+     * ---------- 契约：Rust 发出去的字段名 == `src/bridge/tauri.ts` 读的那些 ----------
+     *
+     * ★ 为什么要有这一条：这两个结构体**没有** `rename_all`，也就是原样发 snake_case，
+     *   而前端 `BackupManifest` / `BackupRestorePreview` 里写的也是 snake_case。
+     *   只要有人给其中一个加上 `#[serde(rename_all = "camelCase")]`（这个仓库里
+     *   大部分结构体都是 camelCase），前端就会**静默**读到 undefined ——
+     *   表现是"备份列表全是 0"、"预览里数字都没有"，而不会报任何错。
+     *   同一个坑这个仓库踩过（`Instance` / `LoaderCapabilities` 那次）。
+     */
+    #[tokio::test]
+    async fn payload_field_names_match_the_bridge() {
+        let (paths, slug) = fake_instance("contract");
+        let m = create(&paths, &slug, "测试实例", "1.20.1", "手动", 1_758_000_000)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::to_value(&m).unwrap();
+        let keys: Vec<&str> = v.as_object().unwrap().keys().map(|s| s.as_str()).collect();
+        for k in [
+            "schema",
+            "id",
+            "slug",
+            "name",
+            "mc_version",
+            "created_secs",
+            "reason",
+            "items",
+            "mods",
+            "total_bytes",
+            "skipped",
+        ] {
+            assert!(keys.contains(&k), "清单缺字段 {k}：{keys:?}");
+        }
+        // 条目里也必须是 snake_case（前端读的是 `present` / `files` / `bytes`）
+        let item = &v["items"][0];
+        for k in ["kind", "rel", "files", "bytes", "present"] {
+            assert!(item.get(k).is_some(), "条目缺字段 {k}：{item}");
+        }
+
+        let p = preview_restore(&paths, &slug, &m.id).unwrap();
+        let pv: serde_json::Value = serde_json::to_value(&p).unwrap();
+        let pkeys: Vec<&str> = pv.as_object().unwrap().keys().map(|s| s.as_str()).collect();
+        for k in [
+            "from_id",
+            "created_secs",
+            "reason",
+            "will_write",
+            "will_change",
+            "will_add",
+            "kept_extra",
+            "mods_extra",
+            "mods_missing",
+            "total_bytes",
+            "sample_write",
+            "sample_kept",
+        ] {
+            assert!(pkeys.contains(&k), "预览缺字段 {k}：{pkeys:?}");
+        }
+        cleanup(&paths);
+    }
 }
