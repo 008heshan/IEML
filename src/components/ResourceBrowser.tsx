@@ -411,6 +411,13 @@ export function ResourceCenterBody({
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /*
+   * ★★ 中文别名（ADR-016）：命中词表时后端会给一句话（"按 jei 搜的"），
+   *   以及这次**实际**用的搜索词。两者都只在"这次搜索真的发生了"之后才有意义，
+   *   所以和 hits 同一条生命周期（每次重搜都会被覆盖）。
+   */
+  const [aliasNote, setAliasNote] = useState<string | null>(null);
+  const [searchedTerm, setSearchedTerm] = useState('');
   /** ★ 搜哪个库（ADR-052）：两个源的结果形状一样，但内容不是同一批 */
   const [source, setSource] = useState<ResourceSourceName>('modrinth');
   /**
@@ -644,6 +651,12 @@ export function ResourceCenterBody({
         if (mine !== seq.current) return; // 迟到的结果丢掉
         setHits((prev) => (opts.append ? [...prev, ...r.hits] : r.hits));
         setTotal(r.total_hits ?? r.hits.length);
+        /*
+         * ★★ 中文别名（ADR-016）：把"我拿什么去搜的"如实记下来，下面渲染成一句提示。
+         *   命中时是 `「物品管理器」是中文叫法，按 jei 搜的`；没命中就是 null。
+         */
+        setAliasNote(r.query_alias ?? null);
+        setSearchedTerm(r.term_used ?? opts.q);
       } catch (e) {
         if (mine !== seq.current) return;
         setError(e instanceof Error ? e.message : String(e));
@@ -984,6 +997,29 @@ export function ResourceCenterBody({
             </div>
           ))}
         </div>
+      ) : null}
+
+      {/*
+        ★★ 中文别名的两句话（ADR-016）：
+          · 命中了 → 如实说"我拿哪个英文词去搜的"（不说的话，用户会以为
+            搜索框里那串中文被原样提交了，结果是另一个词搜出来的）；
+          · 没命中且一条都没有 → 第 ③ 步："试试英文名"。
+            这两句都只在**这次搜索真的发生过**（有输入）时出现。
+      */}
+      {query ? (
+        aliasNote ? (
+          <div className="res-alias" role="status">
+            {aliasNote}
+            {searchedTerm && searchedTerm !== query ? (
+              <span className="dim">（这一页的结果来自「{searchedTerm}」）</span>
+            ) : null}
+          </div>
+        ) : hits.length === 0 && !loading && !error ? (
+          <div className="res-alias" role="status">
+            没搜到「{query}」—— 中文名不一定和平台上的项目名一致，换**英文名**再试一次
+            （比如「钠」试 <span className="mono">sodium</span>）。
+          </div>
+        ) : null
       ) : null}
 
       {!loading && hits.length === 0 && !error ? (

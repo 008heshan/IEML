@@ -2059,8 +2059,22 @@
   cursor: pointer;
 }
 
-/* ============================ 实例设置：隔离判定 ============================ */
-.iso-verdict {
+/* 中文别名提示（ADR-016）：搜索框下面那句"按 xxx 搜的" / "试试英文名" */
+.res-alias {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin: var(--space-2) 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+/* ============================ 实例设置：隔离判定 ============================ */.iso-verdict {
   display: flex;
   align-items: flex-start;
   gap: var(--space-2);

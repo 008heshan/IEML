@@ -3,6 +3,8 @@
 //! 与前端 `src/domain/` 一一对应。规则只在这两处之一实现、另一处镜像，
 //! 并有测试守住（`tests/domain.test.js` 与 `cargo test`）。
 
+/// ★ 中文搜 Mod 的别名表（ADR-016）—— 静态词表 + 纯查表，不碰网络
+pub mod alias;
 pub mod bridge_range;
 pub mod combination;
 pub mod crash;
