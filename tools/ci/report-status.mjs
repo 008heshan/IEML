@@ -55,6 +55,21 @@ function tail(path, lines = 60) {
     .filter((l) => l.trim().length > 0);
 }
 
+/**
+ * ★ 失败细节：只截日志尾巴是不够的 —— 失败点常常在尾巴之前几十行
+ *   （第一版就是这样：只看到"1 / 30 项失败：仓库根布局"，看不到**是哪一条**）。
+ *   这里把带标记的行单独捞出来，红的时候一眼能看到原因。
+ */
+function failures(path, max = 40) {
+  if (!path || !existsSync(path)) return [];
+  const strip = (s) => s.replace(/\u001b\[[0-9;]*m/g, '').trimEnd();
+  return readFileSync(path, 'utf8')
+    .split(/\r?\n/)
+    .map(strip)
+    .filter((l) => /✗|★ MISS|不该在|失败，退出码|Error:|error:/.test(l))
+    .slice(0, max);
+}
+
 const status = {
   ok,
   // ★ 如实写清"这一次跑的是什么、没跑什么"：
@@ -73,6 +88,8 @@ const status = {
   at: new Date().toISOString(),
   note,
   log_tail: tail(logPath),
+  /** ★ 失败细节（带 ✗ / MISS / 退出码 的那些行）—— 红了先看这里 */
+  failures: failures(logPath),
 };
 
 const file = 'tmp/ci-status.json';
