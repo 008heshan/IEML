@@ -125,12 +125,19 @@
 >   CNB 上传 → 匿名验签 → exe 更新链路），真机探针 `live-cf-modpack-check.mjs` **17 条全过**；
 > · **备份/回滚**：本轮实装（`crate::backup` + 实例设置页面板 + 启动前自动备份），
 >   判据见 `backup.rs` 的 8 条单测与 `tools/live/live-backup-check.mjs`；
-> · **CI**：配置已进仓库 —— CNB 的 `.cnb.yml`（push 即跑可移植子集，**已经推上去**）
->   与 GitHub 的 `.github/workflows/ci.yml`（Windows 全量 + Linux 子集，**还没推上去**：
->   推 workflow 文件需要凭据带 `workflow` 权限，本机那把没有，GitHub 原话见 `CHANGELOG.md`）。
->   ★ 而且 CNB 的**构建结果本机读不到**（那把凭据没有构建查询权限：
->   `NO_RIGHT Token scope not match`）—— 所以"每次推送都跑一遍"目前**只有 CNB 的构建页能证明**。
->   ⇒ 平台口径里"没有 CI"这一条**暂时仍然成立**，等它真的跑绿一次（并且我看得到）再改这一句。
+> · **CI**（★ **2026-09-27 晚些时候更新：它真的跑起来了**）：
+>   CNB 主仓的 `.cnb.yml` 每次推送都跑一遍**可移植子集**（类型检查 / 前端测试 /
+>   静态门禁 / 前端构建），结果连同日志尾部写成公开可读的产物：
+>   `https://cnb.cool/IEML_Official/IEML/-/releases/download/ci-status/ci-status.json`
+>   （为什么要这么写：本机那把仓库凭据**没有构建查询权限**，流水线日志在命令行读不到 ——
+>   一份"跑过了但谁也看不见"的 CI 与没有 CI 的区别只在心理上。所以让流水线用
+>   自动注入的 `CNB_TOKEN` 把结果写成 release 资产，仓库凭据就能读。）
+>   **头两次是红的**，红得对：CI 自己把 pnpm store 与临时日志落在了仓库根，
+>   被"仓库根布局"那条门禁当场抓住；把临时文件挪到仓库外之后转绿（`f431ca1`）。
+>   GitHub 那份（`.github/workflows/ci.yml`：Windows 全量 + Linux 子集）**还没推上去**：
+>   推 workflow 文件需要凭据带 `workflow` 权限，本机那把没有。
+>   ⇒ **平台口径没变**：Rust 侧仍然**只在 Windows 上编译与测试**，
+>   "macOS / Linux 没实测过"这句照旧成立。
 
 > ★★ **1 与 2 两行是 2026-09-25 重核的结论，与之前那版（2026-09-21、`beta.57`）不同** ——
 > 不是标准变严了，是**之前那版没跟上事实**：判据表停在 `beta.57`，而"现状"列里

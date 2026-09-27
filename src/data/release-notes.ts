@@ -72,6 +72,19 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.4.1',
+    date: '2026-09-27',
+    headline: '这一版功能与上一版相同，改的是每次推送都会自动跑一遍检查。',
+    groups: [
+      {
+        title: '修改了',
+        items: [
+          '修改了 项目自检：每次推送都会自动跑一遍能跨平台跑的那部分检查，结果公开可查。',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.4.0',
     date: '2026-09-27',
     headline: '这一版回滚之前先告诉你它会动哪些文件。',
