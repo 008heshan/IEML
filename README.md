@@ -2,7 +2,7 @@
 
 从零构建的 Minecraft 启动器。快、小、好用。
 
-**当前版本：`0.4.1`** — 改动见 [`CHANGELOG.md`](CHANGELOG.md)。
+**当前版本：`0.4.2`** — 改动见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 真实可运行的桌面应用，460+ 项 Rust 测试 + 前端测试，真实下载和真实启动都跑通过。
 
@@ -14,7 +14,7 @@ pnpm dev              # 浏览器开发，?demo=1 给演示实例
 pnpm desktop:dev      # 桌面版
 pnpm desktop:build    # 打包 exe + NSIS，并逐字节复制到桌面
                       #   → src-tauri/target/release/ieml.exe
-                      #   → src-tauri/target/release/bundle/nsis/IEML_0.4.1_x64-setup.exe
+                      #   → src-tauri/target/release/bundle/nsis/IEML_0.4.2_x64-setup.exe
 pnpm verify           # 一键验证：类型 + 测试 + 端到端 + 构建 + 静态门禁
 ```
 
@@ -69,14 +69,14 @@ UI（React）  →  桥接（一个接口两套实现）  →  领域层（TS �
 这一节是**如实清单**，不是免责声明 —— 写在这里的事，界面上也能看到对应的说法。
 
 - **只发布 Windows**。macOS / Linux 没有实测过，也没有那两台真机。
-  CI 落在 **CNB 主仓**：每次推送都跑一遍可移植子集（类型检查 / 前端测试 /
-  静态门禁 / 前端构建，**不含 Rust** —— 那两项要 Windows 的 MSVC），
-  结果连同日志尾部与构建链接写成公开可读的产物，谁都能查：
-  `https://cnb.cool/IEML_Official/IEML/-/releases/download/ci-status/ci-status.json`。
-  GitHub 那份（`.github/workflows/ci.yml`：Windows 跑全量 + Linux 跑子集）**还没推上去** ——
-  往 GitHub 推 workflow 文件需要凭据带 `workflow` 权限，本机那把没有。
-  ⇒ "Rust 侧只在 Windows 上验"这件事**没有变**，见
-  [`docs/VERSIONING.md`](docs/VERSIONING.md)。
+  CI 在两处都跑（**推送即跑**）：
+  · **GitHub Actions**（`.github/workflows/ci.yml`）—— Windows 跑**全量**（含 Rust 编译与
+    领域测试）、Linux 跑**可移植子集**，两边的结果都在 Actions 页上可查；
+  · **CNB 主仓**（`.cnb.yml`）—— 跑同一套可移植子集，结果连同日志尾部与构建链接
+    写成公开可读的一份产物：
+    `https://cnb.cool/IEML_Official/IEML/-/releases/download/ci-status/ci-status.json`。
+  ★ 但**"能跑"不等于"支持"**：Linux 那条只跑前端与门禁，**Rust 侧仍然只在 Windows 上验**；
+  macOS 一次都没跑过。平台口径见 [`docs/VERSIONING.md`](docs/VERSIONING.md)。
 - **安装包没有买 Windows 代码签名证书**（实测：exe 与安装包的 Authenticode 状态都是
   `NotSigned`），所以从浏览器下载后首次运行，Windows 可能提示「已保护你的电脑」或
   「未知发布者」—— 点「更多信息 → 仍要运行」即可。**自身更新是另一套**：

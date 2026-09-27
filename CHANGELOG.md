@@ -6,6 +6,29 @@
 
 ---
 
+## 0.4.2 — 2026-09-27（第八十七轮：CI 两处都跑绿了，顺手修掉它抓出来的两个真缺陷）
+
+### 修改了
+
+* 修改了 每次推送的自动检查：GitHub 与 CNB 两处都会跑，结果都能查。
+* 修改了 全新克隆下来就能跑测试（以前必须先构建一次前端，否则编译期就报错）。
+* 修改了 Windows 上克隆下来的换行符不再被自动改成 CRLF。
+
+> 这三条的来由值得留一笔：**CI 第一次真的跑起来，就把两个只有"别人的机器"才会遇到的
+> 缺陷抓了出来** ——
+> ① 干净 clone 里没有 `dist/`，而 `tauri::generate_context!()` 在**编译期**就要它
+>    （`frontendDist: "../dist"`），于是全新环境下 `cargo test` 直接死在 proc macro；
+> ② Windows 的 git 默认 `core.autocrlf=true`，检出的是 CRLF，而 JS 的 `.` 不匹配 `\r`，
+>    于是"文档锚点"门禁把 12 个**活**锚点报成死锚点 —— 一条"只有别人克隆才会红"的门禁，
+>    会教会下一个人忽略它。
+> 修法分别是：把前端构建排到 Rust 之前；加 `.gitattributes` 钉 `eol=lf`（门禁自己也
+> 改成按 `\r?\n` 切行，两层都做）。
+> 结果：`a4056f3` 上 GitHub 的 **Windows 全量**与 **Linux 子集**两个作业都 `success`，
+> CNB 那条也绿（30 项通过 / 跳过 2 项），可查：
+> `https://cnb.cool/IEML_Official/IEML/-/releases/download/ci-status/ci-status.json`。
+
+---
+
 ## 0.4.1 — 2026-09-27（第八十六轮：CI 真的跑起来，而且结果可查）
 
 ### 修改了
