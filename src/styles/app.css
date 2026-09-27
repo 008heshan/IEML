@@ -546,29 +546,14 @@
  * dev.15 起列表只有一个容器 + 分隔线，行本身不再是一张张卡片。
  * 之前每行一张带圆角和边框的小卡：一屏 4 行就有 4 个边框 + 4 个圆角，
  * 视觉噪音大、还把行高压到两行文字都挤在一起。
- * 现在 `.list` 是那一个盒子，`.list-row` 只是它里面的一行。
+ *
+ * ★★ 2026-09-27（清理）：`.list` / `.list-row.running` 这两个"统一列表原语"
+ *   **已删**。它们是 ADR-054 计划里的东西，而各页实际各自演化出了
+ *   `.ver-list` / `.res-list` / `.java-list` 这一批 —— 这两个类名
+ *   **在 TSX 里一个消费者都没有**（可查：`grep -r 'className="list' src` 为空）。
+ *   留着的唯一效果是让人以为有一套统一原语可用，而它并不存在。
+ *   ⇒ 各页继续用自己的那一套；真要统一时，把消费者和原语一起加。
  */
-.list {
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  background: var(--card-bg);
-  box-shadow: var(--shadow-card);
-  overflow: hidden;
-}
-
-
-
-
-
-
-.list-row.running {
-  background: var(--success-subtle);
-}
-
-
-
-
-
 
 /* 操作条：一屏里"能做的事"集中成一行，而不是散成四张卡片 */
 .toolbar {
@@ -2761,7 +2746,6 @@ tbody tr.clickable:focus-visible {
   --glass-blur: 13px;
   --glass-hi: 0.12;
   --glass-rim: 0.09;
-  --glass-disp-a: 0.11;
 }
 
 /* 灵动视效：折射更厚、色散更明显、高光会自己流 */
@@ -2769,8 +2753,6 @@ tbody tr.clickable:focus-visible {
   --glass-blur: 18px;
   --glass-hi: 0.17;
   --glass-rim: 0.14;
-  --glass-disp: 2px;
-  --glass-disp-a: 0.16;
 }
 
 

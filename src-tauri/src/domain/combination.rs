@@ -110,8 +110,9 @@ pub fn addon_compatibility(
         AddonKind::OptiFine => {
             /*
              * --- 纯原版：合法，走 OptiFine 自带的 Patcher 对原版 jar 打补丁 ---
-             * ★ 但那个 Patcher 我们没写 —— 所以这里只判"组合合不合法"，
-             *   判完由最后的闸门统一处理"我们有没有实现"。
+             * ★ 那个 Patcher **已经写了**（`net::optifine`，起 Java 子进程跑官方安装器）。
+             *   这里只判"组合合不合法"，"我们有没有实现"由最后的闸门统一处理 ——
+             *   两件事分开，是因为合法性是**规则**、实现是**进度**，混在一起改一处会漏另一处。
              */
             let verdict = match base {
                 // --- 纯原版 ---

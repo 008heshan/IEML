@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 版本隔离判定（ADR-005 三段判定）
  * ------------------------------------------------------------------
  * 原设计稿把隔离做成一个"开/关"开关，甚至全局开关 + 实例开关两处并存，
@@ -58,7 +58,6 @@ export function resolveIsolation(input: IsolationInput): IsolationVerdict {
         '多个版本的 Mod 会互相污染 —— 1.20.1 的 Mod 放进 1.21.1 的实例会直接导致游戏无法启动。仅建议纯原版实例这样做。',
     };
   }
-
   /* ---- ③ 自动：按目录内容判定 ---- */
   if (input.hasContent) {
     return {
@@ -80,38 +79,14 @@ export function resolveIsolation(input: IsolationInput): IsolationVerdict {
 }
 
 /**
- * 隔离方式改变时的迁移后果说明（必须给出**可执行的下一步**，不能只吓唬用户）。
- * PCL2 原文只说"你需要把存档手动迁移"，把活推给了用户；这里给出自动迁移选项。
+ * ★★ 2026-09-27（清理）：这里原来还有 `IsolationMigrationPlan` 与
+ *   `describeMigration()` —— 一整套"关闭隔离后这些内容会被其他实例看到、
+ *   要不要先自动备份再搬"的迁移方案（PCL2 的原文只说要手动迁移，那份设计
+ *   想给用户一条自动路径）。
+ *
+ *   ★ 它**全仓库一个调用方都没有**（判据：`grep -rn describeMigration src` 只有它自己），
+ *     而它里面写着 `canAutoBackup: true` 这种"承诺"—— 没有任何调用方会兑现。
+ *     "共享模式"本身也没接上（见 `InstanceSetup.tsx` 那段说明）。
+ *   ⇒ 删掉：一份没人会执行的迁移方案，比没有方案更容易让人误以为功能已存在。
+ *     真要做共享模式时，连同调用方与判据一起写。
  */
-export interface IsolationMigrationPlan {
-  /** 需要从哪搬到哪 */
-  from: string;
-  to: string;
-  /** 将被搬运的条目 */
-  items: Array<{ name: string; kind: 'saves' | 'mods' | 'config' | 'options' | 'other'; bytes: number }>;
-  /** 是否可以先自动备份再搬 */
-  canAutoBackup: boolean;
-  /** 文案：不做这一步会怎样 */
-  consequence: string;
-}
-
-export function describeMigration(
-  verdict: IsolationVerdict,
-  items: IsolationMigrationPlan['items'],
-  dirs: { isolatedDir: string; sharedDir: string },
-): { plan: IsolationMigrationPlan; headline: string } | null {
-  if (verdict.isolated) return null; // 开启隔离不需要迁移（新目录本来就是空的）
-  const headline = items.length === 0
-    ? '该实例目录目前是空的，关闭隔离不会丢东西'
-    : `关闭隔离后，下列 ${items.length} 项会被其他实例看到`;
-  return {
-    headline,
-    plan: {
-      from: dirs.isolatedDir,
-      to: dirs.sharedDir,
-      items,
-      canAutoBackup: true,
-      consequence: '如果不迁移，这些内容会留在旧目录里"消失"，改用共享目录后游戏会像新装的一样',
-    },
-  };
-}

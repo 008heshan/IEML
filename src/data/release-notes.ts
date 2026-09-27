@@ -72,6 +72,19 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.4.4',
+    date: '2026-09-27',
+    headline: '这一版功能与上一版相同，清掉的是一批已经不成立的说法。',
+    groups: [
+      {
+        title: '修改了',
+        items: [
+          '修改了 源码与文档里一批过期说法，以及几条没有任何地方在用的样式。',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.4.3',
     date: '2026-09-27',
     headline: '这一版功能与上一版相同，定下了版本号以后怎么走。',

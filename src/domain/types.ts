@@ -153,7 +153,14 @@ export interface Instance {
 
 /* ============================ 加载器能力 ============================ */
 
-/** 某个 MC 版本上可用的加载器能力（由 Rust 侧 get_loader_capabilities 提供） */
+/**
+ * 某个 MC 版本上可用的加载器能力。
+ *
+ * ★ 2026-09-27（清理）：这句注释原来写的是「由 Rust 侧 `get_loader_capabilities` 提供」——
+ *   那个命令名**从来不存在**（Rust 侧叫 `loader_capabilities`，`lib.rs` 里注册着），
+ *   而且它**前端一次都没调过**：这份数据实际由 TS 自己算（`domain/loader-caps.ts`）。
+ *   注释指着一个不存在也不被调用的命令，等于给下一个读代码的人挖坑。
+ */
 export interface LoaderCapabilities {
   mcVersion: string;
   /** 可选的基础加载器及各自可用版本 */
