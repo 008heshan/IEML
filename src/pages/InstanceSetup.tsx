@@ -64,6 +64,8 @@ import {
   wholeGb,
   wholeGbFromMb,
 } from '../domain';
+// ★ 备份与回滚面板（ADR-014）—— 规则在后端 `crate::backup`，面板只呈现结论
+import { BackupPanel } from '../components/BackupPanel';
 
 export function InstanceSetup() {
   /** 应用自己的确认弹窗（`window.confirm` 在这个壳里是坏的，见 `ui/confirm.tsx`） */
@@ -771,6 +773,15 @@ export function InstanceSetup() {
             onChange={(v) => updateConfig(active.id, { joinServer: v })}
           />
         </Card>
+
+        {/* ==================== 备份与回滚（ADR-014） ==================== */}
+        {/*
+          ★ 2026-09-27：这一张卡以前不存在 —— ROADMAP 里一直写着"M3 的备份与回滚
+            没有实现"，而"重置为全局设置"的确认框当时还写着"重置前会自动备份"（已改成实话）。
+            现在它真的实现了：范围、保留份数、回滚语义都在 `crate::backup` 里，
+            面板只呈现结论（见 `components/BackupPanel.tsx` 文件头）。
+        */}
+        <BackupPanel slug={active.config.slug} name={active.config.name} />
 
         {/* ==================== 危险操作 ==================== */}
         <Card>

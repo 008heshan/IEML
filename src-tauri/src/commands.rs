@@ -714,6 +714,130 @@ fn copy_tree(src: &std::path::Path, dst: &std::path::Path) -> Result<u64, String
     Ok(total)
 }
 
+/* ====================== 实例备份与回滚（ADR-014） ====================== */
+
+/*
+ * 这一组命令**很薄**：真正的规则（备份范围、jar 不进备份、回滚前先备份、
+ * 滚动保留、越界拒绝）都在 `crate::backup` 里，那里有 8 条单测钉着。
+ * 这里只做三件事：取路径、拿当前时间、把结果原样交给前端。
+ */
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// 这个实例有哪些备份（新的在前）
+#[tauri::command]
+pub fn backup_list(
+    slug: String,
+    state: State<'_, AppState>,
+) -> Vec<crate::backup::BackupManifest> {
+    crate::backup::list(&state.paths(), &slug)
+}
+
+/// 手动做一份备份，并按保留份数滚动清理。
+///
+/// `reason` 会原样显示给用户（`手动` / `启动前自动` / `回滚前自动`）——
+/// 界面上要能看出"这一份是谁触发的"，否则时间线里五份备份长得一模一样。
+#[tauri::command]
+pub async fn backup_create(
+    slug: String,
+    name: String,
+    mc_version: Option<String>,
+    reason: Option<String>,
+    keep: Option<usize>,
+    state: State<'_, AppState>,
+) -> Result<crate::backup::BackupManifest, String> {
+    if slug.trim().is_empty() {
+        return Err("实例 slug 为空".into());
+    }
+    // ★ 先克隆一份路径（`paths()` 返回 Arc 的克隆）——**不跨 await 持任何锁**
+    let paths = state.paths();
+    let m = crate::backup::create(
+        &paths,
+        &slug,
+        &name,
+        mc_version.as_deref().unwrap_or(""),
+        reason.as_deref().unwrap_or("手动"),
+        now_secs(),
+    )
+    .await?;
+    // ★ 保留份数的规矩在 `crate::backup::prune` 里；这里把**刚做的那一份**钉住，
+    //   免得保留数被设成 0 时"做完就删"。
+    let keep = keep.unwrap_or(crate::backup::DEFAULT_KEEP);
+    let removed = crate::backup::prune(&paths, &slug, keep.max(1), &[m.id.clone()]);
+    if !removed.is_empty() {
+        crate::say!(
+            "[IEML/backup] 滚动保留：清掉 {} 份旧备份 {:?}",
+            removed.len(),
+            removed
+        );
+    }
+    Ok(m)
+}
+
+/// 从一份备份回滚（**先自动备份当前状态**，见 `crate::backup::restore`）
+#[tauri::command]
+pub async fn backup_restore(
+    slug: String,
+    name: String,
+    mc_version: Option<String>,
+    id: String,
+    keep: Option<usize>,
+    state: State<'_, AppState>,
+) -> Result<crate::backup::RestoreReport, String> {
+    if slug.trim().is_empty() {
+        return Err("实例 slug 为空".into());
+    }
+    let paths = state.paths();
+    crate::backup::restore(
+        &paths,
+        &slug,
+        &name,
+        mc_version.as_deref().unwrap_or(""),
+        &id,
+        keep.unwrap_or(crate::backup::DEFAULT_KEEP),
+        now_secs(),
+    )
+    .await
+}
+
+/// 删掉一份备份（只删自己认得的那种目录，见 `crate::backup::remove`）
+#[tauri::command]
+pub fn backup_remove(slug: String, id: String, state: State<'_, AppState>) -> Result<(), String> {
+    crate::backup::remove(&state.paths(), &slug, &id)
+}
+
+/// 打开备份目录（没有传 `id` 就打开这个实例的备份总目录）
+#[tauri::command]
+pub fn backup_open_folder(
+    slug: String,
+    id: Option<String>,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let base = crate::backup::backups_root(&state.paths(), &slug);
+    let dir = match id.filter(|s| !s.trim().is_empty()) {
+        Some(id) => {
+            // ★ 越界防护与 `crate::backup::remove` 同一套：id 只允许是单层目录名
+            if id.contains('/') || id.contains('\\') || id.contains("..") || id.contains(':') {
+                return Err("备份 id 不合法".into());
+            }
+            base.join(id)
+        }
+        None => base.clone(),
+    };
+    std::fs::create_dir_all(&dir).ok();
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_path(dir.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| format!("无法打开目录：{e}"))?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
 /* ====================== 启动与停止 ====================== */
 
 /*

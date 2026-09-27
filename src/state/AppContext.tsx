@@ -162,6 +162,8 @@ function sanitizePrefs(raw: unknown): Partial<AppState['prefs']> {
   num('windowHeight', 240, 4320);
   bool('particleEffects');
   bool('reducedMotion');
+  // ★ 启动前自动备份（ADR-014）。缺省 = 开：没写过这个字段的用户也要有保险
+  bool('autoBackup');
   if (typeof r.offlineUsername === 'string' && r.offlineUsername.trim()) {
     out.offlineUsername = r.offlineUsername.trim().slice(0, 32);
   }

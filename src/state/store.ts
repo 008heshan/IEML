@@ -225,6 +225,8 @@ export interface AppState {
     modSource: 'modrinth' | 'both';
     particleEffects: boolean;
     reducedMotion: boolean;
+    /** ★ 启动游戏前自动备份（ADR-014，默认开）。Rust 侧也读它，见下面的说明 */
+    autoBackup: boolean;
     offlineUsername: string;
     accountUuid: string | null;
     windowWidth: number;
@@ -298,6 +300,14 @@ export const initialState: AppState = {
     modSource: 'modrinth',
     particleEffects: true,
     reducedMotion: false,
+    /**
+     * ★★ 启动游戏前自动备份（ADR-014：**默认开启**，"触发时机为启动游戏前"）。
+     *
+     *   这个字段**Rust 侧也要读**（启动命令在 Rust 里跑，那一刻前端可能还没起来），
+     *   所以它必须落在 `prefs.json` 里，而不是只活在内存或 localStorage。
+     *   读取处：`commands_real::auto_backup_enabled`。
+     */
+    autoBackup: true,
     offlineUsername: 'Player',
     accountUuid: null,
     windowWidth: 1280,

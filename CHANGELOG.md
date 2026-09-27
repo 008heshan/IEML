@@ -6,6 +6,27 @@
 
 ---
 
+## 0.3.0 — 2026-09-27（第八十四轮：实例备份与回滚）
+
+### 新增了
+
+* 新增了 实例的备份与回滚：存档、配置、游戏设置、服务器列表都能存一份并回滚，
+  时间线上列着每一份的时间、体积与内容，回滚前会先自动把当前状态也存一份。
+* 新增了 启动游戏前自动备份（默认开启），滚动保留最近 5 份。
+
+### 修改了
+
+* 修改了 备份里的 Mod：只记文件名与校验值，不把 jar 拷进备份 ——
+  一个整合包几百 MB，五份备份就能把盘吃光。
+
+> 这一轮还写了 CI 配置（`.github/workflows/ci.yml`：Windows 全量 + Linux 可移植子集），
+> 但它**一次都没跑过** —— 推 workflow 文件需要凭据带 `workflow` 权限，本机那把没有
+> （GitHub 原话：`refusing to allow an OAuth App to create or update workflow
+> .github/workflows/ci.yml without workflow scope`）。
+> ⇒ 平台口径里"没有 CI"这一条**暂时仍然成立**，见 `README.md` 与 `docs/VERSIONING.md` 的加注。
+
+---
+
 ## 0.2.0 — 2026-09-27（第八十三轮：CurseForge 整合包一键装 + 拖拽导入）
 
 ### 新增了

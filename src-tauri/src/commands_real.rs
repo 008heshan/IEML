@@ -3072,6 +3072,21 @@ pub async fn launch_minecraft(
     std::fs::create_dir_all(&game_dir).map_err(|e| format!("创建游戏目录失败：{e}"))?;
 
     /*
+     * ★★ 启动前自动备份（ADR-014 的触发时机）。
+     *
+     *   为什么放在**这里**（建好游戏目录之后、起进程之前）：
+     *     · 必须在进程起来之前 —— 游戏一起来就会写 `saves/` 与 `options.txt`，
+     *       那时候再备份，"这次会话之前的存档"已经被动过了；
+     *     · 必须在 `create_dir_all` 之后 —— 全新实例还没有 `game/`，
+     *       备份一个不存在的目录没有意义（`backup::create` 会如实报错）。
+     *
+     *   ★ 失败**不拦启动**：备份是保险，不是前置条件。用户要的是进游戏，
+     *     因为"备份没做成"而开不了游戏是本末倒置。但**要说出来**
+     *     （否则"备份怎么没做"会变成一个查不到原因的现象）。
+     */
+    auto_backup_before_launch(&req, &state).await;
+
+    /*
      * ★★ 首次启动把游戏语言设成中文（用户 2026-09-15：
      *   "我希望在玩家首次启动游戏时，游戏语言默认是中文"）。
      *
@@ -4600,6 +4615,99 @@ pub struct StopInfo {
     pub benign_notes: Vec<String>,
     /// 判定依据（一条一条），排障时能看出"它凭什么这么说"
     pub evidence: Vec<String>,
+}
+
+/// `prefs.json` 里的 `autoBackup`（**缺省 = 开**，ADR-014："自动备份默认开启"）。
+///
+/// ★ 为什么 Rust 侧要自己读这个文件，而不是让前端传进来：
+///   备份的触发点是**启动游戏**，而启动命令跑在 Rust 里 ——
+///   设计上它不该依赖"前端此刻是否已经加载完偏好"。
+///   `prefs.json` 是前端写的（`save_prefs`），这里只读一个布尔值；
+///   读不到 / 文件坏了 / 字段类型不对，一律当成**开**（宁可多备一份，
+///   也不要因为一个读不出来的设置把保险关掉）。
+fn auto_backup_enabled(paths: &crate::platform::AppPaths) -> bool {
+    let Some(p) = paths.own_file_for_read("prefs.json") else {
+        return true;
+    };
+    let Ok(text) = std::fs::read_to_string(&p) else {
+        return true;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return true;
+    };
+    v.get("autoBackup").and_then(|x| x.as_bool()).unwrap_or(true)
+}
+
+/// 从实例清单里取**显示名**（备份清单里的 `name` 只用来给用户看：slug 是目录名，
+/// 用户认不出"哪个是我那个整合包"）。取不到就用 slug —— 不编一个名字出来。
+fn instance_display_name(paths: &crate::platform::AppPaths, slug: &str) -> String {
+    let Some(p) = paths.own_file_for_read("instances.json") else {
+        return slug.to_string();
+    };
+    let Ok(text) = std::fs::read_to_string(&p) else {
+        return slug.to_string();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return slug.to_string();
+    };
+    v.get("instances")
+        .and_then(|x| x.as_array())
+        .and_then(|arr| {
+            arr.iter().find_map(|i| {
+                let cfg = i.get("config")?;
+                if cfg.get("slug").and_then(|s| s.as_str()) == Some(slug) {
+                    cfg.get("name").and_then(|n| n.as_str()).map(|s| s.to_string())
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or_else(|| slug.to_string())
+}
+
+/// **启动前自动备份**（ADR-014）。返回备份 id（没做或没做成时 `None`）。
+///
+/// 滚动保留也在这里做：启动是**高频**动作，不清理的话 5 份的上限形同虚设。
+async fn auto_backup_before_launch(
+    req: &LaunchRequest,
+    state: &AppState,
+) -> Option<String> {
+    let paths = state.paths();
+    if !auto_backup_enabled(&paths) {
+        say!("[IEML/backup] 设置里关掉了「启动前自动备份」，这次不备份");
+        return None;
+    }
+    let slug = req.instance_slug.clone();
+    let name = instance_display_name(&paths, &slug);
+    match crate::backup::create(
+        &paths,
+        &slug,
+        &name,
+        &req.mc_version,
+        "启动前自动",
+        now_secs(),
+    )
+    .await
+    {
+        Ok(m) => {
+            say!("[IEML/backup] 启动前已备份：{}（{}）", m.id, m.summary());
+            let removed = crate::backup::prune(
+                &paths,
+                &slug,
+                crate::backup::DEFAULT_KEEP,
+                &[m.id.clone()],
+            );
+            if !removed.is_empty() {
+                say!("[IEML/backup] 滚动保留：清掉 {} 份旧备份", removed.len());
+            }
+            Some(m.id)
+        }
+        Err(e) => {
+            // ★ 不拦启动（见调用处的说明），但一定留下痕迹
+            say!("[IEML/backup] ★ 启动前自动备份没做成（不影响启动）：{e}");
+            None
+        }
+    }
 }
 
 /// 读某个实例的最新日志尾部（供崩溃分析弹窗）
@@ -7687,5 +7795,134 @@ mod wire_tests {
         assert_eq!(size_text(0), "0.0 MB");
         assert_eq!(size_text(1024 * 1024 * 3 / 2), "1.5 MB");
         assert_eq!(size_text(2 * 1024 * 1024 * 1024), "2.00 GB");
+    }
+
+    /*
+     * ---------- 启动前自动备份的开关（ADR-014） ----------
+     *
+     * 这个开关的特殊之处：**读它的地方在 Rust 的启动路径上**，而写它的是前端
+     * （`prefs.json`）。于是"文件读不到 / 内容坏了 / 类型不对"这三种情况都必须有
+     * 明确答案 —— 含糊过去的后果是"用户以为有保险，其实没有"。
+     */
+
+    /// 缺省 = **开**；只有明确写了 `false` 才关；文件坏了回到开
+    #[test]
+    fn auto_backup_defaults_to_on_and_only_explicit_false_turns_it_off() {
+        let base = std::env::temp_dir().join(format!("ieml-autobak-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let mut p = crate::platform::AppPaths::from_root(base.join("root"));
+        p.own_root = base.join("own");
+        std::fs::create_dir_all(&p.own_root).unwrap();
+
+        // ① 还没有 prefs.json（用户从没改过设置）→ 开
+        assert!(
+            auto_backup_enabled(&p),
+            "读不到设置时必须是**开** —— 宁可多备一份，也不要因为一个读不出来的设置把保险关掉"
+        );
+
+        // ② 明确 true → 开
+        std::fs::write(p.prefs_file(), r#"{"autoBackup":true}"#).unwrap();
+        assert!(auto_backup_enabled(&p));
+
+        // ③ 明确 false → 关（用户在界面上关掉了）
+        std::fs::write(p.prefs_file(), r#"{"autoBackup":false}"#).unwrap();
+        assert!(!auto_backup_enabled(&p), "用户关掉之后不该还偷偷备份");
+
+        // ④ 文件坏了 → 开（启动时 prefs 坏掉已经有别的兜底，这里不跟着一起沉默）
+        std::fs::write(p.prefs_file(), "{ 这不是 json").unwrap();
+        assert!(auto_backup_enabled(&p));
+
+        // ⑤ 类型不对（手改成字符串）→ 开
+        std::fs::write(p.prefs_file(), r#"{"autoBackup":"no"}"#).unwrap();
+        assert!(auto_backup_enabled(&p));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 备份清单里的 `name` 取实例显示名；清单里找不到就回退 slug —— **不编名字**
+    #[test]
+    fn backup_uses_the_ledger_display_name_and_falls_back_to_the_slug() {        let base = std::env::temp_dir().join(format!("ieml-bakname-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let mut p = crate::platform::AppPaths::from_root(base.join("root"));
+        p.own_root = base.join("own");
+        std::fs::create_dir_all(&p.own_root).unwrap();
+
+        // 没有清单 → 回退 slug
+        assert_eq!(instance_display_name(&p, "pack-ab12"), "pack-ab12");
+
+        std::fs::write(
+            p.instances_file(),
+            r#"{"instances":[{"config":{"slug":"pack-ab12","name":"我的整合包"}}],"active_id":null}"#,
+        )
+        .unwrap();
+        assert_eq!(instance_display_name(&p, "pack-ab12"), "我的整合包");
+        // 别的实例不在清单里 → 仍然回退 slug
+        assert_eq!(instance_display_name(&p, "pack-zz99"), "pack-zz99");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// ★★ 启动前自动备份：**开着真的备一份、关着一份都不做**（ADR-014 的触发时机）。
+    ///
+    ///   这条测试不联网、也不需要真的装一份游戏：它验的是**钩子本身**
+    ///   （`auto_backup_before_launch`）。"在启动流程里的哪一步"由调用处那段说明钉着：
+    ///   必须在 `create_dir_all(game_dir)` 之后（否则新实例没有目录可备）、
+    ///   在起进程之前（否则游戏已经开始写存档了）。
+    #[tokio::test]
+    async fn launch_hook_backs_up_only_when_enabled() {
+        let base = std::env::temp_dir().join(format!("ieml-launchbak-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let mut p = crate::platform::AppPaths::from_root(base.join("root"));
+        p.own_root = base.join("own");
+        p.instances = p.root.join("instances");
+        let game = p.instance_game_dir("s1");
+        std::fs::create_dir_all(game.join("saves")).unwrap();
+        std::fs::write(game.join("saves/level.dat"), b"v1").unwrap();
+        let state = crate::AppState::new(p.clone());
+        let req: LaunchRequest = serde_json::from_value(serde_json::json!({
+            "mc_version": "1.20.1",
+            "loader_kind": null,
+            "username": "Player",
+            "account_uuid": null,
+            "memory_mb": 2048,
+            "width": 854,
+            "height": 480,
+            "instance_slug": "s1",
+            "instance_id": "i1",
+            "extra_jvm_args": [],
+            "extra_game_args": []
+        }))
+        .expect("LaunchRequest 的必填字段");
+
+        // ① 默认（还没有 prefs.json）→ 备一份，理由如实写「启动前自动」
+        let id = auto_backup_before_launch(&req, &state).await;
+        assert!(id.is_some(), "默认开启时，启动前必须真的备份一份");
+        let list = crate::backup::list(&p, "s1");
+        assert_eq!(list.len(), 1, "{:?}", list.iter().map(|m| &m.id).collect::<Vec<_>>());
+        assert_eq!(list[0].reason, "启动前自动");
+        assert_eq!(list[0].name, "s1", "没有 instances.json 时名字回退 slug");
+        let dest = crate::backup::backups_root(&p, "s1").join(&list[0].id);
+        assert_eq!(
+            std::fs::read(dest.join("saves/level.dat")).unwrap(),
+            b"v1",
+            "备份里必须有存档本身"
+        );
+
+        // ② 界面上关掉 → 一份都不做
+        std::fs::write(p.prefs_file(), r#"{"autoBackup":false}"#).unwrap();
+        assert!(
+            auto_backup_before_launch(&req, &state).await.is_none(),
+            "关掉之后钩子不该做任何事"
+        );
+        assert_eq!(
+            crate::backup::list(&p, "s1").len(),
+            1,
+            "关掉之后不该多出备份"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
