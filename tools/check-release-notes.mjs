@@ -204,6 +204,31 @@ for (const [label, re] of TECH_LEAK) {
   }
 }
 
+/*
+ * ★★ ⑩ **底层改动合为一条** —— 这条机器判不了（"这是不是玩家看得见的变化"是人的判断），
+ *   所以它**不判失败**，只在"最新一版的条目看起来全是底层痕迹"时给一句提示。
+ *
+ *   规矩的出处（用户 2026-09-27）：「如果我们对启动器底层进行修改，这些的部分合为一条：
+ *   **修改了 若干启动器底层事项**」；理由随后也点明了：
+ *   「也就是我们没有对启动器进行实质性修改，但也得单独开个版本来发布，所以，就合为一条」。
+ *
+ *   ★ 为什么只提示不判红：一句话里出现"注释/判据/门禁"并不等于整版都是底层改动
+ *     （比如"修复了 暂停有时不生效"背后是判据工作）。**判据宁可少，也不要乱报** ——
+ *     一条会误伤的门禁，会教会下一个人绕开它。
+ */
+const INTERNAL_HINTS = /注释|文档|判据|门禁|测试|死代码|重构|样式|CI|版本号|仓库根|清理/;
+const newest = versions[0];
+if (newest) {
+  const items = newest.groups.flatMap((g) => g.items);
+  const onlyEdits = newest.groups.every((g) => g.title === '修改了' || g.title === '修复了');
+  if (items.length >= 2 && onlyEdits && items.every((it) => INTERNAL_HINTS.test(it))) {
+    console.log(
+      `ℹ 提示（不判失败）：最新一版 ${newest.version} 的 ${items.length} 条看起来都是底层事项 —— ` +
+        '按规矩应合为一条「修改了 若干启动器底层事项」（见本文件与 release-notes.ts 文件头第 ⑥ 条）。',
+    );
+  }
+}
+
 if (problems.length) {
   console.error(`✗ 更新日志格式不合规（${FILE}）：`);
   for (const p of problems) console.error(`    ${p}`);
