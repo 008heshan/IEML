@@ -348,7 +348,28 @@ results.push([
   run('界面无悬停提示', 'node', ['tools/gates/check-tooltips.mjs']),
 ]);
 
-if (existsSync(join(root, 'src-tauri', 'Cargo.toml'))) {
+/*
+ * ★★ `--skip-rust`：给 **CI 的 Linux 作业**留的唯一一个口子（2026-09-27 加）。
+ *
+ *   下面那两项走 `powershell tools/env/cargo.ps1`（Windows 的 MSVC 环境），
+ *   ubuntu runner 上跑不了 —— 而"跨平台不再靠嘴保证"这件事总要有个开始：
+ *   Linux 作业跑**可移植的那 30 项**（TS / Node / 门禁 / 构建），
+ *   Windows 作业跑全量。
+ *
+ *   ★ 这个口子不许变成"悄悄少跑几项还报全绿"：
+ *     · 跳过时**当场打印**跳了什么；
+ *     · 结尾的总结里**写明"跳过 N 项"**，而不是只说"全部通过"；
+ *     · 只在显式传参时生效，默认永远是全量。
+ */
+const skipRust = process.argv.includes('--skip-rust');
+const skipped = [];
+
+if (skipRust) {
+  console.log(
+    '\n\x1b[33m▶ --skip-rust：跳过 Rust 两项（它们要 Windows 的 powershell + MSVC 环境）\x1b[0m',
+  );
+  skipped.push('Rust 领域测试（含 Java 判据表）', 'Rust 全部测试目标可编译');
+} else if (existsSync(join(root, 'src-tauri', 'Cargo.toml'))) {
   results.push([
     'Rust 领域测试（含 Java 判据表）',
     run('Rust 领域测试（含 Java 判据表）', 'powershell', [
@@ -445,9 +466,19 @@ if (existsSync(dist)) {
 
 console.log('\n' + '─'.repeat(52));
 const failed = results.filter(([, ok]) => !ok);
+/*
+ * ★ 总结里必须写明**跳过了几项**：`--skip-rust` 是给 CI 的 Linux 作业用的，
+ *   而"少跑了两项却只打印'全部通过'"正是这个仓库最忌讳的那种假绿。
+ */
+const skipNote =
+  skipped.length > 0
+    ? `\x1b[33m（★ 跳过 ${skipped.length} 项：${skipped.join('、')} —— 这两项只在 Windows 上跑）\x1b[0m`
+    : '';
 if (failed.length === 0) {
-  console.log(`\x1b[32m全部 ${results.length} 项检查通过\x1b[0m`);
+  console.log(`\x1b[32m跑过的 ${results.length} 项检查全部通过\x1b[0m${skipNote}`);
   process.exit(0);
 }
-console.log(`\x1b[31m${failed.length} / ${results.length} 项失败：${failed.map(([n]) => n).join('、')}\x1b[0m`);
+console.log(
+  `\x1b[31m${failed.length} / ${results.length} 项失败：${failed.map(([n]) => n).join('、')}\x1b[0m${skipNote}`,
+);
 process.exit(1);
