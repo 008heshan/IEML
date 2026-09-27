@@ -6246,6 +6246,317 @@ pub async fn pack_install_local(
     .await
 }
 
+/// 拖进来的**单个东西**：它是哪一类、会落到哪个目录（**只读**，不动盘）。
+///
+/// ★ 判定在 `domain::dropped`（纯逻辑 + 15 条单测，含"整合包不能被认成 Mod"那条顺序判据）；
+///   这一层只负责读盘上的文件、把结论翻译成前端要的形状。
+/// ★ 文件与**目录**都收（`classify_path`）：`mods/` 整个拖进来是常见动作，
+///   以前那种输入会撞上"找不到这个文件：E:\...\mods"这种没法照着做的话。
+/// ★ 前端拿到 `kind == "modpack"` 时应当走**整合包那条路**（`pack_install_local`），
+///   `kind == "folder"` 时走 `install_dropped_dir` —— 三者的区别是
+///   "建实例" / "把一批文件放进目录" / "把一个文件放进目录"。
+#[tauri::command]
+pub fn classify_dropped_file(path: String) -> Result<DroppedFileInfo, String> {
+    let p = std::path::PathBuf::from(path.trim());
+    if !p.exists() {
+        return Err(format!("找不到这个文件或目录：{}", p.display()));
+    }
+    let name = p
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let kind = crate::domain::dropped::classify_path(&p);
+    Ok(dropped_info(&kind, &name, None))
+}
+
+/// 把**一个**资源文件拷进实例的对应目录（`install_dropped_file` 与目录装都用它）。
+///
+/// ★ 扩展名要过一遍判据（与 `install_resource` 同一套）：文件名来自**外部**，
+///   不能直接拼进路径；扩展名不对的也别装（装了游戏读不到，那是"看着成功其实没用"）。
+fn copy_resource_into(
+    src: &std::path::Path,
+    file_name: &str,
+    resource: crate::domain::resources::ResourceKind,
+    paths: &crate::platform::AppPaths,
+    slug: &str,
+) -> Result<std::path::PathBuf, String> {
+    if !crate::domain::resources::filename_matches(resource, file_name) {
+        return Err(format!(
+            "「{file_name}」不像一个{} —— 它应当是 {} 结尾。",
+            resource.display(),
+            resource.extensions().join(" / ")
+        ));
+    }
+    let dir = paths.instance_resource_dir(slug, resource);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败：{e}"))?;
+    let dest = dir.join(file_name);
+    std::fs::copy(src, &dest).map_err(|e| format!("拷贝到实例失败：{e}"))?;
+    say!(
+        "[IEML/drop] 拖入的{}已装到 {}",
+        resource.display(),
+        dest.display()
+    );
+    Ok(dest)
+}
+
+/// 把拖进来的资源装到某个实例（**拷进去，不动原文件**）。
+///
+/// ## 为什么是"拷贝"而不是"移动"
+///
+///   用户拖进来的多半是他下载目录里那份 —— 移走之后他手上就没了。
+///   而且移动跨盘还会失败。拷贝的代价（几十 MB）远小于"装完发现原文件不见了"。
+///
+/// ## 装完必须如实说两句话（ADR-015）
+///
+///   * 纯原版实例装 Mod → 告诉他"放进去也不会被读取"（不是拒绝，是不让他误解）；
+///   * 没 OptiFine/Iris 的实例装光影 → 告诉他"光影不会生效"。
+///   这两句由 `domain::dropped::note_for` 判（真值表在那边，不在这一层）。
+#[tauri::command]
+pub fn install_dropped_file(
+    path: String,
+    slug: String,
+    state: State<'_, AppState>,
+) -> Result<DroppedFileInfo, String> {
+    let src = std::path::PathBuf::from(path.trim());
+    if src.is_dir() {
+        /*
+         * ★ 目录走另一条命令（`install_dropped_dir`）：它要返回**一批**结果。
+         *   这里兜底说清楚，而不是让上层拿到一个"找不到这个文件"。
+         */
+        return Err(
+            "这是一个目录 —— 目录里的东西要一个个判（界面会自动走那条路）".to_string(),
+        );
+    }
+    if !src.is_file() {
+        return Err(format!("找不到这个文件：{}", src.display()));
+    }
+    if slug.trim().is_empty() {
+        return Err("先打开一个版本再拖 —— 这类文件要装到某个版本里".into());
+    }
+    let file_name = src
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let kind = crate::domain::dropped::classify_file(&src);
+
+    let paths = state.paths();
+    let (has_loader, has_shader_support) = instance_flags(&paths, &slug);
+    let note = crate::domain::dropped::note_for(&kind, has_loader, has_shader_support);
+
+    let resource = match &kind {
+        crate::domain::dropped::DroppedKind::Resource(k) => *k,
+        crate::domain::dropped::DroppedKind::Modpack => {
+            return Err(
+                "这是一个**整合包** —— 它会建出一个新实例，走的是另一条路（拖进来时本就会走那条）。\
+                 如果你只是想把它放到某个实例里，请先解压后分别拖 Mod / 资源包。"
+                    .to_string(),
+            );
+        }
+        crate::domain::dropped::DroppedKind::Folder => {
+            return Err("这是一个目录 —— 目录里的东西要一个个判（界面会自动走那条路）".to_string());
+        }
+        crate::domain::dropped::DroppedKind::Unknown(why) => return Err(why.clone()),
+    };
+
+    let dest = copy_resource_into(&src, &file_name, resource, &paths, &slug)?;
+    Ok(dropped_info(&kind, &file_name, Some(dest)).with_note(note))
+}
+
+/// 拖进来的**目录**（`mods` 文件夹、别人给的"材质包合集"）：
+/// 把这一层能装的文件**逐个**判、逐个装。
+///
+/// ## 为什么一次返回一批结果而不是"装了几个"
+///
+///   用户拖进来 20 个文件，其中 3 个装了、17 个没装 —— 只说"装了 3 个"等于把
+///   那 17 个**静默丢掉**，而其中可能有他真正想要的那个。
+///   所以省略掉的每一个都带理由回去（[`DroppedDirReport::skipped`]）。
+///
+/// ## 只装这一层（不递归）
+///
+///   递归会悄悄装一堆用户没打算装的东西（解压出来的 `mods/` 里常混着旧版本残留）。
+///   子目录一律跳过，并在 `skipped` 里说明白。
+#[tauri::command]
+pub fn install_dropped_dir(
+    path: String,
+    slug: String,
+    state: State<'_, AppState>,
+) -> Result<DroppedDirReport, String> {
+    let dir = std::path::PathBuf::from(path.trim());
+    if !dir.is_dir() {
+        return Err(format!("这不是一个目录：{}", dir.display()));
+    }
+    if slug.trim().is_empty() {
+        return Err("先打开一个版本再拖 —— 这些东西要装到某个版本里".into());
+    }
+
+    let paths = state.paths();
+    let (has_loader, has_shader_support) = instance_flags(&paths, &slug);
+    let (installable, skipped) = crate::domain::dropped::plan_dir(&dir);
+    if installable.is_empty() {
+        // ★ 一个都没装成 → 这是一次**失败**，不是"成功装了 0 个"
+        return Err(format!(
+            "「{}」里没有能装的东西：{}",
+            dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+            skipped.join("；")
+        ));
+    }
+
+    let mut installed = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
+    let mut skipped = skipped;
+
+    for (src, resource) in installable {
+        let file_name = src
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        match copy_resource_into(&src, &file_name, resource, &paths, &slug) {
+            Ok(dest) => {
+                // 提示语按**实际装进去的**那一类给（目录里可能既有 Mod 又有光影）
+                let kind = crate::domain::dropped::DroppedKind::Resource(resource);
+                if let Some(n) =
+                    crate::domain::dropped::note_for(&kind, has_loader, has_shader_support)
+                {
+                    if !notes.contains(&n) {
+                        notes.push(n);
+                    }
+                }
+                installed.push(dropped_info(&kind, &file_name, Some(dest)));
+            }
+            Err(e) => skipped.push(e),
+        }
+    }
+
+    Ok(DroppedDirReport {
+        installed,
+        skipped,
+        notes,
+    })
+}
+
+/// 装一个目录的结果：装进去的（逐个）+ 没装的（每一个都带理由）+ 要提醒的话
+#[derive(serde::Serialize)]
+pub struct DroppedDirReport {
+    pub installed: Vec<DroppedFileInfo>,
+    /// 没装的：每一条都是"「文件名」：为什么"
+    pub skipped: Vec<String>,
+    /// 要提醒用户的话（已去重；可能为空）
+    pub notes: Vec<String>,
+}
+
+/// 判断"这个实例有没有加载器 / 光影能不能生效"——**只用来决定提不提醒**，不参与合法性判定。
+///
+/// ## 两个问题的证据来源**不一样**（这是这一小段唯一容易写错的地方）
+///
+///   * **有没有加载器** → 读账本（`instances.json` 的 `loader`）。
+///     这里问的是"用户建这个实例时装了什么"，账本是权威；
+///     盘上有没有那份 jar 是另一个问题，由 `loader_trace` 现读盘回答。
+///   * **光影能不能生效** → **看盘**。判据是"装了 OptiFine **或** Iris/Oculus"：
+///     · OptiFine 可能是**独立**装的（`loader` 为 null、`addons` 里有 optifine，
+///       见 `resolve_loader_version_id` 的用法），所以**不能**用 `has_loader` 代替它 ——
+///       那样会漏报；
+///     · Iris / Oculus 是普通 Mod（落在 `mods/` 里），账本里根本没有它们，
+///       只能看文件名 —— 这也是"用户到底装没装"唯一诚实的证据。
+///
+/// ★ 判错的代价不对称：把"支持"误判成"不支持"，用户会去关一个正常的东西；
+///   反过来（漏报）他会对着一个不生效的光影发呆。所以这里**宁可少报也不漏报**：
+///   只要盘上有 OptiFine 或 Iris/Oculus 的痕迹就算支持。
+fn instance_flags(paths: &crate::platform::AppPaths, slug: &str) -> (bool, bool) {
+    let mut has_loader = false;
+    let mut has_optifine = false;
+
+    if let Some(p) = paths.own_file_for_read("instances.json") {
+        if let Ok(text) = std::fs::read_to_string(&p) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(list) = v.get("instances").and_then(|x| x.as_array()) {
+                    for inst in list {
+                        let Some(cfg) = inst.get("config") else { continue };
+                        if cfg.get("slug").and_then(|s| s.as_str()) != Some(slug) {
+                            continue;
+                        }
+                        has_loader = inst.get("loader").map(|l| !l.is_null()).unwrap_or(false);
+                        has_optifine = inst
+                            .get("addons")
+                            .and_then(|a| a.as_array())
+                            .map(|a| {
+                                a.iter().any(|x| {
+                                    x.get("kind")
+                                        .and_then(|k| k.as_str())
+                                        .map(|k| k.eq_ignore_ascii_case("optifine"))
+                                        .unwrap_or(false)
+                                })
+                            })
+                            .unwrap_or(false);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // 盘上的痕迹：Iris（Fabric/Quilt）与 Oculus（Forge 上的 Iris 移植）都落在 mods/ 里
+    let mods = paths.instance_resource_dir(slug, crate::domain::resources::ResourceKind::Mod);
+    let has_iris = std::fs::read_dir(&mods)
+        .map(|it| {
+            it.filter_map(|e| e.ok()).any(|e| {
+                let n = e.file_name().to_string_lossy().to_ascii_lowercase();
+                n.ends_with(".jar") && (n.contains("iris") || n.contains("oculus"))
+            })
+        })
+        .unwrap_or(false);
+
+    (has_loader, has_optifine || has_iris)
+}
+
+/// 拖入文件的判定结果（前端据此决定下一步：装到哪 / 走哪条路 / 说什么）
+#[derive(serde::Serialize)]
+pub struct DroppedFileInfo {
+    /// `mod` / `resourcepack` / `shader` / `datapack` / `modpack` / `unknown`
+    pub kind: String,
+    /// 人话（"资源包"）
+    pub display: String,
+    /// 认不出来时的原因（认得出时为空）
+    pub reason: String,
+    pub file_name: String,
+    /// 目标目录名（相对实例的游戏目录）；整合包与"认不出来"时为 null
+    pub target_dir: Option<String>,
+    /// 装完之后的完整路径（没装时为 null）
+    pub target_path: Option<String>,
+    /// 装完必须告诉用户的一句话（没有要提醒的为 null）
+    pub note: Option<String>,
+}
+
+impl DroppedFileInfo {
+    fn with_note(mut self, note: Option<String>) -> Self {
+        self.note = note;
+        self
+    }
+}
+
+fn dropped_info(
+    kind: &crate::domain::dropped::DroppedKind,
+    file_name: &str,
+    dest: Option<std::path::PathBuf>,
+) -> DroppedFileInfo {
+    let (kind_key, target_dir) = match kind {
+        crate::domain::dropped::DroppedKind::Modpack => ("modpack".to_string(), None),
+        crate::domain::dropped::DroppedKind::Folder => ("folder".to_string(), None),
+        crate::domain::dropped::DroppedKind::Unknown(_) => ("unknown".to_string(), None),
+        crate::domain::dropped::DroppedKind::Resource(k) => {
+            (k.key().to_string(), Some(k.install_dir().to_string()))
+        }
+    };
+    DroppedFileInfo {
+        kind: kind_key,
+        display: kind.display(),
+        reason: kind.reason(),
+        file_name: file_name.to_string(),
+        target_dir,
+        target_path: dest.map(|d| d.to_string_lossy().to_string()),
+        note: None,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn install_pack_plan(
     plan: PackPlan,

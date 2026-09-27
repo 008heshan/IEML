@@ -497,6 +497,11 @@ pub fn run() {    /*
             commands_real::cf_modpack_install,
             /* ★★ 拖进来的整合包（本地 .mrpack / CF .zip，按内容分辨格式） */
             commands_real::pack_install_local,
+            /* ★★ 拖进来的**单个资源**（Mod / 资源包 / 光影 / 数据包）：
+               先按内容判是什么（ADR-015 的顺序），再放进对应实例的对应目录 */
+            commands_real::classify_dropped_file,
+            commands_real::install_dropped_file,
+            commands_real::install_dropped_dir,
             /* -------- 杂项 -------- */
             commands_real::backend_capabilities,
         ])

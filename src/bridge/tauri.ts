@@ -1619,6 +1619,58 @@ export const backup = {
     call<string>('backup_open_folder', { slug, id: id ?? null }),
 };
 
+/** 拖进来一个文件：它是哪一类、会落到哪个目录（`classify_dropped_file`） */
+export interface DroppedFileInfo {
+  /** `mod` / `resourcepack` / `shader` / `datapack` / `modpack` / `unknown` */
+  kind: string;
+  /** 人话（"资源包"） */
+  display: string;
+  /** 认不出来时的原因（认得出时为空） */
+  reason: string;
+  file_name: string;
+  /** 目标目录名（相对实例的游戏目录）；整合包与"认不出来"时为 null */
+  target_dir: string | null;
+  /** 装完之后的完整路径（没装时为 null） */
+  target_path: string | null;
+  /** 装完必须告诉用户的一句话（例如"这个实例是纯原版，Mod 放进去也不会被读取"） */
+  note: string | null;
+}
+
+/** 拖进来一个**目录**：里面装成了哪些、跳过了哪些（各带理由） */
+export interface DroppedDirReport {
+  /** 真正装进去的（一个文件一条） */
+  installed: DroppedFileInfo[];
+  /** 没装的：每一条都是"「文件名」：为什么"——**一条都不能丢**，用户要照着它处理 */
+  skipped: string[];
+  /** 要提醒的话（已去重） */
+  notes: string[];
+}
+
+/**
+ * ★★ 拖进窗口的**单个资源**（Mod / 资源包 / 光影 / 数据包）—— ADR-015。
+ *
+ * 判定按**内容**（`src-tauri/src/domain/dropped.rs`，15 条单测钉着判定顺序）：
+ *   ① 整合包（`manifest.json` / `modrinth.index.json`，只认根下的）
+ *   ② Mod（`fabric.mod.json` / `quilt.mod.json` / `META-INF/mods.toml` / `mcmod.info`）
+ *   ③ 光影（`shaders/`）→ ④ 资源包 / 数据包（`pack.mcmeta` + `assets/` 还是 `data/`）
+ *
+ * ★ 三种 kind 走三条不同的路，**不能混**：
+ *   * `modpack` → `modpack.installLocal`（那条路是"建实例"，不是"放进目录"）；
+ *   * `folder`  → `drop.installDir`（一次一批，返回装成的 + 跳过的）；
+ *   * 资源      → `drop.install`（一个文件放进一个目录）；
+ *   * `unknown` → 把 `reason` 原样告诉用户（**别自己编一句**）。
+ */
+export const drop = {
+  /** 只判是什么（不装、不动盘）；文件与目录都收 */
+  classify: (path: string) => call<DroppedFileInfo>('classify_dropped_file', { path }),
+  /** 装进某个实例（拷贝，不动原文件）；装完的 `note` 必须原样显示给用户 */
+  install: (path: string, slug: string) =>
+    call<DroppedFileInfo>('install_dropped_file', { path, slug }),
+  /** 装一个**目录**里这一层能装的文件（不递归）；一个都没装成时后端会直接报错 */
+  installDir: (path: string, slug: string) =>
+    call<DroppedDirReport>('install_dropped_dir', { path, slug }),
+};
+
 /** 整合包进度事件（`modpack-progress`） */
 export interface ModpackProgressEvent {
   taskId: string;
