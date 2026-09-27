@@ -9,8 +9,8 @@
  *   先用浏览器把功能跑通，工具链到位后无缝切换。
  */
 import type { Instance, JavaRuntime } from '../domain';
-import type { FolderVersion, RunningGameInfo } from './tauri.ts';
-export type { RunningGameInfo };
+import type { FolderVersion, RunningGameInfo, IsolationInfo } from './tauri.ts';
+export type { RunningGameInfo, IsolationInfo };
 
 export interface BackendInfo {
   kind: 'web' | 'tauri';
@@ -153,6 +153,15 @@ export interface Backend {
    * 同一个存档被两个进程写。
    */
   runningGames(): Promise<RunningGameInfo[]>;
+
+  /**
+   * ★★ **每个实例的隔离判定**（ADR-005）。
+   *
+   * 判定的规则只写在 Rust 侧（`domain::isolation`，ADR-006）——这里只是把它搬回来。
+   * 浏览器演示模式返回**空表**：演示版没有 Rust 后端，也就没有判定，
+   * 界面据此显示"演示模式里没有判定"，而不是自己编一个结论。
+   */
+  listIsolation(): Promise<IsolationInfo[]>;
 
   /* --- 目录 --- */
   openFolder(path: string): Promise<void>;

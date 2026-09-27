@@ -277,7 +277,7 @@ pub async fn create(
     if slug.trim().is_empty() {
         return Err("实例 slug 为空，不能备份".into());
     }
-    let game_dir = paths.instance_game_dir(slug);
+    let game_dir = paths.game_dir_of(slug);
     if !game_dir.is_dir() {
         return Err(format!(
             "这个实例还没有游戏目录，没什么可备份的：{}",
@@ -485,7 +485,7 @@ pub async fn restore(
     // ① ★★ 先存当前状态（失败就中止，绝不进入"既没回滚、也没退路"的状态）
     let pre = create(paths, slug, name, mc_version, "回滚前自动", now_secs).await?;
 
-    let game_dir = paths.instance_game_dir(slug);
+    let game_dir = paths.game_dir_of(slug);
     let mut report = RestoreReport {
         from_id: id.to_string(),
         pre_rollback_id: pre.id.clone(),
@@ -678,7 +678,7 @@ pub fn preview_restore(paths: &AppPaths, slug: &str, id: &str) -> Result<Restore
     let manifest: BackupManifest =
         serde_json::from_str(&text).map_err(|e| format!("这份备份的清单读不了：{e}"))?;
 
-    let game_dir = paths.instance_game_dir(slug);
+    let game_dir = paths.game_dir_of(slug);
     let mut will_write = 0usize;
     let mut will_change = 0usize;
     let mut will_add = 0usize;

@@ -258,6 +258,14 @@ interface AppContextValue {  state: AppState;
    */
   refreshInstances: () => Promise<void>;
 
+  /**
+   * ★★ 重拉隔离判定（ADR-005）。
+   *
+   * 判定由后端算（规则只写一次，ADR-006）——前端改完设置必须**回读**，
+   * 不许自己推一个结论出来。读失败时保持上一次的结论。
+   */
+  refreshIsolation: () => Promise<void>;
+
 
   /**
    * ★★ 2026-09-25（用户：「主页也有同样问题」）：**当前文件夹里的版本** ——
@@ -491,7 +499,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
        *   现在：每条给一个安全的兜底值，只有"机器信息"失败才算真的启动失败
        *   （没有它就渲染不出任何东西）。
        */
-      const [machineR, instR, javaR, prefsR, infoR, runningR] = await Promise.allSettled([
+      const [machineR, instR, javaR, prefsR, infoR, runningR, isolationR] = await Promise.allSettled([
         backend.machineInfo(),
         backend.loadInstances(),
         backend.scanJava(),
@@ -512,6 +520,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
          *   后端那张表是**唯一**知道真相的地方（它手里有子进程句柄）。
          */
         backend.runningGames(),
+        /*
+         * ★★ 隔离判定（ADR-005）：**由后端算**，界面只显示。
+         *   拿不到时保持空表 —— 界面据此显示"读取中"，绝不自己猜一个结论出来
+         *   （猜错的代价是用户以为存档丢了）。
+         */
+        backend.listIsolation(),
       ]);
 
       if (machineR.status === 'rejected') {
@@ -624,6 +638,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (runningR.status === 'fulfilled' && runningR.value.length > 0) {
         dispatch({ type: 'game/sync', list: runningR.value });
         console.info(`[IEML] 桌面版报回来 ${runningR.value.length} 个正在运行的游戏`);
+      }
+
+      /*
+       * ★★ 隔离判定（ADR-005）：后端算完的结论搬进 state。
+       *   读失败时**什么都不做**（保持空表）—— 界面显示"读取中"，
+       *   而不是拿一个前端猜的结论冒充后端判定。
+       */
+      if (isolationR.status === 'fulfilled') {
+        dispatch({ type: 'isolation/set', list: isolationR.value });
+      } else {
+        console.error('[IEML] 读取隔离判定失败（界面会显示"读取中"）：', isolationR.reason);
       }
     })();
   }, [backend]);
@@ -1076,6 +1101,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [backend]);
 
+  /**
+   * ★★ 重拉一遍**隔离判定**（ADR-005）。
+   *
+   * 判定的规则在 Rust 侧，所以"改完隔离设置"之后前端唯一正确的动作是**回读**，
+   * 而不是自己推一个结论（那正是这次修掉的缺陷：两份规则、谁也不算数）。
+   * 读失败时保持上一次的结论并写一行日志 —— 界面上那一条会显示成"读取中"，
+   * 比编一个结论安全。
+   */
+  const refreshIsolation = useCallback(async () => {
+    try {
+      const list = await backend.listIsolation();
+      dispatch({ type: 'isolation/set', list });
+    } catch (e) {
+      console.error('[IEML] 重新读取隔离判定失败：', e);
+    }
+  }, [backend]);
+
   useEffect(() => {
     const onFocus = () => void refreshInstances();
     window.addEventListener('focus', onFocus);
@@ -1421,6 +1463,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     refreshJava,
     reloadAfterRootChange,
     refreshInstances,
+    refreshIsolation,
     folder: {
       versions: folderVers,
       instancesInFolder: folderMatch.instances,

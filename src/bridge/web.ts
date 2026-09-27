@@ -410,6 +410,17 @@ export function createWebBackend(): Backend {
       return [];
     },
 
+    /*
+     * ★★ 隔离判定（ADR-005）：**演示模式返回空表**。
+     *
+     *   规则只写在 Rust 侧（`domain::isolation`）——这里要是照着抄一份，
+     *   就正好复现了这次修掉的那个缺陷：两份规则、措辞不同、谁也不算数。
+     *   返回空表 = "这个后端不掌握这件事"，界面据此显示"演示模式里没有判定"。
+     */
+    async listIsolation() {
+      return [];
+    },
+
     async openFolder(path) {
       // 网页版没有文件系统，把路径回报给调用方去提示用户
       void path;

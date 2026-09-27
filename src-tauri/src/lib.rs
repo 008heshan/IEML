@@ -502,6 +502,11 @@ pub fn run() {    /*
             commands_real::classify_dropped_file,
             commands_real::install_dropped_file,
             commands_real::install_dropped_dir,
+            /* ★★ 版本隔离（ADR-005）：判定（界面显示的就是它）+ 切换时把内容复制过去 */
+            commands_real::isolation_verdicts,
+            commands_real::isolation_of,
+            commands_real::plan_isolation_migration,
+            commands_real::apply_isolation_migration,
             /* -------- 杂项 -------- */
             commands_real::backend_capabilities,
         ])

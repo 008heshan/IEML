@@ -181,61 +181,33 @@ pub struct IsolationVerdict {
 }
 
 /// 三段判定：用户显式设置 > 目录内容 > 全局默认（ADR-005）
+///
+/// ★★ 2026-09-27：这条命令以前**自己实现了一份**判定，而前端一次都没调过它 ——
+///   规则于是有三份（这里、`src/domain/isolation.ts`、以及真正决定游戏目录的
+///   `prepare_spec` 里那一行**两份都不看**）。
+///   现在它只是 `domain::isolation::resolve` 的一层壳（ADR-006：规则只写一次）；
+///   界面要的数据走 `isolation_verdicts` / `isolation_of`（那两条读的是真账本）。
 #[tauri::command]
 pub fn resolve_isolation(
     mode: String,
     has_content: bool,
     global_default: String,
-    from_modpack: bool,
 ) -> IsolationVerdict {
-    // ① 整合包实例一律隔离
-    if from_modpack && mode != "off" {
-        return IsolationVerdict {
-            isolated: true,
-            source: "content".into(),
-            reason: "这是整合包导入的实例，包内的 Mod 与配置必须独占，因此启用隔离".into(),
-            warning: None,
-        };
-    }
-    // ② 用户显式指定
-    if mode == "on" {
-        return IsolationVerdict {
-            isolated: true,
-            source: "user".into(),
-            reason: "你已强制启用隔离，该实例的 mods / saves / config 独立存放".into(),
-            warning: None,
-        };
-    }
-    if mode == "off" {
-        return IsolationVerdict {
-            isolated: false,
-            source: "user".into(),
-            reason: "你已强制关闭隔离，将与其他实例共用 mods / saves / config".into(),
-            warning: Some(
-                "多个版本的 Mod 会互相污染 —— 1.20.1 的 Mod 放进 1.21.1 的实例会直接导致游戏无法启动。仅建议纯原版实例这样做。".into(),
-            ),
-        };
-    }
-    // ③ 按目录内容
-    if has_content {
-        return IsolationVerdict {
-            isolated: true,
-            source: "content".into(),
-            reason: "已检测到该实例目录下的 mods/ 与 saves/，自动启用隔离以避免多版本互相污染".into(),
-            warning: None,
-        };
-    }
-    // ④ 跟随全局默认
-    let isolated = global_default == "isolated";
-    IsolationVerdict {
-        isolated,
-        source: "global".into(),
-        reason: if isolated {
-            "实例目录还是空的，按全局默认启用隔离".into()
-        } else {
-            "实例目录还是空的，按全局默认与其他实例共用目录".into()
+    let v = crate::domain::isolation::resolve(
+        match mode.as_str() {
+            "on" => crate::domain::types::IsolationMode::On,
+            "off" => crate::domain::types::IsolationMode::Off,
+            _ => crate::domain::types::IsolationMode::Auto,
         },
-        warning: None,
+        has_content,
+        &global_default,
+        true,
+    );
+    IsolationVerdict {
+        isolated: v.isolated,
+        source: v.source_str().to_string(),
+        reason: v.reason,
+        warning: v.warning,
     }
 }
 

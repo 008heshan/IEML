@@ -1636,8 +1636,74 @@ export interface DroppedFileInfo {
   note: string | null;
 }
 
-/** 拖进来一个**目录**：里面装成了哪些、跳过了哪些（各带理由） */
-export interface DroppedDirReport {
+/**
+ * ★★ **版本隔离**（ADR-005）—— 判定在 Rust 侧（`domain::isolation`），这里只是搬运。
+ *
+ * 隔离只改变一件事：这个实例的游戏目录（`--gameDir`，也就是 `saves/` `mods/`
+ * `config/` 所在的那一层）是**它自己的**还是**共享的 `.minecraft`**。
+ *
+ * ★ 为什么前端不许自己算这份判定（ADR-006）：
+ *   以前 `src/domain/isolation.ts` 有一份、后端 `resolve_isolation` 有另一份，
+ *   而真正决定游戏目录的那一行**两份都不看** —— 于是「不隔离」选了等于没选，
+ *   界面却按"会共享"来描述（用户报的就是这个）。
+ */
+export interface IsolationInfo {
+  slug: string;
+  /** true = 用实例自己的 `game/`；false = 用共享的 `.minecraft` */
+  isolated: boolean;
+  /** `user` / `content` / `global` / `unknown` —— 界面用它显示"谁决定的" */
+  source: 'user' | 'content' | 'global' | 'unknown';
+  /** 一句话依据（必须具体到"检测到了什么"） */
+  reason: string;
+  /** 关掉隔离时的后果警告（null = 没有要警告的） */
+  warning: string | null;
+  /** 游戏**真正在用**的那个目录 —— 界面直接显示它，省得用户猜存档在哪 */
+  game_dir: string;
+}
+
+/** 迁移计划里的一项 */
+export interface MigrationItem {
+  name: string;
+  files: number;
+  bytes: number;
+}
+
+/** 切换隔离前的提示：会从哪儿搬到哪儿、搬什么、不搬会怎样 */
+export interface IsolationMigration {
+  from: string;
+  to: string;
+  items: MigrationItem[];
+  consequence: string;
+  /** 目标里已有同名文件会不会被覆盖（**永远是 false**：用户的东西不许被顶掉） */
+  overwrite: boolean;
+}
+
+export interface MigrationResult {
+  copied: MigrationItem[];
+  /** 因为"目标里已经有"而跳过的（每条是相对路径） */
+  skipped_existing: string[];
+  failed: string[];
+  /** 迁移前那份备份的 id（没做备份时为空串） */
+  backup_id: string;
+}
+
+export const isolation = {
+  /** 所有实例的判定（列表页 / 概览页 / 启动页共用一次请求） */
+  verdicts: () => call<IsolationInfo[]>('isolation_verdicts'),
+  /** 单个实例（改完设置立刻回读） */
+  of: (slug: string) => call<IsolationInfo>('isolation_of', { slug }),
+  /** 只算不做：给用户看"会搬什么" */
+  planMigration: (slug: string, toMode: 'on' | 'off') =>
+    call<IsolationMigration>('plan_isolation_migration', { slug, toMode }),
+  /**
+   * 真的搬（**只复制，不删源**）。
+   * `backupFirst` = 先按 ADR-014 做一份备份（备份只记清单，不搬 jar）。
+   */
+  applyMigration: (slug: string, toMode: 'on' | 'off', backupFirst: boolean) =>
+    call<MigrationResult>('apply_isolation_migration', { slug, toMode, backupFirst }),
+};
+
+/** 拖进来一个**目录**：里面装成了哪些、跳过了哪些（各带理由） */export interface DroppedDirReport {
   /** 真正装进去的（一个文件一条） */
   installed: DroppedFileInfo[];
   /** 没装的：每一条都是"「文件名」：为什么"——**一条都不能丢**，用户要照着它处理 */
@@ -2027,6 +2093,11 @@ export function createTauriBackend(): Backend {
     /** ★ 现在有哪些实例在跑（界面重新加载后把状态捡回来） */
     async runningGames() {
       return launcher.runningGames();
+    },
+
+    /** ★★ 隔离判定（ADR-005）—— 后端算好的结论，界面只显示 */
+    async listIsolation() {
+      return isolation.verdicts();
     },
 
     /**

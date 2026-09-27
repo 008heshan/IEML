@@ -11,7 +11,7 @@
  *   **显示当前生效值**，而不是像原稿那样把输入框清空（那等于把
  *   "空值=继承"这个隐藏约定又请回来了）。
  */
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useConfirm } from '../ui/confirm';
 import { useApp } from '../state/AppContext';
 import { formatBytes } from '../domain';
@@ -37,6 +37,7 @@ import {
   CustomSelect,
   EmptyState,
   Field,
+  Modal,
   Note,
   Segmented,
   Select,
@@ -57,7 +58,6 @@ import {
   gearToGb,
   maxGear,
   memoryBar,
-  resolveIsolation,
   resolveJavaRequirement,
   validateJavaRangeText,
   formatJavaRange,
@@ -66,6 +66,16 @@ import {
 } from '../domain';
 // ★ 备份与回滚面板（ADR-014）—— 规则在后端 `crate::backup`，面板只呈现结论
 import { BackupPanel } from '../components/BackupPanel';
+// ★ 隔离判定（ADR-005）由后端给出：改设置 → 回读结论 → 需要时问一句要不要搬内容
+import { runIsolationChange } from '../flows/isolation-change.ts';
+import { useRealApi } from '../hooks/useRealApi';
+
+/** 隔离模式怎么念（只看模式本身，不宣称判定结果） */
+function isolationModeLabel(mode: string): string {
+  if (mode === 'on') return '强制隔离';
+  if (mode === 'off') return '不隔离（共享）';
+  return '自动判定';
+}
 
 export function InstanceSetup() {
   /** 应用自己的确认弹窗（`window.confirm` 在这个壳里是坏的，见 `ui/confirm.tsx`） */
@@ -81,7 +91,10 @@ export function InstanceSetup() {
     removeInstance,
     duplicateInstance,
     refreshJava,
+    refreshIsolation,
   } = useApp();
+  /** 真实的 Rust API（隔离判定与迁移都在那边；浏览器演示模式里是 null） */
+  const { api } = useRealApi();
 
   if (!active) {
     return (
@@ -166,18 +179,53 @@ export function InstanceSetup() {
     [state.java.runtimes, javaReq.major],
   );
 
-  const isolation = useMemo(
-    () =>
-      resolveIsolation({
-        mode: active.config.isolation,
-        // ★ 审计发现这里硬编码了演示实例 id `'inst-star'`（来自 bridge/web.ts 的
-        //   演示数据）混进真实逻辑。真判据只有"这个实例有没有自己的内容"：
-        //   Mod / 附加组件 / 存档 —— 用 addons 与 Mod 数来判断，不认实例 id。
-        hasContent: active.addons.length > 0 || state.mods.entries.length > 0,
-        globalDefault: state.prefs.globalIsolation,
+  const iso = useMemo(() => state.isolation[active.config.slug] ?? null, [
+    state.isolation,
+    active.config.slug,
+  ]);
+  /* 演示模式（浏览器）里没有后端判定：文案要如实区分"读不到"与"正在读" */
+  const isDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
+  /*
+   * ★★ 切换隔离时的"要不要搬"弹窗（ADR-005 的迁移/备份提示）。
+   *
+   * 为什么用弹窗而不是 toast 里的一个按钮：这是一个**要等用户回答**的问题
+   * （搬 / 不搬），而 toast 会自己消失 —— 用户去倒杯水回来就找不到那个按钮了。
+   *
+   * 实现上用一个 promise 把"用户点了哪个"交回给流程（`runIsolationChange`），
+   * 于是"问"与"做"的顺序在流程里是直的（先问、再做），不需要在组件里堆状态机。
+   */
+  const [migration, setMigration] = useState<{
+    from: string;
+    to: string;
+    items: Array<{ name: string; files: number; bytes: number }>;
+    consequence: string;
+  } | null>(null);
+  const [migrateMove, setMigrateMove] = useState(true);
+  const [migrateBackup, setMigrateBackup] = useState(true);
+  const migrationAnswer = useRef<
+    ((a: { move: boolean; backupFirst: boolean } | null) => void) | null
+  >(null);
+  const askMigration = useCallback(
+    (plan: {
+      from: string;
+      to: string;
+      items: Array<{ name: string; files: number; bytes: number }>;
+      consequence: string;
+    }) =>
+      new Promise<{ move: boolean; backupFirst: boolean } | null>((resolve) => {
+        migrationAnswer.current = resolve;
+        setMigrateMove(plan.items.length > 0);
+        setMigrateBackup(true);
+        setMigration(plan);
       }),
-    [active, state.prefs.globalIsolation, state.mods.entries.length],
+    [],
   );
+  const closeMigration = (answer: { move: boolean; backupFirst: boolean } | null) => {
+    setMigration(null);
+    migrationAnswer.current?.(answer);
+    migrationAnswer.current = null;
+  };
 
   const [javaRangeText, setJavaRangeText] = useState(
     active.config.javaRange ? formatJavaRange(active.config.javaRange) : '[17, 22)',
@@ -400,16 +448,16 @@ export function InstanceSetup() {
             <IconGrid />
             <span className="ss-k">隔离</span>
             <span className="ss-v">
-              {active.config.isolation === 'auto'
-                ? '自动判定'
-                : active.config.isolation === 'on'
-                  ? '强制隔离'
-                  : '已关闭'}
+              {isolationModeLabel(active.config.isolation)}
             </span>
-            {/* ★ 2026-09-27：原来是 `isolation.isolated ? '独立目录' : '共享目录'` —— 后半是假的
-                （共享模式没接上，所有实例都还是各自独立的目录）。 */}
-            <span className="ss-src">
-              {isolation.isolated ? '独立目录' : '独立目录（「不隔离」还没生效）'}
+            {/*
+              ★★ 2026-09-27（0.7.0）：这里以前写着「独立目录（「不隔离」还没生效）」——
+                那是当时的实话。现在「不隔离」真的生效了（判定决定 `--gameDir`），
+                所以显示的是**后端算出来的结论**：独立目录 / 共享目录。
+                判据没到（演示模式 / 读不到）时只说模式，不宣称结论。
+            */}
+            <span className={`ss-src${iso && !iso.isolated ? ' warn' : ''}`}>
+              {!iso ? '判定读取中' : iso.isolated ? '独立目录' : '共享目录'}
             </span>
           </button>
           <button
@@ -683,11 +731,24 @@ export function InstanceSetup() {
               */}
               <CustomSelect
                 value={active.config.isolation}
-                onChange={(v) =>
-                  updateConfig(active.id, {
-                    isolation: v as 'auto' | 'on' | 'off',
-                  })
-                }
+                onChange={(v) => {
+                  const mode = v as 'auto' | 'on' | 'off';
+                  updateConfig(active.id, { isolation: mode });
+                  /*
+                   * ★★ 改完**必须回读判定**，而且要在结论翻面时问一句"要不要把内容搬过去"：
+                   *   隔离一改，游戏看的目录就换了 —— 旧目录里的存档与 Mod 不会自己
+                   *   跑过去，用户会以为东西丢了（这正是那句"迁移/备份提示"要防的事）。
+                   */
+                  void runIsolationChange(active.config.slug, mode, {
+                    api,
+                    refresh: refreshIsolation,
+                    /* ★ 改之前那一份（判"结论有没有翻面"必须前后两份比） */
+                    before: iso,
+                    ask: askMigration,
+                    toast,
+                    formatBytes,
+                  });
+                }}
                 ariaLabel="版本隔离"
                 options={[
                   { value: 'auto', label: '自动判定（推荐）' },
@@ -702,38 +763,41 @@ export function InstanceSetup() {
           </div>
 
           {/* 判定结果与依据 —— 用户选"自动"时必须告诉他启动器会怎么判 */}
-          <div className={`iso-verdict${isolation.isolated ? '' : ' danger'}`}>
+          <div className={`iso-verdict${iso && !iso.isolated ? ' danger' : ''}`}>
             <IconInfo />
             <span>
               {/*
-                ★ 审计发现：这个下拉框**完全不影响启动** ——
-                  Rust 侧启动永远用 `instances/{slug}/game`，
-                  `resolve_isolation` 这个命令前端从来没调过。
-                  所以"不隔离（共享）"是一项**做不到的承诺**：
-                  存档与 Mod 永远不会被共用。这里如实说明，
-                  而不是继续显示"将与其他实例共用目录"这句假话。
+                ★★ 2026-09-27（0.7.0）：这一段以前写着「共享模式目前还没接上」——
+                  那是**实话**：判定有两份（前端一份、后端一份没人调用），
+                  而真正决定游戏目录的那一行两份都不看。
+                  现在判定只有一份（Rust `domain::isolation`），它**真的**决定
+                  `--gameDir`；这里显示的就是后端算出来的结论与依据。
+
+                ★ 判据没到时不编：`iso` 为空 = 还没读到（或演示模式），
+                  那就只说模式，不宣称任何判定结果。
               */}
-              {active.config.isolation === 'off' ? (
+              {!iso ? (
                 <>
-                  <b>共享模式目前还没接上</b> —— 启动器现在总是用每个实例自己的
-                  目录（存档 / Mod / 配置都在 <span className="mono">instances/{active.config.slug}/game</span>）。
-                  这个选择会被记住，但要等共享目录真正实现后才会生效；
-                  在此之前不会发生任何共用。
+                  <b>{isolationModeLabel(active.config.isolation)}</b> ——{' '}
+                  {isDesktop
+                    ? '正在读取这个实例的判定结果…'
+                    : '演示模式里没有后端判定（桌面版才有）'}
                 </>
               ) : (
                 <>
-                  <b>{isolation.isolated ? '将启用隔离' : '将启用隔离（自动判定建议隔离）'}</b> ——{' '}
-                  {isolation.reason}
+                  <b>{iso.isolated ? '隔离：用这个实例自己的目录' : '不隔离：与共享目录共用'}</b> ——{' '}
+                  {iso.reason}
                   <br />
-                  每个实例的存档与 Mod 互相独立（这是当前唯一实现的行为）。
+                  游戏目录：
+                  <span className="mono">{iso.game_dir}</span>
                 </>
               )}
             </span>
           </div>
 
-          {isolation.warning ? (
+          {iso?.warning ? (
             <Note tone="warning" icon={<IconAlert />}>
-              {isolation.warning}
+              {iso.warning}
             </Note>
           ) : null}
 
@@ -849,6 +913,94 @@ export function InstanceSetup() {
           </div>
         </Card>
       </div>
+
+      {/*
+        ★★ 切换隔离时的"要不要把内容搬过去"（ADR-005 的迁移/备份提示）。
+
+        这个弹窗存在的唯一理由是**后果不可见**：改的是一个下拉框，
+        后果却是"游戏从此读另一个目录"。不说的话，用户看到的是
+        "我的存档没了 / 我的 Mod 没了"，而其实什么都没丢 —— 只是没跟过去。
+
+        ★ 两个默认值都是**保守**那一侧：
+          · 有内容时才默认勾"复制过去"（空的就没什么可搬的）；
+          · 默认勾"先备份一份"（ADR-014）。
+        ★ 底下那句"原目录不会删"必须写明：不然用户不敢点。
+      */}
+      <Modal
+        open={migration !== null}
+        onClose={() => closeMigration(null)}
+        title="切换隔离方式 —— 要不要把现在的内容复制过去？"
+        subtitle="隔离一改，游戏读的就是另一个目录了；原来的存档 / Mod 不会自己跟过去。"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => closeMigration(null)}>
+              取消（保持原样）
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => closeMigration({ move: migrateMove, backupFirst: migrateBackup })}
+            >
+              {migrateMove ? '切换并复制' : '只切换（不复制）'}
+            </Button>
+          </>
+        }
+      >
+        {migration ? (
+          <>
+            <div className="iso-move">
+              <div className="iso-move-row">
+                <span className="iso-move-k">从</span>
+                <span className="mono">{migration.from}</span>
+              </div>
+              <div className="iso-move-row">
+                <span className="iso-move-k">到</span>
+                <span className="mono">{migration.to}</span>
+              </div>
+            </div>
+
+            {migration.items.length === 0 ? (
+              <p className="wz-hint">
+                现在这个目录里没有存档 / Mod / 配置 —— 直接切过去不会丢任何东西。
+              </p>
+            ) : (
+              <>
+                <div className="iso-move-list">
+                  {migration.items.map((it) => (
+                    <div key={it.name} className="iso-move-item">
+                      <span className="mono">{it.name}/</span>
+                      <span>
+                        {it.files} 个文件 · {formatBytes(it.bytes)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <label className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={migrateMove}
+                    onChange={(e) => setMigrateMove(e.target.checked)}
+                  />
+                  <span>把这些内容**复制**过去（原目录不会删，你确认没问题后可以自己清理）</span>
+                </label>
+              </>
+            )}
+
+            <label className="check-row">
+              <input
+                type="checkbox"
+                checked={migrateBackup}
+                onChange={(e) => setMigrateBackup(e.target.checked)}
+              />
+              <span>复制之前先备份一份（存档与配置可以回滚）</span>
+            </label>
+
+            <p className="wz-hint">{migration.consequence}</p>
+            <p className="wz-hint">
+              ★ 同名文件**不会覆盖** —— 目标目录里已有的同名文件会被跳过，并在完成后列出来。
+            </p>
+          </>
+        ) : null}
+      </Modal>
     </>
   );
 }
