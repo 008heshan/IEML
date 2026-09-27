@@ -5303,6 +5303,409 @@ pub async fn import_external_data(
     })
 }
 
+/* ====================== 导出整合包（ADR-024） ====================== */
+
+/// 导出计划里的一项
+#[derive(serde::Serialize)]
+pub struct ExportItem {
+    /// 相对游戏目录的路径（目录带尾斜杠）
+    pub rel: String,
+    pub is_dir: bool,
+    pub files: u64,
+    pub bytes: u64,
+    /// 被排除的原因（能带上的为 None）
+    pub reason: Option<String>,
+    /// `hard` / `suggested`（能带上的为空串）
+    pub blacklist: String,
+    /// ★ 是不是登录凭据（红线）—— 界面要单独把它标出来
+    pub red_line: bool,
+}
+
+/// 一次导出计划（**只读**：把"会带上什么、不会带上什么"摆在用户面前）
+#[derive(serde::Serialize)]
+pub struct ExportPlan {
+    pub slug: String,
+    pub name: String,
+    pub mc_version: String,
+    /// 加载器（`fabric` / `forge`…）；没有就是纯原版
+    pub loader_kind: Option<String>,
+    pub loader_version: Option<String>,
+    /// 会带上的（按路径排序）
+    pub include: Vec<ExportItem>,
+    /// 硬黑名单挡掉的（**绝不带上**）
+    pub excluded: Vec<ExportItem>,
+    /// 建议黑名单挡掉的（默认不带，用户勾了就带上）
+    pub suggested: Vec<ExportItem>,
+    /// ★ 盘上存在的**登录凭据**（绝不上带；报出来是为了让用户知道它在那儿）
+    pub red_line_found: Vec<String>,
+    pub include_bytes: u64,
+    pub include_files: u64,
+}
+
+/// 遍历游戏目录，按 ADR-024 的两张名单分类。
+///
+/// ## 产出的是**文件**，不是目录
+///
+///   ★★ 第一版把"能带上的目录"和"递归进去的文件"**都**放进了 `include` ——
+///   于是同一个文件被写进 zip 两次，导出直接失败（`Duplicate filename`）。
+///   真机探针当场撞上。现在的分工很清楚：
+///     · 目录只用来**剪枝**（命中硬名单 → 整棵子树不看；命中建议且没勾 → 整棵不看）；
+///     · 进 `include` 的**只有文件** —— 与"真的写进 zip 的东西"一一对应。
+fn walk_export(
+    root: &std::path::Path,
+    rel_prefix: &str,
+    include_suggested: &[String],
+    include: &mut Vec<ExportItem>,
+    excluded: &mut Vec<ExportItem>,
+    suggested: &mut Vec<ExportItem>,
+    red_line_found: &mut Vec<String>,
+) {
+    let Ok(rd) = std::fs::read_dir(root) else {
+        return;
+    };
+    let mut entries: Vec<_> = rd.flatten().collect();
+    entries.sort_by_key(|e| e.file_name());
+    for e in entries {
+        let name = e.file_name().to_string_lossy().to_string();
+        let is_dir = e.path().is_dir();
+        let rel = if is_dir {
+            format!("{rel_prefix}{name}/")
+        } else {
+            format!("{rel_prefix}{name}")
+        };
+        let (files, bytes) = count_tree(&e.path());
+        let item = |reason: Option<String>, blacklist: &str| ExportItem {
+            rel: rel.clone(),
+            is_dir,
+            files,
+            bytes,
+            reason,
+            blacklist: blacklist.to_string(),
+            red_line: !is_dir && crate::domain::modpack_export::is_red_line(&rel),
+        };
+
+        if !is_dir && crate::domain::modpack_export::is_red_line(&rel) {
+            red_line_found.push(rel.clone());
+        }
+
+        match crate::domain::modpack_export::excluded(&rel, is_dir) {
+            Some(crate::domain::modpack_export::Blacklist::Hard) => {
+                // ★ 整棵子树就此打住（目录里的一切都不带）
+                excluded.push(item(crate::domain::modpack_export::reason_of(&rel, is_dir), "hard"));
+            }
+            Some(crate::domain::modpack_export::Blacklist::Suggested) => {
+                /*
+                 * ★ 建议项：勾上就**整棵带上**（`saves/` 勾了就把它下面全带上 ——
+                 *   一半的存档没有意义）；没勾就整棵不带，并**只在顶层报一条**，
+                 *   不然"存档里有 3000 个文件"会把列表淹掉。
+                 */
+                let picked = include_suggested.iter().any(|s| {
+                    s == &rel || rel.starts_with(&format!("{}/", s.trim_end_matches('/')))
+                });
+                if picked {
+                    if is_dir {
+                        walk_export(
+                            &e.path(),
+                            &rel,
+                            include_suggested,
+                            include,
+                            excluded,
+                            suggested,
+                            red_line_found,
+                        );
+                    } else {
+                        include.push(item(None, ""));
+                    }
+                } else {
+                    suggested.push(item(
+                        crate::domain::modpack_export::reason_of(&rel, is_dir),
+                        "suggested",
+                    ));
+                }
+            }
+            None => {
+                if is_dir {
+                    // 目录本身不进列表（进列表的是文件）—— 继续往下走
+                    walk_export(
+                        &e.path(),
+                        &rel,
+                        include_suggested,
+                        include,
+                        excluded,
+                        suggested,
+                        red_line_found,
+                    );
+                } else {
+                    include.push(item(None, ""));
+                }
+            }
+        }
+    }
+}
+
+/// 算出"这次导出会带上什么"（**只读**，界面拿它给用户看）
+///
+/// `include_suggested` 是用户**明确要求带上**的建议项（ADR-024 默认不勾，
+/// 例如他想把存档一起给朋友）。
+#[tauri::command]
+pub fn scan_modpack_export(
+    slug: String,
+    include_suggested: Option<Vec<String>>,
+    state: State<'_, AppState>,
+) -> Result<ExportPlan, String> {
+    let paths = state.paths();
+    let slug = slug.trim().to_string();
+    let inst = paths
+        .instance_json(&slug)
+        .ok_or_else(|| format!("实例清单里没有「{slug}」这个实例"))?;
+    let game = paths.game_dir_of(&slug);
+    let mc = inst
+        .get("mcVersion")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let loader_kind = inst
+        .get("loader")
+        .and_then(|l| l.get("kind"))
+        .and_then(|k| k.as_str())
+        .map(String::from);
+    let loader_version = inst
+        .get("loader")
+        .and_then(|l| l.get("version"))
+        .and_then(|k| k.as_str())
+        .map(String::from);
+
+    let picked = include_suggested.unwrap_or_default();
+    let mut include = Vec::new();
+    let mut excluded = Vec::new();
+    let mut suggested = Vec::new();
+    let mut red_line_found = Vec::new();
+    walk_export(
+        &game,
+        "",
+        &picked,
+        &mut include,
+        &mut excluded,
+        &mut suggested,
+        &mut red_line_found,
+    );
+    include.sort_by(|a, b| a.rel.cmp(&b.rel));
+    let include_bytes = include.iter().map(|i| i.bytes).sum();
+    let include_files = include.iter().map(|i| i.files).sum();
+
+    Ok(ExportPlan {
+        slug: slug.clone(),
+        name: instance_display_name(&paths, &slug),
+        mc_version: mc,
+        loader_kind,
+        loader_version,
+        include,
+        excluded,
+        suggested,
+        red_line_found,
+        include_bytes,
+        include_files,
+    })
+}
+
+/// 导出结果
+#[derive(serde::Serialize)]
+pub struct ExportResult {
+    /// 产出的 `.mrpack` 完整路径
+    pub path: String,
+    pub files: u64,
+    pub bytes: u64,
+    /// 硬黑名单挡掉了几项（如实回报，让用户知道排除生效了）
+    pub excluded: u64,
+    /// ★ 盘上存在、但**没有**被带上的登录凭据
+    pub red_line_found: Vec<String>,
+}
+
+/// 把实例导出成一个 **Modrinth 格式的整合包**（`.mrpack`）
+///
+/// ## 为什么导出成 `.mrpack`
+///
+///   它是**开放格式**、别的启动器（Prism / HMCL / 官方都支持或能转），
+///   而 `.zip` 那种"自己定结构"的包只有自家认得（换启动器就白导了）。
+///
+/// ## 结构（本版策略：内容全放 `overrides/`）
+///
+/// ```text
+///   modrinth.index.json      ← 清单：mc 版本 + 加载器 + （本版 files 为空）
+///   overrides/…              ← 所有要带上的游戏文件（原样照抄路径）
+/// ```
+///
+///   ★ 为什么 `files` 先留空：那一栏要求**每个 Mod 都有下载地址与哈希**
+///     （靠指纹反查 Modrinth）。反查不到的作者禁了第三方分发、或者 Mod 来自
+///     别的站 —— 那时**要么漏装、要么装错**。全放 `overrides/` 的包**一定能装上**，
+///     代价是包大一点。宁可大一点，也不要"装完少几个 Mod"。
+///     （按指纹反查那条路记在 ADR-024 的待办里，不是忘了。）
+///
+/// ## 红线
+///
+///   写进包之前**再过一遍硬黑名单**：计划是一回事，真的写进去是另一回事，
+///   这里不信任上游调用方（`launcher_msa_credentials.bin` 绝不能进包）。
+#[tauri::command]
+pub async fn export_modpack(
+    slug: String,
+    version_id: Option<String>,
+    include_suggested: Option<Vec<String>>,
+    out_path: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<ExportResult, String> {
+    let paths = state.paths();
+    let slug = slug.trim().to_string();
+    // 复用同一条扫描（界面看到的计划与真的写进包的东西**必须同源**）
+    let plan = scan_modpack_export(slug.clone(), include_suggested, state.clone())?;
+    if plan.include_files == 0 {
+        return Err("这个实例里没有可导出的文件（Mod / 配置 / 资源包都没找到）".to_string());
+    }
+
+    let safe_name = plan
+        .name
+        .chars()
+        .map(|c| if "/\\:*?\"<>|".contains(c) { '_' } else { c })
+        .collect::<String>();
+    let version = version_id
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "1.0.0".to_string());
+    let out = match out_path.filter(|p| !p.trim().is_empty()) {
+        Some(p) => std::path::PathBuf::from(p),
+        None => {
+            let dir = paths.own_root.join("exports");
+            std::fs::create_dir_all(&dir).map_err(|e| format!("建导出目录失败：{e}"))?;
+            dir.join(format!("{safe_name}-{version}.mrpack"))
+        }
+    };
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("建目录失败：{e}"))?;
+    }
+    if out.exists() {
+        return Err(format!("已经有一个同名文件了：{}", out.display()));
+    }
+
+    // 清单（Modrinth 的 mrpack 格式，formatVersion 1）
+    let mut deps = serde_json::Map::new();
+    if !plan.mc_version.is_empty() {
+        deps.insert(
+            "minecraft".to_string(),
+            serde_json::Value::String(plan.mc_version.clone()),
+        );
+    }
+    if let (Some(kind), Some(ver)) = (&plan.loader_kind, &plan.loader_version) {
+        if !ver.is_empty() {
+            let key = match kind.as_str() {
+                "fabric" => "fabric-loader",
+                "quilt" => "quilt-loader",
+                "forge" => "forge",
+                "neoforge" => "neoforge",
+                other => other,
+            };
+            deps.insert(key.to_string(), serde_json::Value::String(ver.clone()));
+        }
+    }
+    let index = serde_json::json!({
+        "formatVersion": 1,
+        "game": "minecraft",
+        "versionId": version,
+        "name": plan.name,
+        "summary": format!("由 IEML 从「{}」导出", plan.name),
+        "files": [],
+        "dependencies": deps,
+    });
+
+    /* ---------- 写 zip ---------- */
+    let file = std::fs::File::create(&out).map_err(|e| format!("创建文件失败：{e}"))?;
+    let mut zipw = zip::ZipWriter::new(file);
+    let opts: zip::write::FileOptions<'_, ()> =
+        zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+    let index_text = serde_json::to_string_pretty(&index).map_err(|e| format!("清单序列化失败：{e}"))?;
+    zipw.start_file("modrinth.index.json", opts)
+        .map_err(|e| format!("写清单失败：{e}"))?;
+    std::io::Write::write_all(&mut zipw, index_text.as_bytes())
+        .map_err(|e| format!("写清单失败：{e}"))?;
+
+    let game = paths.game_dir_of(&slug);
+    let mut files_written = 0u64;
+    let mut bytes_written = 0u64;
+    let mut skipped: Vec<String> = Vec::new();
+
+    /** 递归把一个文件/目录写进 `overrides/`；**每个文件都再过一遍黑名单** */
+    fn add_to_zip(
+        zipw: &mut zip::ZipWriter<std::fs::File>,
+        opts: zip::write::FileOptions<'_, ()>,
+        src: &std::path::Path,
+        rel: &str,
+        files: &mut u64,
+        bytes: &mut u64,
+        skipped: &mut Vec<String>,
+    ) -> Result<(), String> {
+        if src.is_dir() {
+            let Ok(rd) = std::fs::read_dir(src) else {
+                return Ok(());
+            };
+            let mut entries: Vec<_> = rd.flatten().collect();
+            entries.sort_by_key(|e| e.file_name());
+            for e in entries {
+                let name = e.file_name().to_string_lossy().to_string();
+                let child_rel = format!("{rel}{name}");
+                add_to_zip(zipw, opts, &e.path(), &child_rel, files, bytes, skipped)?;
+            }
+            return Ok(());
+        }
+        // ★ 红线与硬黑名单**在写入处再挡一次**（不信任上游传进来的清单）
+        if crate::domain::modpack_export::excluded(rel, false)
+            == Some(crate::domain::modpack_export::Blacklist::Hard)
+        {
+            skipped.push(rel.to_string());
+            return Ok(());
+        }
+        let data = std::fs::read(src).map_err(|e| format!("读 {rel} 失败：{e}"))?;
+        zipw.start_file(format!("overrides/{rel}"), opts)
+            .map_err(|e| format!("写入 {rel} 失败：{e}"))?;
+        std::io::Write::write_all(zipw, &data).map_err(|e| format!("写入 {rel} 失败：{e}"))?;
+        *files += 1;
+        *bytes += data.len() as u64;
+        Ok(())
+    }
+
+    for item in &plan.include {
+        add_to_zip(
+            &mut zipw,
+            opts,
+            &game.join(item.rel.trim_end_matches('/')),
+            &item.rel,
+            &mut files_written,
+            &mut bytes_written,
+            &mut skipped,
+        )?;
+    }
+    zipw.finish().map_err(|e| format!("收尾失败：{e}"))?;
+
+    if !skipped.is_empty() {
+        say!(
+            "[IEML/export] 写入时又挡住 {} 个文件（硬黑名单）：{}",
+            skipped.len(),
+            skipped.join("、")
+        );
+    }
+    say!(
+        "[IEML/export] 「{slug}」已导出：{}（{} 个文件 / {} 字节，排除 {} 项）",
+        out.display(),
+        files_written,
+        bytes_written,
+        plan.excluded.len()
+    );
+    Ok(ExportResult {
+        path: out.to_string_lossy().to_string(),
+        files: files_written,
+        bytes: bytes_written,
+        excluded: plan.excluded.len() as u64,
+        red_line_found: plan.red_line_found,
+    })
+}
+
 #[derive(serde::Serialize)]
 pub struct StopInfo {
     pub played_seconds: u64,

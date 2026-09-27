@@ -38,6 +38,7 @@ import { CreateInstanceModal } from '../pages/CreateInstanceModal';
 import { CrashModal } from '../pages/CrashModal';
 import { TaskCenter } from '../components/TaskCenter';
 import { ImportExternalModal } from '../components/ImportExternalModal';
+import { ExportModpackModal } from '../components/ExportModpackModal';
 import { AccountPanel } from '../components/AccountPanel';
 import { AccountMenu } from '../components/AccountMenu';
 import { WindowControls } from '../components/WindowControls';
@@ -884,6 +885,8 @@ export function App() {
       <CrashModal />
       {/* ★ 导入别的启动器的数据（拖一个游戏目录进来，或从版本列表点按钮） */}
       <ImportExternalModal />
+      {/* ★ 导出整合包（ADR-024：两张黑名单 + 登录凭据红线） */}
+      <ExportModpackModal />
 
       {/*
         ★★ 光影装了、但这个实例用不了 → **问一句**（ADR-015 的原话是

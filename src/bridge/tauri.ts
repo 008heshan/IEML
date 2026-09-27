@@ -1758,6 +1758,72 @@ export const external = {
     call<MigrationResult>('import_external_data', { path, slug, layer, backupFirst }),
 };
 
+/**
+ * ★★ **导出整合包**（ADR-024）：两张黑名单 + 登录凭据红线。
+ *
+ * 导出的包是要发出去的，所以规则必须钉死：`launcher_msa_credentials.bin` 之类的
+ * 登录凭据**永远不进包**，日志 / 游戏本体 / 运行期缓存一律不带，
+ * 存档与设置这类"建议不带"的由用户自己勾。
+ *
+ * 规则全在 Rust 侧（`domain::modpack_export`，7 条单测），前端只显示它给的结论 ——
+ * 尤其 `reason` 与 `red_line` 必须原样显示，**不许前端自己归类**。
+ */
+export interface ExportItem {
+  /** 相对游戏目录的路径（目录带尾斜杠） */
+  rel: string;
+  is_dir: boolean;
+  files: number;
+  bytes: number;
+  /** 被排除的原因（能带上的为 null） */
+  reason: string | null;
+  /** `hard` / `suggested`（能带上的为空串） */
+  blacklist: string;
+  /** ★ 是不是登录凭据（界面上要单独标出来） */
+  red_line: boolean;
+}
+
+export interface ExportPlan {
+  slug: string;
+  name: string;
+  mc_version: string;
+  loader_kind: string | null;
+  loader_version: string | null;
+  include: ExportItem[];
+  /** 硬黑名单挡掉的（绝不带上） */
+  excluded: ExportItem[];
+  /** 建议黑名单挡掉的（勾了就带上） */
+  suggested: ExportItem[];
+  /** ★ 盘上存在、但绝不上带的登录凭据 */
+  red_line_found: string[];
+  include_bytes: number;
+  include_files: number;
+}
+
+export interface ExportResult {
+  path: string;
+  files: number;
+  bytes: number;
+  excluded: number;
+  red_line_found: string[];
+}
+
+export const modpackExport = {
+  /** 只算不写：这次导出会带上什么、不会带上什么 */
+  scan: (slug: string, includeSuggested: string[] = []) =>
+    call<ExportPlan>('scan_modpack_export', { slug, includeSuggested }),
+  /**
+   * 真的导出成 `.mrpack`（Modrinth 格式，别的启动器也认）。
+   * `outPath` 留空 = 写到启动器自己的 `exports/` 目录里。
+   */
+  run: (slug: string, versionId: string, includeSuggested: string[] = [], outPath?: string) =>
+    call<ExportResult>('export_modpack', {
+      slug,
+      versionId,
+      includeSuggested,
+      outPath: outPath ?? null,
+    }),
+};
+
 /** 拖进来一个**目录**：里面装成了哪些、跳过了哪些（各带理由） */export interface DroppedDirReport {
   /** 真正装进去的（一个文件一条） */
   installed: DroppedFileInfo[];

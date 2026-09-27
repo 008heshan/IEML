@@ -20,6 +20,7 @@ import {
   IconBox,
   IconCheck,
   IconCopy,
+  IconDownload,
   IconFolder,
   IconJava,
   IconPuzzle,
@@ -29,6 +30,8 @@ import {
   IconTrash,
 } from '../ui/Icons';
 import { useRealApi } from '../hooks/useRealApi';
+// ★ 导出为整合包（ADR-024）：弹窗在 AppShell 里挂载，这里只负责打开它
+import { openExportModpack } from '../components/ExportModpackModal';
 import { installGame } from '../flows/install';
 import { formatBytes } from '../domain';
 // ★ Java 要求只有一份实现（`domain/java-requirement.ts`）—— 界面不许自己再算一遍
@@ -307,6 +310,14 @@ export function InstanceOverview() {
            */
         >
           <IconCopy /> 创建副本
+        </Button>
+        {/*
+          ★★ 2026-09-27（0.10.0）：**导出为整合包**（ADR-024）。
+            放在这一条动作里，是因为它是"把这个版本交给别人"的动作 ——
+            与"创建副本"同一族（一个给自己，一个给别人）。
+        */}
+        <Button size="sm" variant="ghost" onClick={() => openExportModpack(inst.config.slug)}>
+          <IconDownload /> 导出为整合包
         </Button>
       </div>
 

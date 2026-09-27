@@ -18,6 +18,8 @@ pub mod isolation;
 pub mod loader_caps;
 pub mod loader_trace;
 pub mod memory;
+/// ★ 导出整合包时**哪些文件绝不能带上**（ADR-024：两张黑名单 + 登录凭据红线）
+pub mod modpack_export;
 pub mod mods;
 pub mod resources;
 pub mod types;
