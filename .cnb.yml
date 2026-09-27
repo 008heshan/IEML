@@ -1,0 +1,52 @@
+# IEML 在 CNB 上的 CI（云原生构建）—— 与 `.github/workflows/ci.yml` 的 Linux 作业**同一条命令**。
+#
+# ★ 为什么两个地方都有 CI
+#   `cnb.cool` 是这个项目**主仓**（更新端点也在这里），推送权限本来就有；
+#   而 GitHub 那边的 workflow 文件需要凭据带 `workflow` 权限，本机那把没有
+#   （GitHub 原话：`refusing to allow an OAuth App to create or update workflow
+#   .github/workflows/ci.yml without workflow scope`）。所以先在这里把
+#   "每次推送都真的跑一遍"这件事落地 —— 一份配置放在那里没跑过，等于没有 CI。
+#
+# ★ 这条流水线**只覆盖可移植子集**
+#   跑的是 `node tools/verify.mjs --skip-rust`：类型检查 / 前端测试 / 静态门禁 / 前端构建。
+#   **Rust 那两项不在里面**（它们要 Windows 的 powershell + MSVC；见 docs/VERSIONING.md
+#   的平台口径）。脚本自己会把跳过的两项印在输出与总结里 —— 绿了也**不等于** Rust 侧绿了。
+#
+# ★ 镜像钉版本：`node:20` 与仓库里那一套（本机 Node 24.9.0 / pnpm 10.34.5）差得远，
+#   而 pnpm 在 9 → 10 之间改过 lockfile 与构建脚本的默认行为。这里显式装 10.34.5
+#   （与 `.github/workflows/ci.yml` 一致），`--frozen-lockfile` 才不会白设。
+#
+# ★ 不写任何"失败也放行"的开关：任何一步失败都必须让构建红。
+
+main:
+  push:
+    - name: 可移植子集（类型检查 / 前端 / 门禁 / 构建，不含 Rust）
+      docker:
+        image: node:24
+      stages:
+        - name: 环境信息（先把它印出来，红了才知道是哪套版本红的）
+          script: |
+            node -v
+            npm -v
+            corepack enable
+            corepack prepare pnpm@10.34.5 --activate
+            pnpm -v
+        - name: 装依赖
+          script: |
+            pnpm install --frozen-lockfile
+        - name: 可移植子集（node tools/verify.mjs --skip-rust）
+          script: |
+            node tools/verify.mjs --skip-rust
+  pull_request:
+    - name: 可移植子集（PR 同样要过）
+      docker:
+        image: node:24
+      stages:
+        - name: 装依赖
+          script: |
+            corepack enable
+            corepack prepare pnpm@10.34.5 --activate
+            pnpm install --frozen-lockfile
+        - name: 可移植子集（node tools/verify.mjs --skip-rust）
+          script: |
+            node tools/verify.mjs --skip-rust
