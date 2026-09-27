@@ -42,7 +42,25 @@ const statusArg = (arg('--status') || '').trim().toLowerCase();
 const exitCodeArg = arg('--exit-code');
 const ok = statusArg ? statusArg === 'success' : Number(exitCodeArg ?? '0') === 0;
 const logPath = arg('--log');
-const note = arg('--note', '');
+/**
+ * ★★ 兜底日志（2026-09-28 加）：`--log` 那个文件**可能根本不存在** ——
+ *   只要流水线在它之前就结束了（例如"装依赖"那一步挂了、或者被取消），
+ *   verify 的日志就没生成过。
+ *
+ *   第一版遇到这种情况会上报一份**空**的结果（`log_tail: []`），于是从命令行看
+ *   与"跑了但什么都没输出"分不清 —— 更糟的是**状态文件干脆不再更新**，
+ *   谁也不知道是没跑还是跑绿了（0.9.0 / 0.10.0 两次推送就卡在这儿：
+ *   `ci-status.json` 一直停在 0.8.0 那次）。
+ *   ⇒ 现在：主日志没有就用兜底日志（流水线里每一步都往它追加），
+ *     并把"为什么用了兜底"写进 `note` —— **如实说"这次没跑完"**。
+ */
+const fallbackLog = arg('--fallback-log');
+const usedLog = logPath && existsSync(logPath) ? logPath : fallbackLog;
+const logNote =
+  logPath && existsSync(logPath)
+    ? ''
+    : `★ 没找到 ${logPath ?? '(未指定)'} —— 这次流水线很可能在它之前就结束了；下面是前面几步的日志。`;
+const note = [arg('--note', ''), logNote].filter(Boolean).join(' ');
 
 const repo = (process.env.CNB_REPO_SLUG || 'IEML_Official/IEML').replace(/^\/+|\/+$/g, '');
 const apiBase = (process.env.CNB_API_ENDPOINT || 'https://api.cnb.cool').replace(/\/+$/, '');
@@ -89,9 +107,11 @@ const status = {
   build_url: process.env.CNB_BUILD_WEB_URL || '',
   at: new Date().toISOString(),
   note,
-  log_tail: tail(logPath),
+  /** ★ 实际读的是哪个日志（主日志缺失时是兜底那个）—— 免得看的人以为它就是 verify 的输出 */
+  log_used: usedLog ?? '',
+  log_tail: tail(usedLog),
   /** ★ 失败细节（带 ✗ / MISS / 退出码 的那些行）—— 红了先看这里 */
-  failures: failures(logPath),
+  failures: failures(usedLog),
 };
 
 /*

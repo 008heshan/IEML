@@ -378,6 +378,63 @@ try {
     '⑧ 提示里如实说了"导入了几个文件"与"原目录没有删"',
     toastText.slice(0, 200),
   );
+  /* ---------- ⑨ 中途失败 → 逆序回滚（ADR-023 的 Draft 事务） ---------- */
+  /*
+   * ★★ 怎么**真的**制造一次失败：在目标里放一个**同名文件**挡住目录。
+   *   `mods` 那个位置放一个文件，复制 `mods/xxx.jar` 时必然失败。
+   *   而 `saves` 排在它前面、**已经写下去了** —— 判据看的就是"它有没有被撤干净"。
+   */
+  const atomicSlug = 'imp-atomic';
+  const atomicGame = path.join(ROOT, 'instances', atomicSlug, 'game');
+  mkdirSync(atomicGame, { recursive: true });
+  writeFileSync(path.join(atomicGame, 'mods'), 'i am a file, not a dir');
+  writeFileSync(path.join(atomicGame, 'keep.txt'), 'KEEP');
+  const ledger = JSON.parse(readFileSync(path.join(OWN, 'instances.json'), 'utf8'));
+  ledger.instances.push({
+    id: 'i-atomic',
+    mcVersion: '1.12.2',
+    loader: null,
+    addons: [],
+    config: {
+      name: '导入探针·原子性',
+      slug: atomicSlug,
+      isolation: 'on',
+      memoryMb: 2048,
+      memorySource: 'global',
+      javaMode: 'auto',
+    },
+    createdAt: null,
+    lastPlayedAt: null,
+    totalPlaySeconds: 0,
+  });
+  writeFileSync(path.join(OWN, 'instances.json'), JSON.stringify(ledger, null, 2));
+
+  const beforeAtomic = filesIn(atomicGame);
+  const atomic = await inv('import_external_data', {
+    path: OFFICIAL,
+    slug: atomicSlug,
+    layer: '',
+    backupFirst: false,
+  });
+  check(
+    typeof atomic?.__err === 'string' && atomic.__err.includes('回滚'),
+    '⑨ 中途失败会**如实报错**并说明已经回滚',
+    String(atomic?.__err).slice(0, 140),
+  );
+  check(
+    filesIn(atomicGame).length === beforeAtomic.length,
+    '⑨ ★★ 失败之后目标目录**与动手之前一模一样**（半路写进去的存档被撤掉了）',
+    `${JSON.stringify(beforeAtomic)} → ${JSON.stringify(filesIn(atomicGame))}`,
+  );
+  check(
+    !existsSync(path.join(atomicGame, 'saves')) && !existsSync(path.join(atomicGame, 'options.txt')),
+    '⑨ 已经复制过去的内容**没有留下**（原子性）',
+    JSON.stringify(filesIn(atomicGame)),
+  );
+  check(
+    !existsSync(path.join(atomicGame, '.ieml', 'drafts')),
+    '⑨ 回滚区自己也清掉了（不在用户的目录里留垃圾）',
+  );
 } finally {
   console.log(`\n${fail === 0 ? '全过' : '有不合格项'}：${pass} 过 / ${fail} 不过`);
   try {

@@ -1779,7 +1779,6 @@ private record RemovedRoot(Path originalRoot, Path rollbackRoot) {}
 ```
 
 **四个额外的安全设计（必须照抄）：**
-
 **1. 回滚目录隔离**
 ```
 <baseDir>/.hmcl/repository-drafts/commit-<temp>/
@@ -1827,6 +1826,32 @@ if (manifests.containsKey(to))
 - 回滚记录用 `Vec<AppliedAction>` + `Vec` 逆序遍历
 - 原子移动用 `std::fs::rename`（同分区内即原子）
 - 路径校验用 `path.strip_prefix(instance_root)` 检查是否是后代
+
+**实现记录（2026-09-27，0.11.0）**：内核做出来了，并且接在**两条真的会写很多文件的路**上。
+
+| ADR 的要求 | 落在哪 | 判据 |
+|---|---|---|
+| 状态机 `OPEN → COMMITTING → COMMITTED / FAILED / ABORTED` | `src-tauri/src/draft.rs` | 单测（提交两次被拒、abort 后不能再排计划） |
+| **先在内存推演、再动盘**（第 4 步 `buildCommittedSnapshot`） | `Draft::commit` 的第一步**只读校验** | 单测：`a_plan_rejected_up_front_does_not_touch_the_disk`（磁盘一个字节都没动） |
+| 严格逆序回滚 | `Draft::rollback`（`applied` 逆序遍历） | 单测：`a_midway_failure_rolls_back_to_the_exact_previous_state`（**快照逐文件比对**，回到原样） |
+| 回滚目录隔离（`removed/` + `backups/`，成功即删） | `<base>/.ieml/drafts/draft-<id>/` | 单测 + 真机（失败后 `.ieml/drafts` 不存在） |
+| 原子移动优先，失败退化为 copy+remove | `move_replacing` | 同上（被移除的文件能移回来） |
+| 路径越界防护 | `resolve`（拒绝绝对路径与 `..`） | 单测：`path_escapes_are_refused_before_touching_the_disk` |
+| **共享 library / asset 缓存不在回滚范围内** | 回滚只认"我们写下去的那些路径" | —— |
+
+**接在哪两条路上**（这两条都是"一次操作写几千个文件"）：
+`import_external_data`（导入别的启动器的数据）与 `apply_isolation_migration`（切换隔离时的迁移）。
+
+★ 真机判据（`tools/live/live-import-check.mjs` 第 ⑨ 段）**真的制造一次失败**：
+在目标里放一个**同名文件**挡住 `mods` 目录 → 复制必然失败 → 断言
+"已经复制过去的 `saves/` 被撤干净、目录与动手之前逐条一致、回滚区没留垃圾"。
+这比单测更狠一层：它走的是界面按下去的那条真实路径。
+
+★ **还没接上的地方**（如实记着）：整合包安装那条路（`install_pack_plan`）**跨下载**、
+时间跨度长，本版没往里塞事务；它现在靠"装完可重试 + 备份"兜底。
+ADR-023 的另一半（重命名时联动改写子实例的 `inheritsFrom`）也没做 ——
+IEML 的实例之间**没有继承链**（每个实例各自完整），所以那一条今天不适用。
+
 
 ---
 

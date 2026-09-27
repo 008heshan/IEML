@@ -41,23 +41,41 @@ main:
       stages:
         - name: 环境信息（先印出来，红了才知道是哪套版本红的）
           script: |
-            node -v
-            npm -v
-            corepack enable
-            corepack prepare pnpm@10.34.5 --activate
-            pnpm -v
+            {
+              node -v
+              npm -v
+              corepack enable
+              corepack prepare pnpm@10.34.5 --activate
+              pnpm -v
+            } > /tmp/stage.log 2>&1
+            code=$?
+            cat /tmp/stage.log >> /tmp/ci.log
+            cat /tmp/stage.log
+            exit $code
         - name: 装依赖（store 指到仓库外）
           script: |
-            pnpm install --frozen-lockfile --store-dir /tmp/pnpm-store
+            # ★ 为什么不用 `| tee`：管道会把退出码换成 tee 的 0（这个仓库为此栽过）。
+            #   走"先落盘、再追加、最后 exit $code"，日志与退出码都要。
+            pnpm install --frozen-lockfile --store-dir /tmp/pnpm-store > /tmp/stage.log 2>&1
+            code=$?
+            cat /tmp/stage.log >> /tmp/ci.log
+            cat /tmp/stage.log
+            exit $code
         - name: 可移植子集（node tools/verify.mjs --skip-rust）
           script: |
             node tools/verify.mjs --skip-rust > /tmp/ci-verify.log 2>&1
+            code=$?
+            cat /tmp/ci-verify.log >> /tmp/ci.log
             tail -40 /tmp/ci-verify.log
+            exit $code
       endStages:
         - name: 把结果与日志尾部写成可读的产物（成功/失败都写）
           script: |
-            node tools/ci/report-status.mjs --status "${CNB_PIPELINE_STATUS}" --log /tmp/ci-verify.log \
-              || echo "[ci] 状态上报没成功（不影响判定：判定看的是上面那一步的退出码）"
+            # ★ 两个日志都给上报脚本：verify 那一步没跑起来时（例如装依赖就挂了），
+            #   至少还有前面几步的现场 —— 否则状态文件里是空的，看起来像"什么都没发生"。
+            node tools/ci/report-status.mjs --status "${CNB_PIPELINE_STATUS}" \
+              --log /tmp/ci-verify.log --fallback-log /tmp/ci.log \
+              || echo "[ci] ★★ 状态上报没成功（判定不受影响：判定看的是 verify 的退出码）"
   pull_request:
     - name: 可移植子集（PR 同样要过）
       docker:
