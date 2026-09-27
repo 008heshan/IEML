@@ -386,6 +386,8 @@ pub fn run() {    /*
             commands::backup_list,
             commands::backup_create,
             commands::backup_restore,
+            /* ★ 回滚**之前**的差异预览（ADR-014：先看差异、再确认回滚） */
+            commands::backup_preview,
             commands::backup_remove,
             commands::backup_open_folder,
             commands::installed_versions,

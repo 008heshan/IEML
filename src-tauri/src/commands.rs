@@ -805,6 +805,19 @@ pub async fn backup_restore(
     .await
 }
 
+/// ★★ **回滚之前先算差异**（ADR-014 的 UI 要求：预览差异，再确认回滚）。
+///
+/// 只读：不动任何文件。界面拿它把"会覆盖多少、会新增多少、保留多少、
+/// 哪些 Mod 会移走、哪些 Mod 不在盘上"如实说给用户，再让他决定。
+#[tauri::command]
+pub fn backup_preview(
+    slug: String,
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<crate::backup::RestorePreview, String> {
+    crate::backup::preview_restore(&state.paths(), &slug, &id)
+}
+
 /// 删掉一份备份（只删自己认得的那种目录，见 `crate::backup::remove`）
 #[tauri::command]
 pub fn backup_remove(slug: String, id: String, state: State<'_, AppState>) -> Result<(), String> {

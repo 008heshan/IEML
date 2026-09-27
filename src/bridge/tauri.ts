@@ -1544,6 +1544,34 @@ export interface BackupRestoreReport {
   mods_moved_out: string[];
 }
 
+/**
+ * ★★ **回滚之前**的差异预览（ADR-014 的 UI 要求：先看差异、再确认回滚）。
+ *
+ * 全是"回滚会做什么"的**如实计数**，一个文件都不会动。
+ * 界面必须把 `will_change` / `kept_extra` / `mods_missing` 说给用户听 ——
+ * 回滚是这个功能里唯一会覆盖现有数据的动作。
+ */
+export interface BackupRestorePreview {
+  from_id: string;
+  created_secs: number;
+  reason: string;
+  /** 备份里有的文件（会被写回） */
+  will_write: number;
+  /** 其中**内容与现在不同**的（新增 + 覆盖） */
+  will_change: number;
+  /** 其中现在盘上还没有的（纯新增） */
+  will_add: number;
+  /** 现在盘上有、备份里没有的（**不会被删**） */
+  kept_extra: number;
+  /** 会被移进那份备份的 mods-extra/ 的 Mod */
+  mods_extra: string[];
+  /** 清单里有、盘上没有的 Mod（要用户自己重新获取） */
+  mods_missing: string[];
+  total_bytes: number;
+  sample_write: string[];
+  sample_kept: string[];
+}
+
 export const backup = {
   list: (slug: string) => call<BackupManifest[]>('backup_list', { slug }),
 
@@ -1572,6 +1600,13 @@ export const backup = {
     }),
 
   remove: (slug: string, id: string) => call<void>('backup_remove', { slug, id }),
+
+  /**
+   * ★★ **回滚之前**的差异预览（ADR-014：先看差异、再确认回滚）。
+   * 只读，不动任何文件；界面拿它把真实数字说给用户听。
+   */
+  preview: (slug: string, id: string) =>
+    call<BackupRestorePreview>('backup_preview', { slug, id }),
 
   openFolder: (slug: string, id?: string) =>
     call<string>('backup_open_folder', { slug, id: id ?? null }),
