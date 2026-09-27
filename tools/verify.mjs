@@ -363,6 +363,21 @@ results.push([
 ]);
 
 /*
+ * ★★ **源码里的中文有没有被写坏**（2026-09-27 加，两次真事故之后）。
+ *
+ *   事故长这样：用 PowerShell 的 `Get-Content -Raw | ... | Set-Content -Encoding utf8`
+ *   改一个带中文的源文件。5.1 的 `Get-Content` 默认按 **ANSI（GBK）** 解码 ——
+ *   文件里的 UTF-8 中文当场就错了，写回去只是把错误固化。
+ *
+ *   ★ 两次都是**事后**才发现的：它不报错、编译也过（那堆怪字在 Rust 里仍是合法
+ *     标识符与字符串），只有用户会在界面上看见。
+ *   ★ 这道门禁自己也挨过两次打脸（手写字表漏掉最普通的"好了"、
+ *     直接按候选字判红冤枉了 213 处「浏览」）—— 所以它现在还带一份自测
+ *     （`tests/mojibake-gate.test.mjs`），两个方向都钉住：会红、也不乱红。
+ */
+results.push(['中文乱码', run('中文乱码', 'node', ['tools/gates/check-mojibake.mjs'])]);
+
+/*
  * ★★ 前端生产构建**必须排在 Rust 那两项之前**（2026-09-27，CI 抓出来的真依赖）。
  *
  *   `src-tauri/src/lib.rs` 里有 `tauri::generate_context!()`，它在**编译期**

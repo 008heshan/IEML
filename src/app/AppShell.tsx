@@ -76,7 +76,7 @@ function isLong(text: string): boolean {
 }
 
 export function App() {
-  const { state, go, dismissToast, closeVersion, setSubPage, open, setLaunchTarget, update } =
+  const { state, go, dismissToast, closeVersion, setSubPage, open, setLaunchTarget, update, goDownloadFor } =
     useApp();
   const [stopping, setStopping] = useState(false);
   /** 顶栏的账号弹窗（正版登录入口） */
@@ -192,15 +192,28 @@ export function App() {
    *   （实测 `src/` 里 `onDrop` 0 命中，而界面确实拖不进东西）。
    *   所以要用 `getCurrentWebview().onDragDropEvent()`。
    *
-   * ## 收到之后做什么
+   * ## 收到之后做什么（★ 2026-09-27：从"只认整合包"扩到**五类都认**）
    *
-   *   只认整合包（`.mrpack` / CurseForge 的 `.zip`）—— 但**判据交给后端按内容判**
-   *   （扩展名可以改错，zip 里面的清单骗不了人）。这里只做两件轻活：
-   *   把用户带到下载页、把路径派发出去；真正的安装由 `DownloadPage` 跑
-   *   （它手里有任务中心、建实例、跳转那一整套）。
+   *   拖进来的东西**按内容**判是哪一类（`classify_dropped_file`，判据在
+   *   `src-tauri/src/domain/dropped.rs`，15 条单测钉着 ADR-015 的判定顺序）：
    *
-   *   ★ 不是整合包的文件**不动手也不静默**：弹一句说清"只支持整合包"。
+   *   ```
+   *   整合包  → 走建实例那条路（下载页那套：任务中心 + 建实例 + 跳转）
+   *   目录    → 这一层能装的**逐个**判、逐个装（装成的与跳过的都要说）
+   *   Mod / 资源包 / 光影 / 数据包 → 放进**当前打开的那个实例**的对应目录
+   *   认不出来 → 如实说为什么（不猜、也不静默）
+   *   ```
+   *
+   *   ★ 为什么"装资源"要有当前实例：那四类都是**装进某个版本**的
+   *     （`instances/<slug>/game/<目录>`），没有"当前版本"就无处可放 ——
+   *     这时候如实说"先打开一个版本"，而不是随便挑一个实例塞进去。
+   *   ★ 判据一律交给后端按内容判：扩展名可以改错，zip 里面的东西骗不了人。
    */
+  const openSlugRef = useRef<string | null>(null);
+  openSlugRef.current = open?.config.slug ?? null;
+  /** 装了光影但这个实例用不了 → 问一句"要不要现在装一个光影加载器"（ADR-015） */
+  const [shaderPrompt, setShaderPrompt] = useState(false);
+
   useEffect(() => {
     if (!isTauri()) return;
     let unlisten: (() => void) | null = null;
@@ -212,28 +225,7 @@ export function App() {
           if (event.payload.type !== 'drop') return;
           const paths = event.payload.paths ?? [];
           if (paths.length === 0) return;
-          const pack = paths.find((p) => /\.(mrpack|zip)$/i.test(p));
-          if (!pack) {
-            dispatchToast(
-              'warning',
-              '这个文件拖不进来',
-              '目前只支持整合包：Modrinth 的 .mrpack，或者 CurseForge 整合包的 .zip。',
-            );
-            return;
-          }
-          go('download');
-          /*
-           * ★ 先**存下路径**再切页：`DownloadPage` 的监听器是它挂载之后才注册的，
-           *   立刻派发事件会丢（那正是"拖进去没反应"的成因）。
-           *   它挂载时会 `takePendingPack()` 取走 —— 取走即清空，不会装两遍。
-           */
-          setPendingPack(pack, pack.split(/[\\/]/).pop());
-          /* 同页拖放（已经在下载页）就直接派发，省掉一次取件 */
-          window.dispatchEvent(
-            new CustomEvent('ieml:install-local-pack', {
-              detail: { path: pack, name: pack.split(/[\\/]/).pop() },
-            }),
-          );
+          void handleDrop(paths);
         });
         if (cancelled) stop();
         else unlisten = stop;
@@ -248,6 +240,112 @@ export function App() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /**
+   * 一次拖放可能带来多个文件：**逐个判、逐个装**，最后给一句汇总。
+   *
+   * ★ 不"只挑第一个像整合包的"：那样用户拖进来三个 Mod，只会装一个，另外两个**悄悄没了**。
+   */
+  async function handleDrop(paths: string[]) {
+    const { getRealApi } = await import('../bridge');
+    const api = await getRealApi();
+    if (!api) {
+      // 浏览器演示模式：没有后端，如实说
+      dispatchToast('info', '演示模式', '浏览器里拖进来的文件不会真的安装。');
+      return;
+    }
+
+    const done: string[] = [];
+    const problems: string[] = [];
+    const notes: string[] = [];
+    let packPath: string | null = null;
+    /*
+     * ★★ ADR-015 要求的是**问一句**，不只是说一句：
+     *   往没有光影支持的实例里拖光影包时，除了"不会生效"，还要给「是否现在安装」。
+     *   所以这里把"装了光影但用不了"记下来，最后弹一个带两条出路的小窗
+     *   （直接 `goDownloadFor('mod', id)` 去装 Iris —— 那条路**不依赖事件时序**，
+     *   见 ModsPanel 里那段关于 `ieml:download-target` 被丢掉的教训）。
+     */
+    let shaderNeedsSupport = false;
+
+    for (const p of paths) {
+      let info;
+      try {
+        info = await api.drop.classify(p);
+      } catch (e) {
+        problems.push(e instanceof Error ? e.message : String(e));
+        continue;
+      }
+      if (info.kind === 'modpack') {
+        // 整合包：记下来，最后走"建实例"那条路（它要切页，放最后做）
+        packPath = p;
+        continue;
+      }
+      if (info.kind === 'unknown') {
+        problems.push(info.reason || `${info.file_name}：认不出来`);
+        continue;
+      }
+      const slug = openSlugRef.current;
+      if (!slug) {
+        problems.push(`${info.file_name}：这是${info.display}，要先打开一个版本才能装进去`);
+        continue;
+      }
+      try {
+        if (info.kind === 'folder') {
+          /*
+           * 目录：一次判一批。★ 后端把**没装成的每一条**都带回来（带理由）——
+           * 只说"装了 3 个"等于把剩下那些静默丢掉，而其中可能有他真正想要的那个。
+           */
+          const r = await api.drop.installDir(p, slug);
+          for (const f of r.installed) {
+            done.push(`${f.display} ${f.file_name}`);
+            if (f.display === '光影' && f.note) shaderNeedsSupport = true;
+          }
+          for (const n of r.notes) notes.push(n);
+          for (const s of r.skipped) problems.push(s);
+          continue;
+        }
+        const r = await api.drop.install(p, slug);
+        done.push(`${r.display} ${r.file_name}`);
+        if (r.note) {
+          notes.push(r.note);
+          if (r.display === '光影') shaderNeedsSupport = true;
+        }
+      } catch (e) {
+        problems.push(e instanceof Error ? e.message : String(e));
+      }
+    }
+
+    if (packPath) {
+      go('download');
+      /*
+       * ★ 先**存下路径**再切页：`DownloadPage` 的监听器是它挂载之后才注册的，
+       *   立刻派发事件会丢（那正是"拖进去没反应"的成因）。
+       *   它挂载时会 `takePendingPack()` 取走 —— 取走即清空，不会装两遍。
+       */
+      setPendingPack(packPath, packPath.split(/[\\/]/).pop());
+      /* 同页拖放（已经在下载页）就直接派发，省掉一次取件 */
+      window.dispatchEvent(
+        new CustomEvent('ieml:install-local-pack', {
+          detail: { path: packPath, name: packPath.split(/[\\/]/).pop() },
+        }),
+      );
+      return;
+    }
+
+    if (done.length > 0) {
+      dispatchToast(
+        'ok',
+        `已装进去 ${done.length} 个`,
+        [done.join('、'), ...notes].filter(Boolean).join('\n'),
+      );
+    }
+    if (problems.length > 0) {
+      dispatchToast('warning', '有东西没装成', problems.join('\n'));
+    }
+    // ★ "光影装了但用不了" → 按 ADR-015 问一句（不是只在提示里说一声）
+    if (shaderNeedsSupport) setShaderPrompt(true);
+  }
 
   /*
    * ★★ 2026-09-24（C-7 修复）：这里原来有个「最近玩过」块 ——
@@ -766,6 +864,62 @@ export function App() {
 
       <CreateInstanceModal />
       <CrashModal />
+
+      {/*
+        ★★ 光影装了、但这个实例用不了 → **问一句**（ADR-015 的原话是
+           "必须提示「当前实例未安装 OptiFine 或 Iris，光影不会生效，是否现在安装？」"）。
+
+        为什么是弹窗而不是 toast 里的一个按钮：toast 是"通知"，它会自己消失；
+        而这句问话要**等用户回答**（去装 / 以后再说）。做成 toast 的话，
+        用户去泡杯水回来就找不到那个按钮了。
+
+        ★ 两条出路都是真的：
+          · 有加载器（Fabric/Quilt/Forge…）→ 去下载页的 Mod 页签找 Iris/Oculus，
+            而且**带着这个实例**去（`goDownloadFor` 一次把页签、目标版本、切页都定了，
+            不依赖事件时序）；
+          · 纯原版 → Iris 是 Mod，装进去也没用，只能走 OptiFine，
+            所以这里如实说、并把按钮指向"以后再说"之外的那条真路（去下载页自己挑）。
+      */}
+      <Modal
+        open={shaderPrompt}
+        onClose={() => setShaderPrompt(false)}
+        title="光影包已放好，但它现在还不会生效"
+        subtitle={
+          open?.loader
+            ? '这个版本没有 Iris / Oculus。它们是 Mod，装上之后光影才有地方生效。'
+            : '这个版本是纯原版，也没装 OptiFine —— 光影包放好了也读不到。'
+        }
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setShaderPrompt(false)}>
+              以后再说
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => {
+                setShaderPrompt(false);
+                /*
+                 * 纯原版：Iris 是 Fabric 的 Mod，装进原版实例等于没装 ——
+                 * 所以那条路指向"先装一个加载器"，而不是假装 Iris 能用。
+                 */
+                if (open?.loader) goDownloadFor('mod', open.id);
+                else setSubPage('setup');
+              }}
+            >
+              {open?.loader ? '去找 Iris / Oculus' : '去装加载器或 OptiFine'}
+            </Button>
+          </>
+        }
+      >
+        <p className="wz-hint">
+          光影包已经放进 <code>shaderpacks/</code> 了，位置没错 —— 少的只是那个"读它"的组件。
+        </p>
+        <p className="wz-hint">
+          {open?.loader
+            ? 'Fabric / Quilt 用 Iris，Forge / NeoForge 用 Oculus（Iris 的移植版）。'
+            : '原版只能用 OptiFine：在「版本设置」里给它装上，光影就会生效。'}
+        </p>
+      </Modal>
 
       {/*
         ★ 账号弹窗：顶栏那个按钮打开它（内容与设置页的账号卡是同一个组件）。
