@@ -31,6 +31,10 @@ const root = process.cwd();
 /** 允许出现在仓库根的**文件**（精确名） */
 const ALLOWED_FILES = new Set([
   '.gitignore',
+  // ★ 2026-09-27：**钉换行符用**（`* text=auto eol=lf`）。必须在仓库根 ——
+  //   它管的就是整个仓库的检出行为；CI 上第一次跑就抓出"CRLF 检出让文档锚点门禁
+  //   满屏假红"这件事，见该文件里的说明。
+  '.gitattributes',
   '.npmrc',
   '.editorconfig',
   // ★ 2026-09-27：CNB 的云原生构建配置。它**必须**在仓库根（平台约定，改名就失效）——
