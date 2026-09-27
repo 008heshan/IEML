@@ -125,10 +125,12 @@
 >   CNB 上传 → 匿名验签 → exe 更新链路），真机探针 `live-cf-modpack-check.mjs` **17 条全过**；
 > · **备份/回滚**：本轮实装（`crate::backup` + 实例设置页面板 + 启动前自动备份），
 >   判据见 `backup.rs` 的 8 条单测与 `tools/live/live-backup-check.mjs`；
-> · **CI**：配置已进仓库（`.github/workflows/ci.yml`），但**到这一版为止一次都没跑过** ——
->   往 GitHub 推 workflow 文件需要凭据带 `workflow` 权限，本机那把没有（GitHub 原话见
->   `CHANGELOG.md`）。⇒ 平台口径里"没有 CI"这一条**暂时仍然成立**，
->   等它真的跑绿一次再改这一句。
+> · **CI**：配置已进仓库 —— CNB 的 `.cnb.yml`（push 即跑可移植子集，**已经推上去**）
+>   与 GitHub 的 `.github/workflows/ci.yml`（Windows 全量 + Linux 子集，**还没推上去**：
+>   推 workflow 文件需要凭据带 `workflow` 权限，本机那把没有，GitHub 原话见 `CHANGELOG.md`）。
+>   ★ 而且 CNB 的**构建结果本机读不到**（那把凭据没有构建查询权限：
+>   `NO_RIGHT Token scope not match`）—— 所以"每次推送都跑一遍"目前**只有 CNB 的构建页能证明**。
+>   ⇒ 平台口径里"没有 CI"这一条**暂时仍然成立**，等它真的跑绿一次（并且我看得到）再改这一句。
 
 > ★★ **1 与 2 两行是 2026-09-25 重核的结论，与之前那版（2026-09-21、`beta.57`）不同** ——
 > 不是标准变严了，是**之前那版没跟上事实**：判据表停在 `beta.57`，而"现状"列里
