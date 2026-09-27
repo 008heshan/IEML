@@ -514,8 +514,14 @@ export interface LaunchPreview {
   java: string;
   classpath_entries: number;
   natives_dir: string;
-  /** ★ 账号告警（null = 正常）；例如"令牌过期、续期失败、这次用离线身份" */
-  notice?: string | null;
+  /**
+   * ★★ **这条 Java 是怎么选出来的**（ADR-030 的四模式）。
+   *
+   * 用户在实例设置里显式选过 Java 时，这里写明"按你选的那一项"；
+   * 选得与版本要求不一致时带上警告。没有它，用户只能从 `java` 路径去猜
+   * 那个决定是谁做的 —— 而路径看不出来。
+   */
+  java_note?: string | null;
 }
 
 export interface LaunchStarted {

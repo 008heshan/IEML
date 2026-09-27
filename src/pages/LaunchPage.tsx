@@ -824,6 +824,18 @@ export function LaunchPage() {
                   {preview.java.split(/[\\/]/).slice(-3).join('/')}
                 </span>
               </div>
+              {/*
+                ★★ 这条 Java 是谁选的（ADR-030 的四模式，2026-09-28）：
+                  用户在版本设置里显式选过 Java 时，这里写明"按你选的那一项"，
+                  选得与版本要求不一致时后端会给一句警告。
+                  ★ 没有它，用户只能从路径去猜这个决定是谁做的 —— 而路径看不出来。
+              */}
+              {preview.java_note ? (
+                <div className="pack-lock">
+                  <span className="pl-k">为什么用它</span>
+                  <span className="pl-v">{preview.java_note}</span>
+                </div>
+              ) : null}
               <div className="pack-lock">
                 <span className="pl-k">classpath 条目</span>
                 <span className="pl-v mono">{preview.classpath_entries}</span>

@@ -181,6 +181,7 @@ async fn live_auto_download_java_and_launch() {
         window_title: None,
         join_server: None,
         notice: None,
+        java_note: None,
     };
 
     let cmd = launch_args::build_command(&spec);

@@ -1778,6 +1778,29 @@ pub fn scan_java_with_extra(paths: &AppPaths, manual: &[String]) -> Vec<JavaRunt
         push(exe, "scan", &mut by_path);
     }
 
+    /*
+     * ⑨ ★★ **实例文件夹里自带的 Java**（2026-09-28 补）。
+     *
+     *   整合包（尤其国外包）经常在实例里塞一份 JRE：`<实例>/java` 或
+     *   `<实例>/game/java`，装的时候就不必求用户先装对版本。
+     *   而这一处**从来没被扫过** —— 于是实例设置页的「实例文件夹」那一档
+     *   （ADR-030 的四模式之一）永远报"实例文件夹里没有找到 Java"。
+     *
+     *   ★★ 必须进 `preferred`（排在探测队列前面），**不能**只是追加到 `by_path`：
+     *     `probe_many` 有条 64 个候选的上限，而后面的来源（PATH / 注册表 /
+     *     各盘浅扫）很容易把名额吃光 —— 第一次就是追加在后面，于是真机上
+     *     **一个实例 Java 都没扫到**（探针当场抓到）。
+     */
+    for slug in instance_slugs(paths) {
+        for sub in ["java", "game/java"] {
+            let dir = paths.instance_dir(&slug).join(sub);
+            let exe = java_exe_in(&dir);
+            if exe.is_file() {
+                push(exe, "instance", &mut preferred);
+            }
+        }
+    }
+
     preferred.extend(by_path);
 
     // 并行探测：先做零成本收集，再一次性花钱
@@ -1796,9 +1819,40 @@ pub fn scan_java_with_extra(paths: &AppPaths, manual: &[String]) -> Vec<JavaRunt
     found
 }
 
+/// 账本里所有实例的 slug（**读不到就返回空**：扫 Java 这件事不该因为清单坏了而失败）
+///
+/// ★ 只读 `config.slug`，不解析整个 `Instance` —— 清单里有一条坏数据时，
+///   我们仍然该扫得到**其他**实例的 Java。
+fn instance_slugs(paths: &AppPaths) -> Vec<String> {
+    paths
+        .own_json("instances.json")
+        .and_then(|v| v.get("instances").and_then(|i| i.as_array()).cloned())
+        .map(|list| {
+            list.iter()
+                .filter_map(|i| {
+                    i.get("config")
+                        .and_then(|c| c.get("slug"))
+                        .and_then(|s| s.as_str())
+                        .map(String::from)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `java_exe_in` 的**公开版**：给"实例文件夹里自带的那份 Java"用。
+///
+/// ★ 为什么命令层需要它：`scan_java_with_extra` 按**规范化路径**去重，
+///   而整合包自带的那份 JRE 往往与系统里已扫到的是同一份（作者就是塞了一份）
+///   —— 那时列表里只会留先扫到的那条，`source == "instance"` 不出现。
+///   所以「实例文件夹」这一档的正确判据是**那个路径上有没有 java**，
+///   而不是"扫描列表里有没有标着实例的"（详见 `instance_java_choice`）。
+pub fn java_exe_for_instance(dir: &Path) -> PathBuf {
+    java_exe_in(dir)
+}
+
 /// 探测结果的上限：防止某个病态的 PATH 把扫描拖成分钟级
-const MAX_JAVA_CANDIDATES: usize = 64;
-/// 并行度：`java -version` 是进程启动，8 路足够快也不至于把机器打满
+const MAX_JAVA_CANDIDATES: usize = 64;/// 并行度：`java -version` 是进程启动，8 路足够快也不至于把机器打满
 const PROBE_CONCURRENCY: usize = 8;
 
 fn probe_many(candidates: Vec<(String, PathBuf)>) -> Vec<JavaRuntime> {

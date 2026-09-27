@@ -253,6 +253,12 @@ pub struct LaunchSpec {
     /// ★ 为什么放在 spec 里：`prepare_spec` 是判定的地方，界面是呈现的地方，
     ///   中间只有这一个结构体。写在日志里等于没写（用户不会去看日志）。
     pub notice: Option<String>,
+    /// ★★ **这条 Java 是怎么选出来的**（ADR-030 的四模式，2026-09-28 补）。
+    ///
+    /// 用户在实例设置里显式选了 Java 时，这里写明"按你选的那一项"；
+    /// 选得与版本要求不一致时带上警告（"你选的 Java 8 不在 [17, ) 里"）。
+    /// 没有它，用户只能从 `java` 那个路径猜是谁的决定 —— 而路径看不出来。
+    pub java_note: Option<String>,
 }
 
 /// 这个 MC 版本支持 `--title` 吗？
@@ -845,7 +851,8 @@ mod tests {
             extra_game_args: vec![],
             window_title: None,
             join_server: None,
-        notice: None,
+            notice: None,
+            java_note: None,
         }
     }
 

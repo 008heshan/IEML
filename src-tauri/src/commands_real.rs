@@ -3016,6 +3016,13 @@ pub struct LaunchPreview {
     ///   否则"点前就知道会发生什么"这句承诺对账号那一层不成立。
     #[serde(default)]
     pub notice: Option<String>,
+    /// ★★ **这条 Java 是怎么选出来的**（ADR-030 的四模式）。
+    ///
+    /// 用户显式选过 Java 时，这里写明"按你选的那一项"，并在选得不对时带上警告
+    /// （例如"你选的 Java 8 不在这个版本要求的 [17, ) 里"）。
+    /// 没有它，用户只能从 `java` 那个路径去猜 —— 而路径看不出来是谁的决定。
+    #[serde(default)]
+    pub java_note: Option<String>,
 }
 
 /// ★★ 启动失败的**结构化**错误（P0-7）。
@@ -3092,6 +3099,7 @@ pub async fn preview_launch(
         classpath_entries: spec.classpath.len(),
         natives_dir: spec.natives_dir.to_string_lossy().to_string(),
         notice: spec.notice.clone(),
+        java_note: spec.java_note.clone(),
     })
 }
 
@@ -4194,7 +4202,43 @@ async fn prepare_spec(
         req.loader_kind.as_deref().unwrap_or(""),
         req.loader_version.as_deref(),
     );
-    let java = find_java_by_requirement(state, &java_input, &req.mc_version)?;
+    /*
+     * ★★ **先问实例设置里选了什么**（ADR-030 的四模式）。
+     *
+     *   用户显式选了「手动指定 / 区间 / 实例文件夹」时，那是他的决定：
+     *   · 用得成 → 就用它（不在要求区间里则附一句警告，见 `instance_java_choice`）；
+     *   · 用不成 → **报错**，不偷偷回退到自动（回退就是"启动器不听话"）。
+     *   只有 `auto` 才落到下面那条"按版本要求挑"的路。
+     */
+    let mut java_note: Option<String> = None;
+    let java = match instance_java_choice(state, &req.instance_slug, &java_input) {
+        Some(Ok((rt, warning))) => {
+            say!(
+                "[IEML/launch] 按实例设置选定的 Java：{} {}（{}）",
+                rt.vendor,
+                rt.version,
+                rt.path
+            );
+            if let Some(w) = &warning {
+                say!("[IEML/launch] {w}");
+            }
+            java_note = Some(match &warning {
+                Some(w) => w.clone(),
+                None => format!("按你在版本设置里选的那一项：{} {}", rt.vendor, rt.version),
+            });
+            std::path::PathBuf::from(&rt.path)
+        }
+        Some(Err(why)) => {
+            return Err(LaunchError {
+                code: "java-chosen-missing".to_string(),
+                message: why,
+                /* ★ 结构化字段：界面据此给"去改设置 / 去下载 Java"的出路（P0-7 的规矩） */
+                required_major: None,
+                required_range: None,
+            })
+        }
+        None => find_java_by_requirement(state, &java_input, &req.mc_version)?,
+    };
 
     /*
      * ★★ 账号：**先看令牌过没过期，过期就静默续期**，续不上才退回离线。
@@ -4371,6 +4415,8 @@ async fn prepare_spec(
         join_server: req.join_server.clone(),
         // ★ 账号告警要**带给界面**：写进日志等于没写（用户不会去看日志）
         notice: account_note,
+        // ★ Java 是怎么选出来的（ADR-030 四模式）：界面据此说清"按你选的那一项"
+        java_note,
     })
 }
 
@@ -4403,6 +4449,140 @@ fn count_native_binaries(dir: &std::path::Path) -> usize {
                     .unwrap_or(false)
         })
         .count()
+}
+
+/// ★★ **这个实例自己指定的 Java**（ADR-030 的四模式里除 `auto` 之外的三档）。
+///
+/// ## 为什么要有这一层
+///
+///   实例设置页能选「自动 / 区间 / 实例文件夹 / 手动指定」，账本里也**存着**
+///   （`javaMode` / `javaPath` / `javaRange`）—— 但启动时**从来没人看它**：
+///   启动路径一律走 [`find_java_by_requirement`]（按版本要求挑最高的）。
+///   用户手选了一个 Java，启动器却用另一个，而且界面上看不出来 ——
+///   属于"说了不算"那一类。
+///
+/// ## 三条规矩
+///
+///   ① **`auto` 不在这里管**：它交给 `find_java_by_requirement`（那三道闸门是有测试的）。
+///      本函数只在用户**显式**选了另外三档时给结论；
+///   ② 用户选的 Java **不在版本要求区间里**时：**照用**（那是他的显式选择），
+///      但**必须给一句警告** —— 让他在启动失败前就知道为什么；
+///   ③ 选的 Java **不在了**（文件被删/盘符变了）：**如实报错**，
+///      绝不偷偷回退到自动 —— 那正是"启动器不听话"的成因。
+fn instance_java_choice(
+    state: &AppState,
+    slug: &str,
+    input: &crate::domain::java::JavaConstraintInput,
+) -> Option<Result<(domain::java::JavaRuntime, Option<String>), String>> {
+    let inst = state.paths().instance_json(slug)?;
+    let cfg = inst.get("config")?;
+    let mode = cfg.get("javaMode").and_then(|m| m.as_str()).unwrap_or("auto");
+    if mode == "auto" || mode.is_empty() {
+        return None; // 交给自动那条路
+    }
+    let path = cfg.get("javaPath").and_then(|p| p.as_str());
+    let range = cfg.get("javaRange").and_then(|r| serde_json::from_value::<domain::types::JavaRange>(r.clone()).ok());
+    let vr = range.map(|r| domain::version::VersionRange {
+        min: r.min.map(|v| v as f64),
+        min_inclusive: r.min_inclusive,
+        max: r.max.map(|v| v as f64),
+        max_inclusive: r.max_inclusive,
+    });
+
+    let runtimes = crate::platform::scan_java(&state.paths());
+    let picked = domain::java::pick_java(mode, &runtimes, input.clone(), vr, path);
+    let rt = match picked.runtime {
+        Some(rt) => rt,
+        None => {
+            /*
+             * ★★ 「实例文件夹」这一档**直接看盘**，不依赖扫描结果（2026-09-28，探针逼出来的）。
+             *
+             *   原因：`scan_java_with_extra` 按**规范化后的路径**去重 —— 如果整合包自带的
+             *   那份 JRE 与系统里已扫到的是同一份（很常见：包作者就是把它塞了一份），
+             *   列表里只会留先扫到的那条（来源标着 registry / mojang），
+             *   `source == "instance"` 就永远不出现 ⇒ 这一档明明有 Java 却报"没找到"。
+             *
+             *   而这一档的语义就是"用**这个实例文件夹里**的那一份"——
+             *   那么正确的判据是**那个路径上有没有 java**，不是"扫描列表里有没有标着实例的"。
+             */
+            let found = if mode == "instance-folder" {
+                ["java", "game/java"]
+                    .iter()
+                    .map(|sub| crate::platform::java_exe_for_instance(&state.paths().instance_dir(slug).join(sub)))
+                    .find(|exe| exe.is_file())
+            } else {
+                None
+            };
+            match found {
+                Some(exe) => {
+                    // 主版本从扫描结果里按**规范化路径**找（找不到就 0：那份 java 没被探过）
+                    let major = runtimes
+                        .iter()
+                        .find(|r| {
+                            r.path
+                                .parse::<std::path::PathBuf>()
+                                .ok()
+                                .and_then(|p| p.canonicalize().ok())
+                                .zip(exe.canonicalize().ok())
+                                .map(|(a, b)| a == b)
+                                .unwrap_or(false)
+                        })
+                        .map(|r| r.major)
+                        .unwrap_or(0);
+                    say!(
+                        "[IEML/launch] 用实例文件夹里的 Java：{}（主版本 {}）",
+                        exe.display(),
+                        major
+                    );
+                    domain::java::JavaRuntime {
+                        path: exe.to_string_lossy().to_string(),
+                        major,
+                        version: if major > 0 {
+                            format!("Java {major}")
+                        } else {
+                            "实例自带的 Java".to_string()
+                        },
+                        vendor: "实例自带".to_string(),
+                        arch: String::new(),
+                        source: "instance".to_string(),
+                        disabled_by_default: false,
+                        bytes: 0,
+                    }
+                }
+                // ★ 用户明确指定了，却找不到 —— 报错（不退回自动）
+                None => {
+                    return Some(Err(format!(
+                        "实例设置里指定了 Java（{}），但这条选择现在用不了：{}\n\
+                         处理办法：回「版本设置 → Java」把它改回「自动」，或者重新选一个还在的 Java。",
+                        match mode {
+                            "path" => "手动指定",
+                            "range" => "指定区间",
+                            "instance-folder" => "实例文件夹",
+                            other => other,
+                        },
+                        picked.reason
+                    )))
+                }
+            }
+        }
+    };
+
+    /*
+     * ★ 用户的选择与"这个版本需要什么"不一致时，照用但要说。
+     *   判定用同一份 `JavaRequirement`（不另写一套）。
+     */
+    let requirement = domain::java::resolve_java_requirement(input.clone());
+    let warning = if requirement.range.contains(rt.major as f64) {
+        None
+    } else {
+        Some(format!(
+            "★ 你选的 Java {} 不在这个版本的要求区间 {} 里 —— 照你的选择启动，\
+             但游戏可能起不来（真起不来时把这一档改回「自动」）",
+            rt.major,
+            requirement.range.format()
+        ))
+    };
+    Some(Ok((rt, warning)))
 }
 
 /// 找可用的 Java（按**约束区间**找，不是按单个主版本号）。
@@ -4908,48 +5088,14 @@ pub struct MigrationResult {
     pub backup_id: String,
 }
 
-/// 递归复制，**已存在的一律跳过**（不覆盖用户的东西）
-fn copy_tree_no_overwrite(
-    src: &std::path::Path,
-    dst: &std::path::Path,
-    rel: &str,
-    copied: &mut Vec<(String, u64, u64)>,
-    skipped: &mut Vec<String>,
-    failed: &mut Vec<String>,
-) {
-    if src.is_file() {
-        if let Some(parent) = dst.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                failed.push(format!("{rel}：建目录失败（{e}）"));
-                return;
-            }
-        }
-        if dst.exists() {
-            skipped.push(rel.to_string());
-            return;
-        }
-        match std::fs::copy(src, dst) {
-            Ok(n) => copied.push((rel.to_string(), 1, n)),
-            Err(e) => failed.push(format!("{rel}：复制失败（{e}）")),
-        }
-        return;
-    }
-    let Ok(rd) = std::fs::read_dir(src) else {
-        failed.push(format!("{rel}：读不了这个目录"));
-        return;
-    };
-    for e in rd.flatten() {
-        let name = e.file_name().to_string_lossy().to_string();
-        copy_tree_no_overwrite(
-            &e.path(),
-            &dst.join(&name),
-            &format!("{rel}/{name}"),
-            copied,
-            skipped,
-            failed,
-        );
-    }
-}
+/*
+ * ★★ 2026-09-28：这里原来有一个 `copy_tree_no_overwrite`（递归复制、已存在就跳过）。
+ *   导入别人的数据与切换隔离时的迁移**都改成走 Draft 事务**（ADR-023）之后，
+ *   它一个调用方都没有了 —— 删掉。
+ *   ★ 为什么不留着"以后可能用得上"：那份实现**没有回滚**，留着它，
+ *     下一次写"搬一堆文件"的人很可能又会顺手拿它用 —— 于是同一个坑再踩一遍。
+ *     复制这件事现在只有一条路：`crate::draft::Draft`（先推演、失败逆序回滚）。
+ */
 
 /// 真的把内容复制过去（**只复制，不删源**）。
 ///
