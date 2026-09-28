@@ -241,6 +241,19 @@ OptiFine 的两种身份
 >
 > 产出物落在 `libraries/optifine/OptiFine/<MC版本>_<OF自述版本>/`，例如 `1.20.1_HD_U_I6`。
 > HMCL 源码在类注释里明确写了：`Note: OptiFine should be installed in the end.`
+>
+> **★ 2026-09-28（0.16.0）这两条收尾动作的落地情况**：
+> · **删 `META-INF/mods.toml`** —— **已做**（`net::optifine::tidy_launchwrapper_library`）。
+>   本机真实产物里确实有这条声明（`…\OptiFine\1.16.5_HD_U_G8\OptiFine-1.16.5_HD_U_G8.jar`，
+>   3597 个条目之一，正文写着 `modLoader="javafml"`）。
+>   ★ **只在 launchwrapper + OptiFine tweaker 那种装法下删**：判定读盘上那份版本描述的
+>   `mainClass` 与参数（`--tweakClass optifine.OptiFineTweaker`）；1.17+ 的
+>   `cpw.mods.bootstraplauncher.BootstrapLauncher` 正是靠 `mods.toml`
+>   被 Forge 认成一个 Mod，一个字节都不动。
+> · **launchwrapper 提取** —— **不适用**：那是"自己拼库列表"才需要的活，
+>   我们的库文件由官方安装器写盘后**整目录拷回**，不自己拼。
+>   ★ 反过来，老版本（<1.14，方式 B）**必须自己把安装器副本放到声明的坐标上** ——
+>   以前只声明不落文件，那个版本一启动就缺库（OptiFine 静默不生效）。已补，见 ADR-003 实现记录。
 
 #### 约束矩阵（必须硬编码进 UI 校验逻辑）
 

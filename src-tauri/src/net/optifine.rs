@@ -275,6 +275,12 @@ pub async fn install(
             })?;
         let version_dir = shared.join("versions").join(&version_id);
         let json_path = version_dir.join(format!("{version_id}.json"));
+        /*
+         * ★★ ADR-003 修正 2 的收尾：库 jar 里那句 Forge Mod 声明要删掉。
+         *   放在**装完之后**做，且只在"靠 launchwrapper/tweaker 生效"的那种装法下做
+         *   （判定见 `tidy_launchwrapper_library` 的注释）。
+         */
+        let notes = tidy_launchwrapper_library(shared, &json_path);
         return Ok(OptiFineInstall {
             version_id: version_id.clone(),
             version_dir: version_dir.clone(),
@@ -283,8 +289,11 @@ pub async fn install(
             method: "A（跑官方 Patcher）",
             required_java,
             summary: format!(
-                "OptiFine {} 已装到 {}（方式 A：Patcher 打过补丁，版本 id {}）",
-                v.version, mc_version, version_id
+                "OptiFine {} 已装到 {}（方式 A：Patcher 打过补丁，版本 id {}）{}",
+                v.version,
+                mc_version,
+                version_id,
+                as_tail(&notes)
             ),
         });
     }
@@ -293,7 +302,16 @@ pub async fn install(
     let version_id = expected_id;
     let version_dir = shared.join("versions").join(&version_id);
     let json_path = version_dir.join(format!("{version_id}.json"));
-    install_legacy_style(shared, mc_version, &version_id, v, &version_dir, &json_path)?;
+    install_legacy_style(
+        shared,
+        mc_version,
+        &version_id,
+        v,
+        installer_jar,
+        &version_dir,
+        &json_path,
+    )?;
+    let notes = tidy_launchwrapper_library(shared, &json_path);
     Ok(OptiFineInstall {
         version_id: version_id.clone(),
         version_dir: version_dir.clone(),
@@ -301,8 +319,22 @@ pub async fn install(
         client_jar: version_dir.join(format!("{version_id}.jar")),
         method: "B（拼版本描述）",
         required_java,
-        summary: format!("OptiFine {} 已装到 {}（方式 B：直接挂 tweaker）", v.version, mc_version),
+        summary: format!(
+            "OptiFine {} 已装到 {}（方式 B：直接挂 tweaker）{}",
+            v.version,
+            mc_version,
+            as_tail(&notes)
+        ),
     })
+}
+
+/// 把"收尾做了什么"接在总结句后面；**什么都没做就不接**（不写空话）。
+fn as_tail(notes: &[String]) -> String {
+    if notes.is_empty() {
+        String::new()
+    } else {
+        format!("；{}", notes.join("；"))
+    }
 }
 
 /// 方式 A：造临时 `.minecraft` → 跑 Patcher → 整体拷回。
@@ -520,6 +552,7 @@ fn install_legacy_style(
     mc_version: &str,
     version_id: &str,
     v: &OptifineVersion,
+    installer_jar: &Path,
     version_dir: &Path,
     json_path: &Path,
 ) -> Result<(), String> {
@@ -547,6 +580,32 @@ fn install_legacy_style(
         .replace("OptiFine_", "")
         .replace("preview_", "")
         .replace(".jar", "");
+
+    /*
+     * ★★ 老版本没有 Patcher：**安装器自己就是那个库文件**。
+     *   HMCL 的 `OptiFineInstallTask` 在没有 `optifine/Patcher.class` 时做的
+     *   正是 `FileUtils.copyFile(installerFile, optiFineLibraryPath)`
+     *   （见 DECISIONS.md ADR-003 修正 1 的那段源码）。
+     *
+     *   ★ 为什么这一行是**必须**的：下面那份版本描述里声明了
+     *     `optifine:OptiFine:<of_ver>`，而 Maven 布局的路径是**算得出来的**
+     *     （`metadata::maven_path`，与启动时找库用的是同一个函数）。
+     *     以前我们只声明、不落文件 —— 于是这个版本一启动就"缺库"，
+     *     或者被容错跳过（OptiFine 静默不生效）。**声明了就必须在盘上。**
+     */
+    let lib_rel = crate::net::metadata::maven_path(&format!("optifine:OptiFine:{of_ver}"))
+        .ok_or_else(|| format!("拼不出 optifine:OptiFine:{of_ver} 的库路径"))?;
+    let lib_path = shared.join("libraries").join(&lib_rel);
+    if let Some(parent) = lib_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建库目录失败：{e}"))?;
+    }
+    std::fs::copy(installer_jar, &lib_path).map_err(|e| {
+        format!(
+            "把 OptiFine 安装器放到库目录失败（{}）：{e}",
+            lib_path.display()
+        )
+    })?;
+
     let now = "2026-01-01T00:00:00+08:00";
     let json = serde_json::json!({
         "id": version_id,
@@ -587,6 +646,192 @@ fn copy_dir_all(from: &Path, to: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/* ====================== 装完之后的收尾（ADR-003 修正 2） ====================== */
+
+/// 要被删掉的那两条**Forge / NeoForge Mod 声明**。
+///
+/// ★ 为什么删（不是洁癖）：OptiFine 的 jar 里带着 `META-INF/mods.toml`，
+///   内容是 `modLoader="javafml"` —— 对 Forge 来说**这就是"我是一个 Mod"**。
+///   而这个 jar 躺在 `libraries/optifine/…` 里（在启动 classpath 上），
+///   于是 OptiFine 会被应用两次：一次靠 tweaker、一次靠 Forge 当 Mod 加载
+///   —— 这正是我们自己的崩溃规则 `optifine-conflict` 认的那种崩法。
+///   HMCL `OptiFineInstallTask.java` 对**安装器副本**与**产出的库 jar**各删一次。
+///
+/// ★ 实测（本机真实产物，2026-09-28）：
+///   `…\libraries\optifine\OptiFine\1.16.5_HD_U_G8\OptiFine-1.16.5_HD_U_G8.jar`
+///   3597 个条目，其中一个就是 `META-INF/mods.toml`，正文里写着 `modLoader="javafml"`。
+///
+/// ★ 只删这两条：`META-INF/services/cpw.mods.modlauncher.api.ITransformationService`
+///   **必须留着** —— 现代 Forge 就是靠那个服务声明发现 OptiFine 的转换服务的。
+const FORGE_MOD_DECLARATIONS: [&str; 2] = ["META-INF/mods.toml", "META-INF/neoforge.mods.toml"];
+
+/// 把 zip 里 `drop` 列出的条目去掉，返回新字节；**一条都没命中就返回 `None`**
+/// （调用方据此不重写文件 —— 不做无谓的改动，也才好写"什么都不该动"的判据）。
+fn zip_without_entries(jar: &Path, drop: &[&str]) -> Result<Option<Vec<u8>>, String> {
+    use std::io::{Read, Write};
+
+    let f = std::fs::File::open(jar).map_err(|e| format!("打开 {} 失败：{e}", jar.display()))?;
+    let mut z = zip::ZipArchive::new(f)
+        .map_err(|e| format!("{} 不是能读的 zip：{e}", jar.display()))?;
+
+    let mut hits = 0usize;
+    let mut buf = std::io::Cursor::new(Vec::new());
+    {
+        let mut w = zip::ZipWriter::new(&mut buf);
+        for i in 0..z.len() {
+            let mut e = z
+                .by_index(i)
+                .map_err(|e| format!("读 {} 的第 {i} 个条目失败：{e}", jar.display()))?;
+            let name = e.name().to_string();
+            if drop.iter().any(|d| d.eq_ignore_ascii_case(&name)) {
+                hits += 1;
+                continue;
+            }
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(e.compression())
+                .unix_permissions(e.unix_mode().unwrap_or(0o644));
+            if e.is_dir() {
+                w.add_directory(name, opts)
+                    .map_err(|e| format!("写回目录条目失败：{e}"))?;
+                continue;
+            }
+            w.start_file(name, opts)
+                .map_err(|e| format!("写回条目失败：{e}"))?;
+            let mut body = Vec::new();
+            e.read_to_end(&mut body)
+                .map_err(|e| format!("读条目内容失败：{e}"))?;
+            w.write_all(&body).map_err(|e| format!("写条目内容失败：{e}"))?;
+        }
+        w.finish().map_err(|e| format!("收尾 zip 失败：{e}"))?;
+    }
+    if hits == 0 {
+        return Ok(None);
+    }
+    Ok(Some(buf.into_inner()))
+}
+
+/// 把 `libraries/optifine/**` 下的库 jar 里那句 Forge Mod 声明删掉。
+///
+/// ## 只在"靠 launchwrapper + tweaker 生效"的装法下做 —— 这条判据不能永远绿
+///
+///   判定看**盘上那份版本描述**，两条同时成立才动手：
+///   ① `mainClass` 含 `launchwrapper`；
+///   ② 参数里有 OptiFine 的 tweaker（`--tweakClass optifine.OptiFineTweaker` /
+///      `optifine.OptiFineForgeTweaker`）。
+///
+///   ①+② 同时成立 ⇒ OptiFine 是"整个 jar 当补丁库 + tweaker 挂上去"的，
+///   `mods.toml` 只会让 Forge **再加载一次** ⇒ **删**（HMCL 的做法）。
+///
+///   否则（例如 1.17+ 的 `cpw.mods.bootstraplauncher.BootstrapLauncher`，
+///   或者没有 tweaker 的装法）⇒ OptiFine 正是靠那份声明被 Forge 认成一个 Mod
+///   ⇒ **一个字节都不动**，动了就是把用户的高清修复弄没。
+///
+/// ★ 两条判据都是**实测形状**（本机真装一遍 1.16.5 + G8 之后读到的原文）：
+///   `mainClass = net.minecraft.launchwrapper.Launch`，
+///   `libraries = [optifine:OptiFine:1.16.5_HD_U_G8, optifine:launchwrapper-of:2.2]`，
+///   `arguments.game = ["--tweakClass", "optifine.OptiFineTweaker"]`。
+///
+/// 返回人话（为空 = 什么都没做，界面据此不吹自己）。
+fn tidy_launchwrapper_library(shared: &Path, version_json: &Path) -> Vec<String> {
+    let parsed = std::fs::read_to_string(version_json)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+    let main_class = parsed
+        .as_ref()
+        .and_then(|j| j.get("mainClass")?.as_str().map(|s| s.to_string()))
+        .unwrap_or_default();
+
+    /*
+     * OptiFine 的 tweaker 可能写在 `arguments.game`（现代格式）里，
+     * 也可能写在 `minecraftArguments`（老格式，一整行字符串）里 —— 两种都看。
+     * 先把候选文本拼起来，再一次判定（避免两处各写一遍规则）。
+     */
+    let mut args_text = String::new();
+    if let Some(j) = parsed.as_ref() {
+        for key in ["game", "jvm"] {
+            if let Some(list) = j.get("arguments").and_then(|a| a.get(key)).and_then(|v| v.as_array()) {
+                for v in list {
+                    if let Some(s) = v.as_str() {
+                        args_text.push_str(s);
+                        args_text.push(' ');
+                    }
+                }
+            }
+        }
+        if let Some(s) = j.get("minecraftArguments").and_then(|v| v.as_str()) {
+            args_text.push_str(s);
+        }
+    }
+    let lower = args_text.to_lowercase();
+    let has_of_tweaker = lower.contains("tweaker") && lower.contains("optifine");
+
+    if !main_class.contains("launchwrapper") || !has_of_tweaker {
+        say!(
+            "[IEML/optifine] 这次装法（mainClass=`{}`，tweaker={}）不靠补丁库生效 —— 库 jar 里的 Mod 声明不动",
+            if main_class.is_empty() { "（读不出来）" } else { &main_class },
+            if has_of_tweaker { "有" } else { "没有" }
+        );
+        return Vec::new();
+    }
+
+    let mut jars = Vec::new();
+    collect_jars(&shared.join("libraries").join("optifine"), &mut jars);
+    jars.sort();
+
+    let mut notes = Vec::new();
+    for jar in jars {
+        let rewritten = match zip_without_entries(&jar, &FORGE_MOD_DECLARATIONS) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => continue, // 本来就没有 —— 不动、也不报
+            Err(e) => {
+                // 删不掉不算安装失败：OptiFine 本身已经装好了，如实说一句就行
+                say!("[IEML/optifine] 收尾跳过 {}：{e}", jar.display());
+                notes.push(format!("有一处库文件没能收尾（{}）", jar.display()));
+                continue;
+            }
+        };
+        let name = jar.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let rel = match jar.strip_prefix(shared) {
+            Ok(r) => r.to_string_lossy().replace('\\', "/"),
+            Err(_) => {
+                notes.push(format!("{name} 不在游戏目录里，没动它"));
+                continue;
+            }
+        };
+        /*
+         * 走 Draft（ADR-023）：先备份旧文件、失败可回滚。
+         * 这是"改用户盘上已有的文件"，与"写自己的新文件"不是一回事。
+         */
+        let outcome = crate::draft::Draft::open(shared).and_then(|mut d| {
+            d.plan(crate::draft::Op::WriteFile {
+                rel: rel.clone(),
+                bytes: rewritten,
+            })?;
+            d.commit().map_err(|e| e.to_string())
+        });
+        match outcome {
+            Ok(_) => notes.push(format!("清掉了 {name} 里的 Forge Mod 声明")),
+            Err(e) => notes.push(format!("{name} 没能收尾（{e}）")),
+        }
+    }
+    notes
+}
+
+/// 递归收集 `dir` 下的 `.jar`（只看这一棵树，别的不碰）
+fn collect_jars(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            collect_jars(&p, out);
+        } else if p.extension().map(|x| x.eq_ignore_ascii_case("jar")).unwrap_or(false) {
+            out.push(p);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -724,5 +969,228 @@ mod tests {
             "没有 Installer.class 就该报错（而不是猜一个 Java 版本）"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /* ============ ADR-003 修正 2：装完之后的两处收尾 ============ */
+
+    /// 造一个"像 OptiFine 库 jar"的 zip：带 Forge Mod 声明、带 ModLauncher 服务声明、
+    /// 带一个 class 与一个目录条目 —— 前三者里只有第一条该被删掉。
+    fn write_fake_library(jar: &Path, with_mods_toml: bool) {
+        use std::io::Write as _;
+        if let Some(p) = jar.parent() {
+            std::fs::create_dir_all(p).unwrap();
+        }
+        let f = std::fs::File::create(jar).unwrap();
+        let mut z = zip::ZipWriter::new(f);
+        let o = zip::write::SimpleFileOptions::default();
+        z.add_directory("optifine/", o).unwrap();
+        if with_mods_toml {
+            z.start_file("META-INF/mods.toml", o).unwrap();
+            z.write_all(b"modLoader=\"javafml\"\nloaderVersion=\"[31,)\"\n").unwrap();
+        }
+        z.start_file("META-INF/services/cpw.mods.modlauncher.api.ITransformationService", o)
+            .unwrap();
+        z.write_all(b"optifine.OptiFineTransformationService\n").unwrap();
+        z.start_file("optifine/OptiFineClassTransformer.class", o).unwrap();
+        z.write_all(&[0xCA, 0xFE, 0xBA, 0xBE, 0, 0, 0, 52]).unwrap();
+        z.finish().unwrap();
+    }
+
+    fn entries_of(jar: &Path) -> Vec<String> {
+        let f = std::fs::File::open(jar).unwrap();
+        let mut z = zip::ZipArchive::new(f).unwrap();
+        (0..z.len())
+            .map(|i| z.by_index(i).unwrap().name().to_string())
+            .collect()
+    }
+
+    fn entry_bytes(jar: &Path, name: &str) -> Option<Vec<u8>> {
+        use std::io::Read as _;
+        let f = std::fs::File::open(jar).unwrap();
+        let mut z = zip::ZipArchive::new(f).unwrap();
+        let mut e = z.by_name(name).ok()?;
+        let mut v = Vec::new();
+        e.read_to_end(&mut v).ok()?;
+        Some(v)
+    }
+
+    /// 删掉 Forge Mod 声明，而**别的条目一个字节都不能变**。
+    #[test]
+    fn strip_removes_forge_mod_declaration_only() {
+        let dir = std::env::temp_dir().join("ieml-of-strip");
+        let _ = std::fs::remove_dir_all(&dir);
+        let jar = dir.join("OptiFine-1.16.5_HD_U_G8.jar");
+        write_fake_library(&jar, true);
+        let before = entries_of(&jar);
+        assert!(before.iter().any(|n| n == "META-INF/mods.toml"));
+        let service_before = entry_bytes(&jar, "META-INF/services/cpw.mods.modlauncher.api.ITransformationService");
+        let class_before = entry_bytes(&jar, "optifine/OptiFineClassTransformer.class");
+
+        let bytes = zip_without_entries(&jar, &FORGE_MOD_DECLARATIONS)
+            .expect("该能重写")
+            .expect("里面有 mods.toml，不该返回 None");
+        std::fs::write(&jar, &bytes).unwrap();
+
+        let after = entries_of(&jar);
+        assert!(
+            !after.iter().any(|n| n == "META-INF/mods.toml"),
+            "Forge Mod 声明必须被删掉：{after:?}"
+        );
+        assert_eq!(
+            after.len(),
+            before.len() - 1,
+            "只该少一条（多删/少删都是错的）：before={before:?} after={after:?}"
+        );
+        assert_eq!(
+            entry_bytes(&jar, "META-INF/services/cpw.mods.modlauncher.api.ITransformationService"),
+            service_before,
+            "★ ModLauncher 的服务声明必须原样留着 —— 删了 OptiFine 就不生效了"
+        );
+        assert_eq!(
+            entry_bytes(&jar, "optifine/OptiFineClassTransformer.class"),
+            class_before,
+            "别的条目要逐字节不变"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★ 对照组：本来就没有那条声明 ⇒ **返回 None（不重写）**，文件一个字节都不动。
+    ///   没有这条，"删掉了"与"把文件重写了一遍"就分不出来。
+    #[test]
+    fn strip_leaves_clean_jar_untouched() {
+        let dir = std::env::temp_dir().join("ieml-of-strip-clean");
+        let _ = std::fs::remove_dir_all(&dir);
+        let jar = dir.join("clean.jar");
+        write_fake_library(&jar, false);
+        let before = std::fs::read(&jar).unwrap();
+        assert_eq!(
+            zip_without_entries(&jar, &FORGE_MOD_DECLARATIONS).unwrap(),
+            None,
+            "没有可删的条目时不该给出新字节"
+        );
+        assert_eq!(std::fs::read(&jar).unwrap(), before, "磁盘上的文件不该被动过");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 不是 zip ⇒ 报错（**不是**把文件写坏）。
+    #[test]
+    fn strip_refuses_garbage() {
+        let dir = std::env::temp_dir().join("ieml-of-strip-bad");
+        let _ = std::fs::create_dir_all(&dir);
+        let bad = dir.join("bad.jar");
+        std::fs::write(&bad, b"not a zip at all").unwrap();
+        assert!(zip_without_entries(&bad, &FORGE_MOD_DECLARATIONS).is_err());
+        assert_eq!(std::fs::read(&bad).unwrap(), b"not a zip at all");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★★ 这条是**规则本身**：只有"launchwrapper + OptiFine 的 tweaker"那种装法才删；
+    ///    靠 `mods.toml` 被 Forge 认成 Mod 的装法（1.17+ 的 BootstrapLauncher）、
+    ///    以及**有 launchwrapper 但没有 tweaker** 的装法，**一个字节都不许动**
+    ///    —— 动了就是把用户的高清修复弄没。
+    #[test]
+    fn tidy_only_touches_launchwrapper_installs() {
+        for (label, json, should_strip) in [
+            (
+                "lw",
+                serde_json::json!({
+                    "id": "x",
+                    "mainClass": "net.minecraft.launchwrapper.Launch",
+                    "arguments": { "game": ["--tweakClass", "optifine.OptiFineTweaker"] },
+                }),
+                true,
+            ),
+            (
+                "boot",
+                serde_json::json!({
+                    "id": "x",
+                    "mainClass": "cpw.mods.bootstraplauncher.BootstrapLauncher",
+                    "arguments": { "game": ["--tweakClass", "optifine.OptiFineTweaker"] },
+                }),
+                false,
+            ),
+            (
+                // ★ 第三种：launchwrapper 在，但**没有** OptiFine 的 tweaker
+                //   ⇒ 说明它不是靠补丁库生效的，照样不许动
+                "notweak",
+                serde_json::json!({
+                    "id": "x",
+                    "mainClass": "net.minecraft.launchwrapper.Launch",
+                    "arguments": { "game": [] },
+                }),
+                false,
+            ),
+        ] {
+            let shared = std::env::temp_dir().join(format!("ieml-of-tidy-{label}"));
+            let _ = std::fs::remove_dir_all(&shared);
+            let jar = shared
+                .join("libraries")
+                .join("optifine")
+                .join("OptiFine")
+                .join("1.16.5_HD_U_G8")
+                .join("OptiFine-1.16.5_HD_U_G8.jar");
+            write_fake_library(&jar, true);
+            let dir = shared.join("versions").join("1.16.5-OptiFine_HD_U_G8");
+            std::fs::create_dir_all(&dir).unwrap();
+            let json_path = dir.join("1.16.5-OptiFine_HD_U_G8.json");
+            std::fs::write(&json_path, json.to_string()).unwrap();
+
+            let notes = tidy_launchwrapper_library(&shared, &json_path);
+            let has_toml = entries_of(&jar).iter().any(|n| n == "META-INF/mods.toml");
+            if should_strip {
+                assert!(!has_toml, "{label}：该删掉 Forge Mod 声明");
+                assert_eq!(notes.len(), 1, "该如实报一句：{notes:?}");
+                assert!(notes[0].contains("清掉了"), "{notes:?}");
+            } else {
+                assert!(has_toml, "{label}：这种装法靠 mods.toml 生效，不许删");
+                assert!(notes.is_empty(), "什么都没做就不该有话：{notes:?}");
+            }
+            let _ = std::fs::remove_dir_all(&shared);
+        }
+    }
+
+    /// ★★ 方式 B 的库文件必须**真的落盘**，且落的就是版本描述里那个坐标算出来的位置。
+    ///    以前只声明不落文件 —— 那个版本一启动就缺库（OptiFine 静默不生效）。
+    #[test]
+    fn legacy_install_places_installer_where_the_json_says() {
+        let shared = std::env::temp_dir().join("ieml-of-legacy");
+        let _ = std::fs::remove_dir_all(&shared);
+        let mc = "1.12.2";
+        let ver_dir = shared.join("versions").join(mc);
+        std::fs::create_dir_all(&ver_dir).unwrap();
+        std::fs::write(ver_dir.join(format!("{mc}.jar")), b"VANILLA-JAR").unwrap();
+        std::fs::write(
+            ver_dir.join(format!("{mc}.json")),
+            serde_json::json!({ "id": mc, "mainClass": "net.minecraft.client.main.Main" }).to_string(),
+        )
+        .unwrap();
+        let installer = shared.join("cache").join("OptiFine_1.12.2_HD_U_G5.jar");
+        std::fs::create_dir_all(installer.parent().unwrap()).unwrap();
+        std::fs::write(&installer, b"INSTALLER-BYTES").unwrap();
+
+        let v = of(false, "HD U G5", "OptiFine_1.12.2_HD_U_G5.jar");
+        let version_id = installed_version_id(mc, &v);
+        let out_dir = shared.join("versions").join(&version_id);
+        let out_json = out_dir.join(format!("{version_id}.json"));
+        install_legacy_style(&shared, mc, &version_id, &v, &installer, &out_dir, &out_json)
+            .expect("方式 B 该能装");
+
+        let j: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&out_json).unwrap()).unwrap();
+        let coord = j["libraries"][0]["name"].as_str().unwrap().to_string();
+        assert_eq!(coord, "optifine:OptiFine:1.12.2_HD_U_G5");
+        let rel = crate::net::metadata::maven_path(&coord).expect("坐标该能算出路径");
+        let lib = shared.join("libraries").join(&rel);
+        assert!(
+            lib.is_file(),
+            "★ 版本描述里声明了 {coord}，盘上就必须有 {}（否则启动即缺库）",
+            lib.display()
+        );
+        assert_eq!(
+            std::fs::read(&lib).unwrap(),
+            b"INSTALLER-BYTES",
+            "老版本没有 Patcher：库文件就是安装器本体（HMCL 同款做法）"
+        );
+        let _ = std::fs::remove_dir_all(&shared);
     }
 }

@@ -84,6 +84,24 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.16.0',
+    date: '2026-09-28',
+    headline: '这一版修了高清修复装完之后的两处遗留问题：它不会再被 Forge 当成第二个 Mod。',
+    groups: [
+      {
+        title: '修复了',
+        items: [
+          '修复了 高清修复被 Forge 当成第二个 Mod 再加载一遍、进而启动冲突的问题。',
+          '修复了 1.13 及更早版本的高清修复装完却起不来的问题，它要的文件以前只登记没放盘上。',
+        ],
+      },
+      {
+        title: '修改了',
+        items: ['修改了 若干启动器底层事项。'],
+      },
+    ],
+  },
+  {
     version: '0.15.0',
     date: '2026-09-28',
     headline: '这一版给整合包实例的 Mod 上了锁：单个 Mod 不能自己更新，免得把作者配好的组合改坏。',

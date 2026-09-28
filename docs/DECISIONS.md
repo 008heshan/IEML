@@ -262,6 +262,77 @@ libraries/optifine/OptiFine/<MC版本>_<OF自述版本>/
 **mavenVersion 的绑定格式是 `<MC版本>_<OptiFine自述版本>`** ——
 这是「MC 版本」与「OptiFine 版本」的绑定方式，也是校验依据。
 
+**实现记录（2026-09-28，0.16.0）**：OptiFine 这条线早就装了（`net::optifine`，方式 A/B
+都在跑），但**修正 2 一直没做**。这一轮把 9 条修正逐条对了一遍账，做掉两条真的会咬人的：
+
+| 修正 | 状态 | 说明 |
+|---|---|---|
+| 1 两种安装路径 | ✅ 早就有 | 方式 A（≥1.14）造临时 `.minecraft` 跑官方安装器；方式 B（更老）复制原版 jar + 手写描述 |
+| 2 ① 删 `META-INF/mods.toml` | ✅ **本轮** | 见下 |
+| 2 ② launchwrapper 提取 | ⛔ 不适用 | 那是 HMCL 自己拼库列表时才需要的活；我们的库文件由官方安装器写盘后**整目录拷回**，不自己拼 |
+| 3 「最后装」 | ✅ 等价实现 | 顺序是一条明写的铁律（`combination.rs::install_order`：原版 → 基础加载器 → 附加组件 → 桥接包 → API → 实例描述），不是散落在调用顺序里 —— 比 HMCL 那个 `priority = 10000` 更不容易被改坏 |
+| 4 安装前置校验（mainClass 白名单） | ⛔ 不照抄 | 我们**只对原版打补丁**，纯原版那条白名单判据恒真 —— 写进去就是死代码（本仓库最忌讳的那种）。它的**意图**（"先看清这个 OptiFine 打算怎么生效"）落到了本轮新增的判定上：读盘上那份版本描述的 `mainClass`，只有 launchwrapper 那种装法才动库文件 |
+| 5 Forge 1.17 的 `buildof.txt` 门槛 | ⏳ 前提不成立 | 那是"在 **Forge 版本**上跑 OptiFine 安装器"才会遇到的分支，我们今天不打 Forge 版本的补丁。**谁把这个前提改了，谁就得补这一条**（判定所需的三样都在：installer 里的 `buildof.txt`、原版 `mainClass`、Forge 版本号） |
+| 6 约束矩阵 | ✅ 早就有 | `combination.rs`：原版放行 / NeoForge 无条件拒 / Forge 1.13~1.14.3 拒 / Fabric·Quilt ≥1.20.5 拒，各有单测 |
+| 7 `IsOptiFineSuitForForge` 四级（我们做成五级） | ✅ 早就有 | `domain::combination::optifine_suits_forge` + `loader_caps::optifine_forge_req`，1.7.10 / 1.12.2 / 1.16.5 / 1.20.1 四档都有判据 |
+| 8 离线反解（读 `Config.class` 常量池） | ⏳ 没做 | 前提是"用户拿本地 installer jar 来装"—— 今天只有在线清单这一条路，没有本地安装器入口。有了入口再补 |
+| 9 目录布局与命名 | ✅ 本轮补齐 | `libraries/optifine/OptiFine/<MC>_<OF自述版本>/OptiFine-<…>.jar` 正是 `metadata::maven_path` 算出来的位置（1.16.5 的产物就在那儿） |
+
+**修正 2 ① 为什么真的会咬人（不是洁癖）**
+
+OptiFine 的 jar 里带着 `META-INF/mods.toml`，正文是 `modLoader="javafml"` ——
+对 Forge 来说**这就是"我是一个 Mod"**。而这个 jar 躺在 `libraries/optifine/…`
+（启动 classpath 上），于是 OptiFine 会被应用两次：一次靠 tweaker、一次靠 Forge
+当 Mod 加载 —— 这正是我们自己的崩溃规则 `optifine-conflict` 认的那种崩法。
+
+★ 实测证据（本机真实产物，2026-09-28）：
+
+```
+D:\IEML\.minecraft\libraries\optifine\OptiFine\1.16.5_HD_U_G8\OptiFine-1.16.5_HD_U_G8.jar
+  3597 个条目，其中一条就是 META-INF/mods.toml
+  正文头几行：modLoader="javafml" / loaderVersion="[31,)"
+```
+
+也就是说这个坑**就在我们脚下踩着**，只是没人报过（Or 报了也归到"OptiFine 冲突"里去了）。
+
+**本轮做的两件事**
+
+1. **删掉那条声明**（`net::optifine::zip_without_entries` + `tidy_launchwrapper_library`）：
+   把库 jar 重写一遍、只少那一条，其余条目**逐字节不动**（`META-INF/services/…ITransformationService`
+   必须留着 —— 现代 Forge 就是靠它发现 OptiFine 的转换服务，删了等于白装）。
+   走 `Draft`（ADR-023）：这是"改用户盘上已有的文件"，先备份、失败能回滚。
+   ★ **只在 launchwrapper + OptiFine tweaker 那种装法下做**：判定读**盘上那份版本描述**，
+     两条同时成立才动手 —— ① `mainClass` 含 `launchwrapper`；② 参数里有 OptiFine 的
+     tweaker（`--tweakClass optifine.OptiFineTweaker` / `OptiFineForgeTweaker`）。
+     1.17+ 的 `cpw.mods.bootstraplauncher.BootstrapLauncher`、或者有 launchwrapper
+     却没有 tweaker 的装法，正是靠 `mods.toml` 被 Forge 认成一个 Mod，
+     **一个字节都不许动**（动了就是把用户的高清修复弄没）。
+     这条有**对照组单测**（三种装法各跑一遍，两种必须原样不动）。
+     ★ 两条判据都是**实测形状**（真装一遍 1.16.5 + G8 之后读到的原文）：
+     `mainClass = net.minecraft.launchwrapper.Launch`、
+     `libraries = [optifine:OptiFine:1.16.5_HD_U_G8, optifine:launchwrapper-of:2.2]`、
+     `arguments.game = ["--tweakClass", "optifine.OptiFineTweaker"]`。
+2. **老版本（方式 B）的库文件真的落盘**：那份手写的版本描述里声明了
+   `optifine:OptiFine:<MC>_<OF自述版本>`，而以前**只声明、不落文件** ——
+   路径是算得出来的（`metadata::maven_path`，与启动时找库同一个函数），
+   于是这个版本一启动就"缺库"，或者被容错跳过（**OptiFine 静默不生效**）。
+   现在按 HMCL 的做法把安装器副本拷到那个位置（老版本没有 Patcher，安装器本体就是库文件）。
+
+**判据**
+
+* Rust 单测 5 条：删得准不准（只少一条、服务声明与其它条目逐字节不变）、
+  **本来就没有就不许动文件**（对照组）、不是 zip 就报错且不写坏、
+  ★ 只有"launchwrapper + OptiFine tweaker"那种装法才删
+  （BootstrapLauncher 那档、有 launchwrapper 没 tweaker 那档都断言文件**没被动**）、
+  方式 B 声明的坐标路径上**真的有那个文件**。
+* 真机判据 `tools/live/live-optifine-tidy-check.mjs`（12 条）：在沙盒里**真下载、真跑官方安装器**
+  装一遍 1.16.5 + G8，然后开箱看盘：库 jar 在 `libraries/optifine/` 下、
+  **没有** `mods.toml`、**还有**那个服务声明、条目数 ≥1000（实测 3597 → 3596，
+  正好少一条）、安装总结里如实说了这处收尾、★ 对照组：**原版 jar 一个字节没动**、
+  ★ 对照组：安装器自带的 `launchwrapper-of-2.2.jar` 原样不动（12 个条目）；
+  第二段再装一遍老版本 1.12.2 + G5（方式 B，不跑安装器），断言版本描述里声明的
+  `optifine:OptiFine:1.12.2_HD_U_G5` 那个文件**真的在盘上**（2.6 MB）。
+
 ---
 
 ## ADR-004　版本识别采用多级兜底
