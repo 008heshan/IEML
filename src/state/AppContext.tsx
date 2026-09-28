@@ -20,7 +20,7 @@ import {
   type ReactNode,
 } from 'react';
 import type { Instance, InstanceConfig, JavaRuntime } from '../domain';
-import { matchFolderVersions } from '../domain/folder-versions.ts';
+import { instanceFromFolderVersion, matchFolderVersions, pickAutoAdopt } from '../domain/folder-versions.ts';
 import type { FolderVersion } from '../bridge/tauri';
 import { MC_PROFILES } from '../domain/loader-caps.ts';
 import type { ModEntry, ModFilter, ModStateResult } from '../domain/mods.ts';
@@ -1167,13 +1167,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
    *   页头显示 0、角标还显示 3 —— 数据只读一次，谁用谁取。
    */
   const [folderVers, setFolderVers] = useState<FolderVersion[] | null>(null);
+  /*
+   * ★★ 2026-09-29：`folder_versions` 是**异步**读的，而触发点现在有好几个
+   *   （开机 / 焦点 / 事件 / 10 秒轮询）—— 两个请求同时在飞时，
+   *   **先发的可能后回**，把新结果盖成旧的（列表会"闪回上一次的内容"）。
+   *   ⇒ 用序号只认最后一次请求的结果（与下载那边的"只认最新一次"同一个思路）。
+   */
+  const folderSeqRef = useRef(0);
   const reloadFolderVersions = useCallback(async () => {
+    const seq = (folderSeqRef.current += 1);
     try {
       const list = await backend.folderVersions();
+      if (seq !== folderSeqRef.current) return; // 有更新的请求了 —— 这次的结果作废
       setFolderVers(list);
       /* 计数跟着这一份走（页头 / 角标 / 筛选同一个数） */
       dispatch({ type: 'machine/versionCount', count: list.filter((v) => v.hasJson).length });
     } catch {
+      if (seq !== folderSeqRef.current) return;
       /* 读不到就不筛（`null`）——读不到 ≠ 没有；界面宁可多显示，也不要凭空藏东西 */
       setFolderVers(null);
     }
@@ -1187,6 +1197,92 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void reloadFolderVersions();
   }, [reloadFolderVersions]);
+
+  /*
+   * ★★ 2026-09-29（用户：「下载完版本，资源管理器里删除完版本等**不会自动刷新版本列表**」）
+   *
+   *   以前这一份**只在开机与切换游戏目录时**读一次 —— 于是：
+   *     · 装完一个版本，列表里还是旧的（要手动点「重新探测」）；
+   *     · 在资源管理器里删掉版本目录，列表里那一行**还在**，点它才发现没了。
+   *
+   *   现在三个触发点，覆盖"谁改了磁盘"这件事的全部可能：
+   *     ① `ieml:folder-changed` —— 启动器自己改的（安装完成 / 删除 / 导入 / 换目录）；
+   *     ② 窗口重新获得焦点 —— 用户从资源管理器回来（这正是他发现"没刷新"的时刻）；
+   *     ③ 一个 10 秒的慢轮询（只在页面可见时）—— 分屏 / 双屏下窗口一直有焦点的情况。
+   *
+   *   ★ 为什么敢轮询：`folder_versions` 只是一次 `read_dir` + 读每个版本自己的那份
+   *     json（几十个小文件，毫秒级）。而"列表和磁盘不一致"这件事的代价大得多。
+   */
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === 'hidden') return;
+      void reloadFolderVersions();
+    };
+    const onFocus = () => refresh();
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('ieml:folder-changed', refresh);
+    const timer = window.setInterval(refresh, 10_000);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('ieml:folder-changed', refresh);
+      window.clearInterval(timer);
+    };
+  }, [reloadFolderVersions]);
+
+  /*
+   * ★★ 2026-09-29（用户：「当没有版本时，下载第一个版本**不会自动选择那个仅有的版本**」）
+   *
+   *   账本里**一个实例都没有**、而当前文件夹里**有版本**时，自动认领一个：
+   *   这样"装完第一个版本"之后，启动页立刻就有可启动的目标，不用用户再点一次。
+   *
+   *   三条纪律（都是"不许替用户做决定"的边界）：
+   *     · **只在 0 个实例时**跑 —— 有实例就说明账本是好的，绝不改写用户的选择；
+   *     · 只认领**能在启动器里启动的**（`hasJson`）版本；多个时按文件夹顺序取第一个
+   *       （与版本列表的显示顺序一致，用户看得见是哪一条）；
+   *     · 认领过就不再跑（认领之后 `instances.length === 1`），不会反复建。
+   *   ★ 用的是与「建实例」按钮**同一个函数**（`instanceFromFolderVersion`）。
+   */
+  const autoAdoptTriedRef = useRef(false);
+  useEffect(() => {
+    if (!state.ready || !instancesLoadedRef.current) return;
+    if (autoAdoptTriedRef.current) return;
+    const fv = pickAutoAdopt(folderVers, state.instances);
+    if (!fv) return;
+    autoAdoptTriedRef.current = true;
+    const inst = instanceFromFolderVersion(fv, {
+      takenSlugs: [],
+      totalMemoryGb: state.machine?.totalMemoryGb ?? 16,
+      availableMemoryGb: state.machine?.availableMemoryGb ?? 8,
+    });
+    void createInstance(inst)
+      .then(() => {
+        // 用非组件那条 toast 通道（`ieml:toast`）—— 这里比 `say` 的定义更早，
+        // 而这条事件本来就是为了"非组件代码弹提示"存在的（见上面的 onToast 监听）
+        window.dispatchEvent(
+          new CustomEvent('ieml:toast', {
+            detail: {
+              kind: 'ok',
+              title: '已经选中文件夹里的版本',
+              desc: `${fv.dir} —— 这是当前唯一可启动的版本，直接点启动就行`,
+            },
+          }),
+        );
+      })
+      .catch((e) => {
+        // 认领失败**不能影响启动器**：说一句实话就好（用户还能在版本列表里手动建实例）
+        window.dispatchEvent(
+          new CustomEvent('ieml:toast', {
+            detail: {
+              kind: 'warning',
+              title: '没能自动选中版本',
+              desc: e instanceof Error ? e.message : String(e),
+            },
+          }),
+        );
+      });
+    // `createInstance` / `say` 都是稳定的回调；这里只依赖"那一刻的事实"
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.ready, state.instances.length, state.machine, folderVers]);
 
   const setLaunchTarget = useCallback((id: string | null) => {
     dispatch({ type: 'instances/last', id });
@@ -1283,6 +1379,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       // ★ 磁盘处理完了才动记录 —— 顺序反过来就是上面那条缺陷
       dispatch({ type: 'instances/remove', id });
+      /*
+       * ★ 2026-09-29：删除动过磁盘（`instances/<slug>/`）—— 广播一句"文件夹变了"，
+       *   版本列表与启动页立刻重读，不再等用户手动点「重新探测」。
+       */
+      window.dispatchEvent(new CustomEvent('ieml:folder-changed'));
       return bytes;
     },
     [backend],

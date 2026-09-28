@@ -84,6 +84,24 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.18.4',
+    date: '2026-09-29',
+    headline: '这一版让版本列表跟着磁盘走：装完或删掉版本会自己刷新，装完第一个版本也会自动选中它。',
+    groups: [
+      {
+        title: '修复了',
+        items: [
+          '修复了 装完版本、或在资源管理器里增删版本后，版本列表不自动刷新的问题。',
+          '修复了 一个版本都没有时，装完第一个版本不会自动选中它的问题。',
+        ],
+      },
+      {
+        title: '修改了',
+        items: ['修改了 若干启动器底层事项。'],
+      },
+    ],
+  },
+  {
     version: '0.18.3',
     date: '2026-09-29',
     headline: '这一版装游戏不用再等资源文件了：先装能启动的，材质与声音在首次启动时后台补齐。',

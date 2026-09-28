@@ -43,6 +43,18 @@ const TASK_REMOVE = 'ieml:task-remove';
 const TOAST = 'ieml:toast';
 
 /**
+ * 广播"游戏文件夹变了"。
+ *
+ * ★★ 2026-09-29（用户：「下载完版本，资源管理器里删除完版本等**不会自动刷新版本列表**」）：
+ *   安装 / 删除 / 导入都会改磁盘，而版本列表与启动页看的是**磁盘事实**
+ *   （`folder_versions`）—— 以前那份只在开机与切换目录时读一次，于是界面长期落后于磁盘。
+ *   现在改磁盘的地方喊一声，`AppContext` 里的监听统一重读（出口只有一个）。
+ */
+function folderChanged(): void {
+  window.dispatchEvent(new CustomEvent('ieml:folder-changed'));
+}
+
+/**
  * ★★ 安装的**三种结局**（不是 boolean）。
  *
  * 为什么必须分开（P0-3）：暂停不是失败。老签名只有一个 boolean，
@@ -361,6 +373,7 @@ async function installVersionFromManifest(
       detail: `${result.libraries} 个库 · 资源文件留给启动时后台补`,
     });
     pendingJobs.delete(taskId);
+    folderChanged();
     return 'done';
   } catch (e) {
     // ★ 取消 / 暂停是用户主动操作，不能覆盖成「失败」
@@ -505,6 +518,7 @@ export async function installGame(opts: {
         : `${result.libraries} 个库 · 资源文件留给启动时后台补`,
     });
     pendingJobs.delete(taskId);
+    folderChanged();
     return 'done';
   } catch (e) {
     if (cancelledTasks.has(taskId)) {
@@ -598,6 +612,7 @@ async function installLoader(
       detail: `${result.libraries} 个库`,
     });
     pendingJobs.delete(taskId);
+    folderChanged();
     return 'done';
   } catch (e) {
     if (cancelledTasks.has(taskId)) {

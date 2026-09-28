@@ -122,6 +122,12 @@ export function ImportExternalModal() {
         [`${r.copied.map((c) => c.name).join('、')}`, ...extra].filter(Boolean).join('\n'),
       );
       await refreshIsolation();
+      /*
+       * ★ 2026-09-29：导入会往游戏目录里写东西（版本 / Mod / 存档）——
+       *   告诉版本列表与启动页"文件夹变了"，它们立刻重读（用户报的
+       *   「资源管理器里删除完版本等不会自动刷新版本列表」是同一类问题的另一面）。
+       */
+      window.dispatchEvent(new CustomEvent('ieml:folder-changed'));
       close();
     } catch (e) {
       toast('err', '导入失败', e instanceof Error ? e.message : String(e));
