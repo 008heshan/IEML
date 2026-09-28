@@ -18,6 +18,12 @@ import {
 import { compareVersion, forgeVersionSatisfies, parseRange, inRange } from '../src/domain/version.ts';
 /* ★ 整合包实例的 Mod 更新锁定（ADR-018 第 ⑥ 条） */
 import { modUpdateLock } from '../src/domain/pack-lock.ts';
+/* ★★ 2026-09-29：文件夹里的版本 ↔ 实例（"装完第一个版本自动选中它"那条规则） */
+import {
+  instanceFromFolderVersion,
+  knownLoaderKind,
+  pickAutoAdopt,
+} from '../src/domain/folder-versions.ts';
 
 /* ====================== 加载器能力表 ====================== */
 
@@ -987,4 +993,79 @@ test('★ 同一个 sha1 有多份（用户放了两遍）→ 全删；没有 sh
   assert.deepEqual(oldFilesToDrop(entries, 'AAA', 'a-2.0.jar').sort(), ['/m/a.jar', '/m/a副本.jar']);
   // 空 sha1 = "不知道要更新的是哪个文件" → 不许删任何东西（宁可留下旧文件）
   assert.deepEqual(oldFilesToDrop(entries, '', 'a-2.0.jar'), []);
+});
+
+/* ====================== 文件夹里的版本 → 实例（"自动选择那一个"的规则） ======================
+ *
+ * ★★ 2026-09-29 用户报的：「当没有版本时，下载第一个版本**不会自动选择那个仅有的版本**」。
+ *   这条规则原来只存在于版本列表页的一个按钮里，启动器自己不会认领 —— 现在抽到这里，
+ *   按钮与自动认领共用同一份（`AppContext` 的自动选择）。
+ */
+
+const fv = (over = {}) => ({
+  dir: '1.20.1',
+  id: '1.20.1',
+  inherits: '',
+  mcVersion: '1.20.1',
+  loaderName: null,
+  hasJson: true,
+  ...over,
+});
+
+test('★ 一个实例都没有、文件夹里有一个版本 → 认领它', () => {
+  const picked = pickAutoAdopt([fv()], []);
+  assert.equal(picked?.dir, '1.20.1');
+});
+
+test('★ 账本里已经有实例 → 绝不认领（不许改写用户的选择）', () => {
+  const inst = { id: 'inst-1', config: { slug: '1.20.1' } };
+  assert.equal(pickAutoAdopt([fv()], [inst]), null);
+});
+
+test('没有 json 的目录不算版本（只有文件夹不算能启动）', () => {
+  assert.equal(pickAutoAdopt([fv({ hasJson: false })], []), null);
+  // 多个里挑第一个**有 json 的**
+  assert.equal(pickAutoAdopt([fv({ dir: 'x', hasJson: false }), fv({ dir: 'y' })].map((v) => v), [])?.dir, 'y');
+});
+
+test('读不到文件夹（null）→ 不认领（读不到 ≠ 没有）', () => {
+  assert.equal(pickAutoAdopt(null, []), null);
+});
+
+test('从文件夹版本建实例：slug 撞了加 -2、加载器按目录名认、内存自动算', () => {
+  const a = instanceFromFolderVersion(fv({ dir: '1.20.1-forge-47.2.0', loaderName: 'forge' }), {
+    takenSlugs: [],
+    totalMemoryGb: 32,
+    availableMemoryGb: 16,
+    now: 1_700_000_000_000,
+  });
+  assert.equal(a.config.slug, '1.20.1-forge-47.2.0');
+  assert.equal(a.loader?.kind, 'forge');
+  assert.equal(a.mcVersion, '1.20.1');
+  assert.equal(a.config.isolation, 'auto');
+  assert.equal(a.config.memorySource, 'auto');
+  assert.ok(a.config.memoryMb > 0);
+
+  const b = instanceFromFolderVersion(fv({ dir: '1.20.1-forge-47.2.0', loaderName: 'forge' }), {
+    takenSlugs: ['1.20.1-forge-47.2.0'],
+    totalMemoryGb: 32,
+    availableMemoryGb: 16,
+    now: 1_700_000_001_000,
+  });
+  assert.equal(b.config.slug, '1.20.1-forge-47.2.0-2', '撞名要加后缀，不许覆盖别人的 slug');
+});
+
+test('认不出的加载器名当"没有加载器"（optifine / liteloader 在 IEML 里走 addons）', () => {
+  for (const name of ['optifine', 'liteloader', null]) {
+    const inst = instanceFromFolderVersion(fv({ loaderName: name }), {
+      takenSlugs: [],
+      totalMemoryGb: 16,
+      availableMemoryGb: 8,
+      now: 0,
+    });
+    assert.equal(inst.loader, null, '${name} 不该被当成 loader');
+    assert.deepEqual(inst.addons, []);
+  }
+  assert.equal(knownLoaderKind('fabric'), 'fabric');
+  assert.equal(knownLoaderKind('neoforge'), 'neoforge');
 });

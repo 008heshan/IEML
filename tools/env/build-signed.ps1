@@ -83,7 +83,27 @@ $version = (Get-Content -Encoding UTF8 'package.json' -Raw | ConvertFrom-Json).v
 Write-Output "[build-signed] 开始构建 $version（Rust 全量编译，通常 5–10 分钟）"
 $sw = [Diagnostics.Stopwatch]::StartNew()
 
-pnpm exec tauri build
+<#
+ * ★★ 2026-09-29：**不再经过 `pnpm exec`**，直接跑 tauri CLI。
+ *
+ *   现场：`pnpm exec tauri build` 跑到 Rust 编译那一段（cargo 正在编 50 多个 crate，
+ *   好几分钟不往 stdout 打字）时，被上层的 pnpm 看门狗判成"300 秒没有任何输出"，
+ *   **SIGKILL 掉**（日志原话：`pnpm produced no output and touched nothing for 300s`）。
+ *   于是 `tauri build` 以退出码 1 结束、白等了 10 分 44 秒（0.18.4 的第一遍）。
+ *
+ *   ⇒ 直接调 CLI：少一层进程、少一个看门狗、也不再依赖 pnpm 是否被允许常驻。
+ *     `node_modules/@tauri-apps/cli` 是 `pnpm exec tauri` 真正会跑的那个东西，
+ *     两者行为一致（同一个二进制、同一个 tauri.conf.json）。
+ *     找不到它时**回退到 pnpm**（老路径还能用，只是可能再被看门狗掐）。
+ #>
+$tauriCli = 'node_modules/@tauri-apps/cli/tauri.js'
+if (Test-Path $tauriCli) {
+    Write-Output "[build-signed] 直接调用 tauri CLI（$tauriCli）"
+    node $tauriCli build
+} else {
+    Write-Output '[build-signed] 没找到本地的 tauri CLI，回退到 pnpm exec'
+    pnpm exec tauri build
+}
 $code = $LASTEXITCODE
 $sw.Stop()
 

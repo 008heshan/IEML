@@ -46,7 +46,8 @@ import {
   trashUnavailablePrompt,
 } from '../domain/delete.ts';
 import type { FolderVersion, InstalledLoader } from '../bridge/tauri';
-import { autoMemory, type Instance } from '../domain';
+// ★ 2026-09-29：认领版本的规则搬到了 `domain/folder-versions.ts`（启动器的自动认领共用同一份）
+import { instanceFromFolderVersion } from '../domain/folder-versions.ts';
 import { instanceTitle } from '../state/instance-name';
 
 type Filter = 'all' | 'modded' | 'vanilla';
@@ -363,30 +364,16 @@ export function VersionsPage() {
     async (fv: FolderVersion) => {
       setAdopting(fv.dir);
       try {
-        const takenSlugs = new Set(state.instances.map((i) => i.config.slug));
-        let slug = fv.dir;
-        for (let n = 2; takenSlugs.has(slug); n++) slug = `${fv.dir}-${n}`;
-        const kind = knownLoaderKind(fv.loaderName);
-        const inst: Instance = {
-          id: `inst-${Date.now().toString(36)}`,
-          mcVersion: fv.mcVersion,
-          loader: kind ? { kind, version: '', mcVersion: fv.mcVersion } : null,
-          addons: [],
-          config: {
-            name: fv.dir,
-            slug,
-            isolation: 'auto',
-            memoryMb: Math.round(
-              autoMemory(0, 'vanilla', state.machine?.totalMemoryGb ?? 16, state.machine?.availableMemoryGb ?? 8)
-                .gb * 1024,
-            ),
-            memorySource: 'auto',
-            javaMode: 'auto',
-          },
-          createdAt: new Date().toISOString(),
-          lastPlayedAt: null,
-          totalPlaySeconds: 0,
-        };
+        /*
+         * ★★ 2026-09-29：拼实例这件事**不再写在这一页里** ——
+         *   启动器的"自动认领"要用同一套规则（见 `instanceFromFolderVersion`）。
+         *   这里只负责点按钮、提示、跳转。
+         */
+        const inst = instanceFromFolderVersion(fv, {
+          takenSlugs: state.instances.map((i) => i.config.slug),
+          totalMemoryGb: state.machine?.totalMemoryGb ?? 16,
+          availableMemoryGb: state.machine?.availableMemoryGb ?? 8,
+        });
         await createInstance(inst);
         toast('ok', '已经用这个文件夹里的版本建好实例', `${fv.dir} —— 现在可以启动它了`);
         openVersion(inst.id);
@@ -1170,19 +1157,4 @@ function loaderName(kind: string): string {
     quilt: 'Quilt',
   };
   return map[kind] ?? kind;
-}
-
-/**
- * 目录名里认出来的加载器 → `BaseLoaderKind`（认不出的返回 null）。
- *
- * ★ 为什么要有这一步：`FolderVersion.loaderName` 是**按目录名猜的字符串**
- *   （Rust 侧只做了 `contains`），而账本里的 `loader.kind` 是一个**受约束的联合类型** ——
- *   直接把字符串塞进去会让类型系统失去保护。认不出的（比如 `optifine`、`liteloader`）
- *   一律当"没有加载器"：那两种在 IEML 里走的是 `addons`，不是 `loader`。
- */
-function knownLoaderKind(name: string | null): 'forge' | 'neoforge' | 'fabric' | 'quilt' | null {
-  if (name === 'forge' || name === 'neoforge' || name === 'fabric' || name === 'quilt') {
-    return name;
-  }
-  return null;
 }
