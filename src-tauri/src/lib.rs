@@ -540,6 +540,18 @@ pub fn run() {    /*
          */
         .setup(|app| {
             use tauri::{Emitter, Manager};
+            /*
+             * ★★ 后台刷新完成之后**通知界面**（ADR-008 的"增量更新"那半句）。
+             *
+             *   没有这条通知的话，"先返回缓存、后台刷新"只做了一半：
+             *   界面拿着旧清单一直显示到用户自己点刷新 —— 与不刷新在观感上没区别。
+             *   前端在 `AppContext` 里监听 `meta-refreshed` 并重新取一次版本清单
+             *   （判据见 `tools/live/live-cache-fresh-check.mjs`）。
+             */
+            let app_for_cache = app.handle().clone();
+            net::metadata::set_refresh_sink(move |key: &str| {
+                let _ = app_for_cache.emit("meta-refreshed", serde_json::json!({ "key": key }));
+            });
             tauri::async_runtime::spawn(async {
                 net::probe::refresh_global().await;
             });

@@ -102,6 +102,131 @@ mod cache_version_tests {
     }
 }
 
+#[cfg(test)]
+mod cache_freshness_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// 三种新鲜度，一条边界：**刚好等于 TTL 就算过期**（`<` 不是 `<=`）。
+    #[test]
+    fn freshness_has_three_answers_and_one_boundary() {
+        let ttl = Duration::from_secs(60);
+        assert_eq!(freshness_of(None, ttl), Freshness::Missing, "没有缓存文件");
+        assert_eq!(freshness_of(Some(Duration::from_secs(0)), ttl), Freshness::Fresh);
+        assert_eq!(freshness_of(Some(Duration::from_secs(59)), ttl), Freshness::Fresh);
+        assert_eq!(
+            freshness_of(Some(Duration::from_secs(60)), ttl),
+            Freshness::Stale,
+            "刚好到 TTL 就该算过期（否则 TTL 实际是 60 秒 + 一次请求的时长）"
+        );
+        assert_eq!(freshness_of(Some(Duration::from_secs(600)), ttl), Freshness::Stale);
+    }
+
+    /// ★★ 后台刷新：**写盘 + 通知**，而且**同一个 key 只允许一个在飞**。
+    ///
+    ///   这条判据钉三件事：
+    ///     ① 第二次 spawn 不会真的再拉一遍（`calls` 只 +1）—— 冷启动时
+    ///        版本清单会被好几个地方同时要，不去重就会同时开四五条连接互相饿死；
+    ///     ② 拉回来的东西真的**写进了缓存文件**（下一个调用就能拿到新的）；
+    ///     ③ 写完之后**通知了界面**（ADR-008 的"增量更新"那半句）。
+    #[tokio::test]
+    async fn background_refresh_writes_cache_notifies_and_dedups() {
+        // 通知落点：进程内全局，只有一个测试用它
+        static NOTIFIED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        set_refresh_sink(|key: &str| {
+            if let Ok(mut v) = NOTIFIED.lock() {
+                v.push(key.to_string());
+            }
+        });
+
+        let dir = std::env::temp_dir().join(format!("ieml-metacache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let key = "probe_manifest.json".to_string();
+        let file = dir.join(&key);
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls2 = calls.clone();
+        // 闸门：fetch 会一直等到测试放行 —— 于是"在飞"这个状态可以被观察到
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let gate2 = gate.clone();
+
+        let fetch = move || {
+            let calls = calls2.clone();
+            let gate = gate2.clone();
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                let _ = gate.acquire().await;
+                Ok(serde_json::json!({ "marker": "fresh" }))
+            }
+        };
+
+        spawn_background_refresh::<serde_json::Value, _>(key.clone(), file.clone(), fetch());
+        // 等第一个真的开始跑
+        for _ in 0..100 {
+            if calls.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "第一个该跑起来");
+        assert!(is_refreshing(&key), "在飞的 key 要能被查到");
+
+        spawn_background_refresh::<serde_json::Value, _>(key.clone(), file.clone(), fetch());
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "★ 同一个 key 的第二次 spawn 不该再拉一遍（去重）"
+        );
+
+        gate.add_permits(1); // 放行
+        let mut wrote = false;
+        for _ in 0..200 {
+            if file.is_file() {
+                wrote = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(wrote, "★ 拉回来的东西必须写进缓存文件");
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.contains("fresh"), "写进去的是新数据：{text}");
+        assert!(!is_refreshing(&key), "跑完要从「在飞」里摘掉（否则以后再也不刷新了）");
+        let notified = NOTIFIED.lock().map(|v| v.clone()).unwrap_or_default();
+        assert!(
+            notified.iter().any(|k| k == &key),
+            "★ 写完要通知界面（增量更新），实际通知了：{notified:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 后台刷新失败**不许影响任何人**：不写盘、不通知、从"在飞"里摘掉。
+    #[tokio::test]
+    async fn failed_background_refresh_is_silent() {
+        let dir = std::env::temp_dir().join(format!("ieml-metacache-fail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let key = "probe_fail.json".to_string();
+        let file = dir.join(&key);
+
+        spawn_background_refresh::<serde_json::Value, _>(key.clone(), file.clone(), async {
+            Err(crate::net::NetError::Other("网络不通".into()))
+        });
+        for _ in 0..200 {
+            if !is_refreshing(&key) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!is_refreshing(&key), "失败也要摘掉（否则这个 key 永远不再刷新）");
+        assert!(!file.exists(), "失败不许写出半个文件");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 /// 单个加载器清单请求的总时长上限。
 ///
 /// ★ 为什么需要它：`get_text` 的重试与 `reqwest` 都只管"能不能连上"
@@ -229,26 +354,125 @@ async fn read_cache_if<T>(file: &Path, accept: impl Fn(Duration) -> bool) -> Res
 where
     T: serde::de::DeserializeOwned,
 {
-    let meta = match tokio::fs::metadata(file).await {
-        Ok(m) => m,
-        Err(_) => return Ok(None),
+    let Some((v, age)) = read_cache_with_age::<T>(file).await else {
+        return Ok(None);
     };
+    if accept(age) {
+        Ok(Some(v))
+    } else {
+        Ok(None)
+    }
+}
+
+/// 读缓存并**把年龄一起带回来**（过期的也读）—— "先返回缓存、后台刷新"要用它。
+async fn read_cache_with_age<T>(file: &Path) -> Option<(T, Duration)>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let meta = tokio::fs::metadata(file).await.ok()?;
     let age = meta
         .modified()
         .ok()
         .and_then(|m| SystemTime::now().duration_since(m).ok())
         .unwrap_or(Duration::MAX);
-    if !accept(age) {
-        return Ok(None);
+    let bytes = tokio::fs::read(file).await.ok()?;
+    let v = serde_json::from_slice(&bytes).ok()?;
+    Some((v, age))
+}
+
+/* ====================== 「先返回缓存、后台刷新」（ADR-008） ====================== */
+
+/// 一份缓存的新鲜度 —— **纯函数**，所以每条规矩都能用字面量单测。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Freshness {
+    /// 没有缓存文件
+    Missing,
+    /// TTL 之内
+    Fresh,
+    /// 有缓存但过期了
+    Stale,
+}
+
+/// 按年龄与 TTL 判新鲜度。
+///
+/// ★ 为什么把它抽成一个函数：这是"要不要走网络"的唯一判据，
+///   而它的三种结果对应三种**完全不同的行为**（直接用 / 先给旧的再偷偷刷新 / 只能等）。
+///   写成一个 `if` 散在三处，就一定会有一处判反（这个仓库的老毛病）。
+pub fn freshness_of(age: Option<Duration>, ttl: Duration) -> Freshness {
+    match age {
+        None => Freshness::Missing,
+        Some(a) if a < ttl => Freshness::Fresh,
+        Some(_) => Freshness::Stale,
     }
-    let bytes = match tokio::fs::read(file).await {
-        Ok(b) => b,
-        Err(_) => return Ok(None),
-    };
-    match serde_json::from_slice(&bytes) {
-        Ok(v) => Ok(Some(v)),
-        Err(_) => Ok(None),
+}
+
+/// 正在后台刷新的 key（**同一个 key 只允许一个**在飞）。
+///
+/// ★ 为什么要有它：冷启动时版本清单可能被**好几个地方同时要**
+///   （下载页、实例设置、关于页…）。没有这层去重的话，一份 300 KB 的清单
+///   会被同时拉四五遍 —— 在国内网络下这几条连接互相饿死，
+///   最后每一遍都变慢（实测过同一现象：并行 5 个请求让 4.5 秒的查询超 30 秒）。
+static REFRESHING: OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+
+fn refreshing_set() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    REFRESHING.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// 某个 key 现在是不是正在后台刷新（探针与单测要看这一条）
+pub fn is_refreshing(key: &str) -> bool {
+    refreshing_set()
+        .lock()
+        .map(|s| s.contains(key))
+        .unwrap_or(false)
+}
+
+/// 后台把数据刷新好之后通知谁（lib.rs 里接上 Tauri 事件）。
+///
+/// ★ 为什么必须有这条通知：ADR-008 的原话是"先返回缓存、**后台刷新、增量更新**"。
+///   只做前两半的话，界面拿着旧数据一直显示到用户手动刷新 ——
+///   那与"不刷新"在观感上没有区别（用户不会知道数据已经新了）。
+static REFRESH_SINK: OnceLock<Box<dyn Fn(&str) + Send + Sync>> = OnceLock::new();
+
+/// 应用启动时设置（lib.rs 的 run() 里传一个发事件的闭包）。
+pub fn set_refresh_sink(f: impl Fn(&str) + Send + Sync + 'static) {
+    let _ = REFRESH_SINK.set(Box::new(f));
+}
+
+/// 后台刷新某个缓存 key：拉一次、写盘、通知。
+///
+/// 失败**不报错给界面**（用户手上已经有一份能用的旧数据了）；只写日志。
+fn spawn_background_refresh<T, F>(key: String, cache_file: PathBuf, fetch: F)
+where
+    T: serde::Serialize + Send + 'static,
+    F: std::future::Future<Output = Result<T>> + Send + 'static,
+{
+    {
+        let Ok(mut set) = refreshing_set().lock() else {
+            return;
+        };
+        if !set.insert(key.clone()) {
+            // 已经有一个在飞 —— 不再开一个（见 `REFRESHING` 的说明）
+            return;
+        }
     }
+    tokio::spawn(async move {
+        let outcome = fetch.await;
+        match outcome {
+            Ok(v) => {
+                if let Ok(bytes) = serde_json::to_vec(&v) {
+                    let _ = tokio::fs::write(&cache_file, bytes).await;
+                }
+                say!("[IEML/meta] 后台刷新完成：{key}（界面会自己更新）");
+                if let Some(sink) = REFRESH_SINK.get() {
+                    sink(&key);
+                }
+            }
+            Err(e) => say!("[IEML/meta] 后台刷新 {key} 失败（继续用旧缓存）：{e}"),
+        }
+        if let Ok(mut set) = refreshing_set().lock() {
+            set.remove(&key);
+        }
+    });
 }
 
 /// 拉 maven-metadata.xml 并解析版本列表，带缓存（缓存解析后的 Vec<String>）。
@@ -457,8 +681,41 @@ pub async fn fetch_manifest(source: Source) -> Result<VersionManifest> {
             .map_err(|e| NetError::Other(format!("解析版本清单失败：{e}")));
     };
     let cache_file = dir.join(&key);
-    if let Ok(Some(v)) = read_cache_if::<VersionManifest>(&cache_file, |age| age < META_TTL).await {
-        return Ok(v);
+    /*
+     * ★★ ADR-008 的「先返回缓存、后台刷新、增量更新」—— 2026-09-28（0.18.0）落地。
+     *
+     *   以前的行为：TTL 之内直接用缓存，**过期了就干等网络**。
+     *   而 ADR 写这条的理由正是"冷启动等 Mojang 元数据要 3–10 秒，
+     *   与「≤500ms 可交互」冲突" —— 30 分钟的 TTL 一过，那 3–10 秒照样要等。
+     *
+     *   现在：过期但有缓存 ⇒ **立刻把旧的给界面**，同时在后台拉一份新的；
+     *   拉到了写盘并发 `meta-refreshed` 事件，界面自己重新取一次（增量更新）。
+     *   ★ 只有"过期的缓存"走这条路；**没有缓存**时照旧同步等（那时没有别的东西可给）。
+     */
+    match read_cache_with_age::<VersionManifest>(&cache_file).await {
+        Some((v, age)) => match freshness_of(Some(age), META_TTL) {
+            Freshness::Fresh => return Ok(v),
+            Freshness::Stale => {
+                say!(
+                    "[IEML/meta] 版本清单缓存已过期（{:.0} 分钟），先用旧的顶上、后台刷新",
+                    age.as_secs_f64() / 60.0
+                );
+                let url2 = url.clone();
+                let src2 = source;
+                spawn_background_refresh::<VersionManifest, _>(
+                    key.clone(),
+                    cache_file.clone(),
+                    async move {
+                        let text = get_text_via(&url2, src2).await?;
+                        serde_json::from_str::<VersionManifest>(&text)
+                            .map_err(|e| NetError::Other(format!("解析版本清单失败：{e}")))
+                    },
+                );
+                return Ok(v);
+            }
+            Freshness::Missing => {}
+        },
+        None => {}
     }
     match get_text_via(&url, source).await {
         Ok(text) => {
