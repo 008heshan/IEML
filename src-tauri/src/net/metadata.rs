@@ -739,6 +739,166 @@ pub async fn fetch_manifest(source: Source) -> Result<VersionManifest> {
 
 /* ====================== 版本详情 ====================== */
 
+/*
+ * ★★ 2026-09-28（0.18.2）修的真 bug：**"只用 BMCLAPI 镜像"时，版本 JSON 仍然直连 Mojang。**
+ *
+ *   现场（用户截图）：选了「只用 BMCLAPI 镜像」，装 26.3 失败，错误是
+ *     `请求 https://piston-meta.mojang.com/v1/packages/bc098d11a72e96178801544a42… 超过 10 秒没有回应`
+ *
+ *   根因不是"镜像表漏了 piston-meta"（表里有），而是**这条路压根没查表**：
+ *   安装（`build_plan_input`）与"看版本详情"（`fetch_version_json`）都是
+ *   `net::get_json(&entry.url)` —— 直接照抄清单里那个地址。而实测：
+ *
+ *     BMCLAPI 的版本清单**保留 Mojang 的 url 字段**（`mc/game/version_manifest_v2.json` 是官方文件的镜像）：
+ *       https://piston-meta.mojang.com/v1/packages/bc098d111a72e9f6178801544a42099bdfbb0cf2/26.3.json
+ *
+ *   于是"清单从镜像来、版本 JSON 却打官方"—— 国内网络下拉不动，三次超时，
+ *   而用户明明选了只用镜像。**把镜像改写套到这个 URL 上也不行**：
+ *   `bmclapi2/v1/packages/…` 这个路径不存在（BMCLAPI 的按 id 取 JSON 接口是
+ *   `/version/<id>/json`）。所以这里按**源**给出候选，而不是照着 URL 改写。
+ */
+
+/// 版本 JSON 的候选地址（**第一个是最该用的**）。
+///
+/// 纯函数，所以"选了源到底会去哪个地址"可以用字面量单测钉住 ——
+/// 这条正是这次出事的地方。
+///
+/// ★★ 与下载层**同一个形状**（`mirror::candidate_urls` 也是
+///   `[首选源, 另一个兜底]`）：界面上那三档说的是**谁先试**，不是"另一条路不许用"。
+///   实测代价摆在眼前 —— 版本 JSON 只有官方一个地址时，官方不通就是
+///   三次超时（10+30+10 秒）之后彻底失败，而镜像明明是通的。
+pub fn version_json_candidates(mc_version: &str, entry_url: &str, source: Source) -> Vec<String> {
+    let mirror = crate::net::mirror::bmclapi_version_json(mc_version);
+    let entry = entry_url.trim().to_string();
+    let mut out: Vec<String> = Vec::new();
+    match source {
+        // 只用镜像 ⇒ 镜像在前（实测可用、且不经过 Mojang），官方只是兜底
+        Source::Bmclapi => {
+            out.push(mirror);
+            if !entry.is_empty() {
+                out.push(entry);
+            }
+        }
+        // 只用官方 ⇒ 官方在前，镜像兜底（顺序与下载层一致）
+        Source::Mojang => {
+            if !entry.is_empty() {
+                out.push(entry);
+            }
+            out.push(mirror);
+        }
+    }
+    out
+}
+
+/// 取某个版本的完整 JSON —— **按源走**（ADR-026）。
+///
+/// 依次试 `version_json_candidates`，第一个成功就返回；都失败时把**每一次**的原因
+/// 拼进错误里（用户要能看出"我选的源到底试了哪些地址"）。
+pub async fn version_json_by_source(
+    mc_version: &str,
+    entry_url: &str,
+    source: Source,
+) -> Result<VersionJson> {
+    let candidates = version_json_candidates(mc_version, entry_url, source);
+    if candidates.is_empty() {
+        return Err(NetError::Other(format!(
+            "版本 {mc_version} 没有任何可用的 JSON 地址（清单里也没给）"
+        )));
+    }
+    let mut tried: Vec<String> = Vec::new();
+    for (i, url) in candidates.iter().enumerate() {
+        match crate::net::get_json::<VersionJson>(url).await {
+            Ok(v) => {
+                if i > 0 {
+                    say!("[IEML/meta] {mc_version} 的版本 JSON：前一个地址不行，改用 {url}");
+                }
+                return Ok(v);
+            }
+            Err(e) => {
+                say!("[IEML/meta] 取 {mc_version} 的版本 JSON 失败（{url}）：{e}");
+                tried.push(format!("{url}：{e}"));
+            }
+        }
+    }
+    Err(NetError::Other(format!(
+        "版本 {mc_version} 的 JSON 取不到。试过 {} 个地址：{}",
+        tried.len(),
+        tried.join("；")
+    )))
+}
+
+#[cfg(test)]
+mod version_json_source_tests {
+    use super::*;
+
+    /// ★★ 实测过的那个地址（用户截图里失败的就是它）：
+    ///   BMCLAPI 的版本清单**保留 Mojang 的 url 字段**。
+    const REAL_ENTRY_URL: &str =
+        "https://piston-meta.mojang.com/v1/packages/bc098d111a72e9f6178801544a42099bdfbb0cf2/26.3.json";
+
+    /// ★★ 这条就是这次的 bug：**只用镜像时，第一个候选必须是镜像地址**。
+    ///    以前 `build_plan_input` 直接 fetch 清单里的 url（上面那个 piston-meta），
+    ///    于是"只用镜像"照样打官方 —— 国内网络下三次超时，安装直接失败。
+    #[test]
+    fn mirror_first_when_source_is_bmclapi() {
+        let c = version_json_candidates("26.3", REAL_ENTRY_URL, Source::Bmclapi);
+        assert_eq!(
+            c.first().map(|s| s.as_str()),
+            Some("https://bmclapi2.bangbang93.com/version/26.3/json"),
+            "选了只用镜像 ⇒ 第一个候选必须是镜像的按 id 取 JSON 地址"
+        );
+        assert!(
+            !c[0].contains("mojang.com"),
+            "第一个候选里不许出现官方域名：{}",
+            c[0]
+        );
+        assert_eq!(
+            c.get(1).map(|s| s.as_str()),
+            Some(REAL_ENTRY_URL),
+            "官方地址留着当兜底（镜像没有这一版时还能装）"
+        );
+    }
+
+    /// 只用官方 ⇒ 官方在前、**镜像兜底**（与下载层 `candidate_urls` 同一形状）
+    #[test]
+    fn official_first_when_source_is_mojang() {
+        let c = version_json_candidates("26.3", REAL_ENTRY_URL, Source::Mojang);
+        assert_eq!(
+            c.first().map(|s| s.as_str()),
+            Some(REAL_ENTRY_URL),
+            "选了官方 ⇒ 第一个候选是清单给的那个"
+        );
+        assert_eq!(
+            c.get(1).map(|s| s.as_str()),
+            Some("https://bmclapi2.bangbang93.com/version/26.3/json"),
+            "官方不通时要有镜像兜底 —— 只有官方一个地址的话，不通就是三次超时后彻底失败"
+        );
+    }
+
+    /// 清单没给地址（手写的/残缺清单）时也要有一个候选，不能返回空
+    #[test]
+    fn empty_entry_url_still_yields_the_mirror_address() {
+        let c = version_json_candidates("1.12.2", "   ", Source::Bmclapi);
+        assert_eq!(c.len(), 1, "官方地址是空的 ⇒ 只剩镜像那一个：{c:?}");
+        assert!(c[0].contains("/version/1.12.2/json"));
+        // 官方源 + 空地址 ⇒ 仍然有镜像那一个候选
+        let o = version_json_candidates("1.12.2", "", Source::Mojang);
+        assert_eq!(o.len(), 1);
+        assert!(o[0].contains("bmclapi2.bangbang93.com"), "{o:?}");
+    }
+
+    /// ★ 反向判据：镜像地址里**不许**出现 piston-meta / mojang（这条能红：
+    ///   谁把 `bmclapi_version_json` 改回官方域名，它立刻报出来）
+    #[test]
+    fn the_mirror_address_is_never_a_mojang_one() {
+        for v in ["1.20.1", "26.3", "rd-132211"] {
+            let url = crate::net::mirror::bmclapi_version_json(v);
+            assert!(url.starts_with("https://bmclapi2.bangbang93.com/"), "{url}");
+            assert!(!url.contains("mojang"), "{url}");
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VersionJson {

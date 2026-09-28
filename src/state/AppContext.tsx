@@ -154,7 +154,12 @@ function sanitizePrefs(raw: unknown): Partial<AppState['prefs']> {
   };
 
   str('globalIsolation', ['isolated', 'shared']);
-  str('downloadSource', ['bmclapi', 'mojang']);
+  /*
+   * ★ 2026-09-28（0.18.2）：白名单里原来少了 `'auto'` —— 而「自动」正是**默认值**
+   *   （设置页三个选项：自动 / 只用 Mojang / 只用 BMCLAPI）。少了它的后果是
+   *   "用户选了自动，读回来时被丢掉"，只是恰好与默认值相同才没露出来。
+   */
+  str('downloadSource', ['auto', 'bmclapi', 'mojang']);
   str('modSource', ['modrinth', 'both']);
   num('globalMemoryMb', 512, 262144);
   num('concurrentDownloads', 1, 512);

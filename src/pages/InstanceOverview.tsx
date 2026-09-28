@@ -456,7 +456,13 @@ export function InstanceOverview() {
                   }),
                 );
                 try {
-                  const r = await api.pack.applyUpdate({ slug: inst.config.slug, versionId: updateVerdict.version_id!, taskId });
+                  const r = await api.pack.applyUpdate({
+                    slug: inst.config.slug,
+                    versionId: updateVerdict.version_id!,
+                    taskId,
+                    // ★ 跟设置里的「下载源」走（0.18.2：以前这一条写死镜像）
+                    source: state.prefs.downloadSource,
+                  });
                   window.dispatchEvent(
                     new CustomEvent('ieml:task-patch', {
                       detail: { id: taskId, patch: { status: 'done', percent: 100 } },
