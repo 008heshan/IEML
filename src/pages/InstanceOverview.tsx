@@ -11,7 +11,7 @@
  * ★ 这里不放解释性长句。以前的四张卡每张都写两三行"为什么"，占掉半屏，
  *   用户要的按钮反而被挤到卡片右边；现在按钮自己在动作条上。
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../state/AppContext';
 import { Button, Note } from '../ui';
 import { useConfirm } from '../ui/confirm';
@@ -66,8 +66,25 @@ export function InstanceOverview() {
   const { api } = useRealApi();
   /** 隔离判定（ADR-005）：后端算好的结论（读不到时 null → 只说模式，不宣称结果） */
   const iso = inst ? state.isolation[inst.config.slug] ?? null : null;
+  /**
+   * ★★ 整合包安装记录（ADR-025）：这个版本是不是从整合包装的。
+   * 读不到（不是整合包 / 记录没有）就是 null —— 界面显示一个破折号，不编。
+   */
+  const [pack, setPack] = useState<{ name: string; version: string; file_count: number } | null>(null);
+  useEffect(() => {
+    if (!api || !inst) return;
+    let alive = true;
+    void api.pack.info(inst.config.slug).then((p) => {
+      if (alive) setPack(p);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [api, inst]);
   /** 检查 / 补齐共用一个忙碌位：它们是同一件事的两步，界面上也只有一个按钮 */
   const [busy, setBusy] = useState(false);
+  /** ★ 检查整合包完整性时用它显示忙碌态（ADR-025） */
+  const [verifying, setVerifying] = useState(false);
   const [verifyResult, setVerifyResult] = useState<{ ok: boolean; text: string } | null>(null);
 
   const modsBytes = useMemo(
@@ -319,6 +336,40 @@ export function InstanceOverview() {
         <Button size="sm" variant="ghost" onClick={() => openExportModpack(inst.config.slug)}>
           <IconDownload /> 导出为整合包
         </Button>
+        {/*
+          ★★ 2026-09-28（ADR-025）：**检查整合包完整性**。
+            装完发现少了几个 Mod 时，用户在这里能看见"缺哪些"，而不是进游戏才知道。
+            没有安装记录（不是整合包装的）时**不显示这个按钮** —— 摆一个点了没用的
+            按钮比不摆更糟。
+        */}
+        {pack ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            loading={verifying}
+            onClick={() => {
+              if (!api || !inst) return;
+              setVerifying(true);
+              void api.pack
+                .verify(inst.config.slug, false)
+                .then((r) => {
+                  toast(
+                    r.complete ? 'ok' : 'warning',
+                    r.summary,
+                    r.missing.length > 0
+                      ? `缺的文件：${r.missing.slice(0, 5).join('、')}${
+                          r.missing.length > 5 ? '…' : ''
+                        }`
+                      : undefined,
+                  );
+                })
+                .catch((e) => toast('err', '检查失败', e instanceof Error ? e.message : String(e)))
+                .finally(() => setVerifying(false));
+            }}
+          >
+            检查整合包完整性
+          </Button>
+        ) : null}
       </div>
 
       {verifyResult ? (
@@ -360,6 +411,18 @@ export function InstanceOverview() {
             ) : (
               <span style={{ color: 'var(--warning)' }}>未找到</span>
             )}
+          </span>
+          <span />
+        </div>
+        <div className="fact">
+          <span className="fact-k">整合包</span>
+          <span className="fact-v">
+            {/*
+              ★★ 2026-09-28（ADR-025）：这个版本是不是从整合包装出来的、装的哪个版本。
+                记录在 `<实例>/pack-record.json`（**不在游戏目录**，见 domain::pack_record）。
+                没有记录就是"不是整合包装的" —— 如实显示一个破折号，不编。
+            */}
+            {pack ? `${pack.name} ${pack.version}` : '—'}
           </span>
           <span />
         </div>

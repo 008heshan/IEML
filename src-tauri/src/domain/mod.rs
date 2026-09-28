@@ -21,6 +21,8 @@ pub mod memory;
 /// ★ 导出整合包时**哪些文件绝不能带上**（ADR-024：两张黑名单 + 登录凭据红线）
 pub mod modpack_export;
 pub mod mods;
+/// ★ 整合包安装记录与"装全了没有"（ADR-025 的 Completion 阶段）—— 纯判定，不做下载
+pub mod pack_record;
 pub mod resources;
 pub mod types;
 pub mod validate;

@@ -516,6 +516,10 @@ pub fn run() {    /*
             /* ★★ 导出整合包（ADR-024：两张黑名单 + 登录凭据红线） */
             commands_real::scan_modpack_export,
             commands_real::export_modpack,
+            /* ★★ 整合包完整性（ADR-025 的 Completion 阶段：校验 + 补齐 + 记录） */
+            commands_real::pack_info,
+            commands_real::verify_pack_install,
+            commands_real::repair_pack_install,
             /* -------- 杂项 -------- */
             commands_real::backend_capabilities,
         ])

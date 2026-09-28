@@ -117,6 +117,8 @@ fn paused_pack_result(
         paused: true,
         remaining_files,
         paused_stage: Some(stage.to_string()),
+        // ★ 暂停/提前返回都不写记录，也就没有校验结果（界面不该假装校验过）
+        completion: None,
     }
 }
 
@@ -7004,6 +7006,12 @@ pub async fn modpack_install(
     task_id: String,
     instance_name: String,
     source: String,
+    /*
+     * ★ 包自己的版本号（写进安装记录，ADR-025："记录来源与版本"）。
+     *   界面从 Modrinth 的文件接口拿到它；拿不到就传 None ——
+     *   记录里如实写"未知"，不编一个。
+     */
+    pack_version: Option<String>,
     concurrency: Option<usize>,
     /*
      * `size` = 包体大小（Modrinth 的文件接口给的就是这个数）——**只用来算进度百分比**。
@@ -7087,6 +7095,7 @@ pub async fn modpack_install(
         task_id,
         instance_name,
         source,
+        pack_version,
         concurrency,
         app,
         state,
@@ -7120,6 +7129,8 @@ pub async fn cf_modpack_install(
     task_id: String,
     instance_name: String,
     source: String,
+    // ★ 包版本（写进安装记录；CurseForge 那边能拿到的是文件名/版本串）
+    pack_version: Option<String>,
     concurrency: Option<usize>,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -7243,6 +7254,7 @@ pub async fn cf_modpack_install(
         task_id,
         instance_name,
         source,
+        pack_version,
         concurrency,
         app,
         state,
@@ -7391,6 +7403,8 @@ pub async fn pack_install_local(
     task_id: String,
     instance_name: String,
     source: String,
+    // ★ 包版本（写进安装记录；本地包的版本号由界面/清单给，给不出就"未知"）
+    pack_version: Option<String>,
     concurrency: Option<usize>,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -7497,6 +7511,7 @@ pub async fn pack_install_local(
         task_id,
         instance_name,
         source,
+        pack_version,
         concurrency,
         app,
         state,
@@ -7824,6 +7839,10 @@ async fn install_pack_plan(
     task_id: String,
     instance_name: String,
     source: String,
+    // ★ 包自己的版本号（写进安装记录，ADR-025："记录来源与版本"）。
+    //   三个来源各给各的：Modrinth 是 `versionId`、CF 是文件名/版本、本地包是用户填的；
+    //   谁都给不出时写"未知"——**不编**。
+    pack_version: Option<String>,
     concurrency: Option<usize>,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -7940,6 +7959,7 @@ async fn install_pack_plan(
             paused: true,
             remaining_files: installed.remaining_files,
             paused_stage: installed.paused_stage.clone(),
+            completion: None,
         });
     }
 
@@ -7967,6 +7987,7 @@ async fn install_pack_plan(
                     paused: true,
                     remaining_files: 0,
                     paused_stage: Some(stage),
+                    completion: None,
                 });
             }
             let ver = loader_version.clone().unwrap_or_default();
@@ -7996,6 +8017,26 @@ async fn install_pack_plan(
     let game_dir = state.paths().game_dir_of(&slug);
     // ★ 任务表与"下不了的条目"由**调用方**按各自的清单格式做好（`PackPlan`）
     let (tasks, unsafe_paths) = (plan.tasks, plan.skipped);
+    /*
+     * ★★ 安装记录要在**下载之前**就把清单抄下来：`tasks` 马上会被 move 进下载器，
+     *   而"清单里原本要哪些文件"正是 Completion 阶段要对照的东西。
+     */
+    let plan_skipped = unsafe_paths.clone();
+    let record_files: Vec<crate::domain::pack_record::PackFile> = tasks
+        .iter()
+        .map(|t| crate::domain::pack_record::PackFile {
+            path: t
+                .path
+                .strip_prefix(&game_dir)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|_| t.label.clone()),
+            url: t.url.clone(),
+            sha1: t.sha1.clone(),
+            size: t.size,
+        })
+        .collect();
+    // ★ 记录里的版本号：给不出就"未知"（**不编**）。成功路径与失败路径共用这一个值。
+    let pack_version_for_record = pack_version.unwrap_or_else(|| "未知".to_string());
     /*
      * ★★ 清单里指到游戏目录**外面**的路径必须**说出来**，不许静默丢掉。
      *
@@ -8075,9 +8116,32 @@ async fn install_pack_plan(
             .take(3)
             .map(|(n, e)| format!("{n}：{e}"))
             .collect();
+        /*
+         * ★★ **下载失败也要留下记录**（2026-09-28，探针逼出来的）。
+         *
+         *   ADR-025 要 Completion 阶段是为了"装不全时能补" —— 而第一版把记录写在
+         *   **全部成功之后**，于是"有文件没下下来"这条最需要它的路径上，
+         *   记录压根不存在，用户既看不到缺什么，也没法补齐。
+         *   ⇒ 现在：先落记录（含已下的那些），再如实报错。
+         */
+        let rec = build_pack_record(
+            &state.paths(),
+            &slug,
+            &pack_version_for_record,
+            &source,
+            &mc_version,
+            loader_kind.clone(),
+            loader_version.clone(),
+            plan_skipped.clone(),
+            record_files.clone(),
+        );
+        if let Err(e) = write_pack_record(&state.paths(), &slug, &rec) {
+            say!("[IEML/modpack] 写安装记录失败：{e}");
+        }
         drop_task(&task_id);
         return Err(format!(
-            "整合包有 {} 个文件下载失败（重试 {} 轮后仍失败）：{}",
+            "整合包有 {} 个文件下载失败（重试 {} 轮后仍失败）：{}\n\
+             （已经写下安装记录，可以在版本概览里点「检查整合包完整性」再补齐）",
             outcome.failed.len(),
             outcome.retry_rounds,
             sample.join("；")
@@ -8153,6 +8217,59 @@ async fn install_pack_plan(
     drop_task(&task_id);
     emit("完成", total_files, total_files, total_bytes, "");
 
+    // ---------- ⑥ ★★ Completion 阶段（ADR-025） ----------
+    /*
+     * 前五步是"按清单下载并安装"，这一步是"**校验 + 留下记录**"：
+     *   · 把清单里每个文件的路径 / 地址 / sha1 / 大小写成 `<实例>/pack-record.json`
+     *     —— 有了它，"补齐"不必依赖当初那个 `.mrpack` 还在（用户常常装完就删）；
+     *   · 立刻校验一遍并**如实报出缺了哪些**（`mod_files` 只统计"下过几个"，
+     *     而"盘上现在有几个"是另一回事：文件可能被用户删了、被杀软吃了）。
+     *
+     * ★ 记录写在**实例目录**，不是游戏目录：游戏目录那棵树正是整合包导出会走的，
+     *   放进去就得靠黑名单去挡；放在实例目录里它从结构上就进不了导出的包
+     *   （见 `domain::pack_record` 的模块说明）。
+     */
+    let record = build_pack_record(
+        &state.paths(),
+        &slug,
+        &pack_version_for_record,
+        &source,
+        &mc_version,
+        loader_kind.clone(),
+        loader_version.clone(),
+        plan_skipped.clone(),
+        record_files.clone(),
+    );
+    let completion = match write_pack_record(&state.paths(), &slug, &record) {
+        Ok(()) => {
+            // ★ 立刻校验一遍（不校验哈希：几百 MB 的包读一遍不值当；点"检查"时才做）
+            let report = record.verify(&game_dir, false);
+            if !report.complete {
+                say!("[IEML/modpack] 装完校验：{}", report.summary);
+            }
+            Some(report)
+        }
+        Err(e) => {
+            // 写不下记录不阻断安装 —— 但要说出来（用户以后"补齐"时要用它）
+            say!("[IEML/modpack] 写安装记录失败：{e}");
+            None
+        }
+    };
+    if let Some(r) = &completion {
+        let _ = app.emit(
+            "modpack-progress",
+            serde_json::json!({
+                "taskId": task_id,
+                "stage": format!("装完校验：{}", r.summary),
+                "finishedFiles": 1,
+                "totalFiles": 1,
+                "bytes": 0,
+                "currentFile": "",
+                "percent": 100,
+            }),
+        );
+    }
+
     Ok(ModpackInstallResult {
         mc_version: mc_version.clone(),
         loader_kind,
@@ -8165,6 +8282,8 @@ async fn install_pack_plan(
         paused: false,
         remaining_files: 0,
         paused_stage: None,
+        // ★ ADR-025 的 Completion 结果：盘上实际有几个文件（写不下记录时为 None）
+        completion,
     })
 }
 
@@ -8351,6 +8470,189 @@ pub struct ModpackInstallResult {
     pub remaining_files: usize,
     /// 暂停发生在哪一步（`paused = true` 时才有值）
     pub paused_stage: Option<String>,
+    /// ★★ **装完校验的结果**（ADR-025 的 Completion 阶段）。
+    ///
+    /// `mod_files` 说的是"下过几个"，这里说的是"**盘上现在有几个**" ——
+    /// 两者不是一回事（文件可能被杀软吃了、被用户删了、大小不对）。
+    /// 记录写不下来时为 `None`（那就只剩 `mod_files` 那个数，界面不该假装校验过）。
+    pub completion: Option<crate::domain::pack_record::VerifyReport>,
+}
+
+/* ====================== 整合包完整性（ADR-025 的 Completion 阶段） ====================== */
+
+/// 组装一份安装记录（**纯拼装**，不落盘）—— 成功路径与失败路径共用
+///
+/// ★ 为什么要抽出来：下载失败那条路**也要**留下记录（否则"装不全"时用户既看不到
+///   缺什么、也没法补齐 —— 而那正是 ADR-025 要解决的事）。
+#[allow(clippy::too_many_arguments)]
+fn build_pack_record(
+    paths: &crate::platform::AppPaths,
+    slug: &str,
+    version: &str,
+    source: &str,
+    mc_version: &str,
+    loader_kind: Option<String>,
+    loader_version: Option<String>,
+    skipped: Vec<String>,
+    files: Vec<crate::domain::pack_record::PackFile>,
+) -> crate::domain::pack_record::PackRecord {
+    crate::domain::pack_record::PackRecord {
+        schema: 1,
+        name: instance_display_name(paths, slug),
+        version: version.to_string(),
+        source: source.to_string(),
+        mc_version: mc_version.to_string(),
+        loader_kind,
+        loader_version,
+        installed_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        skipped,
+        files,
+    }
+}
+
+/// 把记录写到 `<实例>/pack-record.json`（**实例目录**，不是游戏目录 —— 见模块说明）
+fn write_pack_record(
+    paths: &crate::platform::AppPaths,
+    slug: &str,
+    record: &crate::domain::pack_record::PackRecord,
+) -> Result<(), String> {
+    let p = crate::domain::pack_record::PackRecord::path_for(&paths.instance_dir(slug));
+    let text = serde_json::to_string_pretty(record).map_err(|e| e.to_string())?;
+    std::fs::write(&p, text).map_err(|e| format!("{}：{e}", p.display()))?;
+    say!("[IEML/modpack] 已写下安装记录：{}", p.display());
+    Ok(())
+}
+
+/// 这个实例的整合包信息（没有记录时为 null）
+#[derive(serde::Serialize)]
+pub struct PackInfo {
+    /// 记录里写的：包名
+    pub name: String,
+    pub version: String,
+    /// `modrinth` / `curseforge` / `local`
+    pub source: String,
+    pub mc_version: String,
+    pub loader_kind: Option<String>,
+    pub loader_version: Option<String>,
+    pub installed_at: u64,
+    /// 清单里一共几个文件
+    pub file_count: u64,
+}
+
+/// 读这个实例的整合包记录（**没有记录 = 不是从整合包装的**，返回 None）
+fn read_pack_record(
+    paths: &crate::platform::AppPaths,
+    slug: &str,
+) -> Result<crate::domain::pack_record::PackRecord, String> {
+    let p = crate::domain::pack_record::PackRecord::path_for(&paths.instance_dir(slug));
+    let text = std::fs::read_to_string(&p)
+        .map_err(|e| format!("这个实例没有整合包安装记录（{}）：{e}", p.display()))?;
+    serde_json::from_str(&text).map_err(|e| format!("整合包记录读不了（{}）：{e}", p.display()))
+}
+
+/// 这个版本是不是从整合包装出来的（ADR-025 第 3 条：用于「是否为整合包」判定）
+#[tauri::command]
+pub fn pack_info(slug: String, state: State<'_, AppState>) -> Option<PackInfo> {
+    let paths = state.paths();
+    let r = read_pack_record(&paths, slug.trim()).ok()?;
+    Some(PackInfo {
+        name: r.name,
+        version: r.version,
+        source: r.source,
+        mc_version: r.mc_version,
+        loader_kind: r.loader_kind,
+        loader_version: r.loader_version,
+        installed_at: r.installed_at,
+        file_count: r.files.len() as u64,
+    })
+}
+
+/// ★★ **检查这个整合包装全了没有**（ADR-025 的 Completion 第 1 条）。
+///
+///   `check_hashes = true` 时逐文件算 SHA1（几百 MB 的包会花几秒）——
+///   默认只比"在不在、大小对不对"（那已经能抓住绝大多数情况：下载中断、
+///   被杀软删掉、磁盘满写了个半截）。
+#[tauri::command]
+pub fn verify_pack_install(
+    slug: String,
+    check_hashes: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<crate::domain::pack_record::VerifyReport, String> {
+    let paths = state.paths();
+    let slug = slug.trim().to_string();
+    let record = read_pack_record(&paths, &slug)?;
+    // ★ 校验的是"这个实例**实际使用**的游戏目录"（隔离与否由判定决定）
+    Ok(record.verify(&paths.game_dir_of(&slug), check_hashes.unwrap_or(false)))
+}
+
+/// 补齐结果
+#[derive(serde::Serialize)]
+pub struct RepairResult {
+    /// 补下来的（相对路径）
+    pub repaired: Vec<String>,
+    /// 补不下来的（相对路径 + 原因）——**必须逐条说**
+    pub failed: Vec<String>,
+    /// 清单里没给下载地址的（补不了，如实说）
+    pub no_source: Vec<String>,
+}
+
+/// ★★ **补齐缺失的文件**（ADR-025 的 Completion 第 2 条）。
+///
+///   "下载源已失效的给出警告而非静默失败" —— 所以这里逐条回报成功与失败，
+///   失败的带原因（`failed`），没地址的单独列（`no_source`）。
+#[tauri::command]
+pub async fn repair_pack_install(
+    slug: String,
+    state: State<'_, AppState>,
+) -> Result<RepairResult, String> {
+    let paths = state.paths();
+    let slug = slug.trim().to_string();
+    let record = read_pack_record(&paths, &slug)?;
+    let game = paths.game_dir_of(&slug);
+    // 先校验（不算哈希：补齐只需要知道"在不在"）
+    let report = record.verify(&game, false);
+    let mut repaired = Vec::new();
+    let mut failed = Vec::new();
+
+    let src = parse_source(""); // 自动：官方优先、失败换镜像（与安装时一致）
+    for path in report.repairable() {
+        let Some(f) = record.files.iter().find(|f| f.path == path) else {
+            continue;
+        };
+        let dest = game.join(f.path.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if let Some(parent) = dest.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let task = download::DownloadTask::new(
+            dest,
+            f.url.clone(),
+            f.sha1.clone(),
+            f.size,
+            f.path.clone(),
+        );
+        // ★ 取消令牌：补齐是一次性动作（用户中断整件事时它跟着取消）
+        let cancel = CancelToken::new();
+        match download::download_one(&task, src, &cancel).await {
+            Ok(_) => {
+                say!("[IEML/modpack] 补齐：{}", f.path);
+                repaired.push(f.path.clone());
+            }
+            Err(e) => {
+                // ★ 源失效**不静默**：逐条记下原因，交回界面
+                say!("[IEML/modpack] 补齐失败：{} —— {e}", f.path);
+                failed.push(format!("{}：{e}", f.path));
+            }
+        }
+    }
+
+    Ok(RepairResult {
+        repaired,
+        failed,
+        no_source: report.no_source,
+    })
 }
 
 /* ====================== 工具 ====================== */
