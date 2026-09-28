@@ -1390,6 +1390,15 @@ export const modpack = {
       size?: number;
       /** ★ 包版本：写进安装记录（ADR-025）；给不出就不传，记录里写"未知" */
       packVersion?: string;
+      /**
+       * ★★ 这个包在平台上的身份（ADR-025 第 4 条"用于后续更新"）。
+       *
+       * 界面**本来就知道**（列表里那条 `project_id` 与选中版本的 `id`）——
+       * 以前没往下传，于是装完之后再也认不出"这是哪个包"，
+       * 查更新只能靠包名猜（那是会把别的包装进来的做法）。
+       */
+      projectId?: string;
+      versionId?: string;
     },
     onProgress?: (e: ModpackProgressEvent) => void,
   ): Promise<ModpackInstallResult> => {
@@ -1409,6 +1418,8 @@ export const modpack = {
         source: opts.source ?? 'bmclapi',
         // ★ 包版本写进安装记录（ADR-025）：给不出就 null，记录里如实写"未知"
         packVersion: opts.packVersion ?? null,
+        projectId: opts.projectId ?? null,
+        versionId: opts.versionId ?? null,
         concurrency: opts.concurrency ?? null,
         size: opts.size ?? null,
       });
@@ -1858,6 +1869,35 @@ export interface PackInfo {
   loader_version: string | null;
   installed_at: number;
   file_count: number;
+  /**
+   * ★★ 这个包在平台上的身份（ADR-025 第 4 条）。
+   *
+   *   有了它才问得出"作者有没有发新版"：`.mrpack` 文件里**没有**自己的
+   *   project id，所以拖进来的包这两个字段是 `null` —— 那时查更新会说
+   *   "来源信息没记下来"，而不是编一个"已是最新"。
+   */
+  project_id: string | null;
+  version_id: string | null;
+}
+
+/** 问平台之后的结论（`pack_check_update` 的返回，与 Rust 侧一一对应） */
+export interface PackUpdateVerdict {
+  /** `up-to-date` / `newer` / `local-ahead` / `newer-mc` / `different` / `unknown` */
+  state: 'up-to-date' | 'newer' | 'local-ahead' | 'newer-mc' | 'different' | 'unknown';
+  /** ★ 一句人话（**后端算好的**，界面直接显示，不自己拼措辞） */
+  summary: string;
+  version?: string;
+  version_id?: string;
+  published?: string;
+  url?: string;
+  size?: number;
+  /** `newer-mc` 那条：作者换到哪个 MC 版本了 */
+  mc_version?: string;
+  /** `different` 那条：两边各是什么 */
+  ours?: string;
+  theirs?: string;
+  /** `unknown` 那条：为什么问不出来 */
+  reason?: string;
 }
 
 export interface PackVerifyReport {
@@ -1889,6 +1929,40 @@ export const pack = {
     call<PackVerifyReport>('verify_pack_install', { slug, checkHashes }),
   /** 补齐缺失的（源失效会逐条报失败，不静默） */
   repair: (slug: string) => call<PackRepairResult>('repair_pack_install', { slug }),
+  /**
+   * ★★ 问平台：这个整合包有没有新版本（ADR-025 第 4 条）。
+   *
+   *   这是 0.15.0 里那句"作者没有提供新版清单"缺的另一半 ——
+   *   以前那句话**没法验证**：我们根本不知道作者发没发新版。
+   */
+  checkUpdate: (slug: string) => call<PackUpdateVerdict>('pack_check_update', { slug }),
+  /**
+   * ★★ 原地升级到某个版本：走**与安装同一条路**，只是 slug 是已有那个实例。
+   *   于是"没变的文件跳过、包不要了的文件收进回收区、记录换成新版本"全都在
+   *   后端那一条路上发生（前端不许自己拼一套升级逻辑）。
+   */
+  applyUpdate: async (
+    opts: { slug: string; versionId: string; taskId: string; source?: string; concurrency?: number },
+    onProgress?: (e: ModpackProgressEvent) => void,
+  ): Promise<ModpackInstallResult> => {
+    let unlisten: UnlistenFn | null = null;
+    if (onProgress) {
+      unlisten = await listen<ModpackProgressEvent>('modpack-progress', (ev) => {
+        if (ev.payload.taskId === opts.taskId) onProgress(ev.payload);
+      });
+    }
+    try {
+      return await call<ModpackInstallResult>('pack_apply_update', {
+        slug: opts.slug,
+        versionId: opts.versionId,
+        taskId: opts.taskId,
+        source: opts.source ?? 'bmclapi',
+        concurrency: opts.concurrency ?? null,
+      });
+    } finally {
+      unlisten?.();
+    }
+  },
 };
 
 /** 拖进来一个**目录**：里面装成了哪些、跳过了哪些（各带理由） */export interface DroppedDirReport {
@@ -1954,6 +2028,29 @@ export interface ModpackInstallResult {
   remaining_files: number;
   /** 暂停发生在哪一步（`paused` 为 `true` 时才有值） */
   paused_stage: string | null;
+  /** ★★ 装完校验（ADR-025 Completion）；写不下记录时为 `null` */
+  completion?: PackVerifyReport | null;
+  /**
+   * ★★ **这一次是不是升级**（这个实例原先就装过整合包）。
+   *
+   *   `null` / 缺省 = 全新安装（没碰任何已有文件）；
+   *   有值 = 按新清单对齐过，`summary` 里说清"新增/更新/移除各几个、移除的放哪了"。
+   */
+  update?: PackUpdateApplied | null;
+}
+
+/** 一次"整包升级"实际做了什么（与 Rust 的 `AppliedUpdate` 一一对应） */
+export interface PackUpdateApplied {
+  add: number;
+  replace: number;
+  remove: number;
+  keep: number;
+  /** 被移除的文件放去了哪里（没移除任何东西时为 null） */
+  trash_dir: string | null;
+  /** 移不动的那些（逐条列出来，不假装成功） */
+  removed_failed: string[];
+  /** ★ 一句人话（后端算好的） */
+  summary: string;
 }
 
 /* ====================== Backend 接口实现 ====================== */

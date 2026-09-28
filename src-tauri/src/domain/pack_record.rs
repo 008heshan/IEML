@@ -69,6 +69,22 @@ pub struct PackRecord {
     /// 清单里指向游戏目录之外、或下不了的条目（安装时如实记下）
     #[serde(default)]
     pub skipped: Vec<String>,
+    /// ★★ **这个包在平台上的身份**（ADR-025 第 4 条："记录来源与版本，用于后续更新"）。
+    ///
+    ///   Modrinth 是 `project_id`（slug 或 id 都行），CurseForge 是数字 id；
+    ///   版本是平台那边的版本 id（Modrinth 的 `version.id`）。
+    ///
+    ///   ★ 为什么必须记下来才能"查有没有新版"：`.mrpack` 文件里**没有**自己的
+    ///     project id（清单里只有 `name` / `versionId` / 文件列表）——
+    ///     不记的话，装完之后就再也认不出"这是哪个包"了，只能靠包名猜。
+    ///   ★ **拖进来的包给不出身份**（文件里没有），那就如实留空 ⇒ 查更新时
+    ///     会说"这个包的来源信息没记下来"，而不是编一个"已是最新"。
+    ///   ★ 两个字段都是 `Option` + `serde(default)`：老记录（0.14–0.16 写的）
+    ///     没有它们，读回来是 `None` —— **不需要升 schema**，老记录照样能用。
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub version_id: Option<String>,
     pub files: Vec<PackFile>,
 }
 
@@ -227,8 +243,30 @@ mod tests {
             loader_version: Some("0.15.0".into()),
             installed_at: 0,
             skipped: vec![],
+            project_id: Some("test-pack".into()),
+            version_id: Some("ver-1".into()),
             files,
         }
+    }
+
+    /// ★ 老记录（0.14–0.16 写的，没有 `project_id` / `version_id`）读回来必须还能用。
+    ///   这两个字段是**后加的**，加的时候不许把用户的旧记录读崩 ——
+    ///   那等于"升级一次启动器，整合包实例全变成不是整合包了"。
+    #[test]
+    fn old_records_without_identity_still_load() {
+        let old = r#"{
+          "schema": 1,
+          "name": "老记录包",
+          "version": "2.0.0",
+          "source": "curseforge",
+          "mc_version": "1.12.2",
+          "installed_at": 1,
+          "files": [{"path":"mods/a.jar","url":"https://e.invalid/a.jar","sha1":"","size":3}]
+        }"#;
+        let r: PackRecord = serde_json::from_str(old).expect("老记录必须读得回来");
+        assert_eq!(r.project_id, None, "没写身份 ⇒ None（不是空串、更不是编一个）");
+        assert_eq!(r.version_id, None);
+        assert_eq!(r.files.len(), 1);
     }
 
     fn file(path: &str, size: u64) -> PackFile {

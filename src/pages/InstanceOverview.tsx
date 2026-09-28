@@ -30,6 +30,8 @@ import {
   IconTrash,
 } from '../ui/Icons';
 import { useRealApi } from '../hooks/useRealApi';
+// ★ 整合包身份与"有没有新版"（ADR-025 第 4 条）的类型 —— 只借类型，不自己拼结论
+import type { PackInfo, PackUpdateVerdict } from '../bridge/tauri';
 // ★ 导出为整合包（ADR-024）：弹窗在 AppShell 里挂载，这里只负责打开它
 import { openExportModpack } from '../components/ExportModpackModal';
 import { installGame } from '../flows/install';
@@ -70,12 +72,16 @@ export function InstanceOverview() {
    * ★★ 整合包安装记录（ADR-025）：这个版本是不是从整合包装的。
    * 读不到（不是整合包 / 记录没有）就是 null —— 界面显示一个破折号，不编。
    */
-  const [pack, setPack] = useState<{ name: string; version: string; file_count: number } | null>(null);
+  const [pack, setPack] = useState<PackInfo | null>(null);
   useEffect(() => {
     if (!api || !inst) return;
     let alive = true;
     void api.pack.info(inst.config.slug).then((p) => {
-      if (alive) setPack(p);
+      if (alive) {
+        setPack(p);
+        // 换了实例就把上一个实例的结论清掉（结论是"这个实例的"，不是全局的）
+        setUpdateVerdict(null);
+      }
     });
     return () => {
       alive = false;
@@ -86,6 +92,16 @@ export function InstanceOverview() {
   /** ★ 检查整合包完整性时用它显示忙碌态（ADR-025） */
   const [verifying, setVerifying] = useState(false);
   const [verifyResult, setVerifyResult] = useState<{ ok: boolean; text: string } | null>(null);
+  /**
+   * ★★ 「作者有没有发新版」（ADR-025 第 4 条）。
+   *
+   *   `null` = 还没查过（**不显示任何结论** —— 没查就说"已是最新"是编的）；
+   *   查过之后原样显示后端给的 `summary`，按钮只在真能原地升级时才出现。
+   */
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [updateVerdict, setUpdateVerdict] = useState<PackUpdateVerdict | null>(null);
+  /** 正在原地升级（升级过程与安装共用一套进度事件，界面上只显示忙碌态） */
+  const [upgrading, setUpgrading] = useState(false);
 
   const modsBytes = useMemo(
     () => state.mods.entries.reduce((s, e) => s + e.bytes, 0),
@@ -370,7 +386,126 @@ export function InstanceOverview() {
             检查整合包完整性
           </Button>
         ) : null}
+        {/*
+          ★★ 2026-09-28（0.17.0，ADR-025 第 4 条）：**作者有没有发新版**。
+
+            这是 0.15.0 里那句"作者没有提供新版清单"缺的另一半：以前那句话
+            **没法验证**（我们根本不知道作者发没发新版）。
+            结论由后端给（`summary` 一个字都不在界面里拼），按钮只在
+            **真能原地升级**时才出现 —— 换了 MC 版本的新版只给一句解释，
+            不给按钮（那等于换一个包，见 `domain::pack_update`）。
+        */}
+        {pack ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            loading={checkingUpdate}
+            onClick={() => {
+              if (!api || !inst) return;
+              setCheckingUpdate(true);
+              void api.pack
+                .checkUpdate(inst.config.slug)
+                .then((v) => setUpdateVerdict(v))
+                .catch((e) =>
+                  toast('err', '查不到新版本', e instanceof Error ? e.message : String(e)),
+                )
+                .finally(() => setCheckingUpdate(false));
+            }}
+          >
+            检查整合包更新
+          </Button>
+        ) : null}
+        {/*
+          ★ 升级按钮只在"有能原地升的版本"时出现（`upgrade_target` 由后端判）。
+            点了先问一句（要下多少、会动什么），再走 `pack_apply_update`。
+        */}
+        {pack && updateVerdict?.version_id && updateVerdict.version ? (
+          <Button
+            size="sm"
+            variant="primary"
+            loading={upgrading}
+            onClick={() => {
+              if (!api || !inst || !updateVerdict.version_id) return;
+              const target = updateVerdict.version!;
+              void (async () => {
+                const ja = await confirm({
+                  title: `升级到 ${target}？`,
+                  message:
+                    `${updateVerdict.summary}\n\n` +
+                    '升级会：按新清单补齐/更新文件；作者删掉的文件移进回收区（可恢复）；' +
+                    '你的存档、设置、自己装的 Mod 都不动。',
+                  confirmText: '开始升级',
+                });
+                if (!ja) return;
+                setUpgrading(true);
+                const taskId = `modpack-${Date.now().toString(36)}`;
+                window.dispatchEvent(
+                  new CustomEvent('ieml:task-add', {
+                    detail: {
+                      id: taskId,
+                      kind: 'install',
+                      title: `升级整合包 ${pack.name} → ${target}`,
+                      detail: '准备中',
+                      status: 'running',
+                      percent: 0,
+                      finishedFiles: 0,
+                      bytesPerSecond: 0,
+                      currentFile: '',
+                      etaSeconds: 0,
+                    },
+                  }),
+                );
+                try {
+                  const r = await api.pack.applyUpdate({ slug: inst.config.slug, versionId: updateVerdict.version_id!, taskId });
+                  window.dispatchEvent(
+                    new CustomEvent('ieml:task-patch', {
+                      detail: { id: taskId, patch: { status: 'done', percent: 100 } },
+                    }),
+                  );
+                  toast(
+                    'ok',
+                    `已升级到 ${target}`,
+                    r.update?.summary ?? r.completion?.summary,
+                  );
+                  /*
+                   * ★ 升级完必须**重读**记录：界面上的包版本、完整性结论
+                   *   都跟着变了（不重读就会显示旧版本号 —— 那是假信息）。
+                   */
+                  setPack(await api.pack.info(inst.config.slug));
+                  setUpdateVerdict(await api.pack.checkUpdate(inst.config.slug));
+                } catch (e) {
+                  const msg = e instanceof Error ? e.message : String(e);
+                  window.dispatchEvent(
+                    new CustomEvent('ieml:task-patch', {
+                      detail: { id: taskId, patch: { status: 'failed', error: msg } },
+                    }),
+                  );
+                  toast('err', '升级失败', msg);
+                } finally {
+                  setUpgrading(false);
+                }
+              })();
+            }}
+          >
+            升级到 {updateVerdict.version}
+          </Button>
+        ) : null}
       </div>
+
+      {updateVerdict ? (
+        <Note
+          tone={
+            updateVerdict.state === 'newer'
+              ? 'warning'
+              : updateVerdict.state === 'up-to-date'
+                ? 'success'
+                : 'info'
+          }
+          icon={updateVerdict.state === 'newer' ? <IconAlert /> : <IconRefresh />}
+        >
+          {updateVerdict.summary}
+        </Note>
+      ) : null}
 
       {verifyResult ? (
         <Note

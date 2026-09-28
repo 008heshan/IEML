@@ -688,7 +688,7 @@ function ModpackTab({
        */
       const first = version ?? pickedVersion ?? (await api.modrinth.versions(pack.id))[0];
       const file = first?.files.find((f) => f.primary) ?? first?.files[0];
-      if (!file) throw new Error('这个整合包没有可下载的文件');
+      if (!file || !first) throw new Error('这个整合包没有可下载的文件');
 
       /*
        * CF 那份清单在后端读（我们这边只有"文件 id + 文件名 + 可能为空的地址"）。
@@ -787,6 +787,14 @@ function ModpackTab({
                  *   （那一段会如实停在 0%，看起来像卡住）。Modrinth 的文件信息里有 size。
                  */
                 size: file.size,
+                /*
+                 * ★★ 把**包的身份**一起交给后端（ADR-025 第 4 条）：
+                 *   `pack.id`（项目）+ `first.id`（版本）—— 写进安装记录之后，
+                 *   以后才问得出"作者有没有发新版"。
+                 *   `.mrpack` 文件里**没有** project id，不在这里传就永远丢了。
+                 */
+                projectId: pack.id,
+                versionId: first.id,
               },
               (e) => {
                 patch({

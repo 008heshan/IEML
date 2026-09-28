@@ -119,6 +119,8 @@ fn paused_pack_result(
         paused_stage: Some(stage.to_string()),
         // ★ 暂停/提前返回都不写记录，也就没有校验结果（界面不该假装校验过）
         completion: None,
+        // ★ 同理：没走到"对齐"那一步，就不该报一个空的升级结果
+        update: None,
     }
 }
 
@@ -7012,6 +7014,14 @@ pub async fn modpack_install(
      *   记录里如实写"未知"，不编一个。
      */
     pack_version: Option<String>,
+    /*
+     * ★★ 这个包在 Modrinth 上的身份（ADR-025 第 4 条）。界面**本来就知道**
+     *   （列表里那条 `project_id` 与选中版本的 `id`），以前没往下传 ——
+     *   于是记录里只有包名与版本号，装完之后再也认不出"这是哪个包"，
+     *   查更新只能靠包名猜（那是会把别的包装进来的做法）。
+     */
+    project_id: Option<String>,
+    version_id: Option<String>,
     concurrency: Option<usize>,
     /*
      * `size` = 包体大小（Modrinth 的文件接口给的就是这个数）——**只用来算进度百分比**。
@@ -7096,6 +7106,8 @@ pub async fn modpack_install(
         instance_name,
         source,
         pack_version,
+        project_id,
+        version_id,
         concurrency,
         app,
         state,
@@ -7131,6 +7143,11 @@ pub async fn cf_modpack_install(
     source: String,
     // ★ 包版本（写进安装记录；CurseForge 那边能拿到的是文件名/版本串）
     pack_version: Option<String>,
+    /*
+     * ★ CF 这条路的身份**一直都在手上**（`project_id` / `file_id` 就是参数），
+     *   以前只用来下包，没记进安装记录 —— 于是"以后查有没有新版"无从谈起。
+     *   现在一并写进记录（ADR-025 第 4 条）。
+     */
     concurrency: Option<usize>,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -7255,6 +7272,9 @@ pub async fn cf_modpack_install(
         instance_name,
         source,
         pack_version,
+        // ★ CF 的身份一直都在手上：项目 id + 文件 id（写进记录，以后查新版用）
+        Some(project_id.to_string()),
+        Some(file_id.to_string()),
         concurrency,
         app,
         state,
@@ -7405,6 +7425,12 @@ pub async fn pack_install_local(
     source: String,
     // ★ 包版本（写进安装记录；本地包的版本号由界面/清单给，给不出就"未知"）
     pack_version: Option<String>,
+    /*
+     * ★ 包在平台上的身份（可选）：只有"调用方知道自己在装哪个包"时才给得出。
+     *   拖动安装给不出（`.mrpack` 里没有 project id）⇒ None，如实留空。
+     */
+    project_id: Option<String>,
+    version_id: Option<String>,
     concurrency: Option<usize>,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -7512,6 +7538,14 @@ pub async fn pack_install_local(
         instance_name,
         source,
         pack_version,
+        /*
+         * ★ 本地包**给不出身份**（`.mrpack` 里没有 project id）——
+         *   除非调用方知道（例如"整包升级"把新版下到本地再走这条路）。
+         *   给不出就传 None，记录里如实留空：查更新时我们宁可说"不知道"，
+         *   也不拿包名去搜一个看起来像的（搜错了会把别人的包装进来）。
+         */
+        project_id,
+        version_id,
         concurrency,
         app,
         state,
@@ -7843,6 +7877,13 @@ async fn install_pack_plan(
     //   三个来源各给各的：Modrinth 是 `versionId`、CF 是文件名/版本、本地包是用户填的；
     //   谁都给不出时写"未知"——**不编**。
     pack_version: Option<String>,
+    /*
+     * ★★ 包在平台上的身份（ADR-025 第 4 条："用于后续更新"）。
+     *   在线安装的两条路都知道自己在装哪个包的哪个版本；拖进来的本地包给不出
+     *   （`.mrpack` 里没有 project id）⇒ 传 None，记录里如实留空。
+     */
+    project_id: Option<String>,
+    version_id: Option<String>,
     concurrency: Option<usize>,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -7960,6 +8001,7 @@ async fn install_pack_plan(
             remaining_files: installed.remaining_files,
             paused_stage: installed.paused_stage.clone(),
             completion: None,
+            update: None,
         });
     }
 
@@ -7988,6 +8030,7 @@ async fn install_pack_plan(
                     remaining_files: 0,
                     paused_stage: Some(stage),
                     completion: None,
+                    update: None,
                 });
             }
             let ver = loader_version.clone().unwrap_or_default();
@@ -8037,6 +8080,40 @@ async fn install_pack_plan(
         .collect();
     // ★ 记录里的版本号：给不出就"未知"（**不编**）。成功路径与失败路径共用这一个值。
     let pack_version_for_record = pack_version.unwrap_or_else(|| "未知".to_string());
+
+    /*
+     * ★★ 这个实例**原先装过整合包吗** —— 有旧记录 ⇒ 这一次就是一次**升级**。
+     *
+     *   ADR-025 第 4 条要的正是这件事："拿记录去比对包的新版本"。比对的结果
+     *   落到两处：① 按新清单**对齐**文件（新增/更新/移除，见 ④′）；
+     *   ② 升级完之后记录要认得**同一个包**（身份从旧记录沿用，见下）。
+     */
+    let previous = read_pack_record(&state.paths(), &slug).ok();
+    let align_plan = previous
+        .as_ref()
+        .map(|p| crate::domain::pack_update::plan_update(&p.files, &record_files));
+    /*
+     * ★ 身份：调用方给了就用（在线安装知道自己在装哪个包）；没给就**沿用旧记录里那份**
+     *   —— 否则"升级一次，包的身份就丢了"，下次再也查不了更新。
+     *   ★ `version_id` 不沿用：调用方没给就说明这次装的版本号不是平台给的，
+     *     沿用旧的会留下一个**对不上**的 id（信息错比信息少更糟）。
+     */
+    let identity = if project_id.is_some() || version_id.is_some() {
+        (project_id, version_id)
+    } else {
+        (
+            previous.as_ref().and_then(|p| p.project_id.clone()),
+            None,
+        )
+    };
+    if let Some(plan) = &align_plan {
+        say!(
+            "[IEML/modpack] 这是升级（{} → {}）：{}",
+            previous.as_ref().map(|p| p.version.as_str()).unwrap_or("?"),
+            pack_version_for_record,
+            plan.summary()
+        );
+    }
     /*
      * ★★ 清单里指到游戏目录**外面**的路径必须**说出来**，不许静默丢掉。
      *
@@ -8134,6 +8211,8 @@ async fn install_pack_plan(
             loader_version.clone(),
             plan_skipped.clone(),
             record_files.clone(),
+            identity.0.clone(),
+            identity.1.clone(),
         );
         if let Err(e) = write_pack_record(&state.paths(), &slug, &rec) {
             say!("[IEML/modpack] 写安装记录失败：{e}");
@@ -8161,6 +8240,48 @@ async fn install_pack_plan(
     }
 
     let _ = tokio::fs::remove_file(&pack_path).await;
+
+    /*
+     * ---------- ④′ 按新清单**对齐**：包不要了的文件收进回收区 ----------
+     *
+     * ★★ 这一步是"整包更新"与"往上叠一遍"的分界（ADR-025 第 4 条）。
+     *   没有它，升级之后旧版本里被作者删掉的 Mod 会**留在盘上** ——
+     *   而作者删它往往正是因为它跟新版不兼容，留着就是把包升坏。
+     *
+     * ★ 只清**旧记录里的**文件：用户自己丢进 `mods/` 的东西不在记录里，
+     *   所以永远不会被这一步删掉（`plan_update` 的判据里写着）。
+     * ★ 不是删除：全部**移进实例目录下的回收区**（`pack-removed/<时间戳>/…`），
+     *   路径写进总结里 —— 后悔药（ADR-014）对文件级操作同样成立。
+     */
+    let update = match (&previous, &align_plan) {
+        (Some(_), Some(plan)) => {
+            emit("对齐整合包文件", 0, plan.remove.len(), 0, "旧版本留下的文件");
+            match apply_pack_alignment(&state.paths(), &slug, &game_dir, plan) {
+                Ok(ap) => {
+                    if !ap.summary.is_empty() {
+                        say!("[IEML/modpack] 升级对齐：{}", ap.summary);
+                    }
+                    Some(ap)
+                }
+                Err(e) => {
+                    // 对齐失败**不算安装失败**：新文件已经就位，如实说一句
+                    say!("[IEML/modpack] 升级对齐失败：{e}");
+                    Some(crate::domain::pack_update::AppliedUpdate {
+                        add: plan.add.len(),
+                        replace: plan.replace.len(),
+                        remove: plan.remove.len(),
+                        keep: plan.keep.len(),
+                        trash_dir: None,
+                        removed_failed: vec![e.clone()],
+                        summary: format!(
+                            "按新清单对齐文件时出错（{e}）—— 新文件已经装好，旧文件没动。"
+                        ),
+                    })
+                }
+            }
+        }
+        _ => None,
+    };
 
     // ---------- ⑤ Fabric API 前置包（只在作者没带的时候补） ----------
     //
@@ -8239,6 +8360,8 @@ async fn install_pack_plan(
         loader_version.clone(),
         plan_skipped.clone(),
         record_files.clone(),
+        identity.0.clone(),
+        identity.1.clone(),
     );
     let completion = match write_pack_record(&state.paths(), &slug, &record) {
         Ok(()) => {
@@ -8284,6 +8407,8 @@ async fn install_pack_plan(
         paused_stage: None,
         // ★ ADR-025 的 Completion 结果：盘上实际有几个文件（写不下记录时为 None）
         completion,
+        // ★ 这一次是不是升级（原先就装过整合包 ⇒ 按新清单对齐过）
+        update,
     })
 }
 
@@ -8476,6 +8601,11 @@ pub struct ModpackInstallResult {
     /// 两者不是一回事（文件可能被杀软吃了、被用户删了、大小不对）。
     /// 记录写不下来时为 `None`（那就只剩 `mod_files` 那个数，界面不该假装校验过）。
     pub completion: Option<crate::domain::pack_record::VerifyReport>,
+    /// ★★ **这一次是不是升级**（这个实例原先就装过整合包）—— ADR-025 第 4 条。
+    ///
+    /// `None` = 全新安装（没碰任何已有文件）；`Some` = 按新清单对齐过，
+    /// `summary` 里说清"新增/更新/移除各几个、移除的放哪了"。
+    pub update: Option<crate::domain::pack_update::AppliedUpdate>,
 }
 
 /* ====================== 整合包完整性（ADR-025 的 Completion 阶段） ====================== */
@@ -8495,6 +8625,13 @@ fn build_pack_record(
     loader_version: Option<String>,
     skipped: Vec<String>,
     files: Vec<crate::domain::pack_record::PackFile>,
+    /*
+     * ★★ 包在平台上的**身份**（ADR-025 第 4 条：记录来源与版本，"用于后续更新"）。
+     *   没有它，装完之后就再也认不出"这是哪个包" —— 查新版本无从谈起。
+     *   两个都可能是 None：拖进来的 `.mrpack` 里没有 project id，那就如实留空。
+     */
+    project_id: Option<String>,
+    version_id: Option<String>,
 ) -> crate::domain::pack_record::PackRecord {
     crate::domain::pack_record::PackRecord {
         schema: 1,
@@ -8509,13 +8646,108 @@ fn build_pack_record(
             .map(|d| d.as_secs())
             .unwrap_or(0),
         skipped,
+        project_id,
+        version_id,
         files,
     }
 }
 
-/// 把记录写到 `<实例>/pack-record.json`（**实例目录**，不是游戏目录 —— 见模块说明）
-fn write_pack_record(
+/// 按新清单**对齐**：把"旧版本装过、新清单里没有了"的文件收进回收区。
+///
+/// ## 为什么不是删除
+///
+///   ADR-014 的后悔药对文件级操作同样成立：作者删掉的那个 Mod 可能是用户
+///   自己想留的（他甚至手动改过它）。移进
+///   `<实例>/pack-removed/<时间戳>/…`（**保持相对路径**），一句话告诉他放在哪，
+///   想找回来自己拿 —— 比"删了再道歉"便宜得多。
+///
+/// ## 三条硬规矩
+///
+///   * **只动 `plan.remove` 里的路径**（它们全部来自旧记录的清单）；
+///   * 路径必须**相对**、不许有 `..` —— 清单是别人写的字符串，越界的一律拒收；
+///   * 盘上本来就没有的**不算失败**（用户自己删过），只记进 `removed_failed`
+///     的另有说明：这里如实分两类（移不动的才是失败）。
+fn apply_pack_alignment(
     paths: &crate::platform::AppPaths,
+    slug: &str,
+    game_dir: &std::path::Path,
+    plan: &crate::domain::pack_update::UpdatePlan,
+) -> Result<crate::domain::pack_update::AppliedUpdate, String> {
+    use crate::domain::pack_update::AppliedUpdate;
+
+    let base = AppliedUpdate {
+        add: plan.add.len(),
+        replace: plan.replace.len(),
+        remove: plan.remove.len(),
+        keep: plan.keep.len(),
+        trash_dir: None,
+        removed_failed: Vec::new(),
+        summary: plan.summary(),
+    };
+    if plan.remove.is_empty() {
+        return Ok(base);
+    }
+
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let trash = paths
+        .instance_dir(slug)
+        .join("pack-removed")
+        .join(stamp.to_string());
+
+    let mut moved = 0usize;
+    let mut trouble: Vec<String> = Vec::new();
+    for rel in &plan.remove {
+        let p = std::path::Path::new(rel);
+        if p.is_absolute() || rel.split(['/', '\\']).any(|s| s == "..") {
+            trouble.push(format!("{rel}（路径不合法，没动）"));
+            continue;
+        }
+        let src = game_dir.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if !src.is_file() {
+            // 用户自己删过 / 从来没下下来 —— 不算失败，也不算移走
+            say!("[IEML/modpack] 对齐：{rel} 本来就不在盘上，跳过");
+            continue;
+        }
+        let dst = trash.join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if let Some(parent) = dst.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                trouble.push(format!("{rel}（建回收目录失败：{e}）"));
+                continue;
+            }
+        }
+        match std::fs::rename(&src, &dst) {
+            Ok(()) => moved += 1,
+            Err(e) => trouble.push(format!("{rel}（{e}）")),
+        }
+    }
+
+    let mut summary = plan.summary();
+    if moved > 0 {
+        summary.push_str(&format!(
+            " 被移除的 {moved} 个文件放在 {}（要恢复就去那儿拿）。",
+            trash.display()
+        ));
+    }
+    if !trouble.is_empty() {
+        summary.push_str(&format!(" 有 {} 个没能移走：{}。", trouble.len(), trouble.join("；")));
+    }
+    Ok(AppliedUpdate {
+        trash_dir: if moved > 0 {
+            Some(trash.to_string_lossy().to_string())
+        } else {
+            None
+        },
+        removed_failed: trouble,
+        summary,
+        ..base
+    })
+}
+
+/// 把记录写到 `<实例>/pack-record.json`（**实例目录**，不是游戏目录 —— 见模块说明）
+fn write_pack_record(    paths: &crate::platform::AppPaths,
     slug: &str,
     record: &crate::domain::pack_record::PackRecord,
 ) -> Result<(), String> {
@@ -8653,6 +8885,167 @@ pub async fn repair_pack_install(
         failed,
         no_source: report.no_source,
     })
+}
+
+/* ====================== 整合包有没有新版本（ADR-025 第 4 条） ====================== */
+
+/// 问平台：**这个整合包有没有新版本**（只判"有没有"，不动盘）。
+///
+/// ## 靠什么认包
+///
+///   靠安装记录里的 `project_id`（在线装的两条路都会写下来）。
+///   ★ 拖进来的 `.mrpack` 里**没有** project id ⇒ 记录里是空的 ⇒
+///     这里如实回答"来源信息没记下来，查不了"，**不拿包名去搜**
+///     （搜一个看起来像的包，然后拿它的版本号说"你有新版了"，是把用户往错包上带）。
+///
+/// ## CurseForge 为什么先不做
+///
+///   CF 那边要按 `projectID + fileID` 问文件列表，接口与 Modrinth 完全不同；
+///   这一版先把 Modrinth 这条打通（它有公开 API、也是我们默认的包源），
+///   CF 的包**如实说"这条还没做"**，而不是给一个假的"已是最新"。
+#[tauri::command]
+pub async fn pack_check_update(
+    slug: String,
+    state: State<'_, AppState>,
+) -> Result<crate::domain::pack_update::UpdateVerdict, String> {
+    use crate::domain::pack_update::{verdict_for, RemotePackVersion, UpdateVerdict};
+
+    let paths = state.paths();
+    let record = match read_pack_record(&paths, &slug) {
+        Ok(r) => r,
+        // 没有记录 = 不是从整合包装的：这不是错误，是一次**有结论**的回答
+        Err(_) => return Ok(verdict_for(None, &[])),
+    };
+
+    let Some(project) = record.project_id.clone().filter(|p| !p.trim().is_empty()) else {
+        return Ok(UpdateVerdict::Unknown {
+            reason: "记录里没有这个包在平台上的 id".into(),
+            summary: format!(
+                "「{}」的来源信息没记下来（多半是拖进来的包文件）—— 查不了它有没有新版。",
+                record.name
+            ),
+        });
+    };
+    if record.source != "modrinth" {
+        return Ok(UpdateVerdict::Unknown {
+            reason: format!("source={}", record.source),
+            summary: format!(
+                "「{}」来自 {}，查新版本这条路还只支持 Modrinth 的包。",
+                record.name, record.source
+            ),
+        });
+    }
+
+    let list = crate::modrinth::project_versions(&project, None, None)
+        .await
+        .map_err(err)?;
+    /*
+     * 只认**能装的包体**（`.mrpack`）：同一个项目下可能还挂着别的文件，
+     * 挑错了会让"升级"去下一个不相干的东西。
+     */
+    let remote: Vec<RemotePackVersion> = list
+        .iter()
+        .filter_map(|v| {
+            let f = v
+                .files
+                .iter()
+                .find(|f| f.primary)
+                .or_else(|| v.files.first())?;
+            if !f.filename.to_lowercase().ends_with(".mrpack") {
+                return None;
+            }
+            Some(RemotePackVersion {
+                id: v.id.clone(),
+                version: v.version_number.clone(),
+                published: v.date_published.clone(),
+                url: f.url.clone(),
+                size: f.size,
+                mc_version: v.game_versions.first().cloned(),
+            })
+        })
+        .collect();
+    Ok(verdict_for(Some(&record), &remote))
+}
+
+/// ★★ **升级到这个版本**（原地升级，ADR-025 第 4 条的后半句）。
+///
+/// 做的事：问平台要那个版本的包体地址 → 走**和安装完全同一条路**
+/// （`modpack_install`：下包体 → 读清单 → 按清单下文件 → 解压 overrides → 写记录），
+/// 唯一不同的是 `slug` 是**已有的那个实例** —— 于是：
+///
+///   * 游戏本体与加载器已经在盘上 ⇒ 那一步几乎瞬间过（缺什么补什么）；
+///   * 新清单里没变的文件按 sha1/大小跳过（`plan_update` 的 `keep`）；
+///   * **旧版本装过、新清单里没了的文件**由 ④′ 收进回收区（见 `apply_pack_alignment`）；
+///   * 记录换成新版本的（`project_id` 沿用，`version_id` 是新的）。
+///
+/// ★ 为什么不让前端自己拼：前端没有"这是升级"这个概念 ——
+///   它在下载页装包时永远是**新建实例**（`pack-...` 新 slug）。
+///   原地升级必须由后端按已有 slug 走一次，才能命中上面那三条。
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn pack_apply_update(
+    slug: String,
+    version_id: String,
+    task_id: String,
+    source: Option<String>,
+    concurrency: Option<usize>,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ModpackInstallResult, String> {
+    let paths = state.paths();
+    let record = read_pack_record(&paths, &slug)?;
+    let project = record.project_id.clone().filter(|p| !p.trim().is_empty()).ok_or_else(|| {
+        format!(
+            "「{}」没有记录平台 id，没法升级（要升级请去下载页重新装一个）。",
+            record.name
+        )
+    })?;
+    if record.source != "modrinth" {
+        return Err(format!(
+            "「{}」来自 {}，原地升级这条路还只支持 Modrinth 的包。",
+            record.name, record.source
+        ));
+    }
+
+    // 问平台要这一个版本的包体地址（**按 id 精确取**，不取"最新那个"：
+    // 用户点的就是这一版，界面与后端不许各挑各的）
+    let list = crate::modrinth::project_versions(&project, None, None)
+        .await
+        .map_err(err)?;
+    let v = list
+        .iter()
+        .find(|v| v.id == version_id)
+        .ok_or_else(|| format!("平台上找不到这个版本（{version_id}）—— 换个时间再试。"))?;
+    let file = v
+        .files
+        .iter()
+        .find(|f| f.primary)
+        .or_else(|| v.files.first())
+        .ok_or_else(|| "这个版本没有可下载的包体".to_string())?;
+
+    let src = source.unwrap_or_else(|| "bmclapi".to_string());
+    let instance_name = instance_display_name(&paths, &slug);
+    /*
+     * ★ 复用 `modpack_install`（同一条路），只是 slug 换成已有的那个实例。
+     *   身份也一起传：升级完记录里要认得**同一个包**（否则下次查不了更新）。
+     */
+    modpack_install(
+        file.url.clone(),
+        v.name.clone(),
+        slug,
+        task_id,
+        instance_name,
+        src,
+        Some(v.version_number.clone()),
+        Some(project),
+        Some(v.id.clone()),
+        concurrency,
+        // ★ 包体大小：进度百分比要用它（平台给了就给）
+        Some(file.size),
+        app,
+        state,
+    )
+    .await
 }
 
 /* ====================== 工具 ====================== */

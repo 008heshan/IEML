@@ -520,6 +520,9 @@ pub fn run() {    /*
             commands_real::pack_info,
             commands_real::verify_pack_install,
             commands_real::repair_pack_install,
+            /* ★★ 整合包有没有新版本 / 原地升级（ADR-025 第 4 条） */
+            commands_real::pack_check_update,
+            commands_real::pack_apply_update,
             /* -------- 杂项 -------- */
             commands_real::backend_capabilities,
         ])

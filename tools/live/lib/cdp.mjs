@@ -21,7 +21,7 @@
  *
  * ★ 这个库只做"管道"：判据仍然写在各个探针里（探针之间的差别就是判据）。
  */
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
@@ -149,6 +149,34 @@ export async function launch({
   if (!keepDataDir) {
     delete childEnv.IEML_DATA_DIR;
     delete childEnv.IEML_OWN_DIR;
+  }
+  /*
+   * ★★ 沙盒一旦生效，`APPDATA` **必须一起指走**（2026-09-28 加，踩过一次）。
+   *
+   *   两件事都发生在 `%APPDATA%\IEML\` 里：
+   *     · `datadir.txt` / `ownroot.txt` —— 数据根与"启动器自己的家"的**记录**；
+   *     · 启动时的数据根补齐会拿那里的真实数据往新根里**复制一份**。
+   *   不指走的话，探针会读到开发机真实的记录，而且**可能把记录改写掉**：
+   *   实测踩到的后果是 `datadir.txt` 被写成了**仓库根目录**，
+   *   于是用户在仓库目录里跑一次启动器，就会在那儿建出一整套空数据目录
+   *   （看起来像"我的版本全没了"）。修回来花了半天。
+   *
+   *   ⇒ 只要调用方给了 `IEML_DATA_DIR` / `IEML_OWN_DIR`（说明它想沙盒），
+   *     这里就把 `APPDATA` 也落到 `%TEMP%` 下一个按 tag 命名的空目录里；
+   *     调用方显式给了 `APPDATA` 就听调用方的。
+   *   ⇒ 故意用真实数据的探针（`probe-instance-root.mjs` 之类）不设那两个变量，
+   *     于是这条规则**不会**碰到它们。
+   */
+  if (
+    !('APPDATA' in env) &&
+    (childEnv.IEML_DATA_DIR || childEnv.IEML_OWN_DIR)
+  ) {
+    const fakeAppData = path.join(process.env.TEMP ?? '.', `ieml-${tag}-appdata`);
+    try {
+      rmSync(fakeAppData, { recursive: true, force: true });
+      mkdirSync(fakeAppData, { recursive: true });
+    } catch {}
+    childEnv.APPDATA = fakeAppData;
   }
   childEnv.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = `--remote-debugging-port=${cdpPort}`;
   childEnv.WEBVIEW2_USER_DATA_FOLDER = profile;
