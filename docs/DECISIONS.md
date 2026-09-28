@@ -2466,6 +2466,86 @@ Source::Mojang  => [ 清单里那个 url , {BMCLAPI}/version/<mc>/json ]
   真要区分得给 `Source` 加第三个变体，那一圈改动（镜像表 / 健康分 / 下载候选）
   不该塞进一次 bug 修复里。
 
+**★★ 同一天的第二处（0.18.3）：Fabric / Quilt 的 profile 也是同一个坑**
+
+用户装完版本 JSON 那一步之后，报的下一处现场（截图逐字）：
+
+```
+请求 https://meta.fabricmc.net/v2/versions/loader/26.3/0.19.5/profile/json 超过 10 秒没有回应
+```
+
+`fabric_profile` / `quilt_profile` 当年也是 `get_json(&官方地址)` —— **照抄、不看源**。
+讽刺的是 `mirror.rs` 自己 2026-09-16 就实测记着这一条：
+
+| 端点 | 官方 | BMCLAPI 镜像 |
+|---|---|---|
+| `/v2/versions/loader/{mc}/{v}/profile/json` | **超时 12s** | **0.38s** |
+
+⇒ 用同一个 `loader_profile_candidates`（形状与 `version_json_candidates` 一致）修掉，
+实测出事那个版本走镜像 200 / 2.8 KB / 519 ms。
+
+**顺手做的一次审计**（同一类问题的全量排查，免得第三处再冒出来）：
+
+| 环节 | 走哪条路 | 结论 |
+|---|---|---|
+| 版本清单 | `version_manifest_url(source)` | ✅ 按源 |
+| **版本 JSON** | `version_json_by_source` | ✅ 0.18.2 修 |
+| **Fabric / Quilt profile** | `loader_profile_candidates` | ✅ 0.18.3 修 |
+| Fabric / Quilt loader 列表 | 镜像优先 + 官方兜底（早就是这样） | ✅ |
+| 客户端 jar / 库 / 资源索引 | `push_task` → `candidate_urls` | ✅（实测 BMCLAPI 的 `/v1/packages/…` 也 200） |
+| Forge / NeoForge 安装器 + build 列表 | `forge_installer_url(source)` + BMCLAPI 的 `/forge/minecraft/<mc>` | ✅ |
+| OptiFine / LiteLoader | BMCLAPI | ✅ |
+| **Forge promotions** | `get_text(FORGE_PROMOTIONS)` 直连官方 | ⚠️ **全仓没有调用方**（死代码），且 BMCLAPI 没有这个文件（404）⇒ 没法给镜像，留着当记录 |
+| Java 运行时（Adoptium） | 官方 | ⚠️ 没有镜像（文档早已注明） |
+
+**判据**：Rust 单测 +3 条（`loader_profile_*` 三条：只用镜像时第一个候选必须是镜像地址
+且不含官方域名、只用官方时官方在前镜像兜底、Quilt 同一形状）；
+真机 `live-mirror-source-check.mjs` 的 ③ 段改成**装 1.20.1 + Fabric**，
+等 `fabric-loader-0.15.11-1.20.1.json` 落盘，并断言日志里
+**没有"Fabric profile 取不到（meta.fabricmc.net…）"这一行** —— 也就是没去试官方。
+
+**★★ 2026-09-29（0.18.3）："安装"不再等资源文件 —— 先装能启动的。**
+
+用户原话（建议 + 让我照 PCL 的做法看）：
+
+> 「游戏下载也是很慢，我的建议是**下 jar，第一次启动游戏补全文件**
+>   （这只是描述，具体还得看 PCL 的实现方法）」
+
+**为什么这条值得做（本机实测的数字，不是感觉）**
+
+| 事实 | 实测值 |
+|---|---|
+| 到 mcimirror 的 CDN 速度 | **~66 KB/s**（2.5 MB 的 Fabric API 下了 37 秒） |
+| 官方 CDN（`cdn.modrinth.com`） | **连不上** |
+| 一个 26.3 的完整安装 | **582 MB / 5222 个文件** ⇒ 按上面的速度是**几小时** |
+| 其中"能不能进游戏"真正需要的 | 客户端 jar + 库 + 版本描述 —— 1.20.1 实测**78 MB / 52 个文件** |
+
+缺材质/声音的表现是"贴图紫黑、没声音"，**游戏照进** —— 完全可以边玩边下。
+
+**做法（两半，各一处）**
+
+1. **安装时不下资源文件**：`installGame` / `installVersionFromManifest` 的
+   `downloadAssets` 默认改成 `false`（后端那个开关一直就有，只是没人用过）；
+   `InstallComposer` 底部如实写一句「资源文件首次启动时后台补」；
+   ★ 「检查并补齐文件」是**显式补齐动作**，它传 `true`（不传的话那个按钮永远补不齐资源）。
+2. **启动之后在后台补**：`prepare_spec` 里那段"启动前自愈"（`repair_missing`，
+   同步、只补库 —— 库缺了游戏起不来）之后，再 **spawn 一路**
+   `repair_missing { download_assets: true }`：只下"盘上没有的"，下完就停。
+   · **同一个版本只允许一个后台补全在跑**（`ASSET_REPAIRS` 集合）——
+     两批同时写同一份 `.part` 会互相毁掉；
+   · 全程**不弹窗、不挡启动**；什么都不缺时安静结束（绝大多数情况）。
+
+**判据**：真机 `tools/live/live-fast-install-check.mjs`：
+① 安装计划算得出来（**这份是"库 + 客户端"，资源文件不在里面** —— 与"安装时不下资源"同一口径）；
+② ★ `downloadAssets:false` 装完之后版本描述 + 客户端 jar + 库都在（**能启动**，实测 1.20.1 用 38~110 秒）；
+③ ★ 而 `assets/objects` 里**一个文件都没有**（资源确实省下了）；
+④ ★ 日志里如实写着 `download_assets=false`；
+⑤ ★ 之后再跑一次 `downloadAssets:true` ⇒ 资源文件真的开始补（实测 37 个文件）——
+   这正是启动后那条后台路走的东西。
+
+★ 量法上踩到的：**别在构建跑的时候拿 release 的 exe 做探针** —— exe 被占用，
+`tauri build` 会以 `拒绝访问 (os error 5)` 失败（这一轮就这么白等了一次 6 分钟的构建）。
+
 ---
 
 ## ADR-027　整合包独立成一级入口（★ 第八轮新增，撤销 ADR 级别的旧判断）

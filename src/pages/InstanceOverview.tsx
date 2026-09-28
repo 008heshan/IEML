@@ -189,6 +189,12 @@ export function InstanceOverview() {
         source: 'bmclapi',
         concurrency: state.prefs.concurrentDownloads,
         loaderName: inst.loader ? loaderName(inst.loader.kind) : undefined,
+        /*
+         * ★★ 「检查并补齐文件」是**显式的补齐动作** —— 这里必须把资源文件也算上
+         *   （安装默认不下资源文件，见 `installGame` 的说明）。
+         *   不传的话这个按钮永远补不齐资源，用户点了会以为"补好了"。
+         */
+        downloadAssets: true,
       });
       // ★ 暂停 / 失败要分开说（P0-3）—— 暂停不是错误
       if (outcome === 'paused') {

@@ -157,42 +157,61 @@ try {
     );
   }
 
-  /* ==================== ③ 安装路径 ==================== */
-  console.log(`\n③ 起一次安装（source=bmclapi），等版本 JSON 落盘就停…`);
+  /* ==================== ③ 安装路径（原版 + Fabric） ==================== */
+  console.log(`\n③ 起一次安装（1.20.1 + Fabric，source=bmclapi），等 loader profile 落盘就停…`);
   const mark2 = logSize();
   const taskId = `mirror-${Date.now()}`;
+  const LOADER = '0.15.11';
+  const loaderDir = `fabric-loader-${LOADER}-${MC}`;
+  const loaderJson = path.join(ROOT, '.minecraft', 'versions', loaderDir, `${loaderDir}.json`);
   void inv('install_version', {
     mcVersion: MC,
-    loaderKind: null,
-    loaderVersion: null,
+    loaderKind: 'fabric',
+    loaderVersion: LOADER,
     source: 'bmclapi',
     taskId,
     downloadAssets: true,
     concurrency: 8,
   });
-  const jsonPath = path.join(ROOT, '.minecraft', 'versions', MC, `${MC}.json`);
   let landed = false;
-  for (let i = 0; i < 90; i += 1) {
+  for (let i = 0; i < 120; i += 1) {
     await sleep(500);
-    if (existsSync(jsonPath)) {
+    if (existsSync(loaderJson)) {
       landed = true;
       break;
     }
   }
+  const vanillaJson = path.join(ROOT, '.minecraft', 'versions', MC, `${MC}.json`);
   if (!landed) {
-    giveUp('等了 45 秒也没看到版本 JSON 落盘 —— 安装这一段没测到（网络？）');
+    giveUp(
+      `等了 60 秒也没看到 loader profile 落盘 —— 安装这一段没测到（网络？）` +
+        `（原版 JSON ${existsSync(vanillaJson) ? '已' : '未'}落盘）`,
+    );
   } else {
-    const txt = readFileSync(jsonPath, 'utf8');
+    const txt = readFileSync(loaderJson, 'utf8');
     const tail2 = logText().slice(mark2);
     const triedOfficial2 = versionJsonLines(tail2).filter((l) => l.includes('piston-meta'));
+    /*
+     * ★ Fabric profile 那一步的日志长这样（0.18.3 起）：
+     *     [IEML/meta] Fabric profile 取不到（<url>）：<原因>
+     *   判据：这一行里**不许出现官方域名** —— 出现就说明"只用镜像"又去打官方了
+     *   （用户报的第二处现场：`请求 https://meta.fabricmc.net/v2/versions/loader/26.3/0.19.5/profile/json 超过 10 秒没有回应`）。
+     */
+    const profileLines = tail2.split('\n').filter((l) => l.includes('profile 取不到') || l.includes('profile：'));
+    const profileTriedOfficial = profileLines.filter((l) => l.includes('meta.fabricmc.net'));
     check(
-      txt.includes(`"${MC}"`) && txt.length > 1000,
-      '③ ★ 安装路径也按源走：版本 JSON 真的落盘了（修复前会卡在 piston-meta 超时上）',
-      `${path.basename(jsonPath)} ${txt.length} 字节`,
+      txt.includes(loaderDir) && txt.length > 1000,
+      '③ ★ 安装路径也按源走：Fabric profile 真的落盘了（修复前会卡在 meta.fabricmc.net 超时上）',
+      `${loaderDir}.json ${txt.length} 字节`,
+    );
+    check(
+      profileTriedOfficial.length === 0,
+      '③ ★ Fabric profile 这一步**没有去试官方地址**（只用镜像就该如此）',
+      profileTriedOfficial.length ? profileTriedOfficial[0].slice(0, 220) : '（日志里没有官方地址）',
     );
     check(
       triedOfficial2.length === 0,
-      '③ ★ 安装这一段同样**没有去试官方地址**',
+      '③ ★ 同一段里版本 JSON 也没去试官方地址',
       triedOfficial2.length ? triedOfficial2[0].slice(0, 220) : '（日志里没有官方地址）',
     );
   }

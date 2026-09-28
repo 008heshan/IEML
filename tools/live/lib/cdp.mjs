@@ -142,6 +142,52 @@ export async function launch({
   keepProfile = false,
 } = {}) {
   if (!existsSync(exe)) throw new Error('找不到 exe：' + exe);
+
+  /*
+   * ★★ 2026-09-29：**构建期间的探针必须当场拦住**（不是"红一条判据"）。
+   *
+   *   踩到的代价：构建正在写 `target/release/ieml.exe` 时，我又拿这个 exe 起了探针 ——
+   *   exe 被占用，`tauri build` 以 `拒绝访问 (os error 5)` 失败，白等 6 分钟重来；
+   *   而那次探针本身也量不准（跑的是正在被改写的 exe）。
+   *
+   *   三条判据（够用、且不会误伤）：
+   *     ① 有 `ieml` 在跑 —— 单实例插件会让新实例直接退出，探针必然连不上；
+   *     ② 有 `cargo` / `rustc` 在跑 —— 很可能正在写这个 exe；
+   *     ③ exe 是"刚被写过"的（5 秒内）—— 构建正在收尾。
+   *   命中就抛错，各探针按"本次测量无效"（退出码 2）处理。
+   */
+  const child_process = await import('node:child_process');
+  const psCount = (cmd) => {
+    try {
+      const r = child_process.spawnSync('powershell', ['-NoProfile', '-Command', cmd], {
+        encoding: 'utf8',
+        timeout: 20000,
+      });
+      return (r.stdout ?? '').trim();
+    } catch {
+      return '';
+    }
+  };
+  const runningIeml = psCount('(Get-Process ieml -ErrorAction SilentlyContinue | Measure-Object).Count');
+  if (runningIeml && runningIeml !== '0') {
+    throw new Error(
+      `已经有一个启动器在跑（${runningIeml} 个进程）—— 单实例插件会让探针连不上，先关掉它`,
+    );
+  }
+  const builders = psCount('(Get-Process cargo,rustc -ErrorAction SilentlyContinue | Measure-Object).Count');
+  if (builders && builders !== '0') {
+    throw new Error(
+      `有 cargo/rustc 正在跑（${builders} 个进程）—— 它可能正在写 ${exe}；` +
+        '等构建结束再跑探针（否则构建会以"拒绝访问"失败，白等一轮）',
+    );
+  }
+  const exeAgeMs = Date.now() - statSync(exe).mtimeMs;
+  if (exeAgeMs < 5000) {
+    throw new Error(
+      `${exe} 刚被写过（${Math.round(exeAgeMs / 1000)} 秒前）—— 构建可能还在收尾，稍等再跑`,
+    );
+  }
+
   const cdpPort = port || (await pickFreePort());
 
   const profile = path.join(process.env.TEMP ?? '.', `ieml-${tag}-prof`);

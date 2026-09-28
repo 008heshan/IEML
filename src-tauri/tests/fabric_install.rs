@@ -42,7 +42,9 @@ async fn fabric_libraries_are_actually_downloaded() {
         .expect("没有可用的 Fabric loader");
     println!("  Fabric loader 版本：{loader_version}");
 
-    let profile = metadata::fabric_profile(&mc, &loader_version)
+    // ★ 2026-09-29（0.18.3）：`fabric_profile` 多了一个 `source` 参数 ——
+    //   它以前写死官方 meta.fabricmc.net，于是"只用镜像"时照样去连官方（用户报的 bug）。
+    let profile = metadata::fabric_profile(&mc, &loader_version, Source::Bmclapi)
         .await
         .expect("拉 Fabric profile 失败");
     let no_downloads: Vec<String> = profile

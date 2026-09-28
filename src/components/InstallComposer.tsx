@@ -1867,6 +1867,13 @@ export function InstallComposer({
         {formatBytes(estimate.cached)} · Java <b className="mono">{javaReq.major}</b>
         {hasJava ? <Chip tone="success">已就绪</Chip> : <Chip tone="warning">未安装</Chip>} ·
         预计 <b className="mono">{formatDuration(estimate.seconds)}</b>
+        {/*
+          ★★ 2026-09-29：装的时候**不下资源文件**（材质 / 声音，几百 MB），
+            它们在你第一次启动游戏时后台补齐 —— 见 `flows/install.ts` 的说明
+            （用户建议：「下 jar，第一次启动游戏补全文件」）。
+            这句话必须写在按钮旁边：不写的话，用户会以为"装完了却少东西"。
+        */}
+        <span className="dim"> · 资源文件首次启动时后台补</span>
       </span>
       <div className="spacer" />
       {onCancel ? (

@@ -2915,7 +2915,9 @@ async fn build_plan_input(
                     .map(|e| e.loader.version.clone())
                     .ok_or_else(|| format!("Fabric 没有 {mc_version} 的 loader"))?,
             };
-            let profile = metadata::fabric_profile(mc_version, &lv).await.map_err(err)?;
+            let profile = metadata::fabric_profile(mc_version, &lv, source)
+                .await
+                .map_err(err)?;
             installer::merge_versions(&profile, &vanilla)
         }
         Some("quilt") => {
@@ -2928,7 +2930,9 @@ async fn build_plan_input(
                     .map(|e| e.loader.version.clone())
                     .ok_or_else(|| format!("Quilt 没有 {mc_version} 的 loader"))?,
             };
-            let profile = metadata::quilt_profile(mc_version, &lv).await.map_err(err)?;
+            let profile = metadata::quilt_profile(mc_version, &lv, source)
+                .await
+                .map_err(err)?;
             installer::merge_versions(&profile, &vanilla)
         }
         Some("forge") | Some("neoforge") => {
@@ -3661,6 +3665,10 @@ pub fn merge_with_parents(
     version
 }
 
+/// 正在后台补资源文件的版本（同一个版本只允许一个在跑，见启动分支里的说明）
+static ASSET_REPAIRS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::OnceLock::new();
+
 async fn prepare_spec(
     req: &LaunchRequest,
     state: &AppState,
@@ -3886,8 +3894,7 @@ async fn prepare_spec(
         };
         let opts =
             crate::net::installer::InstallOptions::new(32, crate::net::download::CancelToken::new());
-        match crate::net::installer::repair_missing(&repair_input, opts).await {
-            Ok(r) => {
+        match crate::net::installer::repair_missing(&repair_input, opts).await {            Ok(r) => {
                 say!(
                     "[IEML/launch] 启动前自愈：缺 {}，补回 {}，失败 {}",
                     r.missing,
@@ -3923,6 +3930,68 @@ async fn prepare_spec(
                 // 自愈失败不拦住启动 —— 让下面原有的"缺库"检查给出完整清单
                 say!("[IEML/launch] 启动前自愈失败：{e}");
             }
+        }
+    }
+
+    /*
+     * ★★ **资源文件（材质 / 声音 / 语言）在后台补，不挡启动**
+     *   —— 用户 2026-09-29 的建议（原话）：
+     *
+     *   「游戏下载也是很慢，我的建议是**下 jar，第一次启动游戏补全文件**
+     *     （这只是描述，具体还得看 PCL 的实现方法）」。
+     *
+     *   为什么值得这么做（实测）：本机到 mcimirror 的 CDN 只有 ~66 KB/s
+     *   （2.5 MB 的 Fabric API 下了 37 秒），官方 CDN 直接连不上 ——
+     *   一个 26.3 的完整安装是 582 MB / 5000+ 文件，按这个速度要几个小时，
+     *   而其中**决定"能不能进游戏"的只有客户端 jar + 库 + 版本描述**（几十 MB）。
+     *   缺材质/声音的表现是"贴图紫黑、没声音"，游戏照样进 —— 完全可以边玩边下。
+     *
+     *   所以：安装时**不再下资源文件**（`downloadAssets: false`，见 `flows/install.ts`），
+     *   到这里（真的点了启动、而且自愈已经跑过）在**后台**把缺的补上：
+     *     · `repair_missing` 只下"盘上没有的"，下完就停；
+     *     · 同一个版本**只允许一个后台补全在跑**（两个批次写同一份 `.part` 会互相毁）；
+     *     · 全程不弹窗、不挡启动 —— 用户想看进度就看日志，或者看任务中心里的下载速度。
+     */
+    if repair {
+        let key = version.id.clone();
+        let busy = ASSET_REPAIRS
+            .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+            .lock()
+            .map(|mut set| !set.insert(key.clone()))
+            .unwrap_or(true);
+        if busy {
+            say!("[IEML/launch] {key} 已经有一个后台补全在跑，不重复开");
+        } else {
+            let input = crate::net::installer::PlanInput {
+                version: version.clone(),
+                shared_root: shared.clone(),
+                instance_dir: instance_dir.clone(),
+                source: Source::Bmclapi,
+                // ★ 这一路**专门**补资源文件
+                download_assets: true,
+            };
+            let opts = crate::net::installer::InstallOptions::new(
+                16,
+                crate::net::download::CancelToken::new(),
+            );
+            let key2 = key.clone();
+            tauri::async_runtime::spawn(async move {
+                match crate::net::installer::repair_missing(&input, opts).await {
+                    Ok(r) if r.missing > 0 => say!(
+                        "[IEML/launch] 后台补资源文件：缺 {}，补回 {}，失败 {}",
+                        r.missing,
+                        r.repaired,
+                        r.failed.len()
+                    ),
+                    Ok(_) => {} // 什么都不缺 —— 安静地结束（绝大多数情况）
+                    Err(e) => say!("[IEML/launch] 后台补资源文件失败：{e}"),
+                }
+                if let Some(set) = ASSET_REPAIRS.get() {
+                    if let Ok(mut set) = set.lock() {
+                        set.remove(&key2);
+                    }
+                }
+            });
         }
     }
 
