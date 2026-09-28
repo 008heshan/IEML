@@ -22,7 +22,8 @@
  *   E 那一页里有加载器选项、附加组件（短状态「无」、没有"不兼容"角标）、版本名称
  *   F 「返回」回到清单页，而且那一行**仍是选中态**
  *   G 窄窗口 900px：加载器那一行退回竖排（版本下拉在名字下面）
- *   H 别处的入口「新装一个」→ 下载页 + 安装游戏格 + 清单
+ *   H 版本列表页**不再有**重复入口（「新装一个 / 新建版本 / 去下载页装一份」都不在），
+ *     而侧栏「下载」照样到下载页 + 清单（2026-09-28 用户要求删掉那些入口）
  *   I 弹窗形态（派发 `ieml:create`）仍然是一屏两栏，没被这些改动牵连
  *
  * ★ 每一步都**等界面真的到了**再读（`waitFor`），不靠 sleep 猜。
@@ -32,7 +33,16 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 const PORT = 9931;
-const EXE = process.argv[2] ?? path.join('src-tauri', 'target', 'debug', 'ieml.exe');
+/*
+ * ★★ 2026-09-28（0.18.1）：默认 exe 从 `target/debug` 改成 `target/release`。
+ *
+ *   原来默认 debug 版 —— 那是个**量错东西的陷阱**：debug 版是几百次构建之前留下的
+ *   旧产物（而且 debug 会走 `devUrl`，没起 dev server 时读到的是它内嵌的那份旧前端）。
+ *   实测踩到：探针判「版本列表上还有『新建版本』」，而 release 版里那两个按钮
+ *   早就删干净了 —— 红得与代码无关。
+ *   其它探针（`lib/cdp.mjs` 的默认值）一直用的都是 release，这里跟上。
+ */
+const EXE = process.argv[2] ?? path.join('src-tauri', 'target', 'release', 'ieml.exe');
 const OUT = path.join(process.env.TEMP ?? '.', 'ieml-gw');
 const PROFILE = path.join(process.env.TEMP ?? '.', 'ieml-gw-prof');
 if (!existsSync(EXE)) {
@@ -379,7 +389,18 @@ check('★ D9 整屏铺满内容区（不是缩在角落）', (loaderPage?.w ?? 
   const dis = addons.filter((a) => a.note);
   check('★ E1 选不了的附加组件：短状态写「无」/「查不到」', dis.length > 0 && dis.every((a) => /无|查不到/.test(a.note)), JSON.stringify(dis.map((a) => [a.name, a.note])));
   check('★ E2 没有任何「不兼容」角标', addons.every((a) => !a.chips.some((c) => /不兼容/.test(c))), JSON.stringify(addons.map((a) => a.chips)));
-  check('★ E3 理由仍在悬停提示里', dis.length === 0 || dis.some((a) => a.title.length > 4), JSON.stringify(dis.map((a) => a.title)));
+  /*
+   * ★★ 2026-09-28（0.18.1）改：原来这条是"理由仍在**悬停提示**里"（`title` 有字）。
+   *   用户后来明确要求「**去掉所有悬停显示描述**」，门禁 `tools/gates/check-tooltips.mjs`
+   *   现在会拦住任何 `title=` 悬停提示 —— 也就是说 E3 守的是**已经被推翻的旧口径**：
+   *   它只能在"界面违规"时通过。⇒ 反过来判：理由必须**看得见**（写在那一行的文字里），
+   *   而且**不许**藏在悬停提示里。
+   */
+  check(
+    '★ E3 理由**看得见**（写在行里），而且不再藏在悬停提示里',
+    dis.length === 0 || (dis.every((a) => a.note.length > 0) && dis.every((a) => a.title.length === 0)),
+    JSON.stringify(dis.map((a) => [a.note, a.title])),
+  );
 }
 await shot('模组加载器页.png');
 
@@ -419,14 +440,25 @@ check('★ F1 「返回」回到清单页', back?.hasList === true && back?.titl
 check('★ F2 下载页的页签回来了', back?.tabs === 6, String(back?.tabs));
 check('★ F3 刚才点的那一行仍是选中态', back?.picked === picked, `${back?.picked} vs ${picked}`);
 
-/* ---------- H：别处的入口「转到下载页」并落在安装游戏那一格 ---------- */
+/* ---------- H：版本列表页**不再有**"新装一个"这类入口（2026-09-28 用户要求删掉） ----------
+ *
+ * ★★ 这一段原来是"点版本列表的「新装一个」→ 验证它把人送到下载页"。
+ *   用户（截图）点名要求把这一页的重复入口全部删掉、永远不再加回来，
+ *   所以判据反过来：**这一页不该再有那个按钮**，而下载页照样从侧栏进得去。
+ *   （守"永远不再加回来"的那条判据在 `live-version-page-actions-check.mjs`。）
+ */
 await clickNav('版本列表');
 await sleep(1800);
-const entry = await ev(`(() => {
-  const b = [...document.querySelectorAll('button')].find((x) => /新装一个/.test(x.textContent || ''));
-  b?.click();
-  return (b?.textContent || '').trim();
-})()`);
+const leftover = await ev(`JSON.stringify(
+  [...document.querySelectorAll('button')]
+    .filter((b) => b.offsetParent !== null)
+    .map((b) => (b.textContent || '').trim())
+    .filter((t) => /新装一个|新建版本|去下载页装一份/.test(t))
+)`);
+console.log(`  版本列表上残留的重复入口：${leftover}`);
+check('★ H1 版本列表上不再有「新装一个 / 新建版本 / 去下载页装一份」', leftover === '[]', String(leftover));
+// 侧栏的「下载」仍然把人送到下载页（入口还在，只是不在版本列表里）
+await clickNav('下载');
 await sleep(1800);
 const landed = await ev(`(() => {
   const tabs = [...document.querySelectorAll('.tabs .tab')].map((t) => ({ 'label': (t.textContent || '').trim(), 'on': t.classList.contains('on') }));
@@ -436,10 +468,9 @@ const landed = await ev(`(() => {
     'hasList': !!document.querySelector('.gw'),
   };
 })()`);
-console.log(`  版本列表「${entry}」→ ` + JSON.stringify(landed));
-check('★ H1 「新装一个」把人送到**下载页**', landed?.page === '下载', String(landed?.page));
-check('★ H2 而且落在「安装游戏」那一格', landed?.onTab === '安装游戏', String(landed?.onTab));
-check('★ H3 落地的就是版本清单', landed?.hasList === true);
+console.log('  侧栏「下载」→ ' + JSON.stringify(landed));
+check('★ H2 侧栏「下载」照样到下载页', landed?.page === '下载', String(landed?.page));
+check('★ H3 而且落地的就是版本清单', landed?.hasList === true);
 
 /* ---------- I：弹窗形态没被牵连 ----------
  *

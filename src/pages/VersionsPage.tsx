@@ -27,7 +27,6 @@ import {
   IconInfo,
   IconMore,
   IconPlay,
-  IconPlus,
   IconPuzzle,
   IconRefresh,
 } from '../ui/Icons';
@@ -530,10 +529,21 @@ export function VersionsPage() {
         </div>
         <div className="page-actions">
           {/*
-            ★★ 2026-09-25（用户）：「版本列表在合适位置把『新建/切换』移过来，
-              文本改成『新建/切换游戏目录』，要按钮样式，而不是纯文本了」。
-            ⇒ 常驻在这一页的右上角（与「重新探测」并排）—— 换文件夹是这个启动器
-              最常用的动作之一，不该藏在设置页里。
+            ★★ 2026-09-28（用户，截图）：**这一页的"新建/下载实例"按钮全部删掉**。
+
+              原话：「这个界面有一堆重复按键，删除中间的和右上角全部的新建/下载实例，
+              删除中间的切换文件夹按键；同时把那几个按钮的底层代码也要废除，
+              也就是**永远不再加回来了**」。
+
+              删掉的是（四个）：
+                · 右上角「新建版本」—— 派发 `ieml:create` 打开创建实例弹窗；
+                · 右上角「新装一个」—— 跳下载页第一格；
+                · 中间空状态「去下载页装一份」—— 与上面那个是同一件事；
+                · 中间空状态「新建/切换游戏目录」—— 与右上角那个是同一个动作。
+              ⇒ 这一页只回答"**这个文件夹里有什么**"；要装东西去「下载」页，
+                要换文件夹用右上角那一个按钮（同一个动作只留一处入口）。
+              ★ 不许再加回来：`ieml:create` 的另一个入口在实例设置页
+                （`InstanceSetup.tsx`），创建实例这条路没有断，只是不在这一页。
           */}
           <Button size="sm" variant="secondary" onClick={() => setRootPicker(true)}>
             <IconFolder /> 新建/切换游戏目录
@@ -569,21 +579,6 @@ export function VersionsPage() {
               <IconDownload /> 导入其他启动器
             </Button>
           ) : null}
-          {/*
-            ★★ 2026-09-28：**新建版本**（弹窗）的入口。
-              这个弹窗（`CreateInstanceModal`）一直存在、却只在"一个实例都没有"的
-              空状态里能被打开 —— 也就是说**已经装了东西的用户根本找不到它**
-              （这是他建第二个版本时最自然的动作）。
-              它和下载页的「安装游戏」是同一件事（同一个 `InstallComposer`），
-              所以这里只是给同一件事补一个顺手的位置。
-          */}
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => window.dispatchEvent(new CustomEvent('ieml:create'))}
-          >
-            <IconPlus /> 新建版本
-          </Button>
           {api ? (
             <Button
               size="sm"
@@ -597,9 +592,6 @@ export function VersionsPage() {
               <IconRefresh /> 重新探测
             </Button>
           ) : null}
-          <Button variant="primary" size="sm" onClick={() => goDownloadTab('game')}>
-            <IconPlus /> 新装一个
-          </Button>
         </div>
       </div>
 
@@ -652,20 +644,14 @@ export function VersionsPage() {
                   icon={<IconBox />}
                   title="这个文件夹里没有可用的版本"
                   /*
-                   * ★★ 2026-09-25（用户）：「图二这个描述不要」
-                   *   ⇒ 那两行说明删掉。该说的话由按钮说：
-                   *     要装新版就「去下载页装一份」，要换文件夹就「新建/切换游戏目录」。
+                   * ★★ 2026-09-28（用户，截图）：这一格原来有两个按钮
+                   *   （「去下载页装一份」+「新建/切换游戏目录」）—— 与右上角那排
+                   *   是同一批动作，用户要求**全部删掉、永远不再加回来**。
+                   *   这一页只说事实：当前这个文件夹里没有可用的版本；
+                   *   文件夹路径就写在页头（「N 个版本 · 文件夹 …」），
+                   *   要换文件夹用右上角那一个按钮，要装东西去「下载」页。
+                   *   ★ 那句话以前由按钮说，现在由页头说（信息没有丢）。
                    */
-                  actions={
-                    <>
-                      <Button variant="primary" onClick={() => goDownloadTab('game')}>
-                        <IconBox /> 去下载页装一份
-                      </Button>
-                      <Button variant="secondary" onClick={() => setRootPicker(true)}>
-                        <IconFolder /> 新建/切换游戏目录
-                      </Button>
-                    </>
-                  }
                 />
               </div>
             );
