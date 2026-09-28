@@ -16,6 +16,8 @@ import {
   availableFilters, hashCacheKey, oldFilesToDrop,
 } from '../src/domain/mods.ts';
 import { compareVersion, forgeVersionSatisfies, parseRange, inRange } from '../src/domain/version.ts';
+/* ★ 整合包实例的 Mod 更新锁定（ADR-018 第 ⑥ 条） */
+import { modUpdateLock } from '../src/domain/pack-lock.ts';
 
 /* ====================== 加载器能力表 ====================== */
 
@@ -806,7 +808,23 @@ test('Java 四模式：找不到时给出可行动的说明', () => {
  *   这里删掉不是"少测了"，而是**不再让两份规则同时存在**。
  */
 
-/* ====================== Mod 状态（核心源码事实） ====================== */
+/* ====================== 整合包实例的 Mod 更新锁定（ADR-018 ⑥） ====================== */
+
+test('整合包实例：单个 Mod 的更新被锁住，并说得出为什么', () => {
+  const lock = modUpdateLock({ name: 'RLCraft', version: '2.9.3', source: 'curseforge' });
+  assert.equal(lock.locked, true);
+  // ★ 理由里必须**点名是哪个包**（只说"不能更新"，用户会以为启动器坏了）
+  assert.match(lock.reason, /RLCraft/);
+  assert.match(lock.reason, /2\.9\.3/);
+  // 而且要给出路：整包更新才是正确的做法
+  assert.match(lock.reason, /清单|整合包/);
+});
+
+test('不是整合包的实例：不锁（误锁会让用户连自己装的 Mod 都更新不了）', () => {
+  const lock = modUpdateLock(null);
+  assert.equal(lock.locked, false);
+  assert.ok(lock.reason.length > 0, '放开也要说得出理由');
+});
 
 test('★ 启用判定只看扩展名，认 .zip', () => {
   assert.equal(isEnabled('sodium.jar'), true);

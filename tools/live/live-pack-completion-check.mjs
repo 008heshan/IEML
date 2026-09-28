@@ -43,6 +43,12 @@ const EXE =
 const T = process.env.TEMP ?? '.';
 const ROOT = path.join(T, 'ieml-completion-root');
 const OWN = path.join(T, 'ieml-completion-own');
+/*
+ * ★ `APPDATA` 也必须落进沙盒：启动时的"数据根补齐"（`migrate_data_root`）
+ *   会拿**真实**的 `%APPDATA%\IEML` 当源复制一份进来（`probe-a4-fixed.mjs` 记录过）。
+ *   不设它，沙盒里就混着用户的真实实例与设置 —— 判据到底量的是谁就说不清了。
+ */
+const FAKE_APPDATA = path.join(T, 'ieml-completion-appdata');
 const PACK = path.join(T, 'ieml-completion-pack.mrpack');
 const MC = path.join(ROOT, '.minecraft');
 const SLUG = 'comp-probe';
@@ -104,8 +110,9 @@ function makeZip(entries) {
 }
 
 /* ---------- 沙盒 ---------- */
-for (const d of [ROOT, OWN]) rmSync(d, { recursive: true, force: true });
+for (const d of [ROOT, OWN, FAKE_APPDATA]) rmSync(d, { recursive: true, force: true });
 mkdirSync(OWN, { recursive: true });
+mkdirSync(FAKE_APPDATA, { recursive: true });
 const game = path.join(ROOT, 'instances', SLUG, 'game');
 mkdirSync(path.join(game, 'mods'), { recursive: true });
 
@@ -171,7 +178,7 @@ writeFileSync(PACK, makeZip([['modrinth.index.json', JSON.stringify(index, null,
 const { ev, pid, ws } = await launch({
   exe: EXE,
   tag: 'complive',
-  env: { IEML_DATA_DIR: ROOT, IEML_OWN_DIR: OWN },
+  env: { IEML_DATA_DIR: ROOT, IEML_OWN_DIR: OWN, APPDATA: FAKE_APPDATA },
   keepDataDir: true,
   settleMs: 3000,
 });
