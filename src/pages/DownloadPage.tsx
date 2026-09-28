@@ -761,10 +761,15 @@ function ModpackTab({
        *   于是任务中心的「继续」「重试」对它静默失效（审计发现）。
        *   注册之后这两个按钮对整合包也真的能用（断点续传靠 .part）。
        */
+      /*
+       * ★ 2026-09-28（0.18.2）：整合包这三条安装也**跟着设置里的「下载源」走**
+       *   （以前写死 `'bmclapi'`）—— 用户在设置里选的那一档，装的每一步都该照做。
+       */
+      const src = state.prefs.downloadSource;
       const doInstall = () =>
         isCf && cfIds
           ? api.modpack.cfInstall(
-              { ...cfIds, name: packName, slug, taskId, instanceName: packName, source: 'bmclapi' },
+              { ...cfIds, name: packName, slug, taskId, instanceName: packName, source: src },
               (e) => {
                 patch({
                   detail: e.stage,
@@ -781,7 +786,7 @@ function ModpackTab({
                 slug,
                 taskId,
                 instanceName: packName,
-                source: 'bmclapi',
+                source: src,
                 /*
                  * ★ 把包体大小交给后端：包体是一个大文件，**没有体积就没有百分比**
                  *   （那一段会如实停在 0%，看起来像卡住）。Modrinth 的文件信息里有 size。
@@ -996,7 +1001,14 @@ function ModpackTab({
       window.dispatchEvent(new CustomEvent('ieml:task-patch', { detail: { id: taskId, patch: p } }));
     const doInstall = () =>
       api.modpack.installLocal(
-        { path, name: packName, slug, taskId, instanceName: packName, source: 'bmclapi' },
+        {
+          path,
+          name: packName,
+          slug,
+          taskId,
+          instanceName: packName,
+          source: state.prefs.downloadSource,
+        },
         (e) => {
           patch({
             detail: e.stage,

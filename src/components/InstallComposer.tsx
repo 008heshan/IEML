@@ -181,8 +181,7 @@ export function InstallComposer({
   onCancel,
   onStepChange,
 }: InstallComposerProps) {
-  const { state, createInstance, toast } = useApp();
-  const { api } = useRealApi();
+  const { state, createInstance, toast } = useApp();  const { api } = useRealApi();
 
   /* ====================== 版本清单 ====================== */
   const [rows, setRows] = useState<ManifestRow[]>([]);
@@ -190,12 +189,13 @@ export function InstallComposer({
   const [manifestLoading, setManifestLoading] = useState(false);
   const [manifestError, setManifestError] = useState<string | null>(null);
   /*
-   * ★★ 2026-09-23：下载源**不再是用户的选择**（用户："下载页的这个才是要删的"）——
-   *   固定「自动」：官方优先、慢或失败自动换镜像（见 Rust `parse_source`）。
-   *   这里保留常量而不是删掉变量：下面几处调用（取清单 / 取加载器版本）都要显式传它，
-   *   传一个具名常量比到处写字符串更不容易写错。
+   * ★★ 2026-09-23：下载源**不在这一页选**（用户："下载页的这个才是要删的"）。
+   *   ★ 2026-09-28（0.18.2）改：以前这里写死 `'auto'` —— 于是**设置页那个
+   *     「下载源」选择器对装游戏完全不起作用**（用户在设置里选「只用 BMCLAPI 镜像」，
+   *     装的却是"官方优先"）。用户报的正是这件事：「当选择只选择镜像时，会触发这个」。
+   *     现在读设置里那一项（默认 auto = 官方优先、慢或失败换镜像）。
    */
-  const source = 'auto' as const;
+  const source = state.prefs.downloadSource;
   const [channel, setChannel] = useState<Channel>('release');
   /**
    * 世代分组的折叠状态（用户建议："做一个版本折叠功能"）。

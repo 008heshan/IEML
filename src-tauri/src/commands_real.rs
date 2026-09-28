@@ -570,7 +570,9 @@ pub async fn fetch_version_json(
         .find(|v| v.id == mc_version)
         .ok_or_else(|| format!("清单里没有版本 {mc_version}"))?;
 
-    let v: VersionJson = net::get_json(&entry.url).await.map_err(err)?;
+    let v: VersionJson = metadata::version_json_by_source(&mc_version, &entry.url, src)
+        .await
+        .map_err(err)?;
 
     Ok(VersionDetail {
         id: v.id.clone(),
@@ -2896,7 +2898,9 @@ async fn build_plan_input(
         .iter()
         .find(|v| v.id == mc_version)
         .ok_or_else(|| format!("清单里没有版本 {mc_version}"))?;
-    let vanilla: VersionJson = net::get_json(&entry.url).await.map_err(err)?;
+    let vanilla: VersionJson = metadata::version_json_by_source(mc_version, &entry.url, source)
+        .await
+        .map_err(err)?;
 
     // 加载器：Fabric / Quilt 用 profile JSON 直接合并；Forge / NeoForge 只能跑安装器
     let merged = match loader_kind {

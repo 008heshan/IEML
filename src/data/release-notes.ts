@@ -84,6 +84,24 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.18.2',
+    date: '2026-09-28',
+    headline: '这一版修了"在设置里选了只用镜像、装游戏却还在连官方源"的问题。',
+    groups: [
+      {
+        title: '修复了',
+        items: [
+          '修复了 选了「只用 BMCLAPI 镜像」装游戏时仍去连官方源、卡住后失败的问题。',
+          '修复了 设置里的「下载源」对装游戏与装整合包不起作用的问题。',
+        ],
+      },
+      {
+        title: '修改了',
+        items: ['修改了 若干启动器底层事项。'],
+      },
+    ],
+  },
+  {
     version: '0.18.1',
     date: '2026-09-28',
     headline: '这一版删掉了版本列表页上重复的按钮：这一页只回答"这个文件夹里有什么"。',
