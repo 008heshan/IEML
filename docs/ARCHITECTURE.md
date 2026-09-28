@@ -1052,15 +1052,21 @@ fn pick_update_target(
 「此实例由整合包管理，作者未提供新版本清单」。若整合包有新 manifest，走**整合包整体更新**流程，
 而不是一个个 Mod 单独更新——因为整合包作者验证过的是一整套组合。
 
-> **★ 已落地（0.15.0）**：这句话现在真的生效 —— 判定归
-> `src/domain/pack-lock.ts::modUpdateLock`（唯一事实来自后端的 `pack_info`，
-> 读的是安装时写下的 `<实例>/pack-record.json`），界面在 `ModsPanel.tsx`
-> 把「检查更新」置灰并显示同一个理由。
-> 真机判据 8 条（`tools/live/live-pack-lock-check.mjs`），
-> 其中**对照组**（自己建的实例按钮仍可用）是必需的 —— 没有它这条判据可以永远绿。
-> 实现记录见 [`DECISIONS.md` ADR-018 ⑥](./DECISIONS.md)。
-> ★ 还欠一句："有新 manifest 就走整包更新"那半句**没有**落地（要向平台问包的新版本，
-> 见 ADR-025 第 4 条），今天界面上的理由句只说到"作者没有提供新版清单"为止。
+> **★ 已落地（0.15.0 / 0.17.0）**：这两半现在都真的生效了。
+> * **锁**：判定归 `src/domain/pack-lock.ts::modUpdateLock`（唯一事实来自后端的 `pack_info`，
+>   读的是安装时写下的 `<实例>/pack-record.json`），界面在 `ModsPanel.tsx`
+>   把「检查更新」置灰并显示同一个理由。
+>   真机判据 8 条（`tools/live/live-pack-lock-check.mjs`），
+>   其中**对照组**（自己建的实例按钮仍可用）是必需的 —— 没有它这条判据可以永远绿。
+> * **整包更新**（0.17.0）：记录里补上包在平台上的身份（`project_id` / `version_id`），
+>   于是"作者有没有发新版"问得出来了。判定在 `domain::pack_update`（13 条单测：
+>   版本号比较、同 MC 才给原地升、比不出来就说比不出来、对齐计划四分类），
+>   升级走**与安装同一条路**（只是 slug 是已有实例）+ 一步"按新清单对齐"
+>   （作者删掉的文件移进 `<实例>/pack-removed/`，不是删除）。
+>   真机判据 11 条（`tools/live/live-pack-update-check.mjs`）。
+> * **仍然没做**：CurseForge 的包查不了更新（接口完全不同，如实说"这条路只支持
+>   Modrinth"）；`modpack.config` 第 4 条"修正 Java 需求"。
+>   实现记录见 [`DECISIONS.md` ADR-018 ⑥ / ADR-025](./DECISIONS.md)。
 
 #### Mod 管理页的信息结构
 

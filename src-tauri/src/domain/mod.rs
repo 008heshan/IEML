@@ -23,6 +23,8 @@ pub mod modpack_export;
 pub mod mods;
 /// ★ 整合包安装记录与"装全了没有"（ADR-025 的 Completion 阶段）—— 纯判定，不做下载
 pub mod pack_record;
+/// ★ 整合包**有没有新版本**、新清单会让盘上换掉哪些文件（ADR-025 第 4 条）—— 纯判定，不碰网络
+pub mod pack_update;
 pub mod resources;
 pub mod types;
 pub mod validate;
