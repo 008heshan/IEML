@@ -84,6 +84,23 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.18.0',
+    date: '2026-09-28',
+    headline: '这一版过了保鲜期的本地清单不再让你干等：先用旧的，后台自动换新。',
+    groups: [
+      {
+        title: '优化了',
+        items: [
+          '优化了 打开需要联网清单的地方不再干等：先用本地那份，后台自动换成最新的。',
+        ],
+      },
+      {
+        title: '修改了',
+        items: ['修改了 若干启动器底层事项。'],
+      },
+    ],
+  },
+  {
     version: '0.17.0',
     date: '2026-09-28',
     headline: '这一版整合包能查作者有没有发新版了，有新版可以一键原地升级。',

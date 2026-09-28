@@ -278,9 +278,24 @@ export function VersionsPage() {
     // 切回窗口时立刻补一次（用户刚在别处装完东西，最可能这时候回来看）
     const onFocus = () => void refreshDisk();
     window.addEventListener('focus', onFocus);
+    /*
+     * ★★ ADR-008 的"增量更新"：后端"先返回缓存、后台刷新"之后会发
+     *   `meta-refreshed` —— 收到就**立刻**重读一次，而不是等下一轮 5 秒轮询。
+     *   （没有这条也能自愈：那 5 秒的轮询会把它捡回来；有它则是"刚新就新"。）
+     */
+    let unlisten: (() => void) | null = null;
+    void (async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        unlisten = await listen('meta-refreshed', () => void refreshDisk());
+      } catch {
+        /* 浏览器演示模式没有事件总线：轮询那一条仍然管用 */
+      }
+    })();
     return () => {
       window.clearInterval(t);
       window.removeEventListener('focus', onFocus);
+      unlisten?.();
     };
   }, [refreshDisk]);
 
