@@ -84,6 +84,24 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.18.1',
+    date: '2026-09-28',
+    headline: '这一版删掉了版本列表页上重复的按钮：这一页只回答"这个文件夹里有什么"。',
+    groups: [
+      {
+        title: '删除了',
+        items: [
+          '删除了 版本列表页上重复的入口：新建版本、新装一个、去下载页装一份。',
+          '删除了 空状态里那个"新建/切换游戏目录"，以及那一格里多余的两个按钮。',
+        ],
+      },
+      {
+        title: '修改了',
+        items: ['修改了 若干启动器底层事项。'],
+      },
+    ],
+  },
+  {
     version: '0.18.0',
     date: '2026-09-28',
     headline: '这一版过了保鲜期的本地清单不再让你干等：先用旧的，后台自动换新。',
