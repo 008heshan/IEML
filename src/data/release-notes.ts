@@ -84,6 +84,27 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.18.3',
+    date: '2026-09-29',
+    headline: '这一版装游戏不用再等资源文件了：先装能启动的，材质与声音在首次启动时后台补齐。',
+    groups: [
+      {
+        title: '新增了',
+        items: ['新增了 装游戏只下能启动的部分，资源文件改成首次启动时后台补齐。'],
+      },
+      {
+        title: '修复了',
+        items: [
+          '修复了 选了「只用 BMCLAPI 镜像」时装 Fabric 或 Quilt 加载器仍去连官方源、卡住后失败的问题。',
+        ],
+      },
+      {
+        title: '修改了',
+        items: ['修改了 若干启动器底层事项。'],
+      },
+    ],
+  },
+  {
     version: '0.18.2',
     date: '2026-09-28',
     headline: '这一版修了"在设置里选了只用镜像、装游戏却还在连官方源"的问题。',

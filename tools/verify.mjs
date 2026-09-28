@@ -490,7 +490,25 @@ results.push([
  *   + 内容比对（brotli q9 字节流，或解压后逐字节）。
  */
 const releaseExe = join(root, 'src-tauri', 'target', 'release', 'ieml.exe');
-if (existsSync(releaseExe)) {
+/*
+ * ★★ 2026-09-29：`--skip-embed` —— 迭代期跳过这一项（它一个人要 3~13 分钟）。
+ *
+ *   实测：这一项在本机跑过 193 秒、也跑过 760 秒（它要把 exe 里的前端资源
+ *   解出来逐字节比）。而迭代时我**每改一次前端就要跑一遍 verify** ——
+ *   那 3~13 分钟就是纯等待。
+ *
+ *   ⇒ 迭代期用 `node tools/verify.mjs --skip-embed`（其余 34 项照跑），
+ *     **发版前必须跑一次全量**（发布链里带着，不许跳）。
+ *   ★ 与 `--skip-rust` 同一条纪律：跳过就当场打印、总结里写明"跳过 N 项"，
+ *     绝不出现"少跑了却只打印全部通过"。
+ */
+const skipEmbed = process.argv.includes('--skip-embed');
+if (skipEmbed) {
+  console.log(
+    '\n\x1b[33m▶ --skip-embed：跳过「exe 内嵌前端一致性」（它一个人要 3~13 分钟；★ 发版前要跑全量）\x1b[0m',
+  );
+  skipped.push('exe 内嵌前端一致性（--skip-embed）');
+} else if (existsSync(releaseExe)) {
   results.push([
     'exe 内嵌前端一致性',
     run('exe 内嵌前端一致性', 'node', ['tools/gates/check-frontend-embedded.mjs']),
@@ -522,7 +540,7 @@ const failed = results.filter(([, ok]) => !ok);
  */
 const skipNote =
   skipped.length > 0
-    ? `\x1b[33m（★ 跳过 ${skipped.length} 项：${skipped.join('、')} —— 这两项只在 Windows 上跑）\x1b[0m`
+    ? `\x1b[33m（★ 跳过 ${skipped.length} 项：${skipped.join('、')}）\x1b[0m`
     : '';
 if (failed.length === 0) {
   console.log(`\x1b[32m跑过的 ${results.length} 项检查全部通过\x1b[0m${skipNote}`);

@@ -897,6 +897,69 @@ mod version_json_source_tests {
             assert!(!url.contains("mojang"), "{url}");
         }
     }
+
+    /* ====================== 加载器 profile（0.18.3 的同一个 bug） ====================== */
+
+    /// ★★ 用户报的第二处现场：`请求 https://meta.fabricmc.net/v2/versions/loader/26.3/0.19.5/profile/json
+    ///    超过 10 秒没有回应` —— 而镜像那条路实测 200 / 519 ms。
+    ///    ⇒ 只用镜像时，**第一个候选必须是镜像地址**。
+    #[test]
+    fn loader_profile_is_mirror_first_when_source_is_bmclapi() {
+        let c = loader_profile_candidates(
+            crate::net::mirror::FABRIC_META,
+            "26.3",
+            "0.19.5",
+            Source::Bmclapi,
+        );
+        assert_eq!(
+            c.first().map(|s| s.as_str()),
+            Some("https://bmclapi2.bangbang93.com/fabric-meta/v2/versions/loader/26.3/0.19.5/profile/json"),
+            "只用镜像 ⇒ 第一个候选是镜像的 profile 地址：{c:?}"
+        );
+        assert!(
+            !c[0].contains("meta.fabricmc.net"),
+            "第一个候选里不许出现官方域名：{}",
+            c[0]
+        );
+        assert_eq!(
+            c.get(1).map(|s| s.as_str()),
+            Some("https://meta.fabricmc.net/v2/versions/loader/26.3/0.19.5/profile/json"),
+            "官方地址留着兜底"
+        );
+    }
+
+    /// 只用官方 ⇒ 官方在前、镜像兜底（官方挂 12 秒时还能落到 0.4 秒的镜像上）
+    #[test]
+    fn loader_profile_is_official_first_when_source_is_mojang() {
+        let c = loader_profile_candidates(
+            crate::net::mirror::FABRIC_META,
+            "1.20.1",
+            "0.15.11",
+            Source::Mojang,
+        );
+        assert_eq!(
+            c.first().map(|s| s.as_str()),
+            Some("https://meta.fabricmc.net/v2/versions/loader/1.20.1/0.15.11/profile/json")
+        );
+        assert!(
+            c.iter().any(|u| u.contains("bmclapi2.bangbang93.com/fabric-meta/")),
+            "官方不通时要有镜像兜底：{c:?}"
+        );
+    }
+
+    /// Quilt 也走同一个函数（BMCLAPI 不镜像 Quilt ⇒ 镜像那条会 404，
+    /// 但它是**快速失败**，比官方 40 秒超时好得多）
+    #[test]
+    fn quilt_profile_follows_the_same_shape() {
+        let c = loader_profile_candidates(
+            crate::net::mirror::QUILT_META,
+            "1.20.1",
+            "0.20.0",
+            Source::Bmclapi,
+        );
+        assert!(c[0].contains("quilt-meta/"), "{c:?}");
+        assert!(c[1].contains("meta.quiltmc.org"), "{c:?}");
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1682,15 +1745,101 @@ pub async fn fabric_loaders(mc_version: &str, source: Source) -> Result<Vec<Fabr
 
 /// ★ 关键：Fabric 不自带 installer jar 的运行逻辑，而是给出**一份 profile JSON**，
 ///   里面已经写好了 mainClass / libraries / arguments。直接用它可以省掉跑安装器。
-pub async fn fabric_profile(mc_version: &str, loader_version: &str) -> Result<VersionJson> {
-    let url = format!("{FABRIC_META}/versions/loader/{mc_version}/{loader_version}/profile/json");
-    get_json(&url).await
+///
+/// ★★ 2026-09-28（0.18.3）修的真 bug：**这里原来写死官方 `meta.fabricmc.net`，
+///   完全不看用户选的源。** 用户报的现场（截图逐字）：
+///
+/// ```text
+/// 请求 https://meta.fabricmc.net/v2/versions/loader/26.3/0.19.5/profile/json 超过 10 秒没有回应
+/// ```
+///
+///   而 `mirror.rs` 自己早就实测记着这一条（2026-09-16）：
+///
+/// ```
+/// | /v2/versions/loader/{mc}/{v}/profile/json | 官方 超时 12s | BMCLAPI 0.38s |
+/// ```
+///
+///   ⇒ 修法与版本 JSON 同一套（也是同一天同一个 bug 的第二个落点）：
+///     **按源给候选，镜像那条排前面**。实测镜像这条路对出事的那个版本是通的：
+///     `/fabric-meta/v2/versions/loader/26.3/0.19.5/profile/json` → 200、2.8 KB、519 ms。
+pub async fn fabric_profile(
+    mc_version: &str,
+    loader_version: &str,
+    source: Source,
+) -> Result<VersionJson> {
+    let candidates = loader_profile_candidates(FABRIC_META, mc_version, loader_version, source);
+    fetch_first_json(&candidates, "Fabric profile").await
 }
 
 /// Quilt 的 profile JSON（Quilt Meta 可达，maven 不可达，所以必须用 profile 方式）
-pub async fn quilt_profile(mc_version: &str, loader_version: &str) -> Result<VersionJson> {
-    let url = format!("{QUILT_META}/versions/loader/{mc_version}/{loader_version}/profile/json");
-    get_json(&url).await
+pub async fn quilt_profile(
+    mc_version: &str,
+    loader_version: &str,
+    source: Source,
+) -> Result<VersionJson> {
+    let candidates = loader_profile_candidates(QUILT_META, mc_version, loader_version, source);
+    fetch_first_json(&candidates, "Quilt profile").await
+}
+
+/// 加载器 profile 的候选地址（**第一个是最该用的**）—— 纯函数，可单测。
+///
+/// 形状与 `version_json_candidates` / `mirror::candidate_urls` 一致：
+/// `[首选源, 另一个兜底]`。
+pub fn loader_profile_candidates(
+    base: &str,
+    mc_version: &str,
+    loader_version: &str,
+    source: Source,
+) -> Vec<String> {
+    let official = format!("{base}/versions/loader/{mc_version}/{loader_version}/profile/json");
+    let mirrored = crate::net::mirror::mirror_url(&official, Source::Bmclapi);
+    let has_mirror = mirrored != official;
+    let mut out: Vec<String> = Vec::new();
+    match source {
+        Source::Bmclapi => {
+            if has_mirror {
+                out.push(mirrored.clone());
+            }
+            out.push(official);
+        }
+        Source::Mojang => {
+            out.push(official);
+            if has_mirror {
+                out.push(mirrored);
+            }
+        }
+    }
+    out
+}
+
+/// 依次试候选，第一个成功就返回；都失败时把**每一个**原因拼进错误里。
+///
+/// ★ 与 `version_json_by_source` 同一套行为，所以"选了源之后到底试了哪些地址"
+///   在日志与报错里都看得见（这次两个 bug 都是靠这个查出来的）。
+async fn fetch_first_json(candidates: &[String], what: &str) -> Result<VersionJson> {
+    if candidates.is_empty() {
+        return Err(NetError::Other(format!("{what} 没有任何可用的地址")));
+    }
+    let mut tried: Vec<String> = Vec::new();
+    for (i, url) in candidates.iter().enumerate() {
+        match get_json::<VersionJson>(url).await {
+            Ok(v) => {
+                if i > 0 {
+                    say!("[IEML/meta] {what}：前一个地址不行，改用 {url}");
+                }
+                return Ok(v);
+            }
+            Err(e) => {
+                say!("[IEML/meta] {what} 取不到（{url}）：{e}");
+                tried.push(format!("{url}：{e}"));
+            }
+        }
+    }
+    Err(NetError::Other(format!(
+        "{what} 取不到。试过 {} 个地址：{}",
+        tried.len(),
+        tried.join("；")
+    )))
 }
 
 pub async fn quilt_loaders(mc_version: &str, source: Source) -> Result<Vec<FabricLoaderEntry>> {

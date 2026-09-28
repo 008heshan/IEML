@@ -327,7 +327,8 @@ async function installVersionFromManifest(
     });
 
     const result = await api.installer.install(
-      { mcVersion, source, taskId, downloadAssets: true, concurrency },
+      // ★ 与 `installGame` 同一口径：资源文件不在安装时下（用户 2026-09-29 的建议）
+      { mcVersion, source, taskId, downloadAssets: false, concurrency },
       (p) => {
         patchTask(taskId, {
           percent: p.percent,
@@ -357,7 +358,7 @@ async function installVersionFromManifest(
     patchTask(taskId, {
       status: 'done',
       percent: 100,
-      detail: `${result.libraries} 个库 · ${result.assets} 个资源文件`,
+      detail: `${result.libraries} 个库 · 资源文件留给启动时后台补`,
     });
     pendingJobs.delete(taskId);
     return 'done';
@@ -398,6 +399,21 @@ export async function installGame(opts: {
   /** 触发时给用户看的加载器名（用于标题） */
   loaderName?: string;
   reuseTaskId?: string;
+  /**
+   * ★★ 要不要在**这一步**就把资源文件（材质 / 声音 / 语言，几百 MB）下完。
+   *
+   *   用户 2026-09-29 的建议（原话）：
+   *   「游戏下载也是很慢，我的建议是**下 jar，第一次启动游戏补全文件**
+   *     （这只是描述，具体还得看 PCL 的实现方法）」。
+   *
+   *   实测支撑：本机到 mcimirror 的 CDN 只有 ~66 KB/s（2.5 MB 的 Fabric API 用了 37 秒），
+   *   官方 CDN 直接连不上 —— 一整套 26.3 的 582 MB 资源文件要下几个小时。
+   *   而"能不能启动"只取决于 **客户端 jar + 库 + 版本描述**：
+   *     · 库：启动前的自愈（`repair_missing`，见 `commands_real` 的启动分支）会同步补齐；
+   *     · 资源：**不挡启动** —— 缺的是贴图/声音，游戏照进，后台补齐即可。
+   *   ⇒ 默认 `false`（先装能启动的），启动后再由 `completeAssetsInBackground` 补。
+   */
+  downloadAssets?: boolean;
 }): Promise<InstallOutcome> {
   const {
     mcVersion,
@@ -407,6 +423,7 @@ export async function installGame(opts: {
     concurrency = 64,
     loaderName,
     reuseTaskId,
+    downloadAssets = false,
   } = opts;
 
   const api = await getRealApi();
@@ -457,7 +474,7 @@ export async function installGame(opts: {
         loaderVersion,
         source,
         taskId,
-        downloadAssets: true,
+        downloadAssets,
         concurrency,
       },
       (p) => {
@@ -483,7 +500,9 @@ export async function installGame(opts: {
     patchTask(taskId, {
       status: 'done',
       percent: 100,
-      detail: `${result.libraries} 个库 · ${result.assets} 个资源文件`,
+      detail: downloadAssets
+        ? `${result.libraries} 个库 · ${result.assets} 个资源文件`
+        : `${result.libraries} 个库 · 资源文件留给启动时后台补`,
     });
     pendingJobs.delete(taskId);
     return 'done';
