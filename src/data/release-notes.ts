@@ -84,6 +84,29 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.15.0',
+    date: '2026-09-28',
+    headline: '这一版给整合包实例的 Mod 上了锁：单个 Mod 不能自己更新，免得把作者配好的组合改坏。',
+    groups: [
+      {
+        title: '新增了',
+        items: [
+          '新增了 从整合包装出来的版本会锁住单个 Mod 的更新。',
+          '新增了 锁住的原因写在页面上：是哪个整合包、为什么不给更新。',
+          '新增了 自己建的版本不受影响，照旧可以逐个更新 Mod。',
+        ],
+      },
+      {
+        title: '修复了',
+        items: ['修复了 整合包实例里的 Mod 更新按钮看起来能点、点下去会改坏作者配好的组合的问题。'],
+      },
+      {
+        title: '修改了',
+        items: ['修改了 若干启动器底层事项。'],
+      },
+    ],
+  },
+  {
     version: '0.14.0',
     date: '2026-09-27',
     headline: '这一版装完整合包会自己核对一遍：缺了哪些文件当场告诉你，还能补。',

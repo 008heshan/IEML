@@ -13,6 +13,8 @@ export * from './java.ts';
  *   界面显示的是后端算好的结论（`isolation_verdicts`）。
  */
 export * from './mods.ts';
+/* ★ 整合包实例的 Mod 更新锁定（ADR-018 第 ⑥ 条）—— 纯规则 + 单测 */
+export * from './pack-lock.ts';
 export * from './install-plan.ts';
 export * from './crash.ts';
 export * from './delete.ts';

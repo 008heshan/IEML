@@ -41,7 +41,7 @@ import {
   toggledName,
 } from '../domain/mods.ts';
 import type { ModEntry, ModStateResult } from '../domain/mods.ts';
-import { formatBytes } from '../domain';
+import { formatBytes, modUpdateLock } from '../domain';
 import { EVT_OPEN_MOD_BROWSE } from '../state/events';
 import {
   deleteIntent,
@@ -49,7 +49,7 @@ import {
   trashUnavailablePrompt,
 } from '../domain/delete.ts';
 import { useRealApi } from '../hooks/useRealApi';
-import type { ApiLibStatus, ModUpdateCandidate, ModrinthHit } from '../bridge/tauri';
+import type { ApiLibStatus, ModUpdateCandidate, ModrinthHit, PackInfo } from '../bridge/tauri';
 // ★ 社区资源浏览器：Mod / 资源包 / 光影 / 数据包 共用一套界面
 import { ResourceBrowser } from '../components/ResourceBrowser';
 
@@ -360,6 +360,30 @@ export function ModsPanel() {
   const [checking, setChecking] = useState(false);
   const [updates, setUpdates] = useState<ModUpdateCandidate[]>([]);
   const [checked, setChecked] = useState(false);
+  /**
+   * ★★ 这个实例是不是**从整合包装的**（ADR-025 的记录）——
+   *   ADR-018 第 ⑥ 条据此**锁住单个 Mod 的更新**：
+   *   作者验证过的那套组合，不该被我们一个个换掉（换坏了极难查）。
+   *   `null` = 没有记录 ⇒ 不锁（误锁会让用户连自己装的 Mod 都更新不了）。
+   */
+  const [packInfo, setPackInfo] = useState<PackInfo | null>(null);
+  const packLock = useMemo(() => modUpdateLock(packInfo), [packInfo]);
+  useEffect(() => {
+    if (!api || !active) return;
+    let alive = true;
+    void api.pack
+      .info(active.config.slug)
+      .then((p) => {
+        if (alive) setPackInfo(p);
+      })
+      .catch(() => {
+        /* 读不到记录 = 不是整合包（后端返回 null，不该抛）—— 抛了也别锁 */
+        if (alive) setPackInfo(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [api, active]);
 
   async function checkUpdates() {
     if (!active || !api) {
@@ -715,9 +739,22 @@ export function ModsPanel() {
           </p>
         </div>
         <div className="page-actions">
+          {/*
+            ★★ ADR-018 第 ⑥ 条：**整合包实例不许一个个更新 Mod**。
+              作者验证过的组合被我们换掉一个，崩法极难查 —— 所以这里直接不让查、
+              也不让点，并把理由写在按钮旁边（而不是点下去才弹一句"不行"）。
+              ★ 这一条只对"有安装记录的实例"生效（`pack_info` 读得到）；
+                不是整合包的实例照常能更新。
+          */}
+          {packLock.locked ? (
+            <span className="dim" role="status">
+              {packLock.reason}
+            </span>
+          ) : null}
           <Button
             variant="secondary"
             loading={checking}
+            disabled={packLock.locked}
             onClick={() => void checkUpdates()}
           >
             <IconRefresh /> 检查更新
