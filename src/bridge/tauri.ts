@@ -1388,6 +1388,8 @@ export const modpack = {
        *   而不会编一个看起来在动的百分比。
        */
       size?: number;
+      /** ★ 包版本：写进安装记录（ADR-025）；给不出就不传，记录里写"未知" */
+      packVersion?: string;
     },
     onProgress?: (e: ModpackProgressEvent) => void,
   ): Promise<ModpackInstallResult> => {
@@ -1405,6 +1407,8 @@ export const modpack = {
         taskId: opts.taskId,
         instanceName: opts.instanceName,
         source: opts.source ?? 'bmclapi',
+        // ★ 包版本写进安装记录（ADR-025）：给不出就 null，记录里如实写"未知"
+        packVersion: opts.packVersion ?? null,
         concurrency: opts.concurrency ?? null,
         size: opts.size ?? null,
       });
@@ -1434,6 +1438,8 @@ export const modpack = {
       taskId: string;
       instanceName: string;
       source?: 'auto' | 'mojang' | 'bmclapi';
+      /** ★ 包版本：写进安装记录（ADR-025）；给不出就不传，记录里写"未知" */
+      packVersion?: string;
       concurrency?: number;
     },
     onProgress?: (e: ModpackProgressEvent) => void,
@@ -1455,6 +1461,7 @@ export const modpack = {
         taskId: opts.taskId,
         instanceName: opts.instanceName,
         source: opts.source ?? 'bmclapi',
+        packVersion: opts.packVersion ?? null,
         concurrency: opts.concurrency ?? null,
       });
     } finally {
@@ -1479,6 +1486,8 @@ export const modpack = {
       taskId: string;
       instanceName: string;
       source?: 'auto' | 'mojang' | 'bmclapi';
+      /** ★ 包版本：写进安装记录（ADR-025）；给不出就不传，记录里写"未知" */
+      packVersion?: string;
       concurrency?: number;
     },
     onProgress?: (e: ModpackProgressEvent) => void,
@@ -1497,6 +1506,7 @@ export const modpack = {
         taskId: opts.taskId,
         instanceName: opts.instanceName,
         source: opts.source ?? 'bmclapi',
+        packVersion: opts.packVersion ?? null,
         concurrency: opts.concurrency ?? null,
       });
     } finally {
@@ -1828,6 +1838,57 @@ export const modpackExport = {
       includeSuggested,
       outPath: outPath ?? null,
     }),
+};
+
+/**
+ * ★★ **整合包完整性**（ADR-025 的 Completion 阶段）。
+ *
+ * 装整合包是"下几百个文件"的事：中途断网、某个地址失效 —— 实例看起来都装好了，
+ * 少的那几个 Mod 要等进游戏才发现。这三个命令就是补这一层：
+ *   ① `info`   —— 这个版本是不是从整合包装的（读 `<实例>/pack-record.json`）
+ *   ② `verify` —— 校验盘上齐了没有（缺哪些、大小对不对）
+ *   ③ `repair` —— 补齐缺的（**逐个回报成功与失败**，源失效绝不静默）
+ */
+export interface PackInfo {
+  name: string;
+  version: string;
+  source: string;
+  mc_version: string;
+  loader_kind: string | null;
+  loader_version: string | null;
+  installed_at: number;
+  file_count: number;
+}
+
+export interface PackVerifyReport {
+  total: number;
+  present: number;
+  missing: string[];
+  wrong_size: string[];
+  wrong_hash: string[];
+  /** 缺失**且**清单里没给地址的（补不了，界面要单独说） */
+  no_source: string[];
+  skipped_at_install: string[];
+  /** 装全了吗 */
+  complete: boolean;
+  /** ★ 一句人话（**后端算好的**，界面直接用，不自己拼措辞） */
+  summary: string;
+}
+
+export interface PackRepairResult {
+  repaired: string[];
+  failed: string[];
+  no_source: string[];
+}
+
+export const pack = {
+  /** 这个版本是不是从整合包装的（不是 → null，别编） */
+  info: (slug: string) => call<PackInfo | null>('pack_info', { slug }),
+  /** 校验完整性；`checkHashes` = 逐文件算 SHA1（几百 MB 会花几秒） */
+  verify: (slug: string, checkHashes = false) =>
+    call<PackVerifyReport>('verify_pack_install', { slug, checkHashes }),
+  /** 补齐缺失的（源失效会逐条报失败，不静默） */
+  repair: (slug: string) => call<PackRepairResult>('repair_pack_install', { slug }),
 };
 
 /** 拖进来一个**目录**：里面装成了哪些、跳过了哪些（各带理由） */export interface DroppedDirReport {
