@@ -16,9 +16,8 @@ import { isInstanceRunning } from '../state/store';
 import { EmptyState, Button, Chip, Note, SearchBox, Segmented } from '../ui';
 import { useConfirm } from '../ui/confirm';
 // ★ 版本图标（自绘方块，按世代配色）—— 与下载页、启动页用的是同一个组件
-import { VersionIcon } from '../components/VersionIcon';
 // ★ 行菜单的图标：每个菜单项都要有，视觉效果才统一（用户要求）
-import { IconCopy, IconPencil, IconTrash } from '../ui/Icons';
+import { IconChevronDown, IconCopy, IconPencil, IconTrash } from '../ui/Icons';
 import {
   IconAlert,
   IconBox,
@@ -45,9 +44,15 @@ import {
   describeDelete,
   trashUnavailablePrompt,
 } from '../domain/delete.ts';
-import type { FolderVersion, InstalledLoader } from '../bridge/tauri';
+import type { InstalledLoader } from '../bridge/tauri';
+/*
+ * ★ 2026-09-30：`FolderVersion` 类型与这句 import 一起清掉了 ——
+ *   "还没建实例的版本"那支行删掉之后，这一页不再直接持有 `FolderVersion`。
+ */
 // ★ 2026-09-29：认领版本的规则搬到了 `domain/folder-versions.ts`（启动器的自动认领共用同一份）
-import { instanceFromFolderVersion } from '../domain/folder-versions.ts';
+import { PackIcon } from '../components/PackIcon';
+import type { FolderVersion } from '../bridge/tauri';
+import type { Instance } from '../domain/types';
 import { instanceTitle } from '../state/instance-name';
 
 type Filter = 'all' | 'modded' | 'vanilla';
@@ -101,7 +106,7 @@ function menuLayout(anchor: DOMRect, height: number): MenuPos {
 export function VersionsPage() {
   /** 应用自己的确认弹窗（`window.confirm` 在这个壳里是坏的，见 `ui/confirm.tsx`） */
   const confirm = useConfirm();
-  const { state, goDownloadTab, goDownloadFor, openVersion, toast, removeInstance, duplicateInstance, renameInstance, refreshInstances, createInstance, folder, reloadAfterRootChange } =
+  const { state, goDownloadTab, goDownloadFor, openVersion, toast, removeInstance, duplicateInstance, renameInstance, refreshInstances, folder, reloadAfterRootChange, packIcons, backend } =
     useApp();
   const { api } = useRealApi();
   /** 隔离判定（ADR-005）：后端算好的结论，列表里只显示 */
@@ -320,72 +325,680 @@ export function VersionsPage() {
    *   ★ 匹配规则也搬走了（`domain/folder-versions.ts`）—— 启动页要用同一份。
    */
   const {
+    versions: folderVers,
     instancesInFolder,
-    versionsWithoutInstance,
     reload: reloadFolderVersions,
   } = folder;
 
   /**
-   * 这一页真正列出来的行：**属于当前文件夹的实例** + **还没建实例的版本**，
-   * 两者都吃同一套筛选/搜索。
+   * 这一页真正列出来的行：**属于当前文件夹的实例**。
+   *
+   * ★★ 2026-09-30（用户：「这是不必要的设计，删除它」）：
+   *   这里原来还有第二种行 ——「还没建实例的版本」（带「用它建一个」按钮）。
+   *   现在**盘上有版本、账本里没有的那种会被自动补上记录**（见下面那个 effect），
+   *   补上之后它就是一行普通版本 ⇒ 这一页只剩一种行。
    */
-  const { okRows, newVersions } = useMemo(() => {
-    const idsInFolder = new Set(instancesInFolder.map((i) => i.id));
-    const mine = rows.filter((i) => idsInFolder.has(i.id));
+  /**
+   * 筛选标签「全部 N」用它 —— 与列表**同一个来源**（盘上的版本数）。
+   * ★ 这里原来算的是"账本里对得上的行数"，那是**第二把尺子**（见下面 `listEntries`
+   *   那段说明）：角标按盘上数、标签按账本数，于是同屏出现两个都自认为对的数。
+   */
+  const entriesCount = (folderVers ?? []).length;
+
+  /**
+   * ★★★★ 2026-09-30（用户）：「**这个检测版本，太抽象了，不然咱们学学 PCL 怎么整的**」。
+   *
+   *   ## 这一页以前列的是什么（问题就在这句话里）
+   *
+   *   `listEntries` **只从账本出行** —— 也就是"哪条实例记录能在当前文件夹里找到对应"。
+   *   于是盘上有、账本里没有的版本**一个都不显示**。真机上的后果：
+   *     · `26.3-fabric-0.19.5-2/`（有版本描述、没 jar）
+   *     · `26.2/`（有 jar、没版本描述）
+   *     · `vanilla-262/`（什么都没有）
+   *   三种全都不显示，页头写着「全部 0」——用户**完全看不出盘上有什么**。
+   *   ★ 这一页的注释里一直写着"一个事实只能有一个来源"，而列表用的其实是
+   *     **第二个来源**（账本），角标用的才是盘上。
+   *
+   *   ## 现在按 PCL：**盘上每个版本文件夹都列出来**
+   *
+   *   `ModMinecraft.vb` 的 `McInstance.Check()`：逐个检查、检查不过的
+   *   **照样显示**，只是标成 `Error` 并给一句 `Info` 说原因。
+   *   ⇒ 列表直接来自 `folder.versions`（也就是**磁盘事实**），
+   *     账本只用来**补上"你给它起的名字与设置"**（有记录就用，没有就用目录名）。
+   *
+   *   ★ 于是"版本数量"与"列表行数"从**同一个来源**出，不可能再对不上。
+   */
+  /** 列表条目：一行（`row`）或空状态（`empty`）——显式写出来，免得 TS 推出交叉类型 */
+  type VerEntry =
+    | { kind: 'row'; fv: FolderVersion; inst?: Instance | undefined }
+    | { kind: 'empty' };
+  const listEntries: VerEntry[] = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const extra = versionsWithoutInstance.filter((v) => {
-      if (q && !v.dir.toLowerCase().includes(q) && !v.mcVersion.toLowerCase().includes(q))
+    const shown = (folderVers ?? []).filter((v: FolderVersion) => {
+      if (q && !v.dir.toLowerCase().includes(q) && !v.mcVersion.toLowerCase().includes(q)) {
         return false;
+      }
       if (filter === 'modded') return v.loaderName !== null;
       if (filter === 'vanilla') return v.loaderName === null;
       return true;
     });
-    return { okRows: mine, newVersions: extra };
-  }, [rows, instancesInFolder, versionsWithoutInstance, filter, query]);
+    if (shown.length === 0) return [{ kind: 'empty' as const }];
+    return shown.map((fv: FolderVersion): VerEntry => ({
+      kind: 'row' as const,
+      fv,
+      /* 账本里对得上的那一条（决定显示名 / 内存 / 隔离）—— 可能没有 */
+      inst: instancesInFolder.find((i) => i.config.slug === fv.dir),
+    }));
+  }, [folderVers, instancesInFolder, filter, query]);
 
-  /** 列表里真正要渲染的条目：**这个文件夹里的版本**（没有就空状态） */
-  const listEntries = useMemo(() => {
-    const out: Array<{
-      kind: 'row' | 'new' | 'empty';
-      inst?: (typeof state.instances)[number];
-      fv?: FolderVersion;
-    }> = [];
-    if (okRows.length === 0 && newVersions.length === 0) out.push({ kind: 'empty' });
-    else {
-      for (const inst of okRows) out.push({ kind: 'row', inst });
-      for (const fv of newVersions) out.push({ kind: 'new', fv });
+  /**
+   * ★★★★ 2026-09-30（用户）：「**给不可用的整一个折叠**」。
+   *
+   *   学 PCL 之后，坏掉的版本也列出来了 —— 好处是"看得出盘上有什么"，
+   *   代价是**能用的一行被一堆"不能用"淹掉**（真机上 5 行里 4 行是坏的）。
+   *
+   *   PCL 的列表也是这么分的（正常的在上面、坏掉的折叠在下面）。
+   *   ⇒ 这里按 `ok` 分成两组：**能用的照常列，不能用的收进一个可展开的分组**。
+   *     折叠**默认收起**（"能不能用"这件事已经由页头的数字与这一行的标题说清了），
+   *     但**计数一直显示** —— 收起不等于藏起来，那是两码事。
+   */
+  const [badOpen, setBadOpen] = useState(false);
+  const { goodEntries, badEntries } = useMemo(() => {
+    const good: typeof listEntries = [];
+    const bad: typeof listEntries = [];
+    for (const e of listEntries) {
+      if (e.kind !== 'row') continue;
+      (e.fv!.ok ? good : bad).push(e);
     }
-    return out;
-  }, [okRows, newVersions]);
+    return { goodEntries: good, badEntries: bad };
+  }, [listEntries]);
 
-  /** 用文件夹里已有的版本建一个实例（PCL 里点一下版本就能用） */
-  const [adopting, setAdopting] = useState<string | null>(null);
-  const adoptFolderVersion = useCallback(
-    async (fv: FolderVersion) => {
-      setAdopting(fv.dir);
-      try {
-        /*
-         * ★★ 2026-09-29：拼实例这件事**不再写在这一页里** ——
-         *   启动器的"自动认领"要用同一套规则（见 `instanceFromFolderVersion`）。
-         *   这里只负责点按钮、提示、跳转。
-         */
-        const inst = instanceFromFolderVersion(fv, {
-          takenSlugs: state.instances.map((i) => i.config.slug),
-          totalMemoryGb: state.machine?.totalMemoryGb ?? 16,
-          availableMemoryGb: state.machine?.availableMemoryGb ?? 8,
-        });
-        await createInstance(inst);
-        toast('ok', '已经用这个文件夹里的版本建好实例', `${fv.dir} —— 现在可以启动它了`);
-        openVersion(inst.id);
-      } catch (e) {
-        toast('err', '建实例失败', e instanceof Error ? e.message : String(e));
-      } finally {
-        setAdopting(null);
-      }
-    },
-    [state.instances, state.machine, createInstance, openVersion, toast],
-  );
+  /*
+   * 一行的渲染（两组共用）。
+   *
+   * 2026-09-30：它原来内联在 JSX 的 listEntries.map 里，
+   * 而折叠分组需要把同一批行渲染到两个地方 —— 抽成一个函数，
+   * 两边共用一份实现（不复制 JSX）。
+   */
+  const renderRow = (entry: VerEntry) => {
+    /* 当前文件夹里一个能用的版本都没有（多半是刚换过目录） */
+    if (entry.kind === 'empty') {
+      return (
+        <div key="empty" className="ver-empty">
+          <EmptyState
+            icon={<IconBox />}
+            title="这个文件夹里没有可用的版本"
+            /*
+             * ★★ 2026-09-28（用户，截图）：这一格原来有两个按钮
+             *   （「去下载页装一份」+「新建/切换游戏目录」）—— 与右上角那排
+             *   是同一批动作，用户要求**全部删掉、永远不再加回来**。
+             *   这一页只说事实：当前这个文件夹里没有可用的版本；
+             *   文件夹路径就写在页头（「N 个版本 · 文件夹 …」），
+             *   要换文件夹用右上角那一个按钮，要装东西去「下载」页。
+             *   ★ 那句话以前由按钮说，现在由页头说（信息没有丢）。
+             */
+          />
+        </div>
+      );
+    }
+    /*
+     * ★★★★ 2026-09-30（用户）：「**这个检测版本，太抽象了，不然咱们学学 PCL 怎么整的**」。
+     *
+     *   这一行现在吃的是 **`entry.fv`（盘上那个版本目录）**，`entry.inst`
+     *   只是"账本里恰好有它的记录"时才有 —— 用来补上用户起的名字与设置。
+     *
+     *   ⇒ 两种情况都能显示：
+     *     · 有记录：名字 / 内存 / 隔离都按记录来（用户改过的设置优先）；
+     *     · 没记录：用目录名当名字，其余按"还没配过"处理 ——
+     *       **不是不显示**（那是以前的行为，也正是"看不出盘上有什么"的来源）。
+     */
+    const fv = entry.fv!;
+    const inst = entry.inst ?? null;
+    /* PCL 式的可用性判定（Rust 侧算好的，这里只呈现） */
+    const ok = fv.ok;
+    const showName = inst ? instanceTitle(inst.config.name, fv.mcVersion, inst.loader) : fv.dir;
+    /* 多开实例：判据只有一份（`isInstanceRunning`）；没记录就没有"在跑"可言 */
+    const isRunning = inst ? isInstanceRunning(state, inst.id) : false;
+    const openMenu = menuFor === fv.dir;
+    /*
+     * ★ 盘上与实例记录的**冲突判据**（只在列表行里用，且只产出一个徽标）。
+     *   完整说明在概览页的「版本状态」表里 —— 列表不是讲理的地方。
+     *   ★ 没有记录时不判冲突：没有"记录"就没有"与记录不符"。
+     */
+    const diskLoaders = diskLoadersOf(fv.mcVersion);
+    const conflict = inst ? diskConflictOf(inst, diskLoaders) : null;
+    /*
+     * 菜单里那些操作实例的项需要一个非空的 inst。
+     * 收成这个别名，让 TS 的窄化在 JSX 里也生效 —— 否则每处都要写 inst!，
+     * 而那正是我以为它有记录这类判断失误的来源。
+     */
+    /*
+     * 菜单里那些"操作实例"的项都需要一个非空的 inst。
+     * 这里给一个**替身**：`inst` 为空时用一个不会被看到的默认值 ——
+     * 那些项本来就渲染不出来（见下面的 `{rec.real ? ... : null}`），
+     * 所以替身永远走不到。这样做是为了让 TS 的窄化在回调里成立，
+     * 而不是靠 `inst!` 把一个"我以为它有记录"的假设藏起来。
+     */
+    const rec = {
+      real: inst,
+      id: inst?.id ?? '',
+      name: inst?.config.name ?? fv.dir,
+      slug: inst?.config.slug ?? fv.dir,
+      /*
+       * ★ 目录名（`versions/<这个>`）—— **没有记录时它就是唯一的身份**。
+       *   删除走 `deleteVersionDir(rec.dir)`，所以替身对象里也得有它。
+       */
+      dir: fv.dir,
+      loader: inst?.loader ?? null,
+    };
+    return (
+      <div
+        key={fv.dir}
+        className={`ver-item${isRunning ? ' running' : ''}${ok ? '' : ' ver-item-bad'}`}
+        role="button"
+        tabIndex={0}
+        aria-label={ok ? `打开 ${showName} 的设置` : `${showName} 不可用`}
+        onClick={() => {
+          // ★ 坏掉的版本点不进去（点进去也是一页空设置）—— 原因就写在行里
+          if (inst && ok) openVersion(inst.id);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            if (inst && ok) openVersion(inst.id);
+          }
+        }}
+      >
+        {/*
+          ★★ 版本图标（0.1.0-beta.1）：自绘等距方块，按**世代**配色
+            （现代=绿 / 中期=蓝 / Mod 黄金期=琥珀 / 快照=紫）。
+            以前是一个统一的灰方块或灰层叠图标 —— 一屏四个版本长得
+            一模一样，扫一眼分不出哪个是 1.20、哪个是 1.7.10。
+            ★ 不复制任何官方美术（README 许可那一节说清了）。
 
+          ★★ 2026-09-30（用户）：「整合包显示**整合包自己的图标**，
+            而且要**直接在卡片上，不整那个跟槽一样的东西**」。
+            ⇒ 有作者图标就用它（装包时从包体里抽出来留的），
+              没有才退回上面那个自绘方块。两者的取舍收在 `PackIcon` 里。
+        */}
+        <PackIcon icon={packIcons[fv.dir]} version={fv.mcVersion} size={34} />
+
+        {/* 中间：名称与元信息（一行主 + 一行次；冲突只给徽标） */}
+        <div className="ver-info">
+          <div className="ver-title">
+            {/* ★ 2026-09-22：标题统一走 instanceTitle()（"Minecraft 1.12.2 ：原版" 那种格式） */}
+            <span className="ver-title-name truncate">{showName}</span>
+            {isRunning ? <Chip tone="success">运行中</Chip> : null}
+            {inst?.addons.map((a) => (
+              <Chip key={a.kind} tone="neutral">
+                {a.kind === 'optifine' ? 'OptiFine' : 'LiteLoader'}
+              </Chip>
+            ))}
+            {/*
+              ★ 记录与盘上不一致时**只给一个徽标**（dev.15 重构）。
+                旧版在这里写整句"与实例记录不符：记录要装 Forge，盘上没有"，
+                一屏四行里重复三遍，把名字和启动按钮都淹了。
+                原因没有丢：完整句子在**概览页**那一整块对照表里。
+                ★★ 2026-09-26 用户：「去掉所有悬停显示描述」——
+                  这里原来还挂着一句 `title`，现在只留徽标本身。
+            */}
+            {conflict ? <Chip tone="warning">{conflict.short}</Chip> : null}
+            {/*
+              ★★★★ 2026-09-30（用户）：「这个检测版本，太抽象了，不然咱们学学 PCL 怎么整的」。
+
+              PCL 的 `McInstance.Check()` 检查不过时**照样列出来**，只是标成
+              `Error` 并给一句 `Info` 说明原因（`缺少前置版本 26.2` 这种）。
+              这里就是那句 `Info` —— **说清为什么不能用**，
+              而不是让这个文件夹从列表里消失（那正是"看不出盘上有什么"的来源）。
+            */}
+            {!ok ? <Chip tone="danger">不能用</Chip> : null}
+          </div>
+          <div className="ver-meta">
+            <span className="mono">{fv.mcVersion}</span>
+            <span className="dot" />
+            <span>
+              {/*
+                ★ 加载器这一格：**有记录按记录、没有记录按目录名认**。
+                  两者都可能给不出（原版目录名里没有加载器痕迹）⇒ 就说"原版"。
+              */}
+              {inst?.loader
+                ? `${loaderName(inst.loader.kind)} ${inst.loader.version}`
+                : fv.loaderName
+                  ? loaderName(fv.loaderName)
+                  : '原版'}
+            </span>
+            <span className="dot" />
+            {inst ? (
+              <span className="mono">{Math.round(inst.config.memoryMb / 1024)} GB</span>
+            ) : null}
+            {/*
+              ★★ 2026-09-27（0.7.0）：这一格显示的是**后端算出来的结论**
+                （ADR-005 三段判定；判定只在 Rust 侧实现一份，ADR-006）。
+
+              ★ 历史：这里先后写过两句不成立的话 ——
+                "共享目录"（那时共享模式根本没接上）与
+                "不隔离（还没生效）"（那时它是实话，但功能确实缺着）。
+                现在共享真的生效了（判定决定 `--gameDir`），所以显示结论；
+                结论还没读到（演示模式 / 读不到账本）时只说模式，不宣称结果。
+            */}
+            {inst && inst.config.isolation !== 'auto' ? (
+              <>
+                <span className="dot" />
+                <span>
+                  {isolationOf(inst.config.slug) === null
+                    ? '隔离判定读取中'
+                    : isolationOf(inst.config.slug)?.isolated
+                      ? '独立目录'
+                      : '共享目录'}
+                </span>
+              </>
+            ) : null}
+            {/*
+              盘上确实装了加载器时，把它的版本号如实带一句（信息，不是告警）。
+              盘上什么都没有时**不再重复那句"还没有游戏文件"** ——
+              版本列表是"我建了哪些版本"的清单，缺文件是启动时的事，
+              真缺了上面那个徽标会说。
+            */}
+            {diskLoaders.length > 0 ? (
+              <>
+                <span className="dot" />
+                <span className="ver-disk">
+                  <span className="ver-disk-label">盘上</span>
+                  {diskLoaders.map((l) => (
+                    <span key={l.loader_type} className="mono">
+                      {l.name}
+                      {l.version ? ` ${l.version}` : ''}
+                    </span>
+                  ))}
+                </span>
+              </>
+            ) : null}
+            {/*
+              ★★ 不能用时的**具体原因**（PCL 的 `Info`）。独占一行、用告警色 ——
+                它是这一行最该被看见的一句话：用户要知道**下一步做什么**。
+            */}
+            {!ok ? (
+              <>
+                <span className="dot" />
+                <span className="ver-bad-why">{fv.error}</span>
+              </>
+            ) : null}
+          </div>
+        </div>
+
+        {/* 右侧：操作（★ 2026-09-16：原来这里还有一列"从未启动 / 3 天前"，
+            用户要求删掉时间记录 —— 见 CHANGELOG） */}
+        <div className="ver-side">
+          <div className="ver-actions" onClick={(e) => e.stopPropagation()}>
+            {/*
+              ★ 2026-09-17 用户：「版本列表的启动游戏按钮删除」。
+                原来这里每行都有一个显眼的「启动」主按钮。去掉的理由是它和
+                "这一行是干什么的"不一致 —— 列表是**管理版本**的地方
+                （设置 / Mod / 日志都在二级页），启动入口也在二级页里。
+                就地启动的路没堵死：「更多操作」菜单里仍然有「启动」。
+            */}
+            <Button
+              size="sm"
+              variant="ghost"
+              iconOnly
+              aria-label={`${inst?.config.name ?? fv.dir} 的更多操作`}
+              aria-expanded={openMenu}
+              onClick={(e) => {
+                /*
+                 * ★★ 菜单位置按**按钮的屏幕坐标**算，面板用 `position: fixed`
+                 *   （用户报："这个栏的图层层级不对"）。
+                 *
+                 *   原因：菜单原来是 `absolute`，而它住在 `.ver-list` 里，
+                 *   而那个容器有 `overflow: hidden`（为了圆角）——
+                 *   于是**最后一行的菜单会被列表容器裁掉**，
+                 *   看起来就像"层级不对"（其实是"被剪掉了"）。
+                 *   用 fixed + 坐标算：既躲开裁剪，也不受任何祖先的
+                 *   stacking context 影响。代价是滚动时要关掉它 ——
+                 *   下面那个 effect 就是干这个的。
+                 *
+                 * ★ 2026-09-21：这里**只记锚点**（按钮的坐标）并先给一个"朝下"的
+                 *   临时位置；真正的位置在菜单挂上之后由 `useLayoutEffect`
+                 *   按**量出来的高度**定（靠窗口底部的行会翻上去）。
+                 *   直接在这里写死 `top = bottom + 4` 就是那个 bug 的来源。
+                 */
+                const r = e.currentTarget.getBoundingClientRect();
+                setMenuAnchor(r);
+                setMenuPos({
+                  top: Math.round(r.bottom + 4),
+                  right: Math.round(window.innerWidth - r.right),
+                  maxHeight: Math.round(window.innerHeight - r.bottom - 8),
+                });
+                setMenuFor(openMenu ? null : fv.dir);
+              }}
+            >
+              <IconMore />
+            </Button>
+            {openMenu
+              ? createPortal(
+                  /*
+                   * ★★ 2026-09-23 用户（截图）：「**这地方又出bug了，而且是频繁出bug**」——
+                   *   菜单只露出两项、还压在列表行上。
+                   *
+                   *   根因：它原来虽然写着 `position: fixed`，但**仍挂在行的 DOM 里**。
+                   *   `fixed` 只在没有"包含块祖先"时才相对窗口定位 ——
+                   *   而这条链路上有两类祖先会把它按回原地并裁掉：
+                   *     · `.ver-list` 有 `overflow: hidden`（圆角需要）；
+                   *     · 玻璃层带 `backdrop-filter`（会让 fixed 变成相对该元素）。
+                   *   于是行为**取决于当前主题/视效有没有开玻璃** ——
+                   *   这正是"频繁出bug"的来源：有时好、有时坏。
+                   *
+                   *   改法：**用 portal 渲染到 `document.body`**。
+                   *   菜单不再是任何容器后代，祖先的 overflow / filter / transform
+                   *   一概影响不到它 —— 这才是从根上不再复发。
+                   */
+                  <div
+                    className="row-menu"
+                    role="menu"
+                    ref={menuRef}
+                    /*
+                     * ★ `top` / `bottom` 只会有一个（见 `MenuPos`）：朝下时给 `top`、
+                     *   翻上去时给 `bottom`；`maxHeight` 是兜底，让它在
+                     *   "上下都不够"时自己滚，而不是被窗口切掉。
+                     */
+                    style={
+                      menuPos
+                        ? {
+                            top: menuPos.top,
+                            bottom: menuPos.bottom,
+                            right: menuPos.right,
+                            maxHeight: menuPos.maxHeight,
+                          }
+                        : // 还没量出坐标时先藏起来，别闪一下再跳位
+                          { visibility: 'hidden', top: 0, right: 0 }
+                    }
+                  >
+                {/*
+                  ★★★★ 2026-09-30（用户）：「**这个不可用版本无法删除**」。
+
+                  根因：这一整块菜单原来**只在账本里有记录时才渲染**
+                  （`openMenu = !!inst && …`），而"盘上有、账本里没有记录"的行
+                  （手动放进去的、装到一半失败的）**连菜单都没有** ——
+                  于是它们没有任何删除入口。
+
+                  ⇒ 现在菜单按**目录名**开，并按"有没有记录"给不同的项：
+                    · 有记录：打开设置 / Mod 管理 / 打开目录 / 删除（连记录一起）；
+                    · 没记录：**打开目录 / 删除目录**（只删文件，没有记录可删）。
+                */}
+                {inst ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuFor(null);
+                      openVersion(inst.id);
+                    }}
+                  >
+                    <IconInfo /> 打开设置
+                  </button>
+                ) : null}
+                {/*
+                  ★★ 用户报「根本没这个功能键，我怎么装 mod 嘛」。
+                    安装 Mod 的功能一直都在，但它藏在
+                    「双击版本 → Mod 管理 → 右上角添加 Mod」三层里面。
+                    版本列表这一行是用户最常操作的地方，菜单里直接给一条。
+
+                  ★ 2026-09-17 用户（截图 图二）：
+                    「原版不给装mod的选项，**能装mod的版本，跳转mod下载页**」。
+                    两条都要改：
+
+                    ① **原版不再显示这一项**。以前是显示 + tooltip 说
+                       "纯原版装不了 Mod" —— 那等于给了一个点不动的入口，
+                       点下去只会落到一个写着"不能加载 Mod"的页面。
+                       判据 `rec.loader === null` 与 `ModsPanel.tsx:720/886/891`
+                       那三处一致，**不另写一套**（ADR-020 的教训）。
+
+                    ② **能装 Mod 的改成跳「下载页的 Mod 页签」**，并把
+                       当前这个版本一起带过去（下载页有「装到」选择器 + 资源搜索，
+                       那才是"下载页"；以前的 `openVersion(id,'mods')` 是进
+                       **实例的 Mod 管理**，是"已装了什么"，不是"能装什么"）。
+
+                    ★ 用的是 `goDownloadFor` 而不是"先切页再发事件"：
+                      `DownloadPage` 的监听器在它挂载后才注册，
+                      从这里发 `ieml:download-target` 会被当场丢掉 ——
+                      那正是下面那段 `setTimeout(0)` 注释当年想绕过的坑，
+                      而 `setTimeout(0)` 只是把窗口改小、并没有消除它。
+                  */}
+                {rec.loader !== null ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuFor(null);
+                      goDownloadFor('mod', rec.id);
+                    }}
+                  >
+                    <IconPuzzle /> 安装 Mod
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMenuFor(null);
+                    window.dispatchEvent(
+                      new CustomEvent('ieml:launch-request', { detail: rec.id }),
+                    );
+                  }}
+                >
+                  <IconPlay /> 启动
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMenuFor(null);
+                    const next = prompt('新的版本名称', rec.name);
+                    if (next === null) return; // 取消
+                    // ★ 校验在 `renameInstance` 里做（判据只有一处）
+                    const why = renameInstance(rec.id, next);
+                    if (why) {
+                      toast('warning', '这个名字不能用', why);
+                      return;
+                    }
+                    toast('ok', '已重命名', '目录名不变，只改显示名');
+                  }}
+                >
+                  <IconPencil /> 重命名
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMenuFor(null);
+                    // ★ 真的复制目录（以前只克隆记录，副本是个空壳）
+                    void duplicateInstance(rec.id)
+                      .then((bytes) =>
+                        toast(
+                          'ok',
+                          '已创建副本',
+                          bytes > 0
+                            ? `存档 / Mod / 配置都复制过去了（${formatBytes(bytes)}）`
+                            : '已创建副本（源实例还没有磁盘文件，副本是空的）',
+                        ),
+                      )
+                      .catch((e) =>
+                        toast('err', '创建副本失败', e instanceof Error ? e.message : String(e)),
+                      );
+                  }}
+                >
+                  <IconCopy /> 创建副本
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMenuFor(null);
+                    /*
+                     * ★ 真的打开目录（之前只弹一条写着 slug 的提示，
+                     *   等于"点了没反应"）。走 Rust 命令，绕开 opener
+                     *   插件那个为空的前端路径白名单。
+                     */
+                    if (!api) {
+                      toast('info', '实例目录', rec.slug);
+                      return;
+                    }
+                    void api.launcher
+                      .openDir('instance', rec.slug)
+                      .then((dir) => toast('ok', '已打开实例目录', dir))
+                      .catch((e) =>
+                        toast('err', '打不开目录', e instanceof Error ? e.message : String(e)),
+                      );
+                  }}
+                >
+                  <IconFolder /> 打开目录
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="danger"
+                  onClick={async (e) => {
+                    setMenuFor(null);
+                    const copy = describeDelete({
+                      what: `「${rec.name}」`,
+                      items: [
+                        `版本目录 .minecraft/versions/${rec.slug}/（版本 JSON、存档、Mod、配置都在里面）`,
+                      ],
+                      note:
+                        '共享的游戏文件（libraries / assets）不会被删除，其他版本还能用。',
+                      intent: deleteIntent(e),
+                    });
+                    /*
+                     * ★★ 2026-09-24（A-0）：原来是 `if (!confirm(copy.message)) return;`
+                     *   —— `window.confirm` 被 Tauri 换成了 async 包装，返回的是 Promise，
+                     *   所以那句判断**永远是假**（守卫形同虚设、框也不弹）。
+                     *   现在走应用自己的弹窗，**必须 await**。
+                     */
+                    if (
+                      !(await confirm({
+                        title: '删除这个版本',
+                        danger: true,
+                        confirmText: copy.permanent ? '永久删除' : '删除',
+                        message: copy.message,
+                      }))
+                    ) {
+                      return;
+                    }
+                    /*
+                     * ★ 审计发现：以前这里只从列表里删记录，
+                     *   而确认框写着"存档与配置会一起删除" —— 磁盘没动。
+                     *   现在真的删目录，并把结果如实报告。
+                     *
+                     * ★★★★ 2026-09-30（用户）：「**这个不可用版本无法删除**」。
+                     *
+                     *   有账本记录 ⇒ 走 `removeInstance`（连记录一起删）。
+                     *   没有记录（手动放进 versions/ 的、装到一半失败的）⇒
+                     *   走 `deleteVersionDir`：**只认目录名**，不碰账本。
+                     *
+                     *   ★ 不做"先替它建一条记录再删" —— 那是为了删除而创建数据，
+                     *     而这个项目已经在"补记录"上栽过两次（删掉的版本又回来）。
+                     */
+                    if (!rec.real) {
+                      return backend
+                        .deleteVersionDir(rec.dir, copy.permanent)
+                        .then((bytes) =>
+                          toast(
+                            'warning',
+                            copy.doneVerb,
+                            bytes > 0
+                              ? `${rec.dir} · 磁盘上释放了 ${formatBytes(bytes)}`
+                              : `${rec.dir}（磁盘上本来就没有这个目录）`,
+                          ),
+                        )
+                        .then(() => void reloadFolderVersions())
+                        .catch((e2: unknown) =>
+                          toast(
+                            'err',
+                            '磁盘目录没删掉',
+                            e2 instanceof Error ? e2.message : String(e2),
+                          ),
+                        );
+                    }
+                    void removeInstance(rec.id, copy.permanent)
+                      .then((bytes) =>
+                        toast(
+                          'warning',
+                          copy.doneVerb,
+                          bytes > 0
+                            ? `${rec.name} · 磁盘上释放了 ${formatBytes(bytes)}`
+                            : `${rec.name}（磁盘上本来就没有这个目录）`,
+                        ),
+                      )
+                      .catch(async (err) => {
+                        // ★ 回收站不可用时不静默降级，先问用户
+                        if (
+                          !copy.permanent &&
+                          (await confirm({
+                            title: '回收站用不了',
+                            danger: true,
+                            confirmText: '永久删除',
+                            message: trashUnavailablePrompt(err),
+                          }))
+                        ) {
+                          /*
+                           * ★★ 2026-09-24（A-3）：`removeInstance` 现在是
+                           *   **先删文件、成功之后再删记录**，所以这里重试一次
+                           *   就行（记录还在），并且按真实结果说话。
+                           */
+                          return removeInstance(rec.id, true)
+                            .then((bytes) =>
+                              toast(
+                                'warning',
+                                '已永久删除',
+                                bytes > 0
+                                  ? `${rec.name} · 磁盘上释放了 ${formatBytes(bytes)}`
+                                  : `${rec.name}（磁盘上本来就没有这个目录）`,
+                              ),
+                            )
+                            .catch((e2) =>
+                              toast(
+                                'err',
+                                '磁盘目录没删掉',
+                                e2 instanceof Error ? e2.message : String(e2),
+                              ),
+                            );
+                        }
+                      });
+                  }}
+                >
+                  <IconTrash /> 删除
+                </button>
+                      </div>,
+                      document.body,
+                    )
+                  : null}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  /*
+   * ★ 2026-09-30：「用它建一个」那个按钮删掉之后，`adoptFolderVersion` 与
+   *   `adopting` 状态也一起删了（**死代码不留**：留着它会让下一个人以为
+   *   "这一页还能手动认领版本"）。认领现在由下面那个 effect 自动做。
+   */
+
+  /*
+   * ★★★★ 2026-09-30：**"自动认领"整段删掉了**。
+   *
+   *   它以前干的事是"盘上有版本、账本里没有 ⇒ 替用户补一条实例记录"，
+   *   为了让那种版本能在列表里显示出来。
+   *
+   *   现在不需要了：**列表直接来自磁盘事实**（`folderVers`），
+   *   账本只用来补上"你给它起的名字与设置"。于是：
+   *     · 不需要替用户建记录 —— 列表本来就会显示它；
+   *     · 也就**不可能再"诈尸"**（那是"补记录"这个动作带来的副作用，动作没了，副作用也没了）；
+   *     · 顺带去掉了它对墓碑的依赖（不再需要在两个地方各记得判一次墓碑）。
+   *
+   *   ★ 这一段的历史值得记：它为"删掉的版本又回来"贡献过两次成因
+   *     （一次是我加的补记录、一次是启动时的规范化补记录）。
+   *     结论是**列表是只读的观察，不该有副作用** —— 现在它终于是了。
+   */
   /*
    * ★★ 2026-09-24（C-4 修复）：这里原来算的是
    *   `state.versions.filter(v => v.installed).length`，而 `state.versions`
@@ -507,8 +1120,25 @@ export function VersionsPage() {
               所以把这份事实一直摆在眼前，而不是等用户去设置页翻。
           */}
           <p className="page-desc">
-            {okRows.length + newVersions.length} 个版本
-            {' · 文件夹 '}
+            {/*
+              ★★★★ 2026-09-30（用户）：「**欸，把这个删了吧**」——
+               指的是这个「N 个版本」的数。
+
+              ## 为什么用户最后的选择是"删掉"而不是"继续修"
+
+               这个数前后改过三次口径（账本数 → 盘上 JSON 数 → 与列表行同源），
+               每次都还差一点，因为**它想回答的问题本身是含糊的**：
+               「盘上有几个版本目录」与「列表里有几行」在**有一方出现偏差时**
+               永远是两个数，而这个偏差（记录缺失、空壳目录）本来就存在。
+
+               ⇒ 一个说不准的数不如不要。这一行现在只说**文件夹在哪**
+                 （那是它真正有用的信息：防"我为什么还在读 D 盘"），
+                 不再报数。「全部 N」那个筛选标签同理（见下）。
+
+               ★ 侧栏角标保留：它回答的是"这个文件夹里有多少版本"，
+                 本来就不该与"这一页列了几行"是同一件事。
+            */}
+            {'文件夹 '}
             <span className="mono">
               {state.machine?.dataDir ?? '未知'}
             </span>
@@ -589,7 +1219,13 @@ export function VersionsPage() {
           value={filter}
           onChange={setFilter}
           options={[
-            { value: 'all', label: `全部 ${okRows.length + newVersions.length}` },
+            /*
+             * ★★ 2026-09-30（用户：「欸，把这个删了吧」）：
+             *   页头那个数删掉之后，这里也不能再报一个**屏幕上看不到的数**。
+             *   「全部 N」现在就是**这一页列出来的行数**（筛选前的全部行）——
+             *   点了「原版」它也不会跳成别的数（那是"当前显示"，不是"全部"）。
+             */
+            { value: 'all', label: `全部 ${entriesCount}` },
             { value: 'modded', label: '可装 Mod' },
             { value: 'vanilla', label: '原版' },
           ]}
@@ -622,477 +1258,27 @@ export function VersionsPage() {
 
       {/* ==================== 列表：**这个文件夹里有什么**（PCL 同款口径） ==================== */}
       <div className="ver-list">
-        {listEntries.map((entry) => {
-          /* 当前文件夹里一个能用的版本都没有（多半是刚换过目录） */
-          if (entry.kind === 'empty') {
-            return (
-              <div key="empty" className="ver-empty">
-                <EmptyState
-                  icon={<IconBox />}
-                  title="这个文件夹里没有可用的版本"
-                  /*
-                   * ★★ 2026-09-28（用户，截图）：这一格原来有两个按钮
-                   *   （「去下载页装一份」+「新建/切换游戏目录」）—— 与右上角那排
-                   *   是同一批动作，用户要求**全部删掉、永远不再加回来**。
-                   *   这一页只说事实：当前这个文件夹里没有可用的版本；
-                   *   文件夹路径就写在页头（「N 个版本 · 文件夹 …」），
-                   *   要换文件夹用右上角那一个按钮，要装东西去「下载」页。
-                   *   ★ 那句话以前由按钮说，现在由页头说（信息没有丢）。
-                   */
-                />
-              </div>
-            );
-          }
-          /* 这个文件夹里已经有、但还没建过实例的版本 —— 点一下就用它建一个 */
-          if (entry.kind === 'new') {
-            const fv = entry.fv!;
-            return (
-              <div key={'fv-' + fv.dir} className="ver-item ver-item-new">
-                <VersionIcon version={fv.mcVersion} size={34} />
-                <div className="ver-info">
-                  <div className="ver-title">
-                    <span className="ver-title-name truncate">{fv.dir}</span>
-                    {fv.loaderName ? <Chip tone="neutral">{fv.loaderName}</Chip> : null}
-                    <Chip tone="accent">还没建实例</Chip>
-                  </div>
-                  <div className="ver-meta">
-                    <span className="mono">{fv.mcVersion}</span>
-                    <span className="dim">· 这个文件夹里已经有这份版本</span>
-                  </div>
-                </div>
-                <div className="ver-actions">
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    loading={adopting === fv.dir}
-                    onClick={() => void adoptFolderVersion(fv)}
-                  >
-                    用它建一个
-                  </Button>
-                </div>
-              </div>
-            );
-          }
-          const inst = entry.inst!;
-          // ★ 多开实例：判据只有一份（`isInstanceRunning`）
-          const isRunning = isInstanceRunning(state, inst.id);
-          const openMenu = menuFor === inst.id;
-          /*
-           * ★ 盘上与实例记录的**冲突判据**（只在列表行里用，且只产出一个徽标）。
-           *   完整说明在概览页的「版本状态」表里 —— 列表不是讲理的地方。
-           */
-          const diskLoaders = diskLoadersOf(inst.mcVersion);
-          const conflict = diskConflictOf(inst, diskLoaders);
-          return (
-            <div
-              key={inst.id}
-              className={`ver-item${isRunning ? ' running' : ''}`}
-              role="button"
-              tabIndex={0}
-              aria-label={`打开 ${inst.config.name} 的设置`}
-              onClick={() => openVersion(inst.id)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  openVersion(inst.id);
-                }
-              }}
+        {/*
+          ★ 2026-09-30（用户）：「给不可用的整一个折叠」。
+            能用的照常列；不能用的收进下面那个可展开的分组。
+            两边**共用同一个 `renderRow`** —— 行本身没差别，差别只在放进哪个组。
+        */}
+        {goodEntries.map(renderRow)}
+        {badEntries.length > 0 ? (
+          <div className="ver-bad-group">
+            <button
+              type="button"
+              className="ver-bad-head"
+              aria-expanded={badOpen}
+              onClick={() => setBadOpen((v) => !v)}
             >
-              {/*
-                ★★ 版本图标（0.1.0-beta.1）：自绘等距方块，按**世代**配色
-                  （现代=绿 / 中期=蓝 / Mod 黄金期=琥珀 / 快照=紫）。
-                  以前是一个统一的灰方块或灰层叠图标 —— 一屏四个版本长得
-                  一模一样，扫一眼分不出哪个是 1.20、哪个是 1.7.10。
-                  ★ 不复制任何官方美术（README 许可那一节说清了）。
-              */}
-              <VersionIcon version={inst.mcVersion} size={34} />
-
-              {/* 中间：名称与元信息（一行主 + 一行次；冲突只给徽标） */}
-              <div className="ver-info">
-                <div className="ver-title">
-                  {/* ★ 2026-09-22：标题统一走 instanceTitle()（"Minecraft 1.12.2 ：原版" 那种格式） */}
-                  <span className="ver-title-name truncate">{instanceTitle(inst.config.name, inst.mcVersion, inst.loader)}</span>
-                  {isRunning ? <Chip tone="success">运行中</Chip> : null}
-                  {inst.addons.map((a) => (
-                    <Chip key={a.kind} tone="neutral">
-                      {a.kind === 'optifine' ? 'OptiFine' : 'LiteLoader'}
-                    </Chip>
-                  ))}
-                  {/*
-                    ★ 记录与盘上不一致时**只给一个徽标**（dev.15 重构）。
-                      旧版在这里写整句"与实例记录不符：记录要装 Forge，盘上没有"，
-                      一屏四行里重复三遍，把名字和启动按钮都淹了。
-                      原因没有丢：完整句子在**概览页**那一整块对照表里。
-                      ★★ 2026-09-26 用户：「去掉所有悬停显示描述」——
-                        这里原来还挂着一句 `title`，现在只留徽标本身。
-                  */}
-                  {conflict ? <Chip tone="warning">{conflict.short}</Chip> : null}
-                </div>
-                <div className="ver-meta">
-                  <span className="mono">{inst.mcVersion}</span>
-                  <span className="dot" />
-                  <span>
-                    {inst.loader
-                      ? `${loaderName(inst.loader.kind)} ${inst.loader.version}`
-                      : '原版'}
-                  </span>
-                  <span className="dot" />
-                  <span className="mono">{Math.round(inst.config.memoryMb / 1024)} GB</span>
-                  {/*
-                    ★★ 2026-09-27（0.7.0）：这一格显示的是**后端算出来的结论**
-                      （ADR-005 三段判定；判定只在 Rust 侧实现一份，ADR-006）。
-
-                    ★ 历史：这里先后写过两句不成立的话 ——
-                      "共享目录"（那时共享模式根本没接上）与
-                      "不隔离（还没生效）"（那时它是实话，但功能确实缺着）。
-                      现在共享真的生效了（判定决定 `--gameDir`），所以显示结论；
-                      结论还没读到（演示模式 / 读不到账本）时只说模式，不宣称结果。
-                  */}
-                  {inst.config.isolation !== 'auto' ? (
-                    <>
-                      <span className="dot" />
-                      <span>
-                        {isolationOf(inst.config.slug) === null
-                          ? '隔离判定读取中'
-                          : isolationOf(inst.config.slug)?.isolated
-                            ? '独立目录'
-                            : '共享目录'}
-                      </span>
-                    </>
-                  ) : null}
-                  {/*
-                    盘上确实装了加载器时，把它的版本号如实带一句（信息，不是告警）。
-                    盘上什么都没有时**不再重复那句"还没有游戏文件"** ——
-                    版本列表是"我建了哪些版本"的清单，缺文件是启动时的事，
-                    真缺了上面那个徽标会说。
-                  */}
-                  {diskLoaders.length > 0 ? (
-                    <>
-                      <span className="dot" />
-                      <span className="ver-disk">
-                        <span className="ver-disk-label">盘上</span>
-                        {diskLoaders.map((l) => (
-                          <span key={l.loader_type} className="mono">
-                            {l.name}
-                            {l.version ? ` ${l.version}` : ''}
-                          </span>
-                        ))}
-                      </span>
-                    </>
-                  ) : null}                </div>
-              </div>
-
-              {/* 右侧：操作（★ 2026-09-16：原来这里还有一列"从未启动 / 3 天前"，
-                  用户要求删掉时间记录 —— 见 CHANGELOG） */}
-              <div className="ver-side">
-                <div className="ver-actions" onClick={(e) => e.stopPropagation()}>
-                  {/*
-                    ★ 2026-09-17 用户：「版本列表的启动游戏按钮删除」。
-                      原来这里每行都有一个显眼的「启动」主按钮。去掉的理由是它和
-                      "这一行是干什么的"不一致 —— 列表是**管理版本**的地方
-                      （设置 / Mod / 日志都在二级页），启动入口也在二级页里。
-                      就地启动的路没堵死：「更多操作」菜单里仍然有「启动」。
-                  */}
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    iconOnly
-                    aria-label={`${inst.config.name} 的更多操作`}
-                    aria-expanded={openMenu}
-                    onClick={(e) => {
-                      /*
-                       * ★★ 菜单位置按**按钮的屏幕坐标**算，面板用 `position: fixed`
-                       *   （用户报："这个栏的图层层级不对"）。
-                       *
-                       *   原因：菜单原来是 `absolute`，而它住在 `.ver-list` 里，
-                       *   而那个容器有 `overflow: hidden`（为了圆角）——
-                       *   于是**最后一行的菜单会被列表容器裁掉**，
-                       *   看起来就像"层级不对"（其实是"被剪掉了"）。
-                       *   用 fixed + 坐标算：既躲开裁剪，也不受任何祖先的
-                       *   stacking context 影响。代价是滚动时要关掉它 ——
-                       *   下面那个 effect 就是干这个的。
-                       *
-                       * ★ 2026-09-21：这里**只记锚点**（按钮的坐标）并先给一个"朝下"的
-                       *   临时位置；真正的位置在菜单挂上之后由 `useLayoutEffect`
-                       *   按**量出来的高度**定（靠窗口底部的行会翻上去）。
-                       *   直接在这里写死 `top = bottom + 4` 就是那个 bug 的来源。
-                       */
-                      const r = e.currentTarget.getBoundingClientRect();
-                      setMenuAnchor(r);
-                      setMenuPos({
-                        top: Math.round(r.bottom + 4),
-                        right: Math.round(window.innerWidth - r.right),
-                        maxHeight: Math.round(window.innerHeight - r.bottom - 8),
-                      });
-                      setMenuFor(openMenu ? null : inst.id);
-                    }}
-                  >
-                    <IconMore />
-                  </Button>
-                  {openMenu
-                    ? createPortal(
-                        /*
-                         * ★★ 2026-09-23 用户（截图）：「**这地方又出bug了，而且是频繁出bug**」——
-                         *   菜单只露出两项、还压在列表行上。
-                         *
-                         *   根因：它原来虽然写着 `position: fixed`，但**仍挂在行的 DOM 里**。
-                         *   `fixed` 只在没有"包含块祖先"时才相对窗口定位 ——
-                         *   而这条链路上有两类祖先会把它按回原地并裁掉：
-                         *     · `.ver-list` 有 `overflow: hidden`（圆角需要）；
-                         *     · 玻璃层带 `backdrop-filter`（会让 fixed 变成相对该元素）。
-                         *   于是行为**取决于当前主题/视效有没有开玻璃** ——
-                         *   这正是"频繁出bug"的来源：有时好、有时坏。
-                         *
-                         *   改法：**用 portal 渲染到 `document.body`**。
-                         *   菜单不再是任何容器后代，祖先的 overflow / filter / transform
-                         *   一概影响不到它 —— 这才是从根上不再复发。
-                         */
-                        <div
-                          className="row-menu"
-                          role="menu"
-                          ref={menuRef}
-                          /*
-                           * ★ `top` / `bottom` 只会有一个（见 `MenuPos`）：朝下时给 `top`、
-                           *   翻上去时给 `bottom`；`maxHeight` 是兜底，让它在
-                           *   "上下都不够"时自己滚，而不是被窗口切掉。
-                           */
-                          style={
-                            menuPos
-                              ? {
-                                  top: menuPos.top,
-                                  bottom: menuPos.bottom,
-                                  right: menuPos.right,
-                                  maxHeight: menuPos.maxHeight,
-                                }
-                              : // 还没量出坐标时先藏起来，别闪一下再跳位
-                                { visibility: 'hidden', top: 0, right: 0 }
-                          }
-                        >
-                      <button
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          setMenuFor(null);
-                          openVersion(inst.id);
-                        }}
-                      >
-                        <IconInfo /> 打开设置
-                      </button>
-                      {/*
-                        ★★ 用户报「根本没这个功能键，我怎么装 mod 嘛」。
-                          安装 Mod 的功能一直都在，但它藏在
-                          「双击版本 → Mod 管理 → 右上角添加 Mod」三层里面。
-                          版本列表这一行是用户最常操作的地方，菜单里直接给一条。
-
-                        ★ 2026-09-17 用户（截图 图二）：
-                          「原版不给装mod的选项，**能装mod的版本，跳转mod下载页**」。
-                          两条都要改：
-
-                          ① **原版不再显示这一项**。以前是显示 + tooltip 说
-                             "纯原版装不了 Mod" —— 那等于给了一个点不动的入口，
-                             点下去只会落到一个写着"不能加载 Mod"的页面。
-                             判据 `inst.loader === null` 与 `ModsPanel.tsx:720/886/891`
-                             那三处一致，**不另写一套**（ADR-020 的教训）。
-
-                          ② **能装 Mod 的改成跳「下载页的 Mod 页签」**，并把
-                             当前这个版本一起带过去（下载页有「装到」选择器 + 资源搜索，
-                             那才是"下载页"；以前的 `openVersion(id,'mods')` 是进
-                             **实例的 Mod 管理**，是"已装了什么"，不是"能装什么"）。
-
-                          ★ 用的是 `goDownloadFor` 而不是"先切页再发事件"：
-                            `DownloadPage` 的监听器在它挂载后才注册，
-                            从这里发 `ieml:download-target` 会被当场丢掉 ——
-                            那正是下面那段 `setTimeout(0)` 注释当年想绕过的坑，
-                            而 `setTimeout(0)` 只是把窗口改小、并没有消除它。
-                        */}
-                      {inst.loader !== null ? (
-                        <button
-                          type="button"
-                          role="menuitem"
-                          onClick={() => {
-                            setMenuFor(null);
-                            goDownloadFor('mod', inst.id);
-                          }}
-                        >
-                          <IconPuzzle /> 安装 Mod
-                        </button>
-                      ) : null}
-                      <button
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          setMenuFor(null);
-                          window.dispatchEvent(
-                            new CustomEvent('ieml:launch-request', { detail: inst.id }),
-                          );
-                        }}
-                      >
-                        <IconPlay /> 启动
-                      </button>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          setMenuFor(null);
-                          const next = prompt('新的版本名称', inst.config.name);
-                          if (next === null) return; // 取消
-                          // ★ 校验在 `renameInstance` 里做（判据只有一处）
-                          const why = renameInstance(inst.id, next);
-                          if (why) {
-                            toast('warning', '这个名字不能用', why);
-                            return;
-                          }
-                          toast('ok', '已重命名', '目录名不变，只改显示名');
-                        }}
-                      >
-                        <IconPencil /> 重命名
-                      </button>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          setMenuFor(null);
-                          // ★ 真的复制目录（以前只克隆记录，副本是个空壳）
-                          void duplicateInstance(inst.id)
-                            .then((bytes) =>
-                              toast(
-                                'ok',
-                                '已创建副本',
-                                bytes > 0
-                                  ? `存档 / Mod / 配置都复制过去了（${formatBytes(bytes)}）`
-                                  : '已创建副本（源实例还没有磁盘文件，副本是空的）',
-                              ),
-                            )
-                            .catch((e) =>
-                              toast('err', '创建副本失败', e instanceof Error ? e.message : String(e)),
-                            );
-                        }}
-                      >
-                        <IconCopy /> 创建副本
-                      </button>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        onClick={() => {
-                          setMenuFor(null);
-                          /*
-                           * ★ 真的打开目录（之前只弹一条写着 slug 的提示，
-                           *   等于"点了没反应"）。走 Rust 命令，绕开 opener
-                           *   插件那个为空的前端路径白名单。
-                           */
-                          if (!api) {
-                            toast('info', '实例目录', inst.config.slug);
-                            return;
-                          }
-                          void api.launcher
-                            .openDir('instance', inst.config.slug)
-                            .then((dir) => toast('ok', '已打开实例目录', dir))
-                            .catch((e) =>
-                              toast('err', '打不开目录', e instanceof Error ? e.message : String(e)),
-                            );
-                        }}
-                      >
-                        <IconFolder /> 打开目录
-                      </button>
-                      <button
-                        type="button"
-                        role="menuitem"
-                        className="danger"
-                        onClick={async (e) => {
-                          setMenuFor(null);
-                          const copy = describeDelete({
-                            what: `「${inst.config.name}」`,
-                            items: [
-                              `实例目录 instances/${inst.config.slug}/（存档、Mod、配置都在里面）`,
-                            ],
-                            note:
-                              '共享的游戏文件（libraries / assets）不会被删除，其他版本还能用。',
-                            intent: deleteIntent(e),
-                          });
-                          /*
-                           * ★★ 2026-09-24（A-0）：原来是 `if (!confirm(copy.message)) return;`
-                           *   —— `window.confirm` 被 Tauri 换成了 async 包装，返回的是 Promise，
-                           *   所以那句判断**永远是假**（守卫形同虚设、框也不弹）。
-                           *   现在走应用自己的弹窗，**必须 await**。
-                           */
-                          if (
-                            !(await confirm({
-                              title: '删除这个版本',
-                              danger: true,
-                              confirmText: copy.permanent ? '永久删除' : '删除',
-                              message: copy.message,
-                            }))
-                          ) {
-                            return;
-                          }
-                          /*
-                           * ★ 审计发现：以前这里只从列表里删记录，
-                           *   而确认框写着"存档与配置会一起删除" —— 磁盘没动。
-                           *   现在真的删目录，并把结果如实报告。
-                           */
-                          void removeInstance(inst.id, copy.permanent)
-                            .then((bytes) =>
-                              toast(
-                                'warning',
-                                copy.doneVerb,
-                                bytes > 0
-                                  ? `${inst.config.name} · 磁盘上释放了 ${formatBytes(bytes)}`
-                                  : `${inst.config.name}（磁盘上本来就没有这个目录）`,
-                              ),
-                            )
-                            .catch(async (err) => {
-                              // ★ 回收站不可用时不静默降级，先问用户
-                              if (
-                                !copy.permanent &&
-                                (await confirm({
-                                  title: '回收站用不了',
-                                  danger: true,
-                                  confirmText: '永久删除',
-                                  message: trashUnavailablePrompt(err),
-                                }))
-                              ) {
-                                /*
-                                 * ★★ 2026-09-24（A-3）：`removeInstance` 现在是
-                                 *   **先删文件、成功之后再删记录**，所以这里重试一次
-                                 *   就行（记录还在），并且按真实结果说话。
-                                 */
-                                return removeInstance(inst.id, true)
-                                  .then((bytes) =>
-                                    toast(
-                                      'warning',
-                                      '已永久删除',
-                                      bytes > 0
-                                        ? `${inst.config.name} · 磁盘上释放了 ${formatBytes(bytes)}`
-                                        : `${inst.config.name}（磁盘上本来就没有这个目录）`,
-                                    ),
-                                  )
-                                  .catch((e2) =>
-                                    toast(
-                                      'err',
-                                      '磁盘目录没删掉',
-                                      e2 instanceof Error ? e2.message : String(e2),
-                                    ),
-                                  );
-                              }
-                              toast(
-                                'err',
-                                '磁盘目录没删掉',
-                                err instanceof Error ? err.message : String(err),
-                              );
-                            });
-                        }}
-                      >
-                        <IconTrash /> 删除
-                      </button>
-                        </div>,
-                        document.body,
-                      )
-                    : null}
-                </div>
-              </div>
-            </div>
-          );
-        })}
+              <IconChevronDown className="ver-bad-caret" />
+              不能用的版本 <b>{badEntries.length}</b> 个
+              <span className="dim">· 点开看原因</span>
+            </button>
+            {badOpen ? <div className="ver-bad-body">{badEntries.map(renderRow)}</div> : null}
+          </div>
+        ) : null}
       </div>
 
       {/*

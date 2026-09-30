@@ -93,6 +93,24 @@ createRoot(root).render(
   </StrictMode>,
 );
 
-// 移除启动画面
+/*
+ * 移除启动画面。
+ *
+ * ★★ 2026-09-30（用户）：「**载入加载器时的加载，先全白一下然后再进 logo**」。
+ *
+ *   白色那一下的根因在窗口层（`tauri.conf.json` 没设 `backgroundColor`，
+ *   原生窗口先按系统默认白画出来）+ `index.html` 里主题色定得太晚 —— 两处都已修。
+ *
+ *   这里修的是**最后一下**：原来是 `splash.remove()`，画面**当场消失** ——
+ *   在"深色启动画面"与"应用界面"之间仍是一跳。现在让它**淡出**再移除，
+ *   与 `index.html` 里那条 `transition: opacity` 配合。
+ *
+ *   ★ 淡出期间 `pointer-events: none`：那一层盖在整屏上，
+ *     180 毫秒里如果还吃鼠标事件，用户点到的会是启动画面而不是应用。
+ */
 const splash = document.getElementById('splash');
-splash?.remove();
+if (splash) {
+  splash.style.pointerEvents = 'none';
+  splash.style.opacity = '0';
+  window.setTimeout(() => splash.remove(), 180);
+}

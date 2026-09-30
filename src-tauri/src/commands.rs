@@ -386,12 +386,28 @@ pub fn scan_mods(
     mc_version: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<mods::ModEntry>, String> {
-    // ★ 必须和游戏读到的是同一个目录（instances/{slug}/game/mods）
+    // ★ 必须和游戏读到的是同一个目录（实例的游戏目录下的 mods/）
     let dir = state.paths().instance_mods_dir(&instance_id);
     let mut files: Vec<mods::ModFile> = Vec::new();
 
     let Ok(entries) = std::fs::read_dir(&dir) else {
-        // 目录不存在 = 还没有 Mod，不是错误
+        /*
+         * ★★ 2026-09-30：用户报「Mod 列表不显示」而**目录里明明有 jar**。
+         *
+         *   这条命令原来是**静默返回空**（"目录不存在 = 还没有 Mod，不是错误"）——
+         *   于是"目录不存在"与"目录里有文件但被过滤掉了"在界面上长得**一模一样**
+         *   （都是 0 个）。排查时没有任何线索。
+         *
+         *   ⇒ `IEML_DIAG_MODS=1` 时把**实际读的路径与结果**写到一个文件里。
+         *     这是"读不到 ≠ 没有"（ADR-037）在**排查工具**上的落实：
+         *     两种结论必须能被分开看见。
+         */
+        diag_mods(&format!(
+            "scan_mods(instance_id={instance_id:?}, loader_kind={loader_kind:?}, mc_version={mc_version:?})\n\
+             实际读的目录：{}\n\
+             结果：目录**不存在或读不出来**（read_dir 失败）\n",
+            dir.display()
+        ));
         return Ok(vec![]);
     };
     for e in entries.flatten() {
@@ -413,11 +429,37 @@ pub fn scan_mods(
         });
     }
 
-    Ok(mods::scan_mods(
-        &files,
-        loader_kind.as_deref(),
-        &mc_version,
-    ))
+    let out = mods::scan_mods(&files, loader_kind.as_deref(), &mc_version);
+    diag_mods(&format!(
+        "scan_mods(instance_id={instance_id:?}, loader_kind={loader_kind:?}, mc_version={mc_version:?})\n\
+         实际读的目录：{}\n\
+         目录里读到的文件（{} 个）：{:?}\n\
+         扫描后的条目（{} 个）：{:?}\n",
+        dir.display(),
+        files.len(),
+        files.iter().map(|f| f.file_name.clone()).collect::<Vec<_>>(),
+        out.len(),
+        out.iter().map(|e| e.file_name.clone()).collect::<Vec<_>>(),
+    ));
+    Ok(out)
+}
+
+/// 把 `scan_mods` 的诊断写进 `<own_root>/mods-diag.txt`。
+///
+///   ★★ 2026-09-30：**默认就写**（每次覆盖，几十字节）。
+///
+///   原来我用 `IEML_DIAG_MODS=1` 当开关，但那要求用户"用带环境变量的方式启动
+///   这个 exe" —— 而他双击的是桌面快捷方式，**这个开关他根本开不到**。
+///   一个用户碰不到的诊断开关，等于没有诊断。
+///
+///   代价是每次列 Mod 多写一个几十字节的文件。而它换来的是：
+///   "Mod 列表为什么是空的"这个问题**能在用户自己的机器上被回答** ——
+///   因为这条命令原来的两种结论（"目录不存在"与"目录里有文件但被过滤掉"）
+///   在界面上长得一模一样（都是 0 个）。
+fn diag_mods(text: &str) {
+    let paths = crate::platform::AppPaths::resolve();
+    let _ = std::fs::create_dir_all(&paths.own_root);
+    let _ = std::fs::write(paths.own_root.join("mods-diag.txt"), text);
 }
 
 /* ====================== 崩溃分析 ====================== */
@@ -470,8 +512,83 @@ pub fn list_instances(state: State<'_, AppState>) -> Result<InstanceStore, Strin
      *   所以先**退回原样**（读清单、不动它），第 3 条换个正确做法：
      *   先搞清楚"一个实例在磁盘上到底由哪个路径唯一标识"，再谈"目录没了"。
      *   ——**在搞清楚这件事之前，任何"顺手对一遍磁盘"的代码都是猜。**
+     *
+     * ★★★★ 2026-09-30（用户）：「**删除版本后，重启浏览器，删除的版本又会回来**」。
+     *
+     *   现在那个问题有答案了，而且当年那条"拿 slug 拼目录名"的错**也不再成立**：
+     *   布局规范化之后，**目录名就是 `config.slug`**（一个版本一个文件夹）。
+     *
+     *   所以这里加了一条**有明确证据的**过滤 —— 但判据不是"目录在不在"，
+     *   而是**墓碑**（`prefs.deletedVersions`：用户删过的版本目录名）。
+     *   真机上的现状就是这条判据要治的病：
+     *     · `prefs.json` 里躺着 `26.3-fabric-0.19.5-2` / `-3`（用户确实删过它们）；
+     *     · `instances.json` 里那两条记录**还在** —— 于是列表照旧显示它们，
+     *       角标也是按账本算的（所以"数字与实际不符"）。
+     *
+     *   ★ 为什么是墓碑、不是"目录不存在"：
+     *     墓碑是**用户意图的记录**（他删过），而"目录不在"只是一时的事实
+     *     （盘没挂上、权限、正在搬）。用前者删记录是"照用户说的做"，
+     *     用后者删记录就是 2026-09-23 那次事故的复发。
+     *   ★ 所以：**只滤墓碑**。它在 `prefs.json` 里，读它不需要任何猜测。
      */
-    serde_json::from_str(&text).map_err(|e| format!("实例列表损坏：{e}（文件在 {}）", path.display()))
+    let mut store: InstanceStore =
+        serde_json::from_str(&text).map_err(|e| format!("实例列表损坏：{e}（文件在 {}）", path.display()))?;
+    let buried: std::collections::HashSet<String> = state
+        .paths()
+        .own_json("prefs.json")
+        .and_then(|p| {
+            p.get("deletedVersions")?
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(|s| s.to_lowercase())
+                        .collect()
+                })
+        })
+        .unwrap_or_default();
+    if !buried.is_empty() {
+        let before = store.instances.len();
+        // ★ 大小写无关：Windows 上 `Fabric-1` 与 `fabric-1` 是同一个目录
+        store
+            .instances
+            .retain(|i| !buried.contains(&i.config.slug.to_lowercase()));
+        if store.instances.len() != before {
+            say!(
+                "[IEML/instances] 按墓碑滤掉 {} 条已删除版本的记录（{} → {}）",
+                before - store.instances.len(),
+                before,
+                store.instances.len()
+            );
+            // 指向被删实例的 active_id 也要清掉
+            if let Some(active) = &store.active_id {
+                if !store.instances.iter().any(|i| i.id == *active) {
+                    store.active_id = None;
+                }
+            }
+            /*
+             * ★★ **把过滤后的结果写回文件**（2026-09-30）。
+             *
+             *   只过滤不落盘的话，`instances.json` 里那两条死人记录**永远在**：
+             *   · 每次启动都要再滤一遍（白做功）；
+             *   · 更要紧的是**任何"按账本算数"的地方都会算错** ——
+             *     用户实测到的那条"版本列表的数字和实际数量不一样"就是它。
+             *
+             *   ★ 写回是安全的：这一步**只删墓碑里点名的那些**，
+             *     判据来自用户自己的删除动作，不是我们的推测。
+             *   ★ 用同一个原子写（临时文件 + 改名），与 `save_instances` 一致。
+             */
+            let path = state.paths().instances_file();
+            if let Ok(text) = serde_json::to_string_pretty(&store) {
+                let tmp = path.with_extension("json.tmp");
+                match std::fs::write(&tmp, text).and_then(|_| std::fs::rename(&tmp, &path)) {
+                    Ok(()) => say!("[IEML/instances] 已把清理后的账本写回 {}", path.display()),
+                    Err(e) => say!("[IEML/instances] 清理后的账本写回失败（本次仅内存生效）：{e}"),
+                }
+            }
+        }
+    }
+    Ok(store)
 }
 
 #[tauri::command]
@@ -538,16 +655,35 @@ pub fn save_prefs(state: State<'_, AppState>, prefs: serde_json::Value) -> Resul
     std::fs::rename(&tmp, &path).map_err(|e| format!("保存失败：{e}"))
 }
 
-/// ★ 删除一个实例的目录（存档 / Mod / 配置 / natives 全在里面）。
+/// ★★ 删除一个版本的**整个目录**（版本 JSON / jar / 存档 / Mod / 配置 / natives 全在里面）。
 ///
 /// 审计发现：`removeInstance` 以前只从内存列表里删掉记录，
 /// 而三处确认框都写着「存档与配置会一起删除」—— **磁盘上什么都没删**，
 /// 用户以为删干净了。现在给出真实能力，由前端在删除时调用。
 ///
-/// 安全：目录名来自实例的 slug，必须校验它落在 `instances/` 下面
+/// ## ★★★★ 2026-09-30 修的严重缺陷：删的目标错了
+///
+///   这里原来是 `state.paths().instance_dir(&slug)` —— 那个函数返回的是
+///   **`<版本目录>/.ieml/`**（启动器自己那层：natives、打包记录）。
+///   于是"删除这个版本"实际删的是：
+///     · `.ieml/` 里面那点启动器文件**没了**；
+///     · **版本目录本身、连同存档与 Mod，一个都没删。**
+///
+///   用户报的正是它：「**删掉启动器的版本，资源管理器里的文件夹不会删除，
+///   这个目录结构太奇怪了**」。而"删掉的版本又会回来"也与它同源：
+///   目录一直在盘上，补认/合并就能再次把它变成一条记录。
+///
+///   ⇒ 目标改成 [`AppPaths::instance_root_dir`]（= `<版本目录>` 本身）。
+///
+///   ★ 为什么这个错在改造前不明显：老布局里游戏数据在 `<实例目录>/game/`，
+///     而 `instance_dir` 至少还指在同一个实例目录底下（只差一层）。
+///     改造后"游戏目录 = 版本目录"，而 `.ieml/` 只是它里面的一个子目录 ——
+///     同一个调用点的语义**悄悄变了**，编译器一个字都不会说。
+///
+/// 安全：目录名来自实例的 slug，必须校验它落在版本目录下面
 /// （挡住 `../` 之类的越界删除请求）。
 ///
-/// ★ **默认进系统回收站**（`permanent = false`）。实例目录里有存档，
+/// ★ **默认进系统回收站**（`permanent = false`）。版本目录里有存档，
 ///   这是最不该"删错了就没了"的东西；确认要永久删除时前端按住 Shift 调用。
 #[tauri::command]
 pub fn delete_instance_files(
@@ -559,13 +695,13 @@ pub fn delete_instance_files(
         return Err("实例 slug 为空".into());
     }
     let root = state.paths().instances.clone();
-    let dir = state.paths().instance_dir(&slug);
-    // 越界校验：解析后的路径必须以 instances/ 开头，且不等于它本身
+    let dir = state.paths().instance_root_dir(&slug);
+    // 越界校验：解析后的路径必须以 versions/ 开头，且不等于它本身
     let canon_root = root.canonicalize().unwrap_or_else(|_| root.clone());
     let canon_dir = dir.canonicalize().unwrap_or_else(|_| dir.clone());
     if canon_dir == canon_root || !canon_dir.starts_with(&canon_root) {
         return Err(format!(
-            "拒绝删除：{} 不在实例目录下（instances/）",
+            "拒绝删除：{} 不在版本目录下（versions/）",
             dir.display()
         ));
     }
@@ -578,6 +714,63 @@ pub fn delete_instance_files(
         std::fs::remove_dir_all(&dir).map_err(|e| format!("永久删除实例目录失败：{e}"))?;
     } else {
         // ★ 进回收站：存档还能捞回来
+        trash::delete(&dir).map_err(|e| {
+            format!(
+                "移到回收站失败（{e}）—— 这个位置可能没有回收站；\
+                 确认要永久删除的话，按住 Shift 再点一次删除"
+            )
+        })?;
+    }
+    Ok(bytes)
+}
+
+/// ★★★★ **按版本目录名删除**（2026-09-30，用户：「**这个不可用版本无法删除**」）。
+///
+/// ## 为什么需要单独一条
+///
+///   原来的删除入口是 `removeInstance(inst.id)` —— 它要一条**账本记录**：
+///   删的是"这个实例的目录"，还要把记录一起去掉。
+///   而版本列表改成"盘上每个文件夹都列出来"（学 PCL）之后，出现了**没有记录**的行：
+///   手动放进 `versions/` 的、装到一半失败的、账本记录被删过而目录还在的。
+///   那些行**没有任何删除入口** —— 菜单里的动作全都挂在 `inst` 上。
+///
+///   ⇒ 这条命令只认**目录名**（`versions/<slug>`），不碰账本：
+///     它就是"把这一坨文件处理掉"，与"这个版本有没有实例记录"无关。
+///
+///   ★ 为什么不让前端拼一条假记录再调 `removeInstance`：
+///     那等于**为了删除先创建数据** —— 这个项目已经在"补记录"上栽过两次
+///     （删掉的版本又回来、诈尸）。删除是一条只读不了的写操作，但它**不该先建东西**。
+///
+/// 安全：与 `delete_instance_files` 同一套越界校验（必须以 `versions/` 开头、
+/// 且不能等于它本身）。
+///
+/// ★ **默认进系统回收站**：这些目录里可能有存档，而它们恰恰是"用户没怎么管过"的那些。
+#[tauri::command]
+pub fn delete_version_dir(
+    slug: String,
+    permanent: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<u64, String> {
+    if slug.trim().is_empty() {
+        return Err("版本目录名为空".into());
+    }
+    let root = state.paths().instances.clone();
+    let dir = state.paths().instance_root_dir(&slug);
+    let canon_root = root.canonicalize().unwrap_or_else(|_| root.clone());
+    let canon_dir = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+    if canon_dir == canon_root || !canon_dir.starts_with(&canon_root) {
+        return Err(format!(
+            "拒绝删除：{} 不在版本目录下（versions/）",
+            dir.display()
+        ));
+    }
+    if !dir.is_dir() {
+        return Ok(0); // 目录本来就不在 —— 不算错误
+    }
+    let bytes = dir_size(&dir);
+    if permanent.unwrap_or(false) {
+        std::fs::remove_dir_all(&dir).map_err(|e| format!("永久删除版本目录失败：{e}"))?;
+    } else {
         trash::delete(&dir).map_err(|e| {
             format!(
                 "移到回收站失败（{e}）—— 这个位置可能没有回收站；\
@@ -647,17 +840,32 @@ pub fn copy_instance_files(
     std::fs::create_dir_all(&dst).map_err(|e| format!("创建副本目录失败：{e}"))?;
     let mut copied = 0u64;
 
-    // natives 不复制（启动时会按当前架构重新解压，复制反而可能带错版本的 dll）
-    let skip = ["natives"];
+    /*
+     * ★★ 2026-09-30（布局改成"一个版本一个文件夹"）：**启动器自己那层不复制**。
+     *
+     *   它现在整个是 `<版本目录>/.ieml/`（natives / 打包记录 / 包内被移除文件的
+     *   回收区）。理由与原来那句"natives 不复制"一样，而且更强：
+     *     · `natives` 会在启动时按当前架构重新解压 —— 复制过来多半是错的；
+     *     · `pack-record.json` 是**那个实例**的整合包身份，复制过来会让副本
+     *       自称是同一个整合包，于是"检查更新"会拿错的清单去比。
+     *   所以整层跳过，副本从一个干净的 `.ieml/` 开始。
+     *
+     * ★ 兼容那一行老名字：万一还有老布局的实例目录（顶层 `natives/`），也别复制。
+     */
+    let skip = [platform::LAUNCHER_SUBDIR, "natives"];
     for entry in std::fs::read_dir(&src).map_err(|e| format!("读取源目录失败：{e}"))? {
         let entry = entry.map_err(|e| e.to_string())?;
         let name = entry.file_name().to_string_lossy().to_string();
         if skip.contains(&name.as_str()) {
             continue;
         }
-        // `game` 目录按参数决定要不要复制（存档通常在里面，可能很大）
+        /*
+         * ★ 老布局的 `game/`：新布局里**没有这一层**（游戏数据直接在版本目录里），
+         *   所以正常情况下走不到这里。留着是为了万一遇到尚未迁移的目录时
+         *   行为不乱（`copy_game_dir=false` 时不再凭空造一个空 `game/` ——
+         *   那会让副本看起来"有游戏目录、里面什么都没有"）。
+         */
         if name == "game" && !copy_game_dir {
-            std::fs::create_dir_all(dst.join("game")).map_err(|e| e.to_string())?;
             continue;
         }
         copied += copy_tree(&entry.path(), &dst.join(&name))?;

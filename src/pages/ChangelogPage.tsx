@@ -69,11 +69,25 @@ export function ChangelogPage() {
 
   /* 实时那份就是当前版本、而且真的解析出了条目 ⇒ 用它顶掉包里那条 */
   const useLive = choice === 'live' && live !== null && live.itemCount > 0;
+  /*
+   * ★★ 2026-09-30（用户）：「**我想要更新日志只显示最近十条**」。
+   *
+   *   ★ 为什么在**最外层切**、而且切在 `useLive` 合并**之后**：
+   *     那个合并会顶掉当前版本那一条的内容，但不改变条数 ——
+   *     所以先合并再切与先切再合并，**结果一样**。放在这里只是因为
+   *     它是"最终要显示的那一串"的最后一道加工，读起来不容易错。
+   *
+   *   ★ 十条是**硬上限**，不是分页：日志页的用途是"我刚更新完，看看变了什么"，
+   *     翻二十页历史没有意义（真要看历史的人去仓库那份 CHANGELOG.md）。
+   *     `RELEASE_NOTES` 本来就是倒序的（新的在前），所以 `slice(0, 10)` 留下的
+   *     正好是最近十个版本。
+   */
+  const RECENT_LIMIT = 10;
   const rows = RELEASE_NOTES.map((r) =>
     useLive && r.version === APP_VERSION
       ? { ...r, headline: live!.headline || r.headline, sections: live!.sections }
       : { ...r, sections: r.groups as Array<{ title: string; items: string[] }> },
-  );
+  ).slice(0, RECENT_LIMIT);
 
   return (
     <>

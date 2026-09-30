@@ -316,6 +316,14 @@ pub fn candidate_urls(original: &str, preferred: Source) -> Vec<(Source, String)
         return vec![(Source::Bmclapi, mirrored)];
     }
 
+    const OFFICIAL_FIRST: [&str; 2] = [
+        "https://resources.download.minecraft.net/",
+        "https://libraries.minecraft.net/",
+    ];
+    if OFFICIAL_FIRST.iter().any(|p| original.starts_with(p)) {
+        return vec![(Source::Mojang, official), (Source::Bmclapi, mirrored)];
+    }
+
     let primary = match preferred {
         Source::Bmclapi => (Source::Bmclapi, mirrored.clone()),
         Source::Mojang => (Source::Mojang, official.clone()),
@@ -324,6 +332,42 @@ pub fn candidate_urls(original: &str, preferred: Source) -> Vec<(Source, String)
         Source::Bmclapi => (Source::Mojang, official),
         Source::Mojang => (Source::Bmclapi, mirrored),
     };
+
+    /*
+     * ★★★★ 2026-09-30（用户）：「**整合包下载奇慢无比**」「**切换别的页面会停止启动**」。
+     *
+     *   ## 真机实测（决定性的对照）
+     *
+     *   | 端点 | 官方 | BMCLAPI 镜像 |
+     *   |---|---|---|
+     *   | `resources.download.minecraft.net`（资源对象） | **200，9101 字节** | **302，0 字节** |
+     *   | `libraries.minecraft.net`（库） | **200，910232 字节** | **302，0 字节** |
+     *   | `piston-meta.mojang.com`（版本清单） | 连不上（000） | 302 |
+     *
+     *   两个镜像端点都返回 **302 + 空 body**（而且 `bmclapi2` 的 maven 路径带
+     *   `X-RateLimit-Limit-short: 10` —— **10 次/分钟**的配额）。
+     *
+     *   ## 于是"镜像优先"变成纯粹的净损失
+     *
+     *   每一个资源文件、每一个库文件，都要**先**花一次请求去撞那个 302、
+     *   再用掉一个限流配额，然后才回落到原本就能用的官方地址。
+     *   装一个整合包（几千个资源 + 几十个库）就是几千次白跑。
+     *
+     *   ## 所以：这两个域改成**官方优先、镜像兜底**
+     *
+     *   ★ 为什么这**不是**推翻 2026-09-16 那个"国内优先"的决定：
+     *     那个决定的依据是当时实测「BMCLAPI 3/3 成功、官方 1/3 成功」；
+     *     而现在实测的是**反过来的**（官方 2/2 成功、BMCLAPI 0/2 成功）。
+     *     网络环境变了，判据就得跟着证据走 —— 而不是把一条旧结论当教条。
+     *
+     *   ★ 为什么仍然保留镜像兜底：它对**别的用户/别的时段**可能是唯一能通的路
+     *     （这个仓库里记过多次"某条路今天通、明天不通"）。
+     *     顺序反过来只是"先试当前能用的那条"，**不是**把另一条删掉。
+     *
+     *   ★ `piston-meta`（版本清单/版本 JSON）**不在此列**：实测它官方连不上、
+     *     而 BMCLAPI 那个 302 在旧记录里被当作可用（清单很小，一次就完），
+     *     所以那一类维持原样（仍然镜像优先）。
+     */
 
     // 顺序：用户选的源优先，另一个兜底。
     vec![primary, fallback]
@@ -749,13 +793,24 @@ mod tests {
 
     #[test]
     fn candidates_include_fallback() {
-        let c = candidate_urls(
-            "https://libraries.minecraft.net/a/b.jar",
-            Source::Bmclapi,
-        );
+        let c = candidate_urls("https://libraries.minecraft.net/a/b.jar", Source::Bmclapi);
         assert_eq!(c.len(), 2);
-        assert_eq!(c[0].0, Source::Bmclapi);
-        assert_eq!(c[1].0, Source::Mojang);
+        /*
+         * ★★★★ 2026-09-30：**断言反过来写了**（原来是"镜像在前"）。
+         *
+         *   真机实测（用户报「整合包下载奇慢无比」）：
+         *     · 官方 `libraries.minecraft.net` → **200，910232 字节**
+         *     · 镜像 `bmclapi2.bangbang93.com/maven/...` → **302 + 空 body**（且限流 10 次/分钟）
+         *
+         *   ⇒ 对**库与资源**这两类，"镜像优先"是纯白跑；官方才是当前能用的那条。
+         *     `candidate_urls` 里那条 `OFFICIAL_FIRST` 分支就是为它加的。
+         *
+         *   ★ 这条测试仍然守着**原来那个不变量**：两个候选**必须都在**
+         *     （不能因为换了顺序就把镜像删掉 —— 它对别的用户/别的时段可能是唯一活路）。
+         */
+        assert_eq!(c[0].0, Source::Mojang, "库/资源当前是官方优先（实测镜像 302）");
+        assert_eq!(c[1].0, Source::Bmclapi, "镜像必须仍在候选里（兜底）");
+        assert_ne!(c[0].1, c[1].1, "两个候选不能是同一个 URL");
     }
 
     #[test]

@@ -21,7 +21,6 @@ import {
   Note,
   SearchBox,
   Skeleton,
-  Spinner,
 } from '../ui';
 import {
   IconAlert,
@@ -38,10 +37,10 @@ import {
   filterMods,
   judgeModState,
   oldFilesToDrop,
-  toggledName,
 } from '../domain/mods.ts';
 import type { ModEntry, ModStateResult } from '../domain/mods.ts';
 import { formatBytes, modUpdateLock } from '../domain';
+import { instanceDirSlug } from '../domain/instance-path.ts';
 import { EVT_OPEN_MOD_BROWSE } from '../state/events';
 import {
   deleteIntent,
@@ -52,6 +51,18 @@ import { useRealApi } from '../hooks/useRealApi';
 import type { ApiLibStatus, ModUpdateCandidate, ModrinthHit, PackInfo } from '../bridge/tauri';
 // ★ 社区资源浏览器：Mod / 资源包 / 光影 / 数据包 共用一套界面
 import { ResourceBrowser } from '../components/ResourceBrowser';
+
+/**
+ * 「这是个前置库」那两条说明（用户要求不在卡片上念）。
+ *
+ * ★ 判据放模块级而不是组件里：组件每次渲染都会新建一个正则，
+ *   而这个值从模块加载到卸载都不会变。
+ *
+ * ★ 认的是 `judgeModState` 里那两条**原文**（`domain/mods.ts:268-269`）——
+ *   判定层没动，只是展示层把它们滤掉。改文案时这里要跟着改，
+ *   否则那两句会悄悄回到卡片上（`tests/domain.test.js` 里有前置库判定的用例）。
+ */
+const LIBRARY_EVIDENCE = /前置库|依赖它的 Mod/;
 
 /**
  * 把一批条目过一遍领域层的状态判定。
@@ -87,6 +98,8 @@ export function ModsPanel() {
     open: active,
     go,
     goDownloadFor,
+    /* ★ 2026-09-30：点「详情」要转到**下载页的资源详情页**（见 `openModDetail`） */
+    openResource,
     toast,
     backend,
     setMods,
@@ -98,6 +111,16 @@ export function ModsPanel() {
   } = useApp();
   const { api } = useRealApi();
   const [loading, setLoading] = useState(false);
+  /*
+   * ★★ 2026-09-30：点「详情」之后**正在取那个 Mod 的资源信息**时的加载态。
+   *
+   *   只有"还没核对过"那条路会用到它（那时要先扫一次拿 project id）——
+   *   而那条路要读盘 + 联网，几百毫秒到几秒，**必须让按钮转起来**，
+   *   否则用户会以为点了没反应而重复点。
+   *
+   *   ★ 存路径而不是布尔：列表里可能有多个 Mod，转的必须是**被点的那一个**。
+   */
+  const [detailLoading, setDetailLoading] = useState<string | null>(null);
   const [updateOpen, setUpdateOpen] = useState(false);
   const [compatFor, setCompatFor] = useState<ModEntry | null>(null);
   const [unchecked, setUnchecked] = useState<Set<string>>(new Set());
@@ -262,30 +285,64 @@ export function ModsPanel() {
    * ★ 反查不到就 `remote` 为空，界面显示文件名 —— 有信息显示信息，
    *   没信息就说没信息，绝不编造一个假的"在线库名称"。
    */
-  /** ★ 第二段（联网反查在线库）是否还在跑 —— 界面据此显示"正在核对" */
-  const [resolvingOnline, setResolvingOnline] = useState(false);
+  /*
+   * ★ 2026-09-30：`resolvingOnline` 已删 —— 列表不再联网，那个状态永远不会真。
+   */
 
   const reloadMods = useCallback(async () => {
     if (!active) return;
     setLoading(true);
     try {
       /*
-       * ★★ 两段式加载（用户 2026-09-15："版本的 mod 列表获取版本有什么 mod 的速度太慢"）。
+       * ★★★★ 2026-09-30（用户）：「**我倒是觉得，我们本来就不该联网读取 mod 列表的 mod**」
+       *   以及「**并且，我不想要在线名称了**」。
        *
-       *   慢在哪（实测定位）：列出 Mod 要**每个 jar 都联网反查一次**
-       *   （`modrinth.scanMods` = 读盘 + 算 SHA1/指纹 + 逐个查在线库），
-       *   而在此之前**列表是空的** —— 装了几十个 Mod 的整合包要等很久，
-       *   用户看到的是"白屏很久，然后一次性全出来"。
+       *   这两句把方向纠正了 —— 上一轮我在给一条**不该存在的前置条件**提速
+       *   （把 20 秒优化成 5 秒），而真正的修法是**把那一整段从加载路径里删掉**。
        *
-       *   现在拆成两段：
-       *     ① **本地扫描**（`backend.listMods`，只读文件名/大小）→ 列表**立刻**出现，
-       *        显示文件名、大小、是否禁用 —— 这些本来就不需要联网；
-       *     ② 联网反查放到后台，回来之后把"在线库名称 / 版本 / 支持情况"补上。
+       *   ## 列表要显示的东西**全在盘上**
        *
-       *   ★ 没有造假：第一段显示的是**文件名**（不是编出来的名字），
-       *     补全期间界面明确写着"正在核对在线库"。
+       *     文件名、大小、mtime、启用/禁用（`.disabled` 后缀）—— 一个字段都不需要联网。
+       *     "这是哪个 Mod、有没有新版"才是联网的事，而它有自己的按钮（【检查更新】）。
+       *
+       *   ## 以前是怎么错的
+       *
+       *     进页面就自动反查在线库、把每个 Mod 的名字换成"在线库名称"，于是：
+       *       · `api.modrinth.com` 国内连不上 ⇒ **每次进页面白等 20 秒**
+       *         （补上镜像兜底后仍要 5 秒）；
+       *       · 用户没点任何东西，没有理由为"在线库叫什么"付这个钱；
+       *       · 最刺眼的是：**改个文件名（启用/禁用）也要等这一圈网络**。
+       *
+       *   ⇒ 现在这一段就是全部：`backend.listMods` 只读目录（Rust 侧 `scan_mods`，
+       *     它是纯 `read_dir`，本来就不联网）。联网只剩【检查更新】那一个入口。
+       *
+       *   ★ 名字是**从文件名去掉扩展名**得来的（本地推导，零成本）——
+       *     "在线库名称"那个字段用户明确不要了。
        */
-      const local = await backend.listMods(active.id);
+      /*
+       * ★★★★ 2026-09-30：**这里原来传的是 `active.id`，那是错的** —— 一个真机 bug。
+       *
+       *   `id`（`inst-mulcf1gv`）是**账本里的实例身份**，只在启动器内部用；
+       *   磁盘上的目录名是 **`config.slug`**（`26.3-fabric-0.19.5`）。
+       *   后端拿它当目录名拼路径 ⇒ 读的是
+       *   `.minecraft/versions/inst-mulcf1gv/mods` ⇒ **不存在** ⇒ 列表 0 个。
+       *
+       *   真机证据（`<own_root>/mods-diag.txt`，用户点一下就能看到）：
+       *   ```
+       *   scan_mods(instance_id="inst-mulcf1gv", …)
+       *   实际读的目录：D:\IEML\.minecraft\versions\inst-mulcf1gv\mods
+       *   结果：目录不存在或读不出来
+       *   ```
+       *   而 `D:\IEML\.minecraft\versions\26.3-fabric-0.19.5\mods` 里确实有 jar。
+       *
+       *   ★ 判定收进 `instanceDirSlug`（有测试），不在页面里各自猜字段。
+       */
+      const slug = instanceDirSlug(active);
+      if (!slug) {
+        toast('err', '这个实例没有目录名', '实例记录里的 slug 是空的，无法定位它的 Mod 目录。');
+        return;
+      }
+      const local = await backend.listMods(slug);
       const localEntries: ModEntry[] = local.map((f) => ({
         displayName: f.fileName.replace(/\.(jar|zip|litemod)(\.disabled)?$/i, ''),
         fileName: f.fileName,
@@ -296,61 +353,36 @@ export function ModsPanel() {
       }));
       setMods(localEntries, judgeAll(localEntries, active.mcVersion, active.loader?.kind ?? null));
       setChecked(false);
-      setLoading(false);
 
-      // 浏览器演示模式没有在线库：第一段就是全部
-      if (!api) return;
-
-      setResolvingOnline(true);
-      const scanned = await api.modrinth.scanMods(
-        active.config.slug,
-        active.mcVersion,
-        active.loader?.kind ?? null,
-      );
-
-      const entries: ModEntry[] = scanned.map((s) => ({
-        displayName: s.display_name,
-        fileName: s.file_name,
-        path: s.path,
-        enabled: s.enabled,
-        bytes: s.bytes,
-        mtimeMs: s.mtime_ms,
-        ...(s.sha1 ? { sha1: s.sha1 } : {}),
-        /*
-         * ★★ CurseForge 指纹（ADR-052）：**只有反查命中时后端才给**
-         *    （见 `ModScanEntry::fingerprint` 的说明）。存进 `murmur2`
-         *    是为了与领域层的命名一致 —— 它就是 MurmurHash2。
-         */
-        ...(s.fingerprint ? { murmur2: s.fingerprint } : {}),
-        ...(s.remote
-          ? {
-              remote: {
-                // ★ 来源如实映射：只在 CurseForge 上查到的 Mod 不该被标成 Modrinth
-                source:
-                  s.remote.source === 'curseforge'
-                    ? ('curseforge' as const)
-                    : ('modrinth' as const),
-                projectId: s.remote.project_id,
-                name: s.remote.title || s.remote.project_id,
-                version: s.remote.version,
-                gameVersions: s.remote.game_versions,
-                loaders: s.remote.loaders as never,
-                isLibrary: s.remote.is_library,
-              },
-            }
-          : {}),
-      }));
-
-      // ★ 状态判定走领域层，UI 只呈现
-      setMods(entries, judgeAll(entries, active.mcVersion, active.loader?.kind ?? null));
-      setChecked(false);
+      /*
+       * ★★ 图标**单独取一次**（用户：「我还要 mod 的图标」，方案是"从 jar 里解"）。
+       *
+       *   为什么不塞进上面那次 listMods：图标是 base64，一个几 KB，
+       *   几十个 Mod 就是几百 KB —— 而列表只需要文件名/大小。
+       *   分开取的好处是**列表不等图标**：先出文件与状态，图标回来再补上。
+       *
+       *   ★ 它也是纯本地的（后端按 mtime 解一次并缓存），不联网。
+       *   ★ 失败就当作"都没有图标"（界面用首字母占位块）——
+       *     图标是锦上添花，绝不能因为它让列表读不出来。
+       */
+      try {
+        const icons = await backend.modIcons(slug);
+        if (Object.keys(icons).length > 0) {
+          // ★ 只在**路径仍然存在**的条目上贴图标（用户可能刚好删了一个）
+          const withIcons = localEntries.map((entry) =>
+            icons[entry.path] ? { ...entry, icon: icons[entry.path] } : entry,
+          );
+          setMods(withIcons, judgeAll(withIcons, active.mcVersion, active.loader?.kind ?? null));
+        }
+      } catch {
+        /* 图标取不到就算了 —— 首字母占位块本来就是兜底方案 */
+      }
     } catch (e) {
       toast('err', '读取 Mod 列表失败', e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
-      setResolvingOnline(false);
     }
-  }, [active, api, backend, setMods, toast]);
+  }, [active, backend, setMods, toast]);
 
   useEffect(() => {
     void reloadMods();
@@ -390,30 +422,79 @@ export function ModsPanel() {
       toast('warning', '演示模式', '桌面版才能向在线库核对更新');
       return;
     }
-    /*
-     * ★★ 两个列表**按位置一一对应**（ADR-052）：
-     *   第 i 个 sha1 与第 i 个指纹是同一个文件。没有指纹的文件传空串
-     *   （后端保位置，空位不会让后面错位）。
-     *
-     *   为什么要同时给指纹：Modrinth 用 SHA1 反查，而 **CurseForge 只认
-     *   MurmurHash2 指纹** —— 只发 SHA1 的话，那些只在 CurseForge 上发布的
-     *   Mod 永远查不到更新（而且没有任何报错，静默地"就是没有更新"）。
-     */
-    const rows = state.mods.entries.filter((e) => Boolean(e.sha1));
-    const hashes = rows.map((e) => e.sha1!);
-    const fingerprints = rows.map((e) => e.murmur2 ?? '');
-    const hasFingerprint = fingerprints.some((f) => f !== '');
-    if (hashes.length === 0) {
-      toast(
-        'info',
-        '没有可核对的 Mod',
-        '这些文件都没能在在线库里找到（Modrinth 用 SHA1、CurseForge 用指纹），无法判断更新。',
-      );
-      setChecked(true);
-      return;
-    }
     setChecking(true);
     try {
+      /*
+       * ★★★★ 2026-09-30：**这里是全页唯一联网的地方**（用户：
+       *   「我们本来就不该联网读取 mod 列表的 mod」）。
+       *
+       *   列表已经不再算哈希了（那是为了联网反查才需要的），所以这一步
+       *   自己先把哈希与在线库信息拿回来 —— 一次联网把两件事办完：
+       *     ① `scanMods`  → 读盘 + SHA1/指纹 + 反查在线库（名称/版本/是否前置库）
+       *     ② `checkUpdates` → 用①拿到的 sha1 + 指纹核对更新
+       *
+       *   ⇒ 代价是"点这个按钮会读一遍所有 jar"（按 mtime 有哈希缓存，
+       *     第二次很快），但**这笔钱只在用户主动点的时候付** ——
+       *     而不是每次进页面、每次改个文件名都付。
+       *
+       *   ★ 结果同时被用来**补全列表**（见下面的 `hydrated`）：这样
+       *     "检查更新"顺便把版本信息也带回来了，不需要另一个按钮。
+       */
+      const scanned = await api.modrinth.scanMods(
+        active.config.slug,
+        active.mcVersion,
+        active.loader?.kind ?? null,
+      );
+      const hydrated: ModEntry[] = state.mods.entries.map((entry) => {
+        const hit = scanned.find((s) => s.path === entry.path);
+        if (!hit) return entry;
+        return {
+          ...entry,
+          ...(hit.sha1 ? { sha1: hit.sha1 } : {}),
+          ...(hit.fingerprint ? { murmur2: hit.fingerprint } : {}),
+          ...(hit.remote
+            ? {
+                remote: {
+                  // ★ 来源如实映射：只在 CurseForge 上查到的 Mod 不该被标成 Modrinth
+                  source:
+                    hit.remote.source === 'curseforge'
+                      ? ('curseforge' as const)
+                      : ('modrinth' as const),
+                  projectId: hit.remote.project_id,
+                  name: hit.remote.title || hit.remote.project_id,
+                  version: hit.remote.version,
+                  gameVersions: hit.remote.game_versions,
+                  loaders: hit.remote.loaders as never,
+                  isLibrary: hit.remote.is_library,
+                },
+              }
+            : {}),
+        };
+      });
+
+      /*
+       * ★★ 两个列表**按位置一一对应**（ADR-052）：
+       *   第 i 个 sha1 与第 i 个指纹是同一个文件。没有指纹的文件传空串
+       *   （后端保位置，空位不会让后面错位）。
+       *
+       *   为什么要同时给指纹：Modrinth 用 SHA1 反查，而 **CurseForge 只认
+       *   MurmurHash2 指纹** —— 只发 SHA1 的话，那些只在 CurseForge 上发布的
+       *   Mod 永远查不到更新（而且没有任何报错，静默地"就是没有更新"）。
+       */
+      const rows = hydrated.filter((e) => Boolean(e.sha1));
+      const hashes = rows.map((e) => e.sha1!);
+      const fingerprints = rows.map((e) => e.murmur2 ?? '');
+      const hasFingerprint = fingerprints.some((f) => f !== '');
+      if (hashes.length === 0) {
+        setMods(hydrated, judgeAll(hydrated, active.mcVersion, active.loader?.kind ?? null));
+        toast(
+          'info',
+          '没有可核对的 Mod',
+          '这些文件都没能在在线库里找到（Modrinth 用 SHA1、CurseForge 用指纹），无法判断更新。',
+        );
+        setChecked(true);
+        return;
+      }
       const list = await api.modrinth.checkUpdates(
         hashes,
         fingerprints,
@@ -422,6 +503,8 @@ export function ModsPanel() {
       );
       setUpdates(list);
       setChecked(true);
+      // ★ 补全后的列表**在核对成功之后**才落坐（失败时保留原来那份，不闪）
+      setMods(hydrated, judgeAll(hydrated, active.mcVersion, active.loader?.kind ?? null));
       /*
        * ★ 风险项**默认不勾选**（与弹窗里的说明一致）。
        *
@@ -477,6 +560,94 @@ export function ModsPanel() {
     window.addEventListener('ieml:mods-updates', onUpdates);
     return () => window.removeEventListener('ieml:mods-updates', onUpdates);
   }, [state.mods.entries, setMods, active]);
+
+  /**
+   * ★★★★ 2026-09-30（用户）：「**直接转到下载页的 mod 详情页**」。
+   *
+   *   点「详情」= 把那个项目的**资源信息**交给下载页，然后切过去。
+   *   详情页本身（资源信息卡 + 版本列表）是现成的（`ResourceInstallPage`），
+   *   这里只负责**凑出它要的那个 `ModrinthHit`**。
+   *
+   * ## 两个来源
+   *
+   *   ① **已经核对过**（列表里带 `remote`）⇒ 直接拼出来，一次网络请求都不发；
+   *   ② **还没核对过** ⇒ 先扫一次（读盘 + 按 SHA1/指纹精确反查），
+   *      拿到 project id 再转。列表现在是纯本地的（用户要求"不该联网读列表"），
+   *      所以大多数人点详情时手上只有文件名 —— 这是常态路径。
+   *
+   * ## 为什么**不**按文件名搜索来兜底
+   *
+   *   我一开始想那样做，但它**会给出错的详情页**：文件名与项目往往对不上
+   *   （`fabric-api-0.161.0+26.3.jar` 搜出来可能是别的项目），而详情页
+   *   看起来又是"权威"的 —— 用户会照着它去装一个不相干的版本。
+   *   ⇒ 宁可**如实说"在线库里没有它的记录"**，也不猜一个。
+   */
+  async function openModDetail(entry: ModEntry) {
+    if (!api || !active) {
+      toast('info', '演示模式', '桌面版才能看在线详情');
+      return;
+    }
+    /** 从这几个字段拼出资源详情页要的 hit（详情页会自己去取真正的项目信息） */
+    const hitOf = (o: {
+      project_id: string;
+      title: string;
+      source?: string;
+    }): ModrinthHit => ({
+      project_id: o.project_id,
+      slug: o.project_id,
+      title: o.title,
+      description: '',
+      categories: [],
+      project_type: 'mod',
+      downloads: 0,
+      icon_url: null,
+      versions: [],
+      author: '',
+      page_url: null,
+    });
+
+    // ① 已核对过 —— 手上的信息就够
+    if (entry.remote?.projectId) {
+      openResource(
+        hitOf({
+          project_id: entry.remote.projectId,
+          title: entry.remote.name,
+          source: entry.remote.source,
+        }),
+        'mod',
+        entry.remote.source === 'curseforge' ? 'curseforge' : 'modrinth',
+      );
+      return;
+    }
+
+    // ② 还没核对过 —— 扫一次拿 project id（与【检查更新】同一条路，哈希有缓存）
+    setDetailLoading(entry.path);
+    try {
+      const scanned = await api.modrinth.scanMods(
+        active.config.slug,
+        active.mcVersion,
+        active.loader?.kind ?? null,
+      );
+      const hit = scanned.find((s) => s.path === entry.path)?.remote;
+      if (!hit) {
+        toast(
+          'info',
+          '在线库里没有这个 Mod',
+          '按内容核对（Modrinth 用 SHA1、CurseForge 用指纹）都没找到它 —— 可能是本地改过的包，或者国内暂时连不上在线库。',
+        );
+        return;
+      }
+      openResource(
+        hitOf({ project_id: hit.project_id, title: hit.title || hit.project_id, source: hit.source }),
+        'mod',
+        hit.source === 'curseforge' ? 'curseforge' : 'modrinth',
+      );
+    } catch (e) {
+      toast('err', '打不开详情', e instanceof Error ? e.message : String(e));
+    } finally {
+      setDetailLoading(null);
+    }
+  }
 
   /**
    * 批量启用 / 禁用：真的改文件名后缀，然后重新读盘（不靠前端本地改状态）
@@ -628,39 +799,38 @@ export function ModsPanel() {
     }
   }
 
-  /**
-   * 单条 Mod 的启用 / 禁用。
+  /*
+   * ★★ 2026-09-30（用户）：「不要那个按钮；做一个公共的禁用启用按钮」。
    *
-   * ★ 审计发现：这个按钮以前**只弹一句 toast**（还写着"演示模式未真正改名"），
-   *   在桌面版上也是假的 —— 文件名没改、游戏照样加载它。
-   *   批量版本的 `bulkSetEnabled` 一直是真的，唯独最常用的单条是假的。
-   *   现在走同一条真实路径：改 `.disabled` 后缀 → 重新读盘。
+   *   所以**整个列表只有顶部这一个按钮**管启用/禁用，卡片上不再有它。
+   *   每行的对勾（行尾）只负责"我要处理哪几个"。
+   *
+   *   按钮说什么，判据是用户点的名（原话）：
+   *
+   *   > 选择被禁用的 mod 时，按钮显示启用；选择没被禁用的 mod 时，按钮显示禁用。
+   *
+   *   也就是**按钮说的是"点下去会发生什么"**，不是"它们现在是什么状态"。
+   *   三种情形：
+   *
+   *   | 勾选的 Mod | 按钮显示 | 点下去 |
+   *   |---|---|---|
+   *   | 被禁用的（一个启用的都没有） | **启用** | 全部启用 |
+   *   | 没被禁用的（至少一个启用） | **禁用** | 全部禁用 |
+   *   | 混着选（有启用也有禁用） | **禁用** | 全部禁用 |
+   *
+   *   ★ 混选归到「禁用」是**跟着上面那句话推出来的**，不是我自己加的一条规则：
+   *     "选择没被禁用的 mod"在混选里也成立（其中确实有没被禁用的），
+   *     所以按钮显示「禁用」。逆过来读（有被禁用的就显示启用）会把纯启用的一组
+   *     也判成"禁用" —— 那与用户给的第一句冲突。
+   *
+   *   ★ 文案与它真做的事**必须同源**（ADR-041）：按钮上的字就是从 `bulkTarget`
+   *     推出来的，不会出现"写着启用、点下去却是禁用"。
    */
-  async function toggleOne(entry: ModEntry) {
-    if (!active) return;
-    if (!api) {
-      toast('warning', '演示模式', '浏览器里改不了真实文件');
-      return;
-    }
-    const next = toggledName(entry.fileName, !entry.enabled);
-    try {
-      const done = await api.modrinth.setModEnabled(active.config.slug, [entry.path], !entry.enabled);
-      if (done === 0) {
-        toast('warning', '没有改动', '文件可能已经被别的程序占用或删掉了。');
-      } else {
-        toast(
-          'ok',
-          entry.enabled ? '已禁用' : '已启用',
-          `${entry.fileName} → ${next}（下次启动生效）`,
-        );
-      }
-    } catch (e) {
-      toast('err', '操作失败', e instanceof Error ? e.message : String(e));
-    }
-    // ★ 必须重新读盘：`.disabled` 是磁盘上的真实状态，
-    //   前端自己改状态就会出现"界面说禁用了、盘上还是启用的"两份真相
-    void reloadMods();
-  }
+  const selectedEntries = state.mods.entries.filter((e) => state.mods.selected.has(e.path));
+  const bulkTarget: 'enable' | 'disable' =
+    selectedEntries.length > 0 && selectedEntries.every((e) => !e.enabled)
+      ? 'enable'
+      : 'disable';
 
   const entries = state.mods.entries;
   const states = state.mods.states;
@@ -721,6 +891,22 @@ export function ModsPanel() {
       </>
     );
   }
+
+  /*
+   * ★★★★ 2026-09-30（用户纠正）：「**不不不，直接转到下载页的 mod 详情页**」。
+   *
+   *   我上一版在这一页**自己造了一个详情页**（文件表 + 在线库信息表）——
+   *   而那个界面**已经存在**：下载页的资源详情页（`ResourceInstallPage`，
+   *   照 PCL 做的那个：资源信息卡 + 版本列表）。
+   *
+   *   自己造一份的代价是立刻可见的：
+   *     · 同一个东西两套界面，用户要学两次、我们要维护两处；
+   *     · 我那份只能显示"当前装的这一个版本"，而资源详情页能**列出所有版本并直接换版本**；
+   *     · 我那份里的"在线库信息"还得等用户先点过【检查更新】才有数据 —— 一份残废的表。
+   *
+   *   ⇒ 这一页不再有详情视图。点「详情」只做一件事：
+   *     **拿到那个项目的资源信息，转到下载页的详情页**（见 `openModDetail`）。
+   */
 
   return (
     <>
@@ -899,15 +1085,11 @@ export function ModsPanel() {
             </div>
             <div style={{ flex: 1 }} />
             {/*
-              ★ 第二段还在跑时**明确说出来**：这时列表里显示的是**文件名**，
-                在线库名称还没到。不说的话用户会以为"这就是它的名字"，
-                而下一步（检查更新）又要求先反查完 —— 那才是"点了没反应"的观感。
-            */}
-            {resolvingOnline ? (
-              <span className="dim">
-                <Spinner label="正在核对在线库…" />
-              </span>
-            ) : null}
+             * ★ 2026-09-30：这里原来有一个「正在核对在线库…」的转圈。
+             *   列表不再联网（见 `reloadMods` 的说明），所以这一段的等待没有了 ——
+             *   转圈也跟着删掉：**留着一个不会出现的指示器，比没有更糟**
+             *   （下一个人会以为"联网那段还在，只是慢得没显示"）。
+             */}
             <span className="dim mono">
               {visible.length} / {entries.length} 个 · 占用{' '}
               {formatBytes(entries.reduce((s, e) => s + e.bytes, 0))}
@@ -921,19 +1103,18 @@ export function ModsPanel() {
                 已选中 <b>{state.mods.selected.size}</b> 个
               </span>
               <div className="spacer" />
+              {/*
+               * ★ 按钮上的字就是"点下去会发生什么"，**不再加 `title`**：
+               *   用户要求过"去掉所有悬停显示描述"，而这里也不需要 ——
+               *   按钮文案与动作同源，鼠标停上去再解释一遍是多余的一层。
+               *   （门禁 `check-tooltips` 会拦住这类 `title`，它是真的跑着的。）
+               */}
               <Button
                 size="sm"
                 variant="secondary"
-                onClick={() => void bulkSetEnabled(true)}
+                onClick={() => void bulkSetEnabled(bulkTarget === 'enable')}
               >
-                启用
-              </Button>
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={() => void bulkSetEnabled(false)}
-              >
-                禁用
+                {bulkTarget === 'enable' ? '启用' : '禁用'}
               </Button>
               <Button
                 size="sm"
@@ -1023,18 +1204,39 @@ export function ModsPanel() {
               const st = states.get(entry.path) ?? 'fine';
               const selected = state.mods.selected.has(entry.path);
               return (
-                <div key={entry.path} className={`mod-item${selected ? ' selected' : ''}`}>
-                  <label className="mod-select">
-                    <input
-                      type="checkbox"
-                      checked={selected}
-                      aria-label={`选择 ${entry.displayName}`}
-                      onChange={() =>
-                        toggleModSelect(entry.path)
-                      }
-                    />
-                  </label>
-
+                /*
+                 * ★★ 2026-09-30（用户）：「**我想要点一下这个栏就可以选择**」。
+                 *
+                 *   整行可点 —— 但只做**一件事**：切换这一条的勾选。
+                 *   ★ 为什么敢把整行做成选择区：这一行里现在只有两样能点的东西
+                 *     （状态标签、行尾的对勾），而"选中"是这一行**唯一**的默认动作。
+                 *   ★ 不双击进详情、不右键出菜单 —— 那些是"顺手加的"，而用户没要。
+                 *     加了口子就得处理"点到链接/点到按钮时别触发"的一堆边界。
+                 *
+                 *   ★ 键盘与无障碍走**原生 checkbox**（藏在下面的 `.mod-select` 里）：
+                 *     整行点击只是给鼠标的捷径，Tab/Space 那条路一个字都没变。
+                 */
+                <div
+                  key={entry.path}
+                  className={`mod-item${selected ? ' selected' : ''}`}
+                  onClick={() => toggleModSelect(entry.path)}
+                >
+                  {/*
+                   * ★★ 2026-09-30（用户）：「**我还要 mod 的图标**」，方案是"从 jar 里解"。
+                   *
+                   *   `entry.icon` 是后端从 jar 里解出来的 `data:image/...;base64,…`
+                   *   （见 `mod_icons` 命令）。**没有图标时**（大多数 Mod 不打包图标）
+                   *   用[文件名首字母 + 色块]做占位 —— 用户选的方案。
+                   *
+                   *   ★ 为什么用"首字母色块"而不是一个统一的小图标：
+                   *     列表里一眼扫过去时，缺图标的那些会变成一片相同的方块；
+                   *     用名字首字母（`fabric-api…` → `F`）能让人**在扫视时区分开**，
+                   *     而且颜色由名字决定（同名同色，稳定不乱跳）。
+                   *
+                   *   ★ 图片加载失败不显示破图：`onError` 里退成首字母块。
+                   *     base64 内嵌理论上不会失败，但"理论上"三个字在这个仓库不值钱。
+                   */}
+                  <ModIcon entry={entry} />
                   <div className="mod-main">
                     <div className="mod-name-row">
                       <span className="mod-name">{entry.displayName}</span>
@@ -1042,44 +1244,143 @@ export function ModsPanel() {
                         state={st}
                         onClick={
                           st === 'maybe-incompatible' || st === 'can-update'
-                            ? () => setCompatFor(entry)
+                            ? /* ★ 拦冒泡：整行是选择区，而"看兼容性/更新说明"是另一件事 */
+                              (e) => {
+                                e.stopPropagation();
+                                setCompatFor(entry);
+                              }
                             : undefined
                         }
                       />
                     </div>
-                    {entry.remote?.name && entry.remote.name !== entry.displayName ? (
-                      <div className="mod-remote">
-                        在线库名称：{entry.remote.name}
-                        {entry.latestVersion ? ` · 可更新到 ${entry.latestVersion}` : ''}
-                      </div>
-                    ) : null}
+                    {/*
+                     * ★★ 2026-09-30（用户）：「**并且，我不想要在线名称了**」。
+                     *
+                     *   这里原来有一行「在线库名称：Fabric API · 可更新到 x.y.z」。
+                     *   删掉的理由不只是"不好看"：它**要求先联网反查**才能有值，
+                     *   而列表已经改成纯本地（见 `reloadMods`）——
+                     *   留着它就会让每一行显示成"半截信息"，或者逼着列表重新联网。
+                     *
+                     *   ★ 版本信息没有丢：**可更新**仍然由右边那颗状态标签与
+                     *     卡片上的「更新」按钮表达（它们来自【检查更新】的结果）。
+                     */}
                     {detail?.evidence && detail.evidence.length > 0 && st !== 'can-update' ? (
                       <div className="mod-evidence">
-                        {detail.evidence.map((e, i) => (
-                          <div key={i}>· {e}</div>
-                        ))}
+                        {/*
+                         * ★★ 2026-09-30（用户给了一张"在线库名称：Fabric API"的截图）：
+                         *   「这些文字去掉」—— 指的是 `library` 那两条说明：
+                         *     · `Fabric API 是其他 Mod 的前置库`
+                         *     · `单独禁用它会导致依赖它的 Mod 无法加载`
+                         *
+                         *   ★ 只在**展示**这一层滤掉，`judgeModState` 里的判定一个字没动 ——
+                         *     "前置库"这个状态还成立（右边那颗 `前置库` 标签照旧显示），
+                         *     变的只是"要不要在卡片上把这两句解释念一遍"。
+                         *     把判定也删掉的话，这类 Mod 会落回 `fine`，
+                         *     连"它是前置库"这件事都看不出来了 —— 那是另一个改动，
+                         *     用户没要求，不做。
+                         */}
+                        {detail.evidence
+                          .filter((e) => !LIBRARY_EVIDENCE.test(e))
+                          .map((e, i) => (
+                            <div key={i}>· {e}</div>
+                          ))}
                       </div>
                     ) : null}
+                    {/*
+                     * ★★ 2026-09-30（用户）：「把 mod 上的『禁用』去掉」。
+                     *
+                     *   去掉的是**这行状态文字**（原来写作
+                     *   `· 已启用 / 已禁用（.disabled）`），不是"启用/禁用"这个动作 ——
+                     *   动作仍然在（顶部那个公共按钮），这里只是不再把状态念第二遍。
+                     *
+                     *   ★ 这个区分我一开始搞反过（把动作删了、留下状态文字），
+                     *     结果用户问「单个 mod 的禁用与启用呢？」—— 记在这里免得下次再错。
+                     */}
                     <div className="mod-foot">
                       <span className="mono">{formatBytes(entry.bytes)}</span>
-                      <span className="dot" />
-                      <span>{entry.fileName.endsWith('.disabled') ? '已禁用（.disabled）' : '已启用'}</span>
                     </div>
                   </div>
 
                   <div className="mod-act">
-                    {st === 'can-update' ? (
-                      <Button size="sm" variant="primary" onClick={() => setUpdateOpen(true)}>
-                        更新
-                      </Button>
-                    ) : null}
+                    {/*
+                      ★★ 2026-09-30（用户）：「**为版本的 mod 列表的 mod 加一个详情按钮，
+                        然后点击后进入 mod 的详情页**」。
+                      ★ `stopPropagation`：整行是选择区（点一下切换勾选），
+                        而"看详情"是另一件事 —— 不拦住的话点它会顺手把这一行选上。
+                    */}
                     <Button
                       size="sm"
                       variant="ghost"
-                      onClick={() => void toggleOne(entry)}
+                      loading={detailLoading === entry.path}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void openModDetail(entry);
+                      }}
                     >
-                      {entry.enabled ? '禁用' : '启用'}
+                      <IconInfo /> 详情
                     </Button>
+                    {st === 'can-update' ? (
+                      /*
+                       * ★ `stopPropagation`：整行现在是选择区（见上面的 onClick），
+                       *   而"更新"是**另一件事** —— 不拦住的话点它会顺手把这一行选上，
+                       *   于是顶部那个公共按钮跟着冒出来，用户会以为"更新"顺带做了什么。
+                       */
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setUpdateOpen(true);
+                        }}
+                      >
+                        更新
+                      </Button>
+                    ) : null}
+                    {/*
+                     * ★★ 2026-09-30（用户）：「打对勾的那个，移到 mod 的『禁用』两字的位置」；
+                     *   随后明确：「不要那个按钮；做一个公共的禁用启用按钮」。
+                     *   再后来：「我觉得框选框有些难看，可以做一个更好的效果吗」。
+                     *
+                     *   ⇒ 卡片上**没有**启用/禁用按钮了，这里只有对勾：
+                     *      勾它 = 把这一行交给顶部那个公共按钮处理（语义一个字没改）。
+                     *   ⇒ 对勾**不用系统原生那个方块**：原生框视觉隐藏（但仍可 Tab 聚焦、
+                     *      仍可用空格切换 —— 无障碍不能丢），自己画一个圆圈 + 勾
+                     *      （见 `.mod-select` 那一组样式）。
+                     *
+                     *   ★ 为什么不留那个即时按钮：用户点名不要 ——
+                     *     它与对勾在同一行里管两件不同的事（一个选中、一个改状态），
+                     *     并排摆着最容易点错（"我只想选中它，结果把它禁用了"）。
+                     */}
+                    <label
+                      className="mod-select"
+                      /*
+                       * 点圆圈本身也要能切换 —— 但别让它冒泡到整行（会切两次，等于没切）。
+                       * label 与 input 的联动本来就会触发一次 change，这里只负责拦住冒泡。
+                       */
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {/*
+                       * ★ 无障碍名字用 `aria-label`（不是 `title`）：读屏软件要它，
+                       *   而鼠标悬停**不弹**任何东西 —— 用户要求过"去掉所有悬停显示描述"。
+                       *   `check-tooltips` 门禁把两者分得很清（`aria-label` 放行）。
+                       */}
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        aria-label={`选择 ${entry.displayName}`}
+                        onChange={() => toggleModSelect(entry.path)}
+                      />
+                      {/*
+                       * ★ 自己画的那个圈与勾（原生框被 CSS 视觉隐藏）。
+                       *   它是**纯装饰**：`aria-hidden`，因为语义与键盘操作都由
+                       *   上面那个原生 `input` 承担 —— 读屏软件读的是它。
+                       */}
+                      <span className="box" aria-hidden="true">
+                        <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M2.5 6.4 L4.8 8.7 L9.5 3.6" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      </span>
+                    </label>
                   </div>
                 </div>
               );
@@ -1305,7 +1606,18 @@ export function ModsPanel() {
 
 /* ====================== 状态徽标 ====================== */
 
-function StateChip({ state: st, onClick }: { state: string; onClick?: () => void }) {
+function StateChip({
+  state: st,
+  onClick,
+}: {
+  state: string;
+  /**
+   * ★ 2026-09-30：参数从 `() => void` 改成 `(e) => void` ——
+   *   因为整行现在是选择区，这个标签得能**拦住冒泡**
+   *   （点"兼容性"不该顺手把这一行选上）。
+   */
+  onClick?: (e: React.MouseEvent) => void;
+}) {
   const map: Record<string, { label: string; tone: 'neutral' | 'info' | 'warning' | 'danger' }> = {
     fine: { label: '', tone: 'neutral' },
     disabled: { label: '已禁用', tone: 'neutral' },
@@ -1321,6 +1633,65 @@ function StateChip({ state: st, onClick }: { state: string; onClick?: () => void
       {m.label}
     </Chip>
   );
+}
+
+
+/* ====================== Mod 图标 ====================== */
+
+/**
+ * 一行 Mod 左侧的图标（2026-09-30，用户：「我还要 mod 的图标」）。
+ *
+ * ## 两条路
+ *
+ *   · `entry.icon` 有值 → 它就是从 jar 里解出来的 `data:` URI，直接显示；
+ *   · 没有 → **文件名首字母 + 色块**（用户选的兜底方案）。
+ *
+ * ## 为什么首字母色块比一个统一小图标好
+ *
+ *   Mod 里大多数**不打包图标**，于是列表里会有一大片长得一模一样的方块。
+ *   用名字首字母（`fabric-api-0.161.0+26.3` → `F`）能让人在扫视时区分开，
+ *   而颜色由名字算出来（**同名同色**，刷新多少次都不跳）。
+ *
+ * ★ 颜色只从**名字**推，不用随机数：随机会让每次渲染颜色都变，
+ *   那比没有颜色更让人分心。
+ */
+function ModIcon({ entry }: { entry: ModEntry }) {
+  const [broken, setBroken] = useState(false);
+  const name = entry.displayName || entry.fileName;
+  if (entry.icon && !broken) {
+    return (
+      <img
+        className="mod-icon"
+        src={entry.icon}
+        alt=""
+        // 加载失败就退回首字母块（内嵌 base64 理论上不会失败，但别显示破图）
+        onError={() => setBroken(true)}
+      />
+    );
+  }
+  const letter = firstLetter(name);
+  return (
+    <span className="mod-icon placeholder" data-tone={toneOf(name)} aria-hidden="true">
+      {letter}
+    </span>
+  );
+}
+
+/** 首字母：跳过开头的非字母数字（有些文件名以 `.` 或 `[` 开头） */
+function firstLetter(name: string): string {
+  for (const ch of name) {
+    if (/[A-Za-z0-9\u4e00-\u9fa5]/.test(ch)) return ch.toUpperCase();
+  }
+  return '?';
+}
+
+/** 名字 → 0..5 的色调档（稳定：同一个名字永远同一档） */
+function toneOf(name: string): string {
+  let h = 0;
+  for (let i = 0; i < name.length; i += 1) {
+    h = (h * 31 + name.charCodeAt(i)) % 997;
+  }
+  return String(h % 6);
 }
 
 /* ====================== 工具 ====================== */

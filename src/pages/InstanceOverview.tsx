@@ -624,7 +624,11 @@ export function InstanceOverview() {
                 state.mods.entries.length > 6
                   ? `\n· 等共 ${state.mods.entries.length} 个 Mod`
                   : '';
-              const saves = '实例目录里的存档、配置与截图（instances/<slug>/game/）';
+              /*
+               * ★ 2026-09-30：版本目录 = 游戏目录（PCL 那样一个版本一个文件夹），
+               *   所以文案里没有 `game/` 那一层了。
+               */
+              const saves = '版本目录里的存档、配置与截图（.minecraft/versions/<版本名>/）';
               const copy = describeDelete({
                 what: `「${inst.config.name}」`,
                 items: [

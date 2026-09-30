@@ -275,6 +275,9 @@ export function createWebBackend(): Backend {
           mcVersion: i.mcVersion,
           loaderName: i.loader ? i.loader.kind : null,
           hasJson: true,
+          /* ★ 演示数据都是"能用的版本"—— 演示里不编"坏掉的版本"（那会让人以为真坏了） */
+          ok: true,
+          error: '',
         });
       }
       return out;
@@ -436,6 +439,29 @@ export function createWebBackend(): Backend {
         bytes: m.bytes,
         mtimeMs: base - i * 86400000,
       }));
+    },
+
+    /**
+     * 演示模式**没有真实 jar**，所以没有图标可解 —— 返回空表。
+     *
+     * ★ 不返回假图标：那会让演示看起来"每个 Mod 都有图标"，
+     *   而真实桌面版里大多数 Mod 没有图标。**演示要演示真实形状**，
+     *   所以这里让界面走"首字母占位块"那条路。
+     */
+    async modIcons(instanceId) {
+      void instanceId;
+      return {};
+    },
+
+    /** 演示模式没有真实整合包，也就没有作者图标 —— 返回空表（界面画自绘的版本图标）。 */
+    async packIcons() {
+      return {};
+    },
+
+    /** 演示模式没有真实文件系统 —— 这里不真删（返回 0），桌面版才走真实的删除。 */
+    async deleteVersionDir(slug) {
+      void slug;
+      return 0;
     },
   };
 }

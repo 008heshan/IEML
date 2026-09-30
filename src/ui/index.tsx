@@ -223,7 +223,17 @@ export function Chip({
 }: {
   tone?: ChipTone;
   children: ReactNode;
-  onClick?: () => void;
+  /**
+   * ★ 2026-09-30：签名从 `() => void` 放宽成收事件的版本。
+   *
+   *   起因：Mod 列表那一行现在**整行是选择区**（点一下切换勾选），
+   *   而标签上的点击是**另一件事** —— 它得能 `e.stopPropagation()` 拦住冒泡，
+   *   否则点"兼容性/可更新"会顺手把这一行选上。
+   *
+   *   ★ 收事件的回调**兼容**不收事件的（TS 允许少参数），
+   *     所以这是一次**放宽**，既有的调用点一个都不用改。
+   */
+  onClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
 }) {
   if (onClick) {
     return (

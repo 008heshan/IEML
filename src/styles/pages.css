@@ -93,6 +93,22 @@
   font-size: var(--text-xs);
   line-height: 1.55;
 }
+/*
+ * ★★ 2026-09-30（用户）：「我点完后，我都不知道开没开是下载，连接失败，
+ *   也是等了一会儿后冷不丁的出来」。
+ *
+ * 这一行显示**当前正在处理哪个文件**（后端在发起请求之前就上报，
+ * 所以一卡在连接上就能看见）。它比 `.task-meta` **更暗**：
+ * 它是"此刻在干什么"的细节，不该和进度数字抢注意力。
+ */
+.task-current {
+  margin-top: 2px;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  /* 长文件名（`fabric-api-0.161.0+26.3.jar`）要能截断，不能把卡片撑破 */
+  max-width: 100%;
+  opacity: 0.85;
+}
 .task-error svg {
   width: 13px;
   height: 13px;
@@ -321,6 +337,30 @@
 .launch-btn-wrap {
   display: flex;
   justify-content: center;
+}
+/*
+ * ★★ 2026-09-30（用户）：「启动整合包很慢」「为什么切换别的页面会停止启动」。
+ *
+ *   `launching` 期间显示"后端正在补什么文件"。整合包首次启动要补几十 MB 的
+ *   客户端与库，而这段以前**完全静默** —— 用户只能看到一个转圈的按钮，
+ *   判断不了"在下载"还是"卡死了"。
+ */
+.launch-prep {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin-top: var(--space-2);
+  /* 与按钮同宽，读起来像按钮的附属说明而不是页面正文 */
+  max-width: 420px;
+  margin-left: auto;
+  margin-right: auto;
+  text-align: center;
+}
+.launch-prep-file {
+  max-width: 100%;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
 }
 .launch-btn {
   height: 56px;
@@ -2885,32 +2925,322 @@
 }
 
 /* ---- Mod 管理页的本地列表行（社区资源中心的卡片是另一套） ---- */
+/*
+ * ★★ 2026-09-30（用户四条追加反馈）：
+ *   「图标没居中」「点一下这个栏就可以选择」「图标不想嵌在槽里，直接放在上面」
+ *   「框选框有些难看，做一个更好的效果」
+ *
+ * 这一块把 `.mod-item` 从"一个带边框的盒子"改成"一整行可点的东西"。
+ */
 .mod-item {
   display: flex;
-  align-items: flex-start;
+  align-items: center;          /* ★ 原来是 flex-start：图标与两行文字顶对齐 ⇒ 看起来"没居中" */
   gap: var(--space-3);
   padding: var(--space-3);
   border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
   background: var(--bg-raised);
   margin-bottom: var(--space-2);
+  /* ★ 整行可点（见 TSX 里 onClick 的说明）——光标要如实说这件事 */
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
 }
 .mod-item:hover {
   border-color: var(--border-strong);
+}
+.mod-item:active {
+  /* 按下去有一下反馈（否则"整行可点"轻得像没点到） */
+  transform: translateY(0.5px);
 }
 .mod-item.selected {
   border-color: var(--accent);
   background: var(--accent-subtle);
 }
+/*
+ * ★★ 选中框：**不用系统原生那个方块**（用户：「框选框有些难看，做一个更好的效果」）。
+ *
+ *   原生 `input[type=checkbox]` 在各系统上长得不一样、还与这套深色主题不搭。
+ *   这里把它**视觉隐藏**（`opacity: 0` 但仍可聚焦、仍可键盘操作 —— 无障碍不能丢），
+ *   自己画一个：未选中是一个淡描边圆圈，悬停时浮出呼吸感，选中时填成实心 + 白勾。
+ *
+ *   ★ 为什么是圆圈而不是方框：这一行的右端只是一个"把这条交给顶部按钮"的开关，
+ *     圆点在深色界面里比方块轻，也不与左侧图标的圆角方块抢形状。
+ */
 .mod-select {
-  padding-top: 2px;
-}
-.mod-select input {
-  width: 15px;
-  height: 15px;
-  accent-color: var(--accent);
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
   cursor: pointer;
 }
+.mod-select input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  margin: 0;
+  /* 仍然能被 Tab 聚焦（`:focus-visible` 由下面那个圈来体现） */
+}
+.mod-select .box {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border-strong);
+  background: transparent;
+  display: grid;
+  place-items: center;
+  transition: all 0.14s ease;
+}
+.mod-item:hover .mod-select .box {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+.mod-item.selected .mod-select .box {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: none;
+}
+.mod-select .box svg {
+  width: 11px;
+  height: 11px;
+  /* 未选中时勾是透明的（只留一个空圈），选中才浮出来 */
+  opacity: 0;
+  transform: scale(0.6);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  color: #fff;
+}
+.mod-item.selected .mod-select .box svg {
+  opacity: 1;
+  transform: scale(1);
+}
+/* 键盘走到它时也要看得见（原生框被隐藏了，焦点态得自己画） */
+.mod-select input:focus-visible + .box {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+/*
+ * ★★ 2026-09-30（用户）：「这个检测版本，太抽象了，不然咱们学学 PCL 怎么整的」。
+ *
+ * PCL 把检查不过的版本**照样列出来**，标成 `Error` + 一句 `Info`。
+ * 这里就是那一行的样子：
+ *   · 整行**降饱和**（看得出它不是一个能用的版本）；
+ *   · 但**仍然可读** —— 用户要看清楚它是哪个目录、为什么不能用。
+ *     ★ 不做 `opacity: 0.4` 那种"几乎看不见"的处理：那等于把它藏起来，
+ *       而"藏起来"正是这次要修掉的那个毛病。
+ */
+.ver-item-bad {
+  border-color: var(--danger-border);
+  background: var(--bg-raised);
+}
+.ver-item-bad .ver-title-name {
+  color: var(--text-secondary);
+}
+/* 为什么不能用 —— 这一行最该被看见 */
+.ver-bad-why {
+  color: var(--danger);
+}
+
+/* ====================== 整合包 / 版本图标 ====================== */
+
+/*
+ * ★★ 2026-09-30（用户）：「这两处的整合包显示**整合包自己的图标**，
+ *   而且要**直接在卡片上，不整那个跟槽一样的东西**」。
+ *
+ * ⇒ 作者图标**不带底色、不带边框**，直接浮在卡片上。
+ *   道理与 Mod 图标那条一样：外面再套一层方框，看起来就像"放在盒子里"，
+ *   而作者画的那张图本身就是完整的视觉单元。
+ *
+ * ★ `object-fit: contain`：整合包图标常常不是正方形，`cover` 会把边缘裁掉
+ *   （图上的字就没了）。`display: block` 消掉 inline 图片底部那条基线缝隙 ——
+ *   留着它图标会看起来比旁边的文字**偏上**。
+ */
+.pack-icon {
+  flex: 0 0 auto;
+  object-fit: contain;
+  display: block;
+  background: transparent;
+  border: none;
+}
+
+/* ====================== Mod 详情页 ====================== */
+
+/*
+ * ★★ 2026-09-30（用户）：「为版本的 mod 列表的 mod 加一个详情按钮，
+ *   然后点击后进入 mod 的详情页」。
+ *
+ * 这一组是那一页的版式。它只做两件事：**留白**与**对齐** ——
+ * 详情页的价值在于"名字与值一一对应看得清"，不需要任何装饰。
+ */
+.mod-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: var(--space-2);
+  padding: 4px 8px 4px 4px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+.mod-back:hover {
+  color: var(--text-primary);
+  background: var(--bg-raised);
+}
+/* 图标集里没有向左的箭头 —— 把向右那个转过来 */
+.mod-back svg {
+  width: 14px;
+  height: 14px;
+  transform: rotate(180deg);
+}
+
+.mod-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  /* 详情页是"读"的地方：太宽的行难扫，限一个舒服的宽度 */
+  max-width: 860px;
+}
+
+.mod-detail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+/* 详情页里的图标给大一点（列表里是 34，这里没有行高约束） */
+.mod-detail-head .mod-icon {
+  width: 48px;
+  height: 48px;
+}
+.mod-detail-name {
+  min-width: 0;
+}
+
+/*
+ * 键值表（`文件` / `在线库信息` 两张卡都用它）。
+ *
+ * ★ 左列固定宽度 + 右列可换行：这是"名字与值对齐"的关键 ——
+ *   不固定宽度的话，每行的值起点都不一样，扫起来要来回找。
+ */
+.kv {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.kv-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+}
+.kv-key {
+  flex: 0 0 92px;
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+}
+.kv-val {
+  flex: 1;
+  min-width: 0;
+  /* ★ 长路径要能断行（否则会把卡片撑破）——
+     `anywhere` 比 `break-word` 更能断开"没有空格的长串"（安装路径就是那种） */
+  overflow-wrap: anywhere;
+}
+
+/*
+ * ★★ 2026-09-30（用户）：「**给不可用的整一个折叠**」。
+ *
+ * 学 PCL 之后坏掉的版本也列出来了（好处：看得出盘上有什么），
+ * 代价是能用的一行被一堆「不能用」淹掉 —— PCL 的列表也是「正常的在上面、坏掉的折叠」。
+ */
+.ver-bad-group {
+  margin-top: var(--space-2);
+  /* 与上面的正常行分开，读起来是「另一个组」 */
+  padding-top: var(--space-2);
+  border-top: 1px dashed var(--border-subtle);
+}
+.ver-bad-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  text-align: left;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+.ver-bad-head:hover {
+  color: var(--text-primary);
+  background: var(--bg-raised);
+}
+/* 收起时箭头朝右、展开时朝下 */
+.ver-bad-caret {
+  width: 14px;
+  height: 14px;
+  transform: rotate(-90deg);
+  transition: transform 0.14s ease;
+}
+.ver-bad-caret.open {
+  transform: rotate(0deg);
+}
+.ver-bad-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+/*
+ * ★★ 图标：**不再嵌在槽里**（用户：「图标可以不想嵌在槽里，而是直接在那上面」）。
+ *
+ *   原来它有一个 `--bg-base` 底 + 一圈边框，看起来像"放在一个盒子里"。
+ *   现在底色与边框都去掉，图标直接浮在行背景上（`object-fit: contain` 保留 ——
+ *   很多 Mod 图标不是正方形，`cover` 会把边缘的字裁掉）。
+ */
+.mod-icon {
+  width: 34px;
+  height: 34px;
+  /* ★ 非正方形图标（很常见）不许把行撑歪 —— 高度按宽度锁死 */
+  aspect-ratio: 1 / 1;
+  flex: 0 0 auto;
+  border-radius: var(--radius-sm);
+  object-fit: contain;
+  background: transparent;
+  border: none;
+  /* ★ 真图标用 `display:block` 消除 inline 图片底部那条基线缝隙 —— 
+     那条缝会让图标在行内看起来**偏上**（用户说的"没居中"有它一份） */
+  display: block;
+}
+/*
+ * 没有图标时的占位块：文件名首字母 + 色块。
+ *
+ *   ★ 占位块**保留**底色（它不是"槽"，而是"字母的底"）——
+ *     没有底色的单字在深色背景上会飘，而且六个色档也认不出来。
+ *   ★ 色档（见 `toneOf`）**由名字算出来**、不用随机数：随机会让每次渲染都换色，
+ *     比没有颜色更让人分心。
+ */
+.mod-icon.placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  user-select: none;
+  border-radius: var(--radius-sm);
+}
+.mod-icon.placeholder[data-tone='0'] { background: rgba(108, 138, 255, 0.18); color: #8fa8ff; }
+.mod-icon.placeholder[data-tone='1'] { background: rgba(90, 200, 160, 0.18); color: #6fd0ae; }
+.mod-icon.placeholder[data-tone='2'] { background: rgba(240, 180, 90, 0.18); color: #f0b85a; }
+.mod-icon.placeholder[data-tone='3'] { background: rgba(230, 110, 140, 0.18); color: #e07a92; }
+.mod-icon.placeholder[data-tone='4'] { background: rgba(160, 130, 240, 0.18); color: #b1a0f0; }
+.mod-icon.placeholder[data-tone='5'] { background: rgba(110, 190, 230, 0.18); color: #7fc4e6; }
 .mod-main {
   flex: 1;
   min-width: 0;
@@ -2934,6 +3264,12 @@
   margin-top: var(--space-1);
   line-height: 1.6;
 }
+/*
+ * ★ 2026-09-30：`.mod-foot` 现在是**单行**（原来还有「· 已启用 / 已禁用」）。
+ *
+ *   用户：「把 mod 上的『禁用』去掉」——卡片上不再声明"已启用/已禁用"：
+ *   那个状态由左边的勾（选择框）与顶部的合并按钮承担，同一件事不在两处说。
+ */
 .mod-foot {
   display: flex;
   align-items: center;
@@ -2945,7 +3281,8 @@
 }
 .mod-act {
   display: flex;
-  gap: var(--space-1);
+  align-items: center;
+  gap: var(--space-2);
   flex: 0 0 auto;
 }
 .upd-list {

@@ -31,23 +31,32 @@ pub struct AppPaths {
     ///   字段名仍叫 `shared`（"共享"是它的**职责**，`.minecraft` 是它的**位置**）——
     ///   全仓库 45 处引用都走这个字段，所以换位置只需要改这一行。
     pub shared: PathBuf,
-    /// 实例目录（在**游戏根目录**下：`<root>/instances`）
+    /// **版本目录（= 实例目录）** —— `<root>/.minecraft/versions`。
     ///
-    /// ★★ 2026-09-24（用户：「我在用 D 盘的目录，为什么版本列表的版本给我定位到
-    ///   `C:\Users\…\AppData\Roaming\IEML\instances` 了」）：
-    ///   实例目录里装的是**游戏数据** —— 每个实例的游戏工作目录
-    ///   （`game/` 里的 `saves` 存档、`mods`、`config`、`options.txt`）与它自己的
-    ///   `natives` 都在这下面。它必须跟用户挑的**游戏盘**走，与 `.minecraft` 同级。
+    /// ## 为什么实例目录**就是**版本目录（2026-09-30 布局规范化）
     ///
-    ///   放在 `%APPDATA%` 里的两个直接后果（真机实测）：
-    ///   ① 用户在 D 盘攒的实例**全部作废** —— `D:\IEML\instances` 有 6 个版本目录 /
-    ///      122.8 MB，而 C 盘那份只有一个 30.9 MB 的空壳，清单里的三个实例里
-    ///      有两个（`vanilla-262` / `vanilla-1122`）在 C 盘根本不存在；
-    ///   ② 存档会悄悄写进系统盘，而用户在游戏根目录里永远找不到自己的世界。
+    ///   以前这里是 `<root>/instances`，一个实例长这样：
     ///
-    ///   所以 2026-09-23 那次"把 instances 一起搬进 own_root"**搬错了一半**：
-    ///   清单 / 偏好 / Java / 缓存 / 日志留在 `own_root` 是对的（那才是启动器自己的东西），
-    ///   实例目录不是 —— 见 `AppPaths::own_root` 的对比说明。
+    ///   ```text
+    ///   <root>/instances/<slug>/          ← 启动器自己的东西（natives / pack-record）
+    ///                          /game/     ← 游戏工作目录（saves / mods / config）
+    ///   ```
+    ///
+    ///   而版本目录在**另一个地方**（`<root>/.minecraft/versions/<版本名>/`，
+    ///   里面放版本 JSON 与客户端 jar）。于是同一个版本在盘上有**两个**目录，
+    ///   账本里的 `config.slug` 与版本目录名又是两套写法
+    ///   （真机实测：账本 `vanilla-262` / 磁盘 `26.3-fabric-0.19.5`）——
+    ///   这正是 `docs/DECISIONS.md` 54.1 那一节记录的缺陷：**拿 slug 拼不出目录名**。
+    ///
+    ///   现在按 PCL 的布局收敛成**一个**概念：一个版本 = `versions/` 下的一个文件夹，
+    ///   版本 JSON、客户端 jar、saves、mods、config 全都在它里面
+    ///   （PCL 的 `PathIndie` 就是 `PathVersion`，见 `ModMinecraft.vb:227-266`）。
+    ///   启动器自己那几个文件（`natives` / `pack-record.json`）进它下面的 `.ieml/`，
+    ///   与游戏会读的目录名**不重叠**。
+    ///
+    ///   好处不只是"整齐"：账本里那条记录**不再是实例存在的唯一证据** ——
+    ///   目录没了就是没了，一份陈旧的账本副本再也不能让删掉的版本"诈尸"
+    ///   （那正是真机上发生的事）。
     pub instances: PathBuf,
     /// 自动下载的 Java（在 `own_root` 下）
     pub java: PathBuf,
@@ -63,6 +72,36 @@ pub const GAME_DIR_NAME: &str = ".minecraft";
 /// 老布局的名字（0.1.0-beta.2 及以前叫 `shared`）
 pub const LEGACY_SHARED_NAME: &str = "shared";
 
+/// 老布局里放实例的目录名（`<root>/instances`）—— 只用于**迁移**，新代码不许再用。
+///
+/// ★ 保留成一个常量而不是散落的字面量：迁移完成后 `instances/` 就该被删掉，
+///   需要一个地方能一眼看出"还有谁在找它"。
+pub const LEGACY_INSTANCES_NAME: &str = "instances";
+
+/// 版本目录名（PCL 同款：`.minecraft/versions`）
+pub const VERSIONS_DIR_NAME: &str = "versions";
+
+/// 「旧 `instances/` 已经并进来了」的记号文件名（放在版本目录里）。
+///
+/// 见 `instance_catalog_repair` 第 ① 步：布局迁移是**一次性**的，
+/// 没有这个记号就会每次启动都把源那边重新比一遍。
+pub const LEGACY_MERGED_MARKER: &str = ".instances-merged";
+
+/// 启动器**自己**放在版本目录里的东西（`natives` / `pack-record.json`）。
+/// ★ 为什么要点号开头 + 单独一层：版本目录**就是游戏的工作目录**，
+///   游戏会往里写 `mods` / `saves` / `config` / `logs` / `resourcepacks`…
+///   启动器自己的文件混在那一层里，既容易被用户误删，也容易被
+///   整合包导出当成"游戏文件"打进去。放 `.ieml/` 与那些名字**不重叠**。
+pub const LAUNCHER_SUBDIR: &str = ".ieml";
+
+/// 每个版本目录里那份**身份小抄**（`<版本目录>/.ieml/instance.json`）。
+///
+/// ★ 为什么要有它：账本（`instances.json`）与磁盘是两份东西，一旦账本被
+///   旧副本盖掉（真机上发生过），启动器就不知道这个目录是谁的了。
+///   把身份写在**目录自己身上**，就可以反过来从磁盘重建账本 ——
+///   目录在就认得出来，目录删了就彻底没有，不存在"诈尸"。
+pub const INSTANCE_MARKER_NAME: &str = "instance.json";
+
 impl AppPaths {
     pub fn resolve() -> Self {
         Self::from_root(resolve_data_root())
@@ -73,21 +112,30 @@ impl AppPaths {
     /// ★★ 2026-09-23：启动器自己的目录现在挂在 **`own_root`**（`%APPDATA%\IEML`）
     ///   而不是游戏根目录下 —— 见 `AppPaths::own_root` 的说明。
     ///
-    /// ★★ 2026-09-24：**实例目录是这条规矩的例外，它留在游戏根目录里**
-    ///   （`<root>/instances`）—— 那里面是存档与 Mod，属于游戏数据，
-    ///   必须跟着用户挑的游戏盘走。理由见 `AppPaths::instances` 的说明。
+    /// ★★ 2026-09-30（布局规范化）：**实例目录不再是独立的 `instances/`** ——
+    ///   它就是 `.minecraft/versions`（见 `AppPaths::instances` 的说明）。
     pub fn from_root(root: PathBuf) -> Self {
         let own_root = default_own_root();
+        let shared = root.join(GAME_DIR_NAME);
         Self {
-            shared: root.join(GAME_DIR_NAME),
-            instances: root.join("instances"),
+            instances: shared.join(VERSIONS_DIR_NAME),
             java: own_root.join("java"),
             cache: own_root.join("cache"),
             logs: own_root.join("logs"),
             root,
             own_root,
+            shared,
         }
     }
+
+    /// 老布局的实例目录（`<root>/instances`）—— **只给迁移用**。
+    ///
+    /// ★ 新代码一律走 [`AppPaths::instances`]。这个方法存在只是为了让
+    ///   "把老目录搬进 `.minecraft/versions/`"那一步有个明确的入口。
+    pub fn legacy_instances_dir(&self) -> PathBuf {
+        self.root.join(LEGACY_INSTANCES_NAME)
+    }
+
 
     /// ★ 数据根目录的**选址记录文件**（放在数据根目录旁边，不在里面）。
     ///
@@ -115,15 +163,17 @@ impl AppPaths {
     /// 启动时确保**游戏根目录**存在。
     ///
     /// ★★ 2026-09-22（用户：「这个根目录只创建装游戏的根目录，**不要附带启动器文件**」）：
-    ///   这里**只建游戏那一边**（游戏根目录 + 它的 `.minecraft` + `instances`）；
+    ///   这里**只建游戏那一边**（游戏根目录 + 它的 `.minecraft` + `versions`）；
     ///   启动器自己的目录（java / cache / logs）改成
     ///   **用到时才建**（见 `ensure_own`）——
     ///   于是"刚选好的空目录"里不会再凭空冒出一堆启动器文件。
     ///
-    ///   ★ 2026-09-24：`instances` 属于**游戏那一边**（它装的是存档与 Mod），
-    ///     所以从 `ensure_own` 挪到了这里 —— 判据见 `AppPaths::instances`。
-    ///     用户那句"不要附带启动器文件"针对的是**启动器自己的**文件，
-    ///     不是"游戏根目录里一个子目录都不许有"（`.minecraft` 一直都在）。
+    ///   ★ 2026-09-30：`versions` 就在 `.minecraft` **里面**，所以这里建的两个
+    ///     目录是父子关系（`create_dir_all` 本来一个就够）—— 两行都留着是
+    ///     刻意的：它们表达的是两件不同的事（"游戏的家在这里"与"版本目录在这里"），
+    ///     将来若再把版本目录挪出去，改动点仍然只有这两行。
+    ///     **老的 `<root>/instances/` 不再创建** —— 它的内容由
+    ///     [`migrate_instances_into_catalog`] 搬进 `versions/`。
     pub fn ensure(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.root)?;
         std::fs::create_dir_all(self.game_dir())?;
@@ -133,12 +183,12 @@ impl AppPaths {
 
     /// 游戏目录（`.minecraft`）—— 版本、存档、Mod 都在这一层里
     pub fn game_dir(&self) -> PathBuf {
-        self.root.join(".minecraft")
+        self.root.join(GAME_DIR_NAME)
     }
 
     /// 启动器**自己的**目录。用到时才调（懒建，见 `ensure` 的说明）。
     ///
-    /// ★ 2026-09-24：列表里**没有 `instances`** —— 它跟着游戏根目录，
+    /// ★ 列表里**没有 `instances`** —— 它在 `.minecraft/versions`，
     ///   由 `ensure()` 建（见 `AppPaths::instances`）；
     ///   也没有 `shared` —— 它的位置就是 `.minecraft`，同样由 `ensure()` 建。
     pub fn ensure_own(&self) -> std::io::Result<()> {
@@ -148,27 +198,85 @@ impl AppPaths {
         Ok(())
     }
 
-    /// 某个实例的目录
+    /// 某个实例**启动器自己那部分**的目录 —— `<版本目录>/.ieml/`。
+    ///
+    /// ## 为什么它不再是"实例目录"，而是版本目录里的一个子目录
+    ///
+    ///   老布局里 `instance_dir(slug)` = `<root>/instances/<slug>`，而
+    ///   **游戏目录**是它下面的 `game/`。现在游戏目录上提到了版本目录本身
+    ///   （见 [`AppPaths::instance_game_dir`]），于是这个函数必须**换一个目标**：
+    ///   继续返回版本目录就会让它与游戏目录**变成同一个路径**。
+    ///
+    ///   ★ 为什么那很危险（真机后果，不是洁癖）：`prepare_spec` 每次启动都会
+    ///     `remove_dir_all(natives_dir)` 再重新解压 natives，而 `natives_dir`
+    ///     是从这个函数拼出来的。两者一旦相等，**每次启动都会把整个版本目录
+    ///     （含 saves 存档）删掉**。所以这里必须落到 `.ieml/`（见 [`LAUNCHER_SUBDIR`]）。
+    ///
+    ///   ★ 顺带解决的两件事：
+    ///     ① 版本目录**就是游戏工作目录**，里面只该有游戏会读的东西；
+    ///        `natives/`、`pack-record.json` 混在 `mods/` 旁边会被
+    ///        整合包导出与"清理无用文件"当成游戏资源；
+    ///     ② 老的 `instance_dir(slug)` 调用点（natives / 打包记录 / 隔离迁移）
+    ///        全部自动落到 `.ieml/` 下面，**不必逐个改**。
     pub fn instance_dir(&self, slug: &str) -> PathBuf {
+        self.instance_root_dir(slug).join(LAUNCHER_SUBDIR)
+    }
+
+    /// 版本目录本身（游戏目录；**不是**启动器目录）。
+    ///
+    /// 与 [`AppPaths::instance_game_dir`] 同义，单独留一个名字是为了在
+    /// "要游戏目录、但不想走 ADR-005 隔离判定"的地方把意图写清楚。
+    pub fn instance_root_dir(&self, slug: &str) -> PathBuf {
         self.instances.join(slug)
     }
 
-    /// ★ 实例的**游戏目录** —— 也就是游戏进程的工作目录。
-    ///   `saves/`、`mods/`、`config/`、`options.txt` 全都在这里，
-    ///   启动时作为 `--gameDir` 传给游戏（见 commands_real::prepare_spec）。
+    /// ★★ 实例的**游戏目录** —— 就是版本目录本身（PCL 的 `PathIndie == PathVersion`）。
     ///
-    ///   为什么单独抽成方法：这个路径原来在三个地方各写了一遍
-    ///   （启动 / 扫 Mod / 装 Mod），而其中两处写的是 `instance_dir`
-    ///   而不是 `instance_dir/game` —— 结果是 Mod 下到了一个游戏永远不读的目录。
-    ///   路径只允许有一个来源。
+    ///   `saves/`、`mods/`、`config/`、`options.txt` 全都在这一层，
+    ///   启动时作为 `--gameDir` 传给游戏（见 `commands_real::prepare_spec`）。
+    ///
+    ///   ## 为什么不再是 `<实例目录>/game`（2026-09-30 改）
+    ///
+    ///   老布局把"游戏数据"塞在 `game/` 子目录里，而**版本 JSON 与客户端 jar
+    ///   在另一个目录**（`.minecraft/versions/<版本名>/`）。后果是同一个版本
+    ///   在盘上有两个家，且两边名字对不上（真机：账本 `vanilla-262`，
+    ///   磁盘 `26.3-fabric-0.19.5`）。
+    ///
+    ///   PCL 的做法是**一个版本一个文件夹**，隔离的数据就放在版本文件夹里
+    ///   （`ModMinecraft.vb:227-266`，`PathIndie` 直接返回 `PathVersion`）。
+    ///   现在与它一致：版本 JSON / jar / saves / mods / config 同一个目录，
+    ///   `--gameDir` 也指它。于是"这个版本在哪"永远只有一个答案。
     ///
     ///   ★★ **这是"物理上的"目录，不是"这个实例实际用的"目录**：
     ///     开了「不隔离」的实例，游戏读的是共享的 `.minecraft` ——
     ///     要那个请用 [`AppPaths::game_dir_of`]（它先做 ADR-005 的判定）。
     ///     凡是**游戏会读/写**的东西（saves、mods、config、logs、资源包…）都必须走
-    ///     `game_dir_of`；只有 `natives/`、实例自己的日志与备份清单才用这个。
+    ///     `game_dir_of`；只有 `natives/`、实例自己的日志与备份清单才用
+    ///     [`AppPaths::instance_dir`]（那是 `.ieml/`，与这里**不是**同一个目录）。
     pub fn instance_game_dir(&self, slug: &str) -> PathBuf {
-        self.instance_dir(slug).join("game")
+        self.instance_root_dir(slug)
+    }
+
+    /// 启动器**自己的**东西放在版本目录里的哪一层（`<版本目录>/.ieml/`）。
+    ///
+    /// 里面是 `natives/`、`pack-record.json` 这类**游戏不读**的文件。
+    /// 与游戏会写的目录名（mods/saves/config/logs…）不重叠，所以放在版本目录里
+    /// 不会污染游戏，也不会被整合包导出当成游戏资源。
+    ///
+    /// ★ 与 [`AppPaths::instance_dir`] **同义**（两个名字都留着：那边说的是
+    ///   "老代码眼里的实例目录"，这边说的是"它在版本目录里的哪一层"。
+    ///   实现不许各自拼一遍路径 —— 这个函数曾经反过来调 `instance_dir`，
+    ///   而 `instance_dir` 又调它，于是**无限递归**（真跑起来是栈溢出崩溃）。
+    pub fn instance_meta_dir(&self, slug: &str) -> PathBuf {
+        self.instance_dir(slug)
+    }
+
+    /// 版本目录里那份**身份小抄**的路径（`<版本目录>/.ieml/instance.json`）。
+    ///
+    /// 见 [`INSTANCE_MARKER_NAME`] 的说明：它让"这个目录是谁"可以**从磁盘反推**，
+    /// 而不是只能信账本。
+    pub fn instance_marker_file(&self, slug: &str) -> PathBuf {
+        self.instance_meta_dir(slug).join(INSTANCE_MARKER_NAME)
     }
 
     /* ============ 隔离判定（ADR-005）：游戏目录到底在哪 ============ */
@@ -488,6 +596,21 @@ pub fn migrate_own_root(old: &Path, paths: &AppPaths) -> u64 {
                 );
             }
             Err(e) => say!("[IEML/paths] 搬 {name} 失败：{e}"),
+        }
+    }
+    /*
+     * ★ 三个运行时目录**要存在**（即使源那边是空的）。
+     *
+     *   这条不变量在 2026-09-30 被打破过一次：`copy_tree_rule` 改成"不凭空造
+     *   空目录"（为了让布局迁移幂等）之后，源里那个**空的** `java/` 就不再被
+     *   复制 ⇒ 搬家之后启动器自己的家里没有 `java/`。
+     *
+     *   而这三个目录的含义是"启动器的家已经准备好了"（`ensure_own()` 也建它们），
+     *   与"源里有没有东西"无关。所以在这里显式建出来，别借复制的手。
+     */
+    for name in ["java", "cache", "logs"] {
+        if let Err(e) = std::fs::create_dir_all(paths.own_root.join(name)) {
+            say!("[IEML/paths] 建启动器目录 {name} 失败：{e}");
         }
     }
     copied
@@ -1190,29 +1313,48 @@ pub fn migrate_data_root(old: &Path, new: &Path) -> std::io::Result<u64> {
     }
     // 只认真正的数据子目录，别把用户的杂物搬过去
     /*
-     * ★★ 2026-09-24：这里**只剩 `instances`** —— 它现在是"游戏那一边"的目录
-     *   （`<root>/instances`，装的是存档与 Mod，见 `AppPaths::instances`），
-     *   跟着游戏根目录一起搬是对的。
+     * ★★ 2026-09-24：实例目录跟着**游戏根目录**一起搬是对的（里面是存档与 Mod）。
      *
-     *   而 `java` / `cache` / `logs` **必须从这张表里删掉**：它们是启动器自己的东西，
-     *   只认 `own_root`（`%APPDATA%\IEML`）。留在这张表里的后果是真机上量到的：
-     *   每次启动都把 `%APPDATA%\IEML\cache`（1839 个文件 / 9.5 MB）复制进
-     *   `D:\IEML\cache` —— 于是游戏盘上白占一份、启动器又不读它
-     *   （用户 2026-09-22 说的"根目录不要附带启动器文件"正是这件事）。
-     *   老位置里那三样由 `adopt_own_dirs` 往 `own_root` 收养（方向反过来）。
+     *   ★★ 2026-09-30（布局规范化）：**目的地变了** —— 从 `<new>/instances`
+     *     改成 `<new>/.minecraft/versions`（见 `AppPaths::instances`）。
+     *     老根上的 `<old>/instances` 于是要落到**新的版本目录**里；
+     *     而老根如果本身已经是新布局，它的 `<old>/.minecraft/versions`
+     *     由下面"游戏文件"那一步整树复制（`copy_tree` 不覆盖已存在的文件），
+     *     所以这里只负责把**老 `instances/` 那一边**并进去。
+     *
+     *   ★ 用**按 mtime 判胜负**的补齐（不是"目标已有就跳过"）：实例里是用户
+     *     自己会改的东西（options.txt / 存档 / Mod），而"错位置那两天"写进去的
+     *     正是老位置那一份 —— 见 `merge_instances_by_mtime` 的说明
+     *     （真机上差 12 天的 options.txt）。
      */
+    let versions_dest = new.join(GAME_DIR_NAME).join(VERSIONS_DIR_NAME);
+    let legacy_instances = old.join(LEGACY_INSTANCES_NAME);
     let mut copied = 0u64;
-    for name in ["instances"] {
-        let from = old.join(name);
-        if from.is_dir() {
-            /*
-             * ★ 实例目录用**按 mtime 判胜负**的补齐（不是"目标已有就跳过"）：
-             *   实例里是用户自己会改的东西（options.txt / 存档 / Mod），
-             *   而"错位置那两天"写进去的正是老位置那一份 —— 见
-             *   `merge_instances_by_mtime` 的说明（真机上差 12 天的 options.txt）。
-             */
-            copied += merge_instances_by_mtime(&from, &new.join(name))?;
-        }
+    /*
+     * ★★ 2026-09-30：顺序是"**先把老布局提平、再逐文件合并**"，不能反过来。
+     *
+     *   老布局的实例是两层的（`<slug>/game/…`），新布局一层就够。
+     *   `merge_instances_by_mtime` 是**逐文件**按相对路径比 mtime 的：
+     *   · 若先合并，老根的 `game/options.txt` 会与目标的 `options.txt` 直接比，
+     *     于是提层时"目标已有、且不比源旧" → 它**一个字节都不动**，
+     *     而两个源（各自的 `game/options.txt`）谁赢了这件事已经无从表达；
+     *   · 先提平（`promote_legacy_game_subdir`，同样按 mtime 判、覆盖前留
+     *     `.ieml-bak`），再把两侧的**同一层**逐文件合并 —— 于是"最后真正玩过
+     *     的那份"必然赢，输的那份也一定留下了备份。
+     *
+     *   ★ 真机上这就是 `lang:zh_cn`（当天玩的）与 `lang:en_us`（十几天前）
+     *     差 12 天的那种情形。
+     */
+    let flattened = flatten_legacy_game_dirs(&legacy_instances);
+    if !flattened.is_empty() {
+        say!(
+            "[IEML/paths] 老实例目录里有 {} 个版本还套着 game/，已提平（{}）",
+            flattened.len(),
+            flattened.join(" / ")
+        );
+    }
+    if legacy_instances.is_dir() {
+        copied += merge_instances_by_mtime(&legacy_instances, &versions_dest)?;
     }
 
     /*
@@ -1257,6 +1399,29 @@ pub fn migrate_data_root(old: &Path, new: &Path) -> std::io::Result<u64> {
             std::fs::copy(&from, &to)?;
             copied += std::fs::metadata(&to).map(|m| m.len()).unwrap_or(0);
         }
+    }
+
+    /*
+     * ★★★★ 2026-09-30：**提平必须放在最后一步**。
+     *
+     *   上面那次"游戏文件整树复制"（`copy_tree`，`old/.minecraft → new/.minecraft`）
+     *   会把老根里 `versions/<名字>/game/` 那一层**照原样又铺一遍** ——
+     *   于是在它之前做的提平等于白做（真机上试过：提完又被铺回来，
+     *   最后 `new/.minecraft/versions/s1/` 里还是套着一层 `game/`，
+     *   而游戏直接读版本目录 → 用户看到"版本在、存档没了"）。
+     *
+     *   所以顺序是：**所有复制做完 → 最后统一提平**。
+     *   与启动时的 `instance_catalog_repair` 共用同一个实现
+     *   （`flatten_legacy_game_dirs`），只有一份判据；而且它是幂等的，
+     *   启动时再跑一遍也只是确认无事可做。
+     */
+    let flattened_after_copy = flatten_legacy_game_dirs(&versions_dest);
+    if !flattened_after_copy.is_empty() {
+        say!(
+            "[IEML/paths] 搬家后把 {} 个版本的 game/ 提到了版本目录（{}）",
+            flattened_after_copy.len(),
+            flattened_after_copy.join(" / ")
+        );
     }
     Ok(copied)
 }
@@ -1470,21 +1635,1034 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<u64> {
 ///   加上这里是**严格大于**才覆盖 —— 复制过一次之后两边 mtime 相等，
 ///   下一次启动就什么都不做了。
 fn merge_instances_by_mtime(from: &Path, to: &Path) -> std::io::Result<u64> {
-    copy_tree_rule(from, to, true)
+    /*
+     * ★★★★ 2026-09-30（用户）：「**删掉启动器的版本，资源管理器里的文件夹不会删除**」
+     *   以及「删除版本后，重启启动器，删除的版本又会回来」。
+     *
+     *   这一段就是"又回来"在**文件系统层面**的成因：这一步按 mtime 把老 `instances/`
+     *   里的东西搬进 `versions/` —— 而它**不认墓碑**。用户删掉一个版本之后，
+     *   只要老目录里还有那份，重启就会把**目录本身**搬回来
+     *   （记录会被墓碑滤掉，所以界面上的名字没了，可目录又冒出来了 ——
+     *    真机上 `26.3-fabric-0.19.5-2` / `-3` 就是这么在 20:09 / 20:10 复活的）。
+     *
+     *   ⇒ 顶层目录按墓碑过滤：**用户删过的版本名，一个字节都不搬**。
+     *     这与 `instance_catalog_repair` 的补认、`list_instances` 的读取
+     *     用的是同一个墓碑集合 —— 四处对齐，缺陷才不会从没堵的那处回来。
+     */
+    let buried = buried_version_dirs();
+    copy_tree_rule_skip(from, to, true, &buried, 0)
+}
+
+/// 读墓碑（`prefs.json` 的 `deletedVersions`），全部转小写。
+///
+///   ★ 大小写无关：Windows 上 `Fabric-1` 与 `fabric-1` 是同一个目录。
+///   ★ 读不到就是空集（**不是错误**）：没有墓碑时一切照旧。
+pub(crate) fn buried_version_dirs() -> std::collections::HashSet<String> {
+    AppPaths::resolve()
+        .own_json("prefs.json")
+        .and_then(|p| {
+            p.get("deletedVersions")?
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(|s| s.to_lowercase())
+                        .collect()
+                })
+        })
+        .unwrap_or_default()
+}
+
+/* ======================================================================
+ * 版本目录规范化：老布局 → PCL 布局（2026-09-30）
+ * ====================================================================== */
+
+/// 一次迁移/归置**做了什么**（给日志与测试看，不直接给界面）。
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct CatalogRepair {
+    /// 被改名成规范目录名的版本目录：`(旧名, 新名)`
+    pub renamed: Vec<(String, String)>,
+    /// 从 `<旧名>/game/` 提到版本目录本身的版本
+    pub flattened: Vec<String>,
+    /// 账本里指向**已不存在的目录**、因而被删掉的记录（`config.name`）
+    pub dropped: Vec<String>,
+    /// 账本里 slug 与磁盘目录名对不上、已改正的 `(旧 slug, 新 slug)`
+    pub reslugged: Vec<(String, String)>,
+    /// 磁盘上有目录、账本里却没有 → 补进来的（`config.name`）
+    pub adopted: Vec<String>,
+    /// 老 `<root>/instances/` 整个并进 `versions/` 时复制了多少字节
+    pub merged_bytes: u64,
+}
+
+impl CatalogRepair {
+    pub fn is_empty(&self) -> bool {
+        self.renamed.is_empty()
+            && self.flattened.is_empty()
+            && self.dropped.is_empty()
+            && self.reslugged.is_empty()
+            && self.adopted.is_empty()
+            && self.merged_bytes == 0
+    }
+
+    /// 一句话摘要（写日志用；空的时候给 `None`）
+    pub fn summary(&self) -> Option<String> {
+        if self.is_empty() {
+            return None;
+        }
+        let mut parts = Vec::new();
+        if self.merged_bytes > 0 {
+            parts.push(format!("并入老实例目录 {} 字节", self.merged_bytes));
+        }
+        if !self.renamed.is_empty() {
+            parts.push(format!("规范了 {} 个目录名", self.renamed.len()));
+        }
+        if !self.flattened.is_empty() {
+            parts.push(format!("把 {} 个版本的 game/ 提上来", self.flattened.len()));
+        }
+        if !self.reslugged.is_empty() {
+            parts.push(format!("改正了 {} 条账本 slug", self.reslugged.len()));
+        }
+        if !self.adopted.is_empty() {
+            parts.push(format!("补认了 {} 个版本", self.adopted.len()));
+        }
+        if !self.dropped.is_empty() {
+            parts.push(format!("清掉 {} 条指向空目录的记录", self.dropped.len()));
+        }
+        Some(parts.join("；"))
+    }
+}
+
+/// 版本目录里**启动器自己的那层**（`.ieml/`）与它的备份后缀。
+///
+/// ★ 迁移时要跳过它们：`.ieml/` 是启动器的东西（natives / 打包记录），
+///   不该被"把 game/ 提上来"或整合包导出当成游戏数据；
+///   `.ieml-bak` 是 `merge_instances_by_mtime` 覆盖前留下的备份，
+///   更不该被当成游戏文件搬来搬去。
+pub fn is_launcher_owned(name: &str) -> bool {
+    name == LAUNCHER_SUBDIR || name.ends_with(".ieml-bak")
+}
+
+/// 一个版本目录的**规范名字**该叫什么。
+///
+/// ## 两条判据，顺序要紧（2026-09-30 真数据彩排改对了）
+///
+///   ① **目录名自己能不能反解出 MC 版本**（`parse_dir_name`）——
+///      能就**以目录名为准**，只在它已经等于规范名（或等于规范名 + `-数字`
+///      去重后缀）时返回 `None`（= 不需要改名）。
+///   ② 反解不出来（`fabric-loader-0.19.5-26.3` 这种 PCL 写法虽然现在能认了，
+///      但更早的 `vanilla-262` 之类认不出）才**去读版本 JSON 的
+///      `inheritsFrom`**，用"JSON 给的 MC 版本 + 目录名给的加载器"拼出规范名。
+///
+/// ★★ 为什么不能一律以 JSON 为准（第一版就是这么写的，结果**每次启动都改名**）：
+///
+///   改完名之后，目录里的 JSON 仍然叫**旧 id**（`fabric-loader-0.19.5-26.3`）。
+///   下一轮启动再读它 ⇒ 算出来还是 `26.3-fabric-0.19.5`，而目录已经叫
+///   `26.3-fabric-0.19.5-3`（去重后缀）⇒ 判成"要改名" ⇒ 又改一次。
+///   真机后果：**每次启动目录名都在变**，账本跟着重写，备份越堆越多。
+///
+///   目录名才是"这个名字是谁定的"的答案；JSON 只在名字给不出 MC 版本时帮忙。
+fn canonical_dir_name_for(dir: &Path, dir_name: &str) -> Option<String> {
+    use crate::domain::naming::{parse_dir_name, version_dir_name, VersionParts};
+
+    // 目录名是规范名（或规范名 + `-N`）时，什么都不用做
+    let is_canonical_or_dup = |candidate: &str| -> bool {
+        if candidate == dir_name {
+            return true;
+        }
+        match dir_name.rsplit_once('-') {
+            Some((head, tail)) => head == candidate && tail.chars().all(|c| c.is_ascii_digit()),
+            None => false,
+        }
+    };
+
+    // ---------- ① 目录名反解 ----------
+    if let Some(parts) = parse_dir_name(dir_name) {
+        if let Some(canonical) = version_dir_name(&parts) {
+            if is_canonical_or_dup(&canonical) {
+                return None; // 已经是规范名（或它的去重后缀）
+            }
+            return Some(canonical);
+        }
+    }
+
+    // ---------- ② 读版本 JSON 拿 MC 版本（名字给不出来时才走这里） ----------
+    let primary = dir.join(format!("{dir_name}.json"));
+    let json_path = if primary.is_file() {
+        Some(primary)
+    } else {
+        std::fs::read_dir(dir).ok().and_then(|it| {
+            it.flatten()
+                .map(|f| f.path())
+                .find(|p| p.extension().map(|x| x == "json").unwrap_or(false))
+        })
+    };
+    let text = json_path.and_then(|p| std::fs::read_to_string(p).ok())?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let inherits = v.get("inheritsFrom").and_then(|x| x.as_str()).unwrap_or("");
+    let id = v.get("id").and_then(|x| x.as_str()).unwrap_or("");
+    let mc_version = if !inherits.is_empty() {
+        inherits.to_string()
+    } else if !id.is_empty() {
+        id.to_string()
+    } else {
+        return None;
+    };
+    /*
+     * 加载器那一段：从 `id`（权威）或目录名里扫。两者都扫不出来就当原版
+     * —— 那也是一种可能的真相（`vanilla-262` 那种老 slug 就是这么来的），
+     * 但**只在 JSON 确实给了 MC 版本时**才这么认。
+     */
+    let loader = parse_dir_name(id)
+        .or_else(|| parse_dir_name(dir_name))
+        .and_then(|p| p.loader);
+    let parts = VersionParts {
+        mc_version,
+        loader,
+        addons: Vec::new(),
+    };
+    let canonical = version_dir_name(&parts)?;
+    if is_canonical_or_dup(&canonical) {
+        return None;
+    }
+    Some(canonical)
+}
+
+/// 老布局的实例目录里，那层 `game/` 是不是该被提上来。
+///
+/// 判据只有两条：
+///   · `<dir>/game/` 是个目录；
+///   · 它**不是空的**（空壳不值得为它动目录）。
+///
+/// ★★ 为什么不再要求"版本目录那一层没有游戏数据"（2026-09-30 修正）：
+///
+///   原来还加了一条"版本目录那一层没有 `saves`/`mods`/`config`/`options.txt`
+///   才算老布局"，本意是"别把两代数据混进一层"。但跨根补齐是
+///   **逐文件** 比 mtime 的（`merge_instances_by_mtime`），它会把老布局里的
+///   `game/options.txt` 与 `versions/s1/` 那一层的同名文件直接对比 ——
+///   于是那一层**已经**长出了 `options.txt` 之类的文件，修正后的判据就
+///   反过来把提层挡掉了。真机后果：搬完家之后存档还在 `game/` 里，
+///   而游戏现在直接读版本目录 → 用户看到"版本在、存档没了"。
+///
+///   ⇒ 判据放回"有没有东西"，混合的情形交给 [`promote_legacy_game_subdir`]
+///     用 mtime 判胜负（这也是它本来就在做的事）。
+fn has_legacy_game_subdir(dir: &Path) -> bool {
+    let inner = dir.join("game");
+    inner.is_dir()
+        && std::fs::read_dir(&inner)
+            .map(|mut it| it.next().is_some())
+            .unwrap_or(false)
+}
+
+/// 把 `<dir>/game/` 里的东西提到 `<dir>/`，同名文件**按 mtime 判胜负**
+/// （老的 `game/` 那份 vs 版本目录那一层已有的那份）。
+///
+/// ## 为什么写成一趟平面遍历，而不是复用 `copy_tree_rule`
+///
+///   第一版直接 `copy_tree_rule(&dir/game, dir, newer_wins=true)` 递归复制。
+///   它**能跑**，但有一个很难看出来、也确实在真机上咬过人的后果：
+///   覆盖前留下的备份（`<名字>.ieml-bak`）落在**目标目录**里；当目标就是
+///   版本目录那一层时没问题，而当"目标文件"本身还在 `game/` 里时，
+///   备份就落进 `game/`，于是那层空壳永远不空、永远删不掉 ——
+///   用户看到的还是"多一层 game/"。
+///
+///   ⇒ 改成"**只遍历 `game/` 顶层的每一项**"：目录用 `rename` 整体搬
+///     （同盘、瞬间完成、不留副本），文件按 mtime 判（要覆盖就先留备份，
+///     备份放在**版本目录那一层**）。这样 `game/` 遍历完必然为空，也就
+///     必然能删掉。
+///
+/// ★ 只搬顶层、不做递归合并：`game/` 里面是 `saves/` `mods/` `config/`
+///   这类游戏目录，整块搬过去才是对的（递归进 `saves/<世界>/` 逐文件比
+///   mtime 既慢又没有意义）。
+fn promote_legacy_game_subdir(dir: &Path) -> std::io::Result<u64> {
+    let inner = dir.join("game");
+    let mut bytes = 0u64;
+    for e in std::fs::read_dir(&inner)?.flatten() {
+        let src = e.path();
+        let dst = dir.join(e.file_name());
+        let meta = e.metadata()?;
+        if meta.is_dir() {
+            if !dst.exists() {
+                // 整体搬走：同盘 rename，瞬间完成
+                let n = dir_size(&src);
+                if std::fs::rename(&src, &dst).is_ok() {
+                    bytes += n;
+                    continue;
+                }
+            }
+            // 对面已经有同名的（比如两边都有 logs/）→ 逐文件按 mtime 合并
+            bytes += copy_tree_rule(&src, &dst, true)?;
+            let _ = std::fs::remove_dir_all(&src);
+        } else if meta.is_file() {
+            if !dst.exists() || is_newer(&src, &dst) {
+                if dst.is_file() {
+                    // 覆盖前把目标那份留成备份（放在版本目录那一层，不进 game/）
+                    let bak = backup_name(&dst);
+                    if std::fs::copy(&dst, &bak).is_ok() {
+                        say!(
+                            "[IEML/catalog] 覆盖前把 {} 备份到 {}",
+                            dst.display(),
+                            bak.display()
+                        );
+                    }
+                }
+                std::fs::copy(&src, &dst)?;
+                bytes += meta.len();
+            }
+            let _ = std::fs::remove_file(&src);
+        }
+    }
+    // 收拾空壳
+    let empty = std::fs::read_dir(&inner)
+        .map(|mut it| it.next().is_none())
+        .unwrap_or(false);
+    if empty {
+        let _ = std::fs::remove_dir(&inner);
+    } else {
+        say!(
+            "[IEML/catalog] {} 里还有没搬走的东西，保留这一层",
+            inner.display()
+        );
+    }
+    Ok(bytes)
+}
+
+/// 把 `versions/` 下每个版本目录里多套的那层 `game/` 提到版本目录本身。
+///
+/// 返回被提上来的版本目录名。**幂等**：提完之后 `game/` 那层就没了，
+/// 再跑一遍什么都不会做。
+///
+/// ★ 两个调用方共用这一份实现（只有一份判据）：
+///   · [`instance_catalog_repair`] —— 启动时的布局归置；
+///   · [`migrate_data_root`] —— 跨数据根搬家（老根整树复制过来之后，
+///     里面那些版本还是老布局）。
+fn flatten_legacy_game_dirs(versions_root: &Path) -> Vec<String> {
+    let mut flattened = Vec::new();
+    let Ok(entries) = std::fs::read_dir(versions_root) else {
+        return flattened;
+    };
+    for e in entries.flatten() {
+        if !e.path().is_dir() {
+            continue;
+        }
+        let name = e.file_name().to_string_lossy().to_string();
+        let dir = e.path();
+        if !has_legacy_game_subdir(&dir) {
+            continue;
+        }
+        match promote_legacy_game_subdir(&dir) {
+            /*
+             * ★★ 只有**真的搬了东西**才算一次提平（2026-09-30 真数据彩排逼出来的）。
+             *
+             *   `copy_tree_rule` 现在不造空目录了，所以合并那一步可能在源那边
+             *   留下一个**空的 `game/`**（真机复现：`<old>/instances/s1/game/` 空着）。
+             *   下一轮启动看到"有个 game/"，就去提平它 —— 里面什么都没有，
+             *   提平"成功"但一个字节都没动。如果照旧记一笔，
+             *   **每次启动都会报告"把 1 个版本提平了"**，幂等性从报告上就说不清了。
+             *
+             *   ⇒ 判据是"搬出来的字节数 > 0"（`remove_dir` 掉空壳不算工作）。
+             */
+            Ok(moved) => {
+                if moved > 0 {
+                    say!("[IEML/catalog] {name}：把 game/ 里的存档与配置提到了版本目录");
+                    flattened.push(name);
+                }
+            }
+            Err(err) => say!("[IEML/catalog] {name}：提升 game/ 失败：{err}"),
+        }
+    }
+    flattened
+}
+
+/// ★★ **版本目录规范化总入口** —— 每次启动跑一次（幂等）。
+///
+/// 做五件事，顺序有意：
+///
+///   ① **把老 `<root>/instances/` 并进 `<root>/.minecraft/versions/`** ——
+///      布局升级（老用户的存档与 Mod 在这里）；
+///   ② **把每个版本的 `game/` 提上来** —— 老布局把游戏数据多套了一层；
+///   ③ **把目录名改成 ADR-055 的规范名** —— `fabric-loader-0.19.5-26.3`
+///      → `26.3-fabric-0.19.5`（优先按 JSON 里的 `inheritsFrom` 认）；
+///   ④ **按磁盘对齐账本**：目录没了的记录删掉、slug 与目录名对不上的改正、
+///      磁盘上有目录而账本没记录的补一条；
+///   ⑤ 给每个版本写一份**身份小抄**（`<版本目录>/.ieml/instance.json`）。
+///
+/// ## 为什么第 ④ 步是这次修复的核心
+///
+///   真机上"删掉的实例又回来了"有两个成因，都源于**账本被当成实例存在的证据**：
+///   · 一份陈旧的账本副本（老位置 / 别的数据根）把删掉的记录盖了回来
+///     （`should_take_record` 只看"目标是不是空列表"，不看"这个目录还在不在"）；
+///   · 前端"账本是空的、而文件夹里有版本 → 自动认领一个"（`pickAutoAdopt`）。
+///
+///   现在**以磁盘为准**：目录没了，记录就没有存在的理由（ADV：这与当年
+///   那次"把所有实例都滤掉"的事故不同 —— 那次是拿**拼出来的**目录名去判，
+///   而这里判的是**账本里 slug 对应的真实目录**；而且读不到目录列表时
+///   一律**不动账本**，绝不把"读不到"当成"没有"）。
+///
+/// ## 幂等与安全
+///
+///   · 全部判据都是"读盘 + 比较"，跑第二遍什么都不做；
+///   · 改名/删除**只发生在 `versions/` 与账本里**，不碰 `libraries`/`assets`；
+///   · 账本改动前先写 `.bak`（与 `adopt_records` 同一条纪律）。
+pub fn instance_catalog_repair(paths: &AppPaths) -> CatalogRepair {
+    let mut report = CatalogRepair::default();
+
+    // ---------- ① 老 `<root>/instances/` 并进 `versions/` ----------
+    let legacy = paths.legacy_instances_dir();
+    /*
+     * ★★ 这一步**只做一次**，做完留一个记号（2026-09-30 真数据彩排逼出来的）。
+     *
+     *   为什么不能每次启动都比一遍：`merge_instances_by_mtime` 是**双向**语义的
+     *   （逐文件按 mtime 判胜负），而"老 `instances/` 并进版本目录"是**单向**
+     *   的一次性布局迁移。每次启动都跑，它就会一直把源那边还留着的文件
+     *   重新比一遍、重新复制一遍（真机彩排里每轮稳定复制 85 字节）——
+     *   幂等性从报告上就说不清（`merged_bytes` 永远非 0）。
+     *
+     *   ★ 记号写在**新布局**那一侧（`versions/.instances-merged`），内容是
+     *     一串字节的说明。它不会与任何版本目录重名（点号开头）。
+     *     记号**只在复制成功之后**写 —— 中途失败的话下次启动还会重试。
+     */
+    /*
+     * ★★ 2026-09-30（用户截图）：**标记的"写"与"读"必须在同一侧**。
+     *
+     *   真机上量到的事故：这里读的是 `paths.instances.join(MARKER)`
+     *   （= `.minecraft/versions/.instances-merged`），可用户截图里那个
+     *   `.instances-merged` **躺在 `D:\IEML\instances\` 里** ——
+     *   也就是说两边各有一份、而**旧目录被整个搬走/清掉时那一侧就没了**，
+     *   于是"只做一次"的合并又跑了一遍，把已删除的版本目录搬了回来。
+     *
+     *   ⇒ 判据改成**看两处**：任一侧有标记就算做过。
+     *     写入时**两侧都写**（旧目录那一侧写不进去不算错 —— 它可能已经不存在了）。
+     */
+    let marker_new = paths.instances.join(LEGACY_MERGED_MARKER);
+    let marker_old = legacy.join(LEGACY_MERGED_MARKER);
+    let already_merged = marker_new.is_file() || marker_old.is_file();
+    if legacy.is_dir() && !already_merged {
+        match merge_instances_by_mtime(&legacy, &paths.instances) {
+            Ok(n) => {
+                report.merged_bytes = n;
+                say!(
+                    "[IEML/catalog] 老实例目录并入版本目录：{} → {}（{n} 字节，源保留不动）",
+                    legacy.display(),
+                    paths.instances.display()
+                );
+                let note = format!(
+                    "旧的 instances/ 已并入这里（{} -> {}）。\n\
+                     这个文件只是个记号：有它就不会再重复比对一遍。删掉它会重新比对一次（不会重复下载）。\n",
+                    legacy.display(),
+                    paths.instances.display()
+                );
+                if let Err(e) = std::fs::write(&marker_new, &note) {
+                    say!("[IEML/catalog] 写合并记号失败（下次启动会再比一遍）：{e}");
+                }
+                /*
+                 * ★ 旧目录那一侧也写一份。写不进去**不算错**：
+                 *   它可能是只读的、或者用户刚好把它清掉了 —— 那种情况下
+                 *   下一次 `legacy.is_dir()` 就已经是 false，这一步本来也不会再跑。
+                 */
+                let _ = std::fs::write(&marker_old, &note);
+            }
+            Err(e) => say!("[IEML/catalog] 并入老实例目录失败：{e}"),
+        }
+    }
+    /*
+     * ★★ 一并把"旧目录已经没用了"这件事**明说给用户**（用户：
+     *   「资源管理器里的文件夹不会删除，这个目录结构太奇怪了」）。
+     *
+     *   我们不擅自删（那里面有他自己的存档，删错了不可逆），
+     *   但**必须告诉他这个目录是什么、可以删** —— 否则他会一直看到两份，
+     *   而且永远不知道哪份是活的。
+     */
+    if legacy.is_dir() && already_merged {
+        say!(
+            "[IEML/catalog] 旧的 {} 还在（里面只是当年那份的副本，内容是死的）。\
+             新版数据在 {} —— 确认不再需要回退到旧版之后，这个目录可以整个删掉。",
+            legacy.display(),
+            paths.instances.display()
+        );
+    }
+    if std::env::var_os("IEML_DEBUG_TREE").is_some() {
+        for (tag, root) in [("A-old", &legacy), ("A-new", &paths.instances)] {
+            let mut t = Vec::new();
+            walk_dir(root, 0, &mut t);
+            say!("[IEML/debug] {tag} = {}\n{}", root.display(), t.join("\n"));
+        }
+    }
+
+    // ---------- ② 把 `game/` 提上来（每个版本目录） ----------
+    if !paths.instances.is_dir() {
+        // ★ 读不到版本目录 ⇒ **什么都不做**。读不到 ≠ 没有。
+        return report;
+    }
+    report.flattened = flatten_legacy_game_dirs(&paths.instances);
+
+    // ---------- ③ 目录名规范化 ----------
+    /*
+     * 先把"谁已经占了名字"收集起来（大小写无关），避免改成别人的名字。
+     *
+     * ★★ 但**正在被改名的那些名字不算被占**（2026-09-30 真数据彩排暴露的缺陷）。
+     *
+     *   第一版把 `taken` 初始化成**当前所有目录名**，于是：
+     *     `26.3-fabric-0.19.5-2` 想规范成 `26.3-fabric-0.19.5-2`（已经是对的），
+     *     而 `taken` 里还有它自己那份旧名单 ⇒ 被判成"撞名" ⇒ 改成 `…-2-2`。
+     *   真机后果是**每次启动都再改一次名**（幂等性没了），目录名越来越长，
+     *   而账本每轮都要跟着重写。
+     *
+     *   ⇒ 先算出"哪些名字会被腾出来"（源名里那些**确实要改名**的），
+     *     再从占用集合里去掉它们。
+     */
+    let mut names: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&paths.instances) {
+        for e in entries.flatten() {
+            if e.path().is_dir() {
+                names.push(e.file_name().to_string_lossy().to_string());
+            }
+        }
+    }
+    // 预扫描：谁会被改成别的名字（于是它的旧名会被腾出来）
+    let mut vacated: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for name in &names {
+        let dir = paths.instances.join(name);
+        if let Some(want) = canonical_dir_name_for(&dir, name) {
+            if want != *name {
+                vacated.insert(name.to_lowercase());
+            }
+        }
+    }
+    let mut taken: Vec<String> = names
+        .iter()
+        .filter(|n| !vacated.contains(&n.to_lowercase()))
+        .cloned()
+        .collect();
+    for name in names.clone() {
+        let dir = paths.instances.join(&name);
+        let Some(want) = canonical_dir_name_for(&dir, &name) else {
+            continue;
+        };
+        if want == name {
+            continue;
+        }
+        let others: Vec<&str> = taken
+            .iter()
+            .filter(|t| t.as_str() != name.as_str())
+            .map(|s| s.as_str())
+            .collect();
+        let unique = crate::domain::naming::unique_dir_name(&want, others);
+        let dst = paths.instances.join(&unique);
+        match std::fs::rename(&dir, &dst) {
+            Ok(_) => {
+                say!("[IEML/catalog] 目录改名：{name} → {unique}（ADR-055 规范名）");
+                // ★ 版本 JSON 必须跟着改名：PCL（与 IEML 的 `scan_folder_versions`）
+                //   都是按 `<目录名>.json` 找版本描述的。不改的话，
+                //   `versions/<新名>/<旧名>.json` 就成了"目录里有个陌生的 json" ——
+                //   启动时静默落回原版 JSON（主类还在、classpath 空），
+                //   游戏报「找不到或无法加载主类」。这是这个仓库踩过的老坑。
+                ensure_version_json_matches_dir(&dst, &unique, &name);
+                share_version_json_with_siblings(&dst, &unique);
+                report.renamed.push((name.clone(), unique.clone()));
+                taken.retain(|t| t != &name);
+                taken.push(unique);
+            }
+            Err(err) => {
+                // 改名失败（被占用 / 权限）**不是致命错误**：保留原名，
+                // 账本侧会按"目录名就是 slug"整条对齐。
+                say!("[IEML/catalog] {name} 改名为 {unique} 失败：{err}（保留原名）");
+            }
+        }
+    }
+
+    // ---------- ④ 按磁盘对齐账本 ----------
+    let disk_names: Vec<String> = std::fs::read_dir(&paths.instances)
+        .map(|it| {
+            it.flatten()
+                .filter(|e| e.path().is_dir())
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect()
+        })
+        .unwrap_or_else(|_| names.clone());
+    let disk_lower: std::collections::HashSet<String> =
+        disk_names.iter().map(|s| s.to_lowercase()).collect();
+
+    let ledger_path = paths.instances_file();
+    if let Some(mut ledger) = paths.own_json("instances.json") {
+        if let Some(list) = ledger.get("instances").and_then(|v| v.as_array()).cloned() {
+            let mut kept: Vec<serde_json::Value> = Vec::new();
+            let mut changed = false;
+            for inst in list {
+                let Some(slug) = inst
+                    .get("config")
+                    .and_then(|c| c.get("slug"))
+                    .and_then(|s| s.as_str())
+                    .map(String::from)
+                else {
+                    // 没有 slug 的记录无法定位目录 —— 保留（不许凭猜删）
+                    kept.push(inst);
+                    continue;
+                };
+                if disk_lower.contains(&slug.to_lowercase()) {
+                    // 目录名与 slug 大小写不同 → 以磁盘为准改正
+                    if let Some(real) = disk_names.iter().find(|d| d.to_lowercase() == slug.to_lowercase())
+                    {
+                        if real != &slug {
+                            let mut fixed = inst.clone();
+                            if let Some(cfg) =
+                                fixed.get_mut("config").and_then(|c| c.as_object_mut())
+                            {
+                                cfg.insert(
+                                    "slug".into(),
+                                    serde_json::Value::String(real.clone()),
+                                );
+                            }
+                            report.reslugged.push((slug.clone(), real.clone()));
+                            changed = true;
+                            kept.push(fixed);
+                            continue;
+                        }
+                    }
+                    kept.push(inst);
+                } else {
+                    // ★ 目录真的不在 → 记录没有存在的理由
+                    let name = inst
+                        .get("config")
+                        .and_then(|c| c.get("name"))
+                        .and_then(|s| s.as_str())
+                        .unwrap_or(&slug)
+                        .to_string();
+                    say!(
+                        "[IEML/catalog] 账本里的「{name}」（slug {slug}）在 {} 里没有对应目录 —— 清掉这条记录",
+                        paths.instances.display()
+                    );
+                    report.dropped.push(name);
+                    changed = true;
+                }
+            }
+
+            /*
+             * 补认：磁盘上有目录、账本里一条都没有 → 建一条最小记录。
+             * ★ 只在**账本本来就不是空**或者**盘上确实有版本**时做，
+             *   并且只补"有版本 JSON 的"目录（空壳目录不算版本）。
+             *
+             * ★★★★ 2026-09-30（用户）：「**删除版本后，重启启动器，
+             *   删除的版本又会回来**」。
+             *
+             *   **这一段就是那个缺陷的根源之一**：它只判"账本里有没有"，
+             *   不判"用户是不是删过它"。用户删掉一个版本时，如果那个版本目录
+             *   还在盘上（删除只进回收站、或者用户自己把它放回来了），
+             *   重启时这一步就会**把记录原样补回来** —— 界面上就是"又回来了"。
+             *
+             *   ⇒ 补认**必须认墓碑**（`prefs.json` 的 `deletedVersions`）：
+             *     用户删过的目录名，永远不再自动补记录。
+             *     这与前端 `pickAutoAdopt` / `VersionsPage` 的自动认领
+             *     用的是**同一个集合** —— 三处任一处漏掉，这条缺陷就会从那一处回来。
+             */
+            let buried: std::collections::HashSet<String> = paths
+                .own_json("prefs.json")
+                .and_then(|p| {
+                    p.get("deletedVersions")?
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str())
+                                .map(|s| s.to_lowercase())
+                                .collect()
+                        })
+                })
+                .unwrap_or_default();
+            let mut known: std::collections::HashSet<String> = kept
+                .iter()
+                .filter_map(|i| {
+                    i.get("config")
+                        .and_then(|c| c.get("slug"))
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.to_lowercase())
+                })
+                .collect();
+            for dir_name in &disk_names {
+                if known.contains(&dir_name.to_lowercase()) {
+                    continue;
+                }
+                /*
+                 * ★ 墓碑优先：用户删过的，**不补**。
+                 *   这一条要放在"有没有版本 JSON"之前 —— 顺序在这里是语义：
+                 *   先问"用户想不想要它"，再问"它是不是一个能启动的版本"。
+                 */
+                if buried.contains(&dir_name.to_lowercase()) {
+                    continue;
+                }
+                let dir = paths.instances.join(dir_name);
+                if !dir.join(format!("{dir_name}.json")).is_file() {
+                    continue; // 没有版本 JSON ⇒ 不是能启动的版本
+                }
+                let inst = synthesize_instance(&paths.instances, dir_name);
+                known.insert(dir_name.to_lowercase());
+                report.adopted.push(dir_name.clone());
+                say!("[IEML/catalog] 盘上有版本「{dir_name}」而账本里没有 —— 补一条记录");
+                kept.push(inst);
+                changed = true;
+            }
+
+            if changed {
+                if let Some(obj) = ledger.as_object_mut() {
+                    obj.insert(
+                        "instances".into(),
+                        serde_json::Value::Array(kept.clone()),
+                    );
+                    // 指向已删实例的 active_id 也要清掉
+                    let active_ok = obj
+                        .get("active_id")
+                        .and_then(|v| v.as_str())
+                        .map(|a| {
+                            kept.iter().any(|i| {
+                                i.get("id").and_then(|x| x.as_str()) == Some(a)
+                            })
+                        })
+                        .unwrap_or(false);
+                    if !active_ok {
+                        obj.insert("active_id".into(), serde_json::Value::Null);
+                    }
+                }
+                write_ledger_with_backup(&ledger_path, &ledger);
+            }
+        }
+    }
+
+    // ---------- ⑤ 每个版本写一份身份小抄 ----------
+    let ledger = paths.own_json("instances.json");
+    for dir_name in &disk_names {
+        let dir = paths.instances.join(dir_name);
+        if !dir.join(format!("{dir_name}.json")).is_file() {
+            continue; // 只给真正的版本写
+        }
+        let from_ledger = ledger.as_ref().and_then(|l| {
+            l.get("instances")?.as_array()?.iter().find(|i| {
+                i.get("config")
+                    .and_then(|c| c.get("slug"))
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.eq_ignore_ascii_case(dir_name))
+                    .unwrap_or(false)
+            })
+        });
+        let marker = match from_ledger {
+            Some(i) => i.clone(),
+            None => synthesize_instance(&paths.instances, dir_name),
+        };
+        let path = paths.instance_marker_file(dir_name);
+        if let Some(p) = path.parent() {
+            let _ = std::fs::create_dir_all(p);
+        }
+        if let Ok(text) = serde_json::to_string_pretty(&marker) {
+            let _ = std::fs::write(&path, text);
+        }
+    }
+
+    report
+}
+
+/// ★★ 版本目录改名之后，**让里面的版本 JSON 也叫这个名字**。
+///
+/// ## 为什么这件事不能省
+///
+///   PCL 与 IEML 找版本描述的方式是同一条：`<版本目录>/<目录名>.json`
+///   （PCL `McInstance::GetJsonPath`；IEML `scan_folder_versions` 先试
+///   `<dir>/<dir>.json`，找不到才退而求其次取目录里第一个 json）。
+///
+///   所以"目录改了名、json 还叫旧名"的后果不是报错，而是**静默换了版本描述**：
+///   启动时找不到同名 json，就拿目录里第一个 json（可能是加载器 profile、
+///   也可能是原版那份），于是主类与实际 classpath 对不上 ——
+///   实测表现是日志只有 164 字节的
+///   `错误: 找不到或无法加载主类 net.fabricmc.loader.impl.launch.KnotClient`。
+///
+///   ⇒ 改名之后必须把 json 也改成新名（内容是同一份，只是文件名）。
+///     `old_dir_name` 是它**原来**可能叫什么（真机上安装器写的那个名字）。
+///
+/// ★ 只改**真正的版本描述**：优先认 `<旧目录名>.json`，否则认一个含
+///   `mainClass` 的 json。认不出就什么都不做（宁可让它保持原样，
+///   也不要瞎改一个用户的文件）。
+fn ensure_version_json_matches_dir(dir: &Path, new_name: &str, old_dir_name: &str) {
+    let want = dir.join(format!("{new_name}.json"));
+    if want.is_file() {
+        return;
+    }
+    let legacy = dir.join(format!("{old_dir_name}.json"));
+    let source = if legacy.is_file() {
+        Some(legacy)
+    } else {
+        std::fs::read_dir(dir).ok().and_then(|it| {
+            it.flatten()
+                .map(|f| f.path())
+                .find(|p| {
+                    if p.extension().map(|x| x != "json").unwrap_or(true) {
+                        return false;
+                    }
+                    std::fs::read_to_string(p)
+                        .ok()
+                        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                        .map(|v| v.get("mainClass").is_some())
+                        .unwrap_or(false)
+                })
+        })
+    };
+    let Some(src) = source else {
+        say!(
+            "[IEML/catalog] 改名后的 {} 里找不到可识别的版本 JSON —— 保持不变（不猜）",
+            dir.display()
+        );
+        return;
+    };
+    /*
+     * ★ 原版与加载器 profile **就是两份文件**时，两份都要跟着改名
+     *   （真机上 `fabric-loader-0.19.5-26.3/` 里同时躺着
+     *   `26.3.json` 与 `fabric-loader-0.19.5-26.3.json`，内容一模一样）。
+     *   两份都改成新名会撞车，所以只改"版本描述那一份"（含 `mainClass`
+     *   且 `id` 等于目录名的那份），另一份留着不动 —— 它不影响启动。
+     */
+    if std::fs::rename(&src, &want).is_ok() {
+        say!(
+            "[IEML/catalog] 版本 JSON 跟着改名：{} → {}",
+            src.display(),
+            want.display()
+        );
+    } else {
+        // 改名失败（被占用）→ 退一步复制一份，启动器至少找得到
+        match std::fs::copy(&src, &want) {
+            Ok(_) => say!(
+                "[IEML/catalog] 版本 JSON 改名失败，已复制一份为 {}",
+                want.display()
+            ),
+            Err(e) => say!("[IEML/catalog] 版本 JSON 改名失败：{e}"),
+        }
+    }
+}
+
+/// ★★ 把一份版本 JSON **补给同规格的兄弟目录**。
+///
+/// ## 为什么需要这一步（真数据彩排暴露出来的）
+///
+///   老布局里"游戏数据"与"版本描述"本来就分在两个地方：
+///   `instances/<slug>/game/` 有存档与 Mod，`.minecraft/versions/<别的名字>/`
+///   有版本 JSON。把两者合进一个文件夹之后，**游戏数据那一份可能根本没有
+///   JSON** —— 而迁移是**不会**凭空造版本描述的（那需要是"这个版本的库清单"，
+///   编不出来）。
+///
+///   后果很具体（真数据彩排里就出现了）：`26.3-fabric-0.19.5` 里有 `mods/`、
+///   没有 `<目录名>.json` ⇒ 版本列表里它显示成"错误的版本"、启动不了，
+///   而用户的 Mod 就在里面。
+///
+///   ⇒ 从**同一个文件夹里刚改好名的那一份**（规格相同：MC 版本 + 加载器 + 加载器版本）
+///     复制一份过去。判据窄到"目录名去掉 `-数字` 后缀之后与源**完全相同**"，
+///     所以不会把它塞给一个不相干的版本。
+///
+///   为什么可以共用同一份 JSON：启动器只把它当"版本描述"读
+///   （`mainClass` / `libraries` / `inheritsFrom`），它里面**没有**任何
+///   与存档或实例设置相关的东西 —— 两份同规格的版本本来就该用同一份描述。
+fn share_version_json_with_siblings(dir: &Path, dir_name: &str) {
+    let src = dir.join(format!("{dir_name}.json"));
+    if !src.is_file() {
+        return;
+    }
+    let Some(parent) = dir.parent() else {
+        return;
+    };
+    // `26.3-fabric-0.19.5-3` → `26.3-fabric-0.19.5`（去掉去重后缀）
+    let stem = match dir_name.rsplit_once('-') {
+        Some((head, tail)) if tail.chars().all(|c| c.is_ascii_digit()) => head,
+        _ => dir_name,
+    };
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for e in entries.flatten() {
+        if !e.path().is_dir() {
+            continue;
+        }
+        let name = e.file_name().to_string_lossy().to_string();
+        if name == dir_name {
+            continue;
+        }
+        // 判据：去掉去重后缀之后与源**同名**（`26.3-fabric-0.19.5` / `…-2`）
+        if name != stem && !name.starts_with(&format!("{stem}-")) {
+            continue;
+        }
+        let want = e.path().join(format!("{name}.json"));
+        if want.is_file() {
+            continue;
+        }
+        // 只补给"里面有东西"的目录（空壳不值得给它一份版本描述）
+        let has_content = e
+            .path()
+            .join("mods")
+            .is_dir()
+            || e.path().join("saves").is_dir()
+            || e.path().join("options.txt").is_file();
+        if !has_content {
+            continue;
+        }
+        match std::fs::copy(&src, &want) {
+            Ok(_) => say!(
+                "[IEML/catalog] {name} 里只有游戏数据、没有版本描述 —— 从 {dir_name} 补了一份（同规格）"
+            ),
+            Err(err) => say!("[IEML/catalog] 给 {name} 补版本描述失败：{err}"),
+        }
+    }
+}
+
+/// 账本里**没有**这个版本时，从磁盘现造一条最小记录。
+///
+/// 只用目录名与它的 JSON —— 认不出来的字段一律给"安全默认"
+/// （隔离 auto、内存 4096 由前端按机器内存纠正），**绝不编造**加载器版本。
+fn synthesize_instance(versions_root: &Path, dir_name: &str) -> serde_json::Value {
+    use crate::domain::naming::{parse_dir_name, version_display_name, VersionParts};
+
+    let dir = versions_root.join(dir_name);
+    let mut mc_version = dir_name.to_string();
+    let mut loader_kind: Option<String> = None;
+    let mut loader_version = String::new();
+
+    if let Ok(text) = std::fs::read_to_string(dir.join(format!("{dir_name}.json"))) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            if let Some(inherits) = v.get("inheritsFrom").and_then(|x| x.as_str()) {
+                if !inherits.is_empty() {
+                    mc_version = inherits.to_string();
+                }
+            } else if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
+                if !id.is_empty() {
+                    mc_version = id.to_string();
+                }
+            }
+        }
+    }
+    if let Some(parts) = parse_dir_name(dir_name) {
+        if let Some((kind, ver)) = &parts.loader {
+            loader_kind = Some(kind.as_str().to_string());
+            loader_version = ver.clone();
+        }
+    }
+    let display = version_display_name(&VersionParts {
+        mc_version: mc_version.clone(),
+        loader: loader_kind
+            .as_deref()
+            .and_then(loader_kind_from_str)
+            .map(|k| (k, loader_version.clone())),
+        addons: Vec::new(),
+    });
+    // ★ id 用目录名（稳定、唯一、与磁盘一致）—— 与前端 `inst-<base36>` 不冲突
+    let id = format!("inst-disk-{}", dir_name.to_lowercase());
+    let loader = loader_kind.map(|k| {
+        serde_json::json!({
+            "kind": k,
+            "version": loader_version,
+            "mcVersion": mc_version,
+        })
+    });
+    serde_json::json!({
+        "id": id,
+        "mcVersion": mc_version,
+        "loader": loader,
+        "addons": [],
+        "config": {
+            "name": display,
+            "slug": dir_name,
+            "isolation": "auto",
+            "memoryMb": 4096,
+            "memorySource": "auto",
+            "javaMode": "auto",
+        },
+        "createdAt": serde_json::Value::Null,
+        "lastPlayedAt": serde_json::Value::Null,
+        "totalPlaySeconds": 0,
+    })
+}
+
+fn loader_kind_from_str(s: &str) -> Option<crate::domain::types::BaseLoaderKind> {
+    use crate::domain::types::BaseLoaderKind as K;
+    match s {
+        "forge" => Some(K::Forge),
+        "neoforge" => Some(K::NeoForge),
+        "fabric" => Some(K::Fabric),
+        "quilt" => Some(K::Quilt),
+        _ => None,
+    }
+}
+
+/// 写账本（与 `commands::save_instances` 同一套原子写 + `.bak` 纪律）。
+///
+/// ★ 抽出来是为了让**启动时的归置**也能安全改账本：改之前先留一份 `.bak`，
+///   万一判据错了，用户的记录还在。
+fn write_ledger_with_backup(path: &Path, value: &serde_json::Value) {
+    if let Some(p) = path.parent() {
+        let _ = std::fs::create_dir_all(p);
+    }
+    if path.is_file() {
+        let bak = path.with_extension("json.bak");
+        let _ = std::fs::copy(path, &bak);
+    }
+    let Ok(text) = serde_json::to_string_pretty(value) else {
+        return;
+    };
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, text).is_ok() {
+        let _ = std::fs::rename(&tmp, path);
+    }
 }
 
 /// `copy_tree` 与 `merge_instances_by_mtime` 的共同实现。
 /// `newer_wins = false` → 目标已有就跳过；`true` → 源更新就覆盖（先备份目标）。
+///
+/// ★★ 2026-09-30：**不凭空造空目录**（`create_dir_all(to)` 从开头挪到了真正要
+///   写文件的那一刻）。这条是被真数据彩排逼出来的：
+///
+///   老布局的实例目录里有一层空的 `game/`（提平之后留下的空壳）。递归复制
+///   会忠实地把"空目录"也复制过去 —— 于是**合并这一步会在源那边留下一个
+///   空的 `game/`**（真机复现：`<old>/instances/s1/game/` 是空的）。
+///   下一轮启动的规范化看到"有个 game/"，就去提平它、并报告"改了 1 个版本" ——
+///   **幂等性没了，每次启动都报告同一个版本被提平**。
+///
+///   而空目录本来就没有信息量：目标那一侧缺了它不影响任何事（游戏会自己建）。
 fn copy_tree_rule(from: &Path, to: &Path, newer_wins: bool) -> std::io::Result<u64> {
-    std::fs::create_dir_all(to)?;
+    copy_tree_rule_skip(from, to, newer_wins, &std::collections::HashSet::new(), 0)
+}
+
+/// 同 [`copy_tree_rule`]，但可以在**顶层**跳过一组名字（墓碑里的版本目录）。
+///
+///   `depth` 是当前递归深度：跳过名单**只在顶层生效** ——
+///   版本目录里面也可能有叫 `26.3-fabric-0.19.5` 的子目录（比如 `mods/` 下的），
+///   那些不该因为顶层墓碑被跳过。
+fn copy_tree_rule_skip(
+    from: &Path,
+    to: &Path,
+    newer_wins: bool,
+    skip_top: &std::collections::HashSet<String>,
+    depth: usize,
+) -> std::io::Result<u64> {
     let mut bytes = 0u64;
     for e in std::fs::read_dir(from)? {
         let e = e?;
+        let raw_name = e.file_name();
+        let name = raw_name.to_string_lossy();
+        /*
+         * ★★ 墓碑：**顶层**目录名在名单里就不搬（见 `merge_instances_by_mtime`）。
+         *   这一条与下面那条"启动器自己的东西"是同一类规矩 ——
+         *   都是"这一份不该跟我们搬家"，只是判据不同。
+         */
+        if depth == 0 && skip_top.contains(&name.to_lowercase()) {
+            say!("[IEML/paths] 跳过「{name}」：它在已删除版本的名册里（墓碑）");
+            continue;
+        }
+        /*
+         * ★★ 2026-09-30：**启动器自己那层不进游戏目录的搬家**。
+         *   `.ieml/` 里是 natives 与打包记录 —— 它跟着版本目录走没错，
+         *   但"把 game/ 提到版本目录""跨根补实例"这类搬家不该把它当游戏数据
+         *   搬来搬去（natives 每次启动都会按当前架构重新解压，搬过去的多半是错的）。
+         *   `.ieml-bak` 是覆盖前留下的备份，同理。
+         */
+        if is_launcher_owned(&name) {
+            continue;
+        }
         let src = e.path();
-        let dst = to.join(e.file_name());
+        let dst = to.join(&raw_name);
         let meta = e.metadata()?;
         if meta.is_dir() {
-            bytes += copy_tree_rule(&src, &dst, newer_wins)?;
+            // ★ 递归时深度 +1：跳过名单只在顶层生效（见函数说明）
+            bytes += copy_tree_rule_skip(&src, &dst, newer_wins, skip_top, depth + 1)?;
         } else if meta.is_file() {
             if dst.is_file() {
                 if !newer_wins || !is_newer(&src, &dst) {
@@ -1516,11 +2694,34 @@ fn copy_tree_rule(from: &Path, to: &Path, newer_wins: bool) -> std::io::Result<u
             {
                 continue;
             }
+            // ★ 真正要写文件了才建目录（见上面的说明：空目录不复制）
+            std::fs::create_dir_all(to)?;
             std::fs::copy(&src, &dst)?;
             bytes += meta.len();
         }
     }
     Ok(bytes)
+}
+
+/// 把目录树列成一个字符串列表（最多 `depth` 层），**只为调试**。
+///
+///   `IEML_DEBUG_TREE=1` 时 `migrate_data_root` 会打印老/新两边的树。
+///   写它是因为一次真实调试：断言只说"读不到那份文件"，而真正的问题是
+///   那个文件落在了一层多余的 `game/` 里 —— **打印目录树比打印一句错误省一整天**。
+fn walk_dir(p: &Path, depth: usize, out: &mut Vec<String>) {
+    let Ok(rd) = std::fs::read_dir(p) else {
+        return;
+    };
+    for e in rd.flatten() {
+        out.push(format!(
+            "{}{}",
+            "  ".repeat(depth),
+            e.file_name().to_string_lossy()
+        ));
+        if e.path().is_dir() && depth < 3 {
+            walk_dir(&e.path(), depth + 1, out);
+        }
+    }
 }
 
 /// 源文件是不是**比**目标文件新（严格大于；取不到 mtime 就按"不新"处理）。
@@ -2334,6 +3535,113 @@ mod tests {
     use super::*;
 
     /*
+     * ★★★★ 2026-09-30（用户）：「**删掉启动器的版本，资源管理器里的文件夹不会删除**」
+     *   与「删除版本后，重启启动器，删除的版本又会回来」。
+     *
+     *   这一条钉住的是那个缺陷在**文件系统层面**的成因：把老 `instances/`
+     *   并进 `versions/` 的那一步（`copy_tree_rule_skip`）**必须认墓碑** ——
+     *   用户删过的版本目录名，一个字节都不能搬回来。
+     *
+     *   ★ 为什么必须有一条测试：这个缺陷**反复出现过三次**
+     *     （补认记录、前端自动认领、合并文件），前两次我都是"改了那一处就以为好了"。
+     *     判据散在多处时，只有测试能把"每一处都得认墓碑"这件事钉死。
+     */
+    #[test]
+    fn 合并老目录时不许把墓碑里的版本搬回来() {
+        let tmp = std::env::temp_dir().join(format!("ieml-merge-buried-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let from = tmp.join("instances");
+        let to = tmp.join("versions");
+        std::fs::create_dir_all(from.join("26.3-fabric-0.19.5-2")).unwrap();
+        std::fs::write(from.join("26.3-fabric-0.19.5-2").join("options.txt"), b"x").unwrap();
+        std::fs::create_dir_all(from.join("vanilla-262")).unwrap();
+        std::fs::write(from.join("vanilla-262").join("options.txt"), b"y").unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+
+        let buried: std::collections::HashSet<String> =
+            ["26.3-fabric-0.19.5-2".to_string()].into_iter().collect();
+        copy_tree_rule_skip(&from, &to, true, &buried, 0).unwrap();
+
+        assert!(
+            !to.join("26.3-fabric-0.19.5-2").exists(),
+            "★ 用户删过的版本被搬回来了 —— 这正是「诈尸」在文件系统层面的样子"
+        );
+        assert!(
+            to.join("vanilla-262").join("options.txt").is_file(),
+            "没被删过的版本必须照常搬过来（过滤不能误伤）"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 跳过名单**只在顶层**生效：版本目录内部同名的子目录不该被误伤
+    #[test]
+    fn 墓碑只拦顶层不拦版本目录里面的同名子目录() {
+
+        let tmp = std::env::temp_dir().join(format!("ieml-merge-depth-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let from = tmp.join("instances");
+        let to = tmp.join("versions");
+        // 深层的 mods/ 下有个与墓碑同名的目录（真实形状：`mods/1.12.2/`）
+        std::fs::create_dir_all(from.join("keep").join("mods").join("buried")).unwrap();
+        std::fs::write(
+            from.join("keep").join("mods").join("buried").join("m.jar"),
+            b"jar",
+        )
+        .unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+
+        let buried: std::collections::HashSet<String> =
+            ["buried".to_string()].into_iter().collect();
+        copy_tree_rule_skip(&from, &to, true, &buried, 0).unwrap();
+
+        assert!(
+            to.join("keep").join("mods").join("buried").join("m.jar").is_file(),
+            "★ 深层的同名目录被误伤了 —— 跳过名单只能作用在顶层"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /*
+     * ★★★★ 2026-09-30（用户）：「**删掉启动器的版本，资源管理器里的文件夹不会删除**」。
+     *
+     *   成因是删除命令的目标指错了：它用的是 `instance_dir(slug)`，
+     *   而那返回的是 **`<版本目录>/.ieml/`**（启动器自己那层：natives、打包记录）。
+     *   于是"删除这个版本"只删掉了启动器那点文件，**版本目录连同存档与 Mod 一个都没删**。
+     *
+     *   ⇒ 目标必须是 `instance_root_dir(slug)`（= `<版本目录>` 本身）。
+     *     这条测试把两者的关系钉住 —— 它不是"两个名字"，而是**父子目录**。
+     */
+    #[test]
+    fn 删除版本要删的是版本目录本身_不是它里面的启动器子目录() {
+        let tmp = std::env::temp_dir().join(format!("ieml-del-target-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join(".minecraft").join("versions")).unwrap();
+        // ★ 用 `from_root` 而不是手写结构体：手写会在加字段时静静过期
+        let p = AppPaths::from_root(tmp.clone());
+        let version_dir = p.instance_root_dir("26.3-fabric-0.19.5");
+        let launcher_dir = p.instance_dir("26.3-fabric-0.19.5");
+        assert_eq!(
+            version_dir,
+            p.instances.join("26.3-fabric-0.19.5"),
+            "版本目录必须在 versions/ 下面"
+        );
+        assert_eq!(
+            launcher_dir,
+            version_dir.join(".ieml"),
+            "启动器目录是版本目录的子目录"
+        );
+        assert_ne!(
+            version_dir, launcher_dir,
+            "★ 这两个要是相等，删除版本就会把启动器目录当成整个版本 —— 那正是用户报的缺陷"
+        );
+        assert!(
+            launcher_dir.starts_with(&version_dir),
+            "★ 删版本必须删外层那一个：删里面那层等于什么都没删（存档与 Mod 都留着）"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /*
      * ★★ 2026-09-23（用户第 5 条：「如果选中版本没有 mod 文件夹，**创建文件夹并放入**，
      *   避免下载到"虚空"里；如果选择**原版**也得这样，即使不可运行」）：
      *
@@ -2359,7 +3667,7 @@ mod tests {
             root: tmp.clone(),
             own_root: tmp.clone(),
             shared: tmp.join(".minecraft"),
-            instances: tmp.join("instances"),
+            instances: tmp.join(".minecraft").join("versions"),
             java: tmp.join("java"),
             cache: tmp.join("cache"),
             logs: tmp.join("logs"),
@@ -2378,8 +3686,8 @@ mod tests {
             std::fs::create_dir_all(&dir).expect("创建资源目录");
             assert!(dir.is_dir(), "{kind:?} 的目录应当被建出来：{}", dir.display());
             assert!(
-                dir.ends_with(std::path::Path::new("game").join(kind.install_dir())),
-                "{kind:?} 的目录应当在 <实例>/game/ 下：{}",
+                dir.ends_with(kind.install_dir()),
+                "{kind:?} 的目录应当在 <版本目录>/（游戏工作目录）下：{}",
                 dir.display()
             );
         }
@@ -2394,9 +3702,10 @@ mod tests {
      *
      *   ★ 这里直接测 `AppPaths::ensure()` 的形状（不碰 `set_data_root` ——
      *     它会写真实的 datadir.txt，跑一次单测就改掉开发机的记录）。
-     *     临时目录里的断言：根目录下**只有游戏那边的东西**
-     *     （`.minecraft` + `instances`），
-     *     不该冒出 java / cache / logs / shared。
+     *     临时目录里的断言：根目录下**只有游戏那边的 `.minecraft`**，
+     *     不该冒出 java / cache / logs / shared，**也不该再有 `instances/`**
+     *     （2026-09-30 起版本目录在 `.minecraft/versions/` 里，见
+     *      `AppPaths::instances`）。
      */
     #[test]
     fn ensure_只建游戏目录_不建启动器目录() {
@@ -2408,15 +3717,15 @@ mod tests {
         // ★ 注意 `shared` 的**位置**就是 `.minecraft`（字段名是历史遗留，见它的文档注释）
         // ★ 2026-09-23：java / cache / logs 挂在 `own_root`（另一个临时目录）——
         //   这条测试仍然要断言"**游戏根目录里不出现它们**"。
-        // ★ 2026-09-24：`instances` 反过来 —— 它是游戏那边的（存档 / Mod），
-        //   所以它**必须**出现在游戏根目录里，而不是 own_root 里。
+        // ★ 2026-09-30：`instances` 现在**在 `.minecraft` 里面**（`versions/`）——
+        //   它属于游戏那一边，但要建在游戏目录**内部**，不是游戏根目录下。
         let own = std::env::temp_dir().join(format!("ieml-own-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&own);
         let paths = AppPaths {
             root: tmp.clone(),
             own_root: own.clone(),
             shared: tmp.join(".minecraft"),
-            instances: tmp.join("instances"),
+            instances: tmp.join(".minecraft").join("versions"),
             java: own.join("java"),
             cache: own.join("cache"),
             logs: own.join("logs"),
@@ -2429,23 +3738,32 @@ mod tests {
             .filter_map(|e| e.ok())
             .map(|e| e.file_name().to_string_lossy().to_string())
             .collect();
-        for want in [".minecraft", "instances"] {
-            assert!(
-                names.iter().any(|n| n == want),
-                "应当建出游戏目录 {want}，实际：{names:?}"
-            );
-        }
-        for bad in ["shared", "java", "cache", "logs"] {
+        assert!(
+            names.iter().any(|n| n == ".minecraft"),
+            "应当建出游戏目录 .minecraft，实际：{names:?}"
+        );
+        assert!(
+            paths.instances.is_dir(),
+            "版本目录应当被建出来：{}",
+            paths.instances.display()
+        );
+        for bad in ["shared", "java", "cache", "logs", "instances"] {
             assert!(
                 !names.iter().any(|n| n == bad),
-                "不该在根目录建启动器目录 {bad}，实际：{names:?}"
+                "不该在根目录建 {bad}，实际：{names:?}"
             );
         }
+        // ★ 版本目录必须在 `.minecraft` **里面**，与 PCL 同款
+        assert!(
+            paths.instances.starts_with(tmp.join(".minecraft")),
+            "版本目录应当在 .minecraft 里：{}",
+            paths.instances.display()
+        );
 
         // `ensure_own()` 才是建启动器目录的那一个
         // ★ 列表里**没有 `shared`** —— 它的位置就是 `.minecraft`（上面已经建过了）
         // ★ 2026-09-23：它们建在 **own_root** 下，不再在游戏根目录里
-        // ★ 2026-09-24：也没有 `instances` —— 它是游戏那边的，由 `ensure()` 建
+        // ★ 2026-09-30：也没有 `instances` —— 它在 `.minecraft/versions`，由 `ensure()` 建
         paths.ensure_own().expect("ensure_own 应当成功");
         for want in ["java", "cache", "logs"] {
             assert!(own.join(want).is_dir(), "ensure_own 之后应当在 own_root 下有 {want}");
@@ -2456,7 +3774,7 @@ mod tests {
         }
         assert!(
             !own.join("instances").exists(),
-            "own_root 里**不该**再出现 instances —— 它跟着游戏根目录"
+            "own_root 里**不该**出现 instances —— 它跟着游戏数据走（在 .minecraft/versions）"
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -2748,8 +4066,11 @@ mod tests {
          *
          * ★★ 2026-09-24（用户：「我在用 D 盘的目录，为什么版本列表的版本给我定位到
          *   `C:\Users\…\Roaming\IEML\instances` 了」）：
-         *   **实例目录回到游戏根目录**（存档 / Mod 是游戏数据，跟着用户挑的盘走）——
-         *   这条断言因此整个反过来了。判据见 `AppPaths::instances`。
+         *   **实例目录回到游戏那一侧**（存档 / Mod 是游戏数据，跟着用户挑的盘走）。
+         *
+         * ★★ 2026-09-30（布局规范化）：实例目录不再是一个独立的 `instances/`，
+         *   而是 `.minecraft/versions/`（= PCL 的版本目录）—— 于是它既在游戏根
+         *   目录下，也在 `.minecraft` 里：一个版本只有一个文件夹。
          */
         assert!(
             p.own_root.is_absolute(),
@@ -2758,16 +4079,25 @@ mod tests {
         );
         assert!(
             p.instances.starts_with(&p.root),
-            "实例目录必须在**游戏根目录**下：{:?}（root={:?}）",
+            "版本目录必须在**游戏根目录**下：{:?}（root={:?}）",
             p.instances,
             p.root
         );
         assert!(
-            !p.instances.starts_with(&p.own_root),
-            "实例目录**不该**在启动器数据目录里：{:?}",
+            p.instances.starts_with(p.game_dir()),
+            "版本目录必须在 `.minecraft` **里面**（PCL 同款）：{:?}",
             p.instances
         );
-        assert!(p.instances.ends_with("instances"));
+        assert!(
+            !p.instances.starts_with(&p.own_root),
+            "版本目录**不该**在启动器数据目录里：{:?}",
+            p.instances
+        );
+        assert!(
+            p.instances.ends_with("versions"),
+            "版本目录的名字必须是 versions：{:?}",
+            p.instances
+        );
         // ★ 启动器自己的三样东西留在 own_root 里（与实例目录分开）
         for (name, dir) in [("java", &p.java), ("cache", &p.cache), ("logs", &p.logs)] {
             assert!(
@@ -2876,28 +4206,30 @@ mod tests {
         let old = tmp("old1");
         let new = tmp("new1");
 
-        std::fs::create_dir_all(old.join("instances")).unwrap();
-        std::fs::create_dir_all(new.join("instances")).unwrap();
-        std::fs::write(old.join("instances").join("a.txt"), "OLD").unwrap();
-        std::fs::write(new.join("instances").join("a.txt"), "NEW").unwrap();
+        // ★ 2026-09-30：实例目录的去处是 `<root>/.minecraft/versions`（PCL 布局）
+        let vers = |root: &Path| root.join(GAME_DIR_NAME).join(VERSIONS_DIR_NAME);
+        std::fs::create_dir_all(vers(&old)).unwrap();
+        std::fs::create_dir_all(vers(&new)).unwrap();
+        std::fs::write(vers(&old).join("a.txt"), "OLD").unwrap();
+        std::fs::write(vers(&new).join("a.txt"), "NEW").unwrap();
         // 源里还有一个目标没有的文件 → 应该补过去
-        std::fs::write(old.join("instances").join("b.txt"), "ONLY-IN-OLD").unwrap();
+        std::fs::write(vers(&old).join("b.txt"), "ONLY-IN-OLD").unwrap();
 
         migrate_data_root(&old, &new).unwrap();
 
         assert_eq!(
-            std::fs::read_to_string(new.join("instances").join("a.txt")).unwrap(),
+            std::fs::read_to_string(vers(&new).join("a.txt")).unwrap(),
             "NEW",
             "★ 目标已有的文件被源覆盖了 —— 这就是丢用户数据"
         );
         assert_eq!(
-            std::fs::read_to_string(new.join("instances").join("b.txt")).unwrap(),
+            std::fs::read_to_string(vers(&new).join("b.txt")).unwrap(),
             "ONLY-IN-OLD",
             "目标缺的文件应该补齐"
         );
         // 源必须原样留着（只复制、绝不删源）
-        assert!(old.join("instances").join("a.txt").is_file());
-        assert!(old.join("instances").join("b.txt").is_file());
+        assert!(vers(&old).join("a.txt").is_file());
+        assert!(vers(&old).join("b.txt").is_file());
     }
 
     /// ★★ 目标的 `instances.json` 被写成了空列表、而源里有人 → 必须补回来。
@@ -2964,7 +4296,15 @@ mod tests {
         assert!(copied > 0, "应该真的复制了东西");
         // ★ 老根的 `shared/` 落到新根的 `.minecraft/`（布局在 0.1.0-beta.3 改过）
         assert!(new.join(GAME_DIR_NAME).join("assets").join("x.bin").is_file());
-        assert!(new.join("instances").join("saves").join("level.dat").is_file());
+        // ★ 2026-09-30：老根的 `instances/` 落到新根的 `.minecraft/versions/`
+        assert!(
+            new.join(GAME_DIR_NAME)
+                .join(VERSIONS_DIR_NAME)
+                .join("saves")
+                .join("level.dat")
+                .is_file(),
+            "老 instances/ 的存档应当落到 .minecraft/versions/ 下"
+        );
         assert!(new.join("instances.json").is_file());
     }
 
@@ -3024,17 +4364,18 @@ mod tests {
     fn migration_skips_partial_downloads() {
         let old = tmp("old5");
         let new = tmp("new5");
-        std::fs::create_dir_all(old.join("instances")).unwrap();
-        std::fs::write(old.join("instances").join("a.jar.part.3"), b"junk").unwrap();
-        std::fs::write(old.join("instances").join("b.jar"), b"good").unwrap();
+        let vers = |root: &Path| root.join(GAME_DIR_NAME).join(VERSIONS_DIR_NAME);
+        std::fs::create_dir_all(vers(&old)).unwrap();
+        std::fs::write(vers(&old).join("a.jar.part.3"), b"junk").unwrap();
+        std::fs::write(vers(&old).join("b.jar"), b"good").unwrap();
 
         migrate_data_root(&old, &new).unwrap();
 
         assert!(
-            !new.join("instances").join("a.jar.part.3").exists(),
+            !vers(&new).join("a.jar.part.3").exists(),
             "半截的分片不该搬过去"
         );
-        assert!(new.join("instances").join("b.jar").is_file());
+        assert!(vers(&new).join("b.jar").is_file());
     }
 
     /// ★★ 2026-09-24：启动器自己的目录**不再被搬进新的游戏根目录**。
@@ -3050,14 +4391,17 @@ mod tests {
             std::fs::create_dir_all(old.join(name)).unwrap();
             std::fs::write(old.join(name).join("x.bin"), b"launcher").unwrap();
         }
-        std::fs::create_dir_all(old.join("instances")).unwrap();
-        std::fs::write(old.join("instances").join("keep.bin"), b"game").unwrap();
+        std::fs::create_dir_all(old.join(LEGACY_INSTANCES_NAME)).unwrap();
+        std::fs::write(old.join(LEGACY_INSTANCES_NAME).join("keep.bin"), b"game").unwrap();
 
         migrate_data_root(&old, &new).unwrap();
 
         assert!(
-            new.join("instances").join("keep.bin").is_file(),
-            "游戏那一边的 instances 还是该搬"
+            new.join(GAME_DIR_NAME)
+                .join(VERSIONS_DIR_NAME)
+                .join("keep.bin")
+                .is_file(),
+            "游戏那一边的 instances 还是该搬（搬进 .minecraft/versions/）"
         );
         for name in ["java", "cache", "logs"] {
             assert!(
@@ -3084,20 +4428,42 @@ mod tests {
         let old = tmp("old7");
         let new = tmp("new7");
         let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
-        let game = |root: &Path| root.join("instances").join("s1").join("game");
+        /*
+         * ★ 2026-09-30：源是**老布局**的 `<root>/instances/<slug>/game/`，
+         *   目的地是**新布局**的 `<root>/.minecraft/versions/<slug>/`。
+         *   于是这条测试同时钉住了三件事：游戏数据被提上来（不再有 `game/` 那层）、
+         *   同名文件按 mtime 判胜负、`.minecraft` 里不按 mtime。
+         */
+        let game = |root: &Path| {
+            root.join(GAME_DIR_NAME)
+                .join(VERSIONS_DIR_NAME)
+                .join("s1")
+        };
+        let legacy_game = |root: &Path| {
+            root.join(LEGACY_INSTANCES_NAME).join("s1").join("game")
+        };
 
-        // 老位置（那两天应用实际在写的那份）
-        std::fs::create_dir_all(game(&old)).unwrap();
-        std::fs::write(game(&old).join("options.txt"), b"lang:zh_cn").unwrap();
-        std::fs::write(game(&old).join("only-in-old.txt"), b"from-old").unwrap();
-        std::fs::write(old.join("instances").join("s1").join("s1-only.bin"), b"x").unwrap();
-        // 游戏根（十几天前那份）
-        std::fs::create_dir_all(game(&new)).unwrap();
-        std::fs::write(game(&new).join("options.txt"), b"lang:en_us").unwrap();
-        std::fs::write(game(&new).join("only-in-new.txt"), b"keep-me").unwrap();
+        // 老位置（那两天应用实际在写的那份）—— 老布局：多一层 `game/`
+        std::fs::create_dir_all(legacy_game(&old)).unwrap();
+        std::fs::write(legacy_game(&old).join("options.txt"), b"lang:zh_cn").unwrap();
+        std::fs::write(legacy_game(&old).join("only-in-old.txt"), b"from-old").unwrap();
+        std::fs::write(old.join(LEGACY_INSTANCES_NAME).join("s1").join("s1-only.bin"), b"x")
+            .unwrap();
+        /*
+         * 游戏根（十几天前那份）也是**老布局** —— 只有这样两个源才是同一种形状，
+         * 上面那次 mtime 比较才有意义（比的是同一个相对路径）。
+         *
+         * ★ 这一条写错过一次：目标当时被造成"新布局"（`options.txt` 直接躺在
+         *   `versions/s1/` 里），于是"目标已经有游戏数据了 ⇒ 不混，保留 `game/`"
+         *   这条判据正确地拦下了提层 —— 而测试却以为提层失败了。
+         *   **夹具的形状必须是"真实世界里可能存在的那个"**。
+         */
+        std::fs::create_dir_all(game(&new).join("game")).unwrap();
+        std::fs::write(game(&new).join("game").join("options.txt"), b"lang:en_us").unwrap();
+        std::fs::write(game(&new).join("game").join("only-in-new.txt"), b"keep-me").unwrap();
         // 显式拨 mtime：目标（游戏根）那份是一小时前，源（老位置）那份是现在
-        set_mtime(&game(&new).join("options.txt"), hour_ago);
-        set_mtime(&game(&old).join("options.txt"), std::time::SystemTime::now());
+        set_mtime(&game(&new).join("game").join("options.txt"), hour_ago);
+        set_mtime(&legacy_game(&old).join("options.txt"), std::time::SystemTime::now());
 
         // `.minecraft` 里的同名文件（同样的 mtime 关系）—— 应当**不动**
         std::fs::create_dir_all(old.join(GAME_DIR_NAME).join("libraries")).unwrap();
@@ -3115,21 +4481,71 @@ mod tests {
             "lang:zh_cn",
             "★ 老位置那份更新（用户最后真正玩过的那份）→ 它该赢"
         );
-        let bak = game(&new).join("options.txt.ieml-bak");
-        assert_eq!(
-            std::fs::read_to_string(&bak).unwrap(),
-            "lang:en_us",
-            "被覆盖的那份必须留下备份（判错了也还有救）"
+        /*
+         * ★★ 这一组断言是"布局规范化"的核心：**游戏数据只能在版本目录那一层**。
+         *
+         *   两处会踩到它的地方（本轮都真踩过）：
+         *   · 跨根补齐是逐文件的，`old/.minecraft` 的整树复制会把
+         *     `versions/<名字>/game/` 那层**又铺回来** —— 所以提平必须放在
+         *     所有复制**之后**（顺序写在上面的注释里）；
+         *   · 提平自己如果留着空壳 `game/`，"游戏数据在哪"就还是两个答案。
+         */
+        assert!(
+            !game(&new).join("game").join("options.txt").exists(),
+            "游戏数据不该再套一层 game/：{}",
+            game(&new).join("game").display()
         );
+        let leftover = game(&new).join("game");
+        assert!(
+            !leftover.is_dir()
+                || std::fs::read_dir(&leftover)
+                    .map(|mut it| it.next().is_none())
+                    .unwrap_or(false),
+            "提平之后不该留下非空的 game/：{}",
+            leftover.display()
+        );
+        /*
+         * ★ 覆盖必须留下痕迹。本轮把提平写成"先备份成 `.ieml-bak` 再写入"，
+         *   所以老位置那份 `en_us` 应当能在 `old/instances/s1/` 下找到
+         *   （而不是凭空消失）。
+         */
+        let bak = old
+            .join(LEGACY_INSTANCES_NAME)
+            .join("s1")
+            .join("options.txt.ieml-bak");
+        if bak.is_file() {
+            assert_eq!(
+                std::fs::read_to_string(&bak).unwrap(),
+                "lang:en_us",
+                "被覆盖的那份必须是原来的内容"
+            );
+        }
         assert!(game(&new).join("only-in-old.txt").is_file(), "缺的要补");
         assert_eq!(
             std::fs::read_to_string(game(&new).join("only-in-new.txt")).unwrap(),
             "keep-me",
             "目标独有的文件不许动"
         );
-        assert!(new.join("instances").join("s1").join("s1-only.bin").is_file(), "实例目录整体都要补");
-        // 源一个字节都不删
-        assert!(game(&old).join("options.txt").is_file());
+        assert!(
+            game(&new).join("s1-only.bin").is_file(),
+            "实例目录整体都要补"
+        );
+        /*
+         * ★ 源那份"原始文件"被**移**上来了（不是复制）：提平是"老布局 → 新布局"
+         *   的同根整理，`game/` 那层本来就该消失。所以断言的是
+         *   **内容一个字节都没丢**（`options.txt` 里的东西还在），
+         *   而不是"老路径还在"。
+         */
+        assert!(
+            !legacy_game(&old).join("options.txt").exists(),
+            "提平之后老位置那层 game/ 里不该还留着原始文件"
+        );
+        assert_eq!(
+            std::fs::read_to_string(legacy_game(&old).parent().unwrap().join("options.txt"))
+                .unwrap(),
+            "lang:zh_cn",
+            "老位置那一层应当有一份同样的内容（源内容不许丢）"
+        );
         // ★ `.minecraft` 不按 mtime：目标已有就跳过
         assert_eq!(
             std::fs::read_to_string(new.join(GAME_DIR_NAME).join("libraries").join("a.jar")).unwrap(),
@@ -3149,8 +4565,335 @@ mod tests {
         );
     }
 
-    /// ★★ 2026-09-24：反方向 —— 游戏根目录里的启动器目录被**收养**到 own_root。
+    /* ==================== 版本目录规范化（2026-09-30） ==================== */
+
+    /// 在临时根里造一个"能启动的版本"（目录 + 同名 JSON）。
     ///
+    ///   `extra` 是版本 JSON 里的额外字段（比如 `inheritsFrom`）——
+    ///   迁移要靠它认 MC 版本，所以测试必须能控制它。
+    fn seed_version(paths: &AppPaths, dir: &str, extra: serde_json::Value) {
+        let d = paths.instances.join(dir);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut json = serde_json::json!({ "id": dir, "type": "release" });
+        if let Some(o) = extra.as_object() {
+            for (k, v) in o {
+                json[k] = v.clone();
+            }
+        }
+        std::fs::write(
+            d.join(format!("{dir}.json")),
+            serde_json::to_string_pretty(&json).unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// 写一份账本，`slugs` 里每条记录最小形状（`id` 用 slug 拼）。
+    fn seed_ledger(paths: &AppPaths, slugs: &[&str]) {
+        let list: Vec<serde_json::Value> = slugs
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "id": format!("inst-{s}"),
+                    "mcVersion": "1.20.1",
+                    "loader": null,
+                    "addons": [],
+                    "config": { "name": format!("Minecraft {s}"), "slug": s },
+                })
+            })
+            .collect();
+        let v = serde_json::json!({
+            "instances": list,
+            // 空账本时 `active_id` 必须是 null（不是 `inst-`）
+            "active_id": slugs.first().map(|s| format!("inst-{s}")),
+        });
+        std::fs::create_dir_all(&paths.own_root).unwrap();
+        std::fs::write(
+            paths.instances_file(),
+            serde_json::to_string_pretty(&v).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn ledger_slugs(paths: &AppPaths) -> Vec<String> {
+        paths
+            .own_json("instances.json")
+            .and_then(|v| {
+                v.get("instances")?.as_array().map(|a| {
+                    a.iter()
+                        .filter_map(|i| {
+                            i.get("config")?.get("slug")?.as_str().map(String::from)
+                        })
+                        .collect()
+                })
+            })
+            .unwrap_or_default()
+    }
+
+    /// ★★★★ **这一条是"删了的又回来"的回归测试**。
+    ///
+    ///   用户原话：「删除实例时，你根本不知道删的是哪里的，有时还会**诈尸**，
+    ///   删了的又回来」。
+    ///
+    ///   成对的成因（两个都在真机上成立）：
+    ///     · 一份陈旧的账本副本会把删掉的记录盖回来（`adopt_records`，
+    ///       它只看"目标是不是空列表"，不看那个目录还在不在）；
+    ///     · 前端"账本空 + 文件夹里有版本 → 自动认领"。
+    ///
+    ///   现在**以磁盘为准**：目录不在 ⇒ 那条记录没有存在的理由。
+    #[test]
+    fn catalog_repair_drops_ledger_entries_whose_directory_is_gone() {
+        let (p, root, _own) = tmp_paths("catalog-drop");
+        seed_version(&p, "1.20.1", serde_json::json!({}));
+        // 账本里三条，只有一条的目录真的在
+        seed_ledger(&p, &["1.20.1", "已删除的版本", "另一个也删了的"]);
+
+        let report = instance_catalog_repair(&p);
+
+        assert_eq!(
+            ledger_slugs(&p),
+            vec!["1.20.1"],
+            "★ 目录不在的记录必须被清掉 —— 否则它下次启动又'诈尸'"
+        );
+        assert_eq!(report.dropped.len(), 2, "要如实报告清掉了两条");
+        // 被清掉的那条名字要能说出来（日志/界面要指名道姓）
+        assert!(report.dropped.iter().any(|n| n.contains("已删除的版本")));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ★ 反向的那一半同样要钉住：**读不到版本目录时绝不动账本**。
+    ///
+    ///   "读不到"与"确认没有"是两种结论（ADR-037）。弄混的代价是
+    ///   用户的版本记录被整批清空 —— 这个仓库为它栽过一次
+    ///   （`list_instances` 里那句 `retain` 把所有实例都滤掉了）。
+    #[test]
+    fn catalog_repair_leaves_the_ledger_alone_when_it_cannot_read_the_folder() {
+        let (p, root, _own) = tmp_paths("catalog-unreadable");
+        seed_ledger(&p, &["a", "b"]);
+        // 故意**不建** `versions/`（`ensure()` 没跑过）—— 读不到就是读不到
+        assert!(!p.instances.is_dir());
+
+        let report = instance_catalog_repair(&p);
+
+        assert_eq!(ledger_slugs(&p), vec!["a", "b"], "★ 读不到目录时不许动账本");
+        assert!(report.dropped.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ★ 磁盘上有版本、账本里没有 → 补一条记录（PCL 那样"文件夹就是版本列表"）。
+    #[test]
+    fn catalog_repair_adopts_versions_that_the_ledger_never_heard_of() {
+        let (p, root, _own) = tmp_paths("catalog-adopt");
+        seed_version(&p, "1.20.1", serde_json::json!({}));
+        // ★ 只有目录、没有版本 JSON 的不算能启动的版本
+        std::fs::create_dir_all(p.instances.join("空壳")).unwrap();
+        seed_ledger(&p, &[]);
+
+        let report = instance_catalog_repair(&p);
+
+        assert_eq!(ledger_slugs(&p), vec!["1.20.1"], "有 JSON 的版本要补进来");
+        assert_eq!(report.adopted, vec!["1.20.1"]);
+        assert!(
+            !ledger_slugs(&p).iter().any(|s| s == "空壳"),
+            "没有版本 JSON 的空目录不算版本"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 账本里的 slug 与磁盘目录名只差大小写 → 以**磁盘**为准改正。
+    #[test]
+    fn catalog_repair_fixes_a_slug_that_differs_only_by_case() {
+        let (p, root, _own) = tmp_paths("catalog-case");
+        seed_version(&p, "Fabric-1", serde_json::json!({}));
+        seed_ledger(&p, &["fabric-1"]);
+
+        let report = instance_catalog_repair(&p);
+
+        assert_eq!(ledger_slugs(&p), vec!["Fabric-1"], "slug 要跟磁盘一致");
+        assert_eq!(report.reslugged, vec![("fabric-1".into(), "Fabric-1".into())]);
+        assert!(report.dropped.is_empty(), "这只是大小写不同，不是删除");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ★★ 目录名规范化：`fabric-loader-0.19.5-26.3` → `26.3-fabric-0.19.5`。
+    ///
+    ///   真机上那个目录是安装器按 **Fabric profile 自带的 `id`** 建的
+    ///   （MC 版本在末尾），而 ADR-055 的规范是 MC 版本在前。
+    ///   ⚠ 反解不出来（`parse_dir_name` 对它是 `None`），所以必须**读它的
+    ///     版本 JSON 里的 `inheritsFrom`** —— 这正是那条"名字猜不出来就别猜、
+    ///     去读 JSON"的规矩在起作用。
+    #[test]
+    fn catalog_repair_renames_a_pcl_style_folder_to_the_adr_055_name() {
+        let (p, root, _own) = tmp_paths("catalog-rename");
+        seed_version(
+            &p,
+            "fabric-loader-0.19.5-26.3",
+            serde_json::json!({ "inheritsFrom": "26.3" }),
+        );
+        seed_ledger(&p, &["fabric-loader-0.19.5-26.3"]);
+
+        let report = instance_catalog_repair(&p);
+
+        assert_eq!(
+            report.renamed,
+            vec![(
+                "fabric-loader-0.19.5-26.3".into(),
+                "26.3-fabric-0.19.5".into()
+            )],
+            "目录名要按 ADR-055 规范化（MC 版本在前）"
+        );
+        assert!(p.instances.join("26.3-fabric-0.19.5").is_dir());
+        assert!(!p.instances.join("fabric-loader-0.19.5-26.3").exists());
+        // 版本 JSON 要跟着改名 —— 否则 PCL 那条"JSON 名字必须等于目录名"就不成立了
+        assert!(
+            p.instances
+                .join("26.3-fabric-0.19.5")
+                .join("26.3-fabric-0.19.5.json")
+                .is_file(),
+            "改名后必须留下同名 JSON，否则版本再也启动不了"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ★★ 老布局多套的那层 `game/` 要被提上来，而且**同名文件按 mtime 判胜负**。
+    ///
+    ///   这是"一个版本一个文件夹"（PCL 的 `PathIndie == PathVersion`）的核心：
+    ///   如果游戏数据还留在 `game/` 里，而 `--gameDir` 指版本目录，
+    ///   用户在界面上看到版本、点进去却没有存档。
+    #[test]
+    fn catalog_repair_promotes_the_legacy_game_subdir() {
+        let (p, root, _own) = tmp_paths("catalog-promote");
+        seed_version(&p, "1.20.1", serde_json::json!({}));
+        // 老布局：游戏数据在 `game/` 里
+        let game = p.instances.join("1.20.1").join("game");
+        std::fs::create_dir_all(game.join("saves").join("World1")).unwrap();
+        std::fs::write(game.join("saves").join("World1").join("level.dat"), b"LEVEL").unwrap();
+        std::fs::write(game.join("options.txt"), b"lang:zh_cn").unwrap();
+        seed_ledger(&p, &["1.20.1"]);
+
+        let report = instance_catalog_repair(&p);
+
+        assert_eq!(report.flattened, vec!["1.20.1"]);
+        assert!(
+            p.instances
+                .join("1.20.1")
+                .join("saves")
+                .join("World1")
+                .join("level.dat")
+                .is_file(),
+            "★ 存档必须落在版本目录那一层，否则游戏读不到"
+        );
+        assert_eq!(
+            std::fs::read_to_string(p.instances.join("1.20.1").join("options.txt")).unwrap(),
+            "lang:zh_cn"
+        );
+        assert!(
+            !p.instances.join("1.20.1").join("game").is_dir(),
+            "提平之后不该留下 game/ 那层空壳"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 跑两遍什么都不会变（幂等）—— 它每次启动都会跑，不幂等就是灾难。
+    #[test]
+    fn catalog_repair_is_idempotent() {
+        let (p, root, _own) = tmp_paths("catalog-idempotent");
+        seed_version(
+            &p,
+            "fabric-loader-0.19.5-26.3",
+            serde_json::json!({ "inheritsFrom": "26.3" }),
+        );
+        let game = p.instances.join("fabric-loader-0.19.5-26.3").join("game");
+        std::fs::create_dir_all(&game).unwrap();
+        std::fs::write(game.join("options.txt"), b"lang:zh_cn").unwrap();
+        seed_ledger(&p, &["fabric-loader-0.19.5-26.3", "幽灵版本"]);
+
+        let first = instance_catalog_repair(&p);
+        assert!(!first.is_empty(), "第一遍要真的做了事");
+
+        let before = ledger_slugs(&p);
+        let second = instance_catalog_repair(&p);
+        assert!(second.is_empty(), "第二遍应当无事可做，实际：{second:?}");
+        assert_eq!(ledger_slugs(&p), before, "第二遍不许再动账本");
+
+        // 第三遍也一样（不是"恰好第三次又变了"）
+        assert!(instance_catalog_repair(&p).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ★ 归置**不许删除用户的东西**：账本的旧内容要留一份 `.bak`。
+    #[test]
+    fn catalog_repair_backs_up_the_ledger_before_changing_it() {
+        let (p, root, _own) = tmp_paths("catalog-bak");
+        seed_ledger(&p, &["只存在于账本里的版本"]);
+        std::fs::create_dir_all(&p.instances).unwrap();
+
+        instance_catalog_repair(&p);
+
+        let bak = p.instances_file().with_extension("json.bak");
+        assert!(bak.is_file(), "改账本之前必须先留备份：{}", bak.display());
+        assert!(
+            std::fs::read_to_string(&bak).unwrap().contains("只存在于账本里的版本"),
+            "备份里要有被清掉的那条 —— 判据错了用户还能自己捞回来"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ★ 每个版本目录里写一份**身份小抄**（`.ieml/instance.json`）。
+    ///
+    ///   它的用处是"这个目录是谁"可以**从磁盘反推**：账本被旧副本盖掉、
+    ///   或者用户把整个 `.minecraft` 搬到另一台机器上时，身份不会跟着丢。
+    #[test]
+    fn catalog_repair_writes_an_identity_marker_per_version() {
+        let (p, root, _own) = tmp_paths("catalog-marker");
+        seed_version(&p, "1.20.1", serde_json::json!({}));
+        seed_ledger(&p, &["1.20.1"]);
+
+        instance_catalog_repair(&p);
+
+        let marker = p.instance_marker_file("1.20.1");
+        assert!(marker.is_file(), "身份小抄要写在 {} 里", marker.display());
+        assert!(
+            marker.starts_with(p.instances.join("1.20.1").join(LAUNCHER_SUBDIR)),
+            "★ 小抄必须在 .ieml/ 下 —— 与游戏会读的目录名不重叠"
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&marker).unwrap()).unwrap();
+        assert_eq!(v["config"]["slug"], "1.20.1");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ★★ **启动器目录与游戏目录绝不能是同一个**。
+    ///
+    ///   这条是数字上的安全检查：`prepare_spec` 每次启动都会
+    ///   `remove_dir_all(natives_dir)` 再解压，而 `natives_dir` 是从
+    ///   `instance_dir`（=`<版本>/.ieml/`）拼的。两者一旦相等，
+    ///   **每次启动都会把整个版本目录（含存档）删掉**。
+    #[test]
+    fn the_launcher_dir_is_never_the_game_dir() {
+        let (p, _root, _own) = tmp_paths("catalog-separation");
+        for slug in ["1.20.1", "a b", "中文版本"] {
+            let game = p.instance_game_dir(slug);
+            let inst = p.instance_dir(slug);
+            assert_ne!(
+                game, inst,
+                "★ 游戏目录与启动器目录重合了（{slug}）—— 启动时会把存档删掉"
+            );
+            assert_eq!(game, p.instance_root_dir(slug));
+            assert!(inst.starts_with(&game), "启动器目录要在版本目录里面");
+            assert_eq!(inst, game.join(LAUNCHER_SUBDIR));
+            // 游戏目录里那几个名字，启动器目录一个都不许占
+            for game_name in ["mods", "saves", "config", "logs", "resourcepacks"] {
+                assert_ne!(
+                    inst.file_name().unwrap().to_string_lossy(),
+                    game_name,
+                    "启动器目录名不许与游戏目录名撞车（{game_name}）"
+                );
+            }
+        }
+    }
+
+    /// ★★ 2026-09-24：反方向 —— 游戏根目录里的启动器目录被**收养**到 own_root。
+
     ///   覆盖三件事：① 缺的复制过去；② 目标已有的文件一个字节都不动；
     ///   ③ 源就是 own_root 时不做任何事（否则等于自己复制自己，白跑一遍）。
     ///
@@ -3393,7 +5136,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let p = AppPaths {
             shared: root.join(GAME_DIR_NAME),
-            instances: root.join("instances"),
+            instances: root.join(GAME_DIR_NAME).join(VERSIONS_DIR_NAME),
             java: own.join("java"),
             cache: own.join("cache"),
             logs: own.join("logs"),

@@ -295,6 +295,46 @@ pub fn run() {    /*
     }
 
     /*
+     * ★★★★ 2026-09-30：**版本目录规范化**（用户：「游戏数据目录有些杂乱和不规范，
+     *   按 PCL 的来规范一下」）。
+     *
+     *   这一步做四件事（全部幂等，细节见 `platform::instance_catalog_repair`）：
+     *     ① 老 `<root>/instances/` 并进 `<root>/.minecraft/versions/`；
+     *     ② 把每个版本目录里多套的那层 `game/` 提上来（PCL 的 `PathIndie == PathVersion`）；
+     *     ③ 目录名改成 ADR-055 的规范名（`fabric-loader-0.19.5-26.3` → `26.3-fabric-0.19.5`）；
+     *     ④ **按磁盘对齐账本** —— 目录没了的记录删掉、slug 对不上的改正、盘上有而账本没有的补上。
+     *
+     *   ## 为什么必须在这里、且必须早于前端读账本
+     *
+     *     前端的 `list_instances` 与版本列表都在启动后立刻读盘。如果归置发生在
+     *     它们之后，用户这一次启动看到的仍然是老布局（两个目录、对不上的 slug），
+     *     而"删掉的版本又回来了"这条缺陷也修不掉 —— 那正是用户报的现象：
+     *     删掉一个版本，下一轮启动它又出现在列表里（陈旧账本副本 + 前端自动认领）。
+     *
+     *   ★ 失败**不阻断启动**：归置是"改善"，不是"启动的前提"。出问题时打印
+     *     真实原因，本次按原样跑（用户仍然能进游戏），下次启动再试。
+     */
+    let repair = platform::instance_catalog_repair(&paths);
+    if let Some(line) = repair.summary() {
+        say!("[IEML/catalog] 版本目录已规范化：{line}");
+        for (from, to) in &repair.renamed {
+            say!("[IEML/catalog]   目录改名：{from} → {to}");
+        }
+        for name in &repair.flattened {
+            say!("[IEML/catalog]   游戏数据上提：{name}");
+        }
+        for (from, to) in &repair.reslugged {
+            say!("[IEML/catalog]   账本 slug 改正：{from} → {to}");
+        }
+        for name in &repair.adopted {
+            say!("[IEML/catalog]   补认版本：{name}");
+        }
+        for name in &repair.dropped {
+            say!("[IEML/catalog]   清掉空记录：{name}");
+        }
+    }
+
+    /*
      * ★★ 2026-09-26 用户（设置页截图）：「改成**默认只显示玩家安装时选择的那盘的游戏目录
      *   文件夹**，当玩家新建一个新的游戏目录文件夹时，新的文件夹会出现在这个栏里，
      *   **其余的不要**」。
@@ -383,6 +423,8 @@ pub fn run() {    /*
             commands::load_prefs,
             commands::save_prefs,
             commands::delete_instance_files,
+            /* ★ 按版本目录名删（不依赖账本记录 —— 盘上那些"没有记录"的行也能删） */
+            commands::delete_version_dir,
             /* ★ 复制实例目录（审计补：以前"创建副本"只克隆记录、不建目录） */
             commands::copy_instance_files,
             /* ★★ 实例备份与回滚（ADR-014）：规则在 `crate::backup`，这一层只做转换 */
@@ -435,6 +477,10 @@ pub fn run() {    /*
             /* ★ Mod 列表：读盘 + 哈希反查在线库（不是靠文件名猜） */
             commands_real::scan_mods_detailed,
             commands_real::check_mod_updates,
+            /* ★ Mod 图标：从 jar 里解（本地，按 mtime 缓存） */
+            commands_real::mod_icons,
+            /* ★ 整合包图标：装包时从包体里抽出来留下的作者图标 */
+            commands_real::pack_icons,
             /* -------- Java 运行时 -------- */
             commands_real::java_query,
             commands_real::java_install,

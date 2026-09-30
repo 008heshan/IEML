@@ -269,20 +269,15 @@ pub async fn projects_by_ids(ids: &[String]) -> Result<HashMap<String, Project>>
     // Modrinth 的批量接口是 GET /projects?ids=["a","b"]（JSON 数组放在查询串里）
     let ids_json = serde_json::to_string(ids)
         .map_err(|e| NetError::Other(format!("序列化项目 id 失败：{e}")))?;
-    let resp = crate::net::api_client()
-        .get(format!("{API}/projects"))
-        .query(&[("ids", ids_json.as_str())])
-        .send()
-        .await?;
-    if !resp.status().is_success() {
-        return Err(NetError::Other(format!(
-            "批量取项目信息失败：HTTP {}",
-            resp.status()
-        )));
-    }
-    let list: Vec<Project> = resp
-        .json()
-        .await
+    /*
+     * ★ 2026-09-30：与 `versions_from_hashes` 同一个改动 —— 这里原来也是
+     *   `api_client().get(...)` 直连官方（绕过镜像兜底）。它紧跟在哈希反查之后，
+     *   所以"20 秒超时"其实是**两段**：反查 20 秒 + 项目信息再 20 秒。
+     *   现在统一走 `get_text_third_party`（官方优先、错峰换镜像）。
+     */
+    let url = format!("{API}/projects?ids={}", urlencode(&ids_json));
+    let text = crate::net::get_text_third_party(&url).await?;
+    let list: Vec<Project> = serde_json::from_str(&text)
         .map_err(|e| NetError::Other(format!("解析项目信息失败：{e}")))?;
     Ok(list.into_iter().map(|p| (p.id.clone(), p)).collect())
 }
@@ -385,6 +380,19 @@ pub async fn version_from_hash(sha1: &str) -> Result<Option<ProjectVersion>> {
 }
 
 /// 批量哈希反查（PCL2 也是批量做的：`POST /v2/version_files`）
+///
+/// ★★ 2026-09-30（用户：「加载、刷新 mod 列表的速度有些慢」）：
+///   这里原来是 `crate::net::api_client().post(...)` —— **直连官方 Modrinth**，
+///   绕过了全仓库那套"官方优先、错峰换 mcimirror"的兜底（见
+///   `net::post_json_third_party` 的说明）。
+///
+///   真机代价：`api.modrinth.com` 国内基本连不上，于是**每次刷新 Mod 列表
+///   都要白等满 20 秒连接超时**（实测 20011 ms），然后才去走 CurseForge 兜底。
+///   而同一个 POST 走镜像只要 528 ms，还真的能命中。
+///
+///   ⇒ 改走 `post_json_third_party`：官方立刻发、2 秒没回就让镜像同时上。
+///     这条与"搜索/项目信息"那几条 GET（早就有兜底）从此判据一致 ——
+///     **同一个 API 的 GET 有兜底、POST 没有**，正是最难发现的那种"慢"。
 pub async fn versions_from_hashes(hashes: &[String]) -> Result<HashMap<String, ProjectVersion>> {
     if hashes.is_empty() {
         return Ok(HashMap::new());
@@ -392,20 +400,11 @@ pub async fn versions_from_hashes(hashes: &[String]) -> Result<HashMap<String, P
     let body = serde_json::json!({
         "hashes": hashes,
         "algorithm": "sha1"
-    });
-    let resp = crate::net::api_client()
-        .post(format!("{API}/version_files"))
-        .json(&body)
-        .send()
-        .await?;
-    if !resp.status().is_success() {
-        return Err(NetError::Other(format!("哈希反查失败：HTTP {}", resp.status())));
-    }
-    let map: HashMap<String, ProjectVersion> = resp
-        .json()
-        .await
-        .map_err(|e| NetError::Other(format!("解析批量反查结果失败：{e}")))?;
-    Ok(map)
+    })
+    .to_string();
+    let text = crate::net::post_json_third_party(&format!("{API}/version_files"), &body).await?;
+    serde_json::from_str(&text)
+        .map_err(|e| NetError::Other(format!("解析批量反查结果失败：{e}")))
 }
 
 /* ====================== 整合包（.mrpack） ====================== */
@@ -681,6 +680,47 @@ pub fn parse_mrpack_bytes(bytes: &[u8]) -> Result<MrpackIndex> {
     Err(NetError::Other(
         "这个压缩包里没有 modrinth.index.json —— 不是 Modrinth 整合包".into(),
     ))
+}
+
+/// 从整合包字节里**抽出作者的图标**（返回 PNG/JPEG 的原始字节）。
+///
+/// ★★ 2026-09-30（用户）：「这两个地方的整合包显示**整合包自己的图标**」。
+///
+///   `.mrpack` 与 CurseForge 的整合包 zip 都把作者图标放在**包根目录**，
+///   名字按惯例是这几个之一（Modrinth 规范推荐 `icon.png`）：
+///     `icon.png` / `icon.jpg` / `pack.png` / `logo.png`
+///   —— 顺序就是优先级，取**第一个找到的**。
+///
+/// ★ 为什么按"顺序找"而不是"全找出来挑最大的"：包根目录里同时出现好几个的
+///   情况极少，而"挑最大的"要把每个候选都解压一遍（每个都可能是几百 KB）。
+///   第一个命中就走，代价最小。
+///
+/// ★ 找不到就返回 `None`：**不是错误**。界面会退回自绘的版本图标
+///   （`VersionIcon`），那本来就是"没有真图标时"的样子。
+pub fn extract_pack_icon(bytes: &[u8]) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+
+    /// 包根目录里可能放图标的名字（按优先级）
+    const NAMES: [&str; 4] = ["icon.png", "icon.jpg", "pack.png", "logo.png"];
+    /// 图标上限：它是给人看的小图，不该是个几十 MB 的东西
+    const MAX: u64 = 2 * 1024 * 1024;
+
+    let reader = std::io::Cursor::new(bytes.to_vec());
+    let mut archive = zip::ZipArchive::new(reader).ok()?;
+
+    for name in NAMES {
+        let Ok(mut entry) = archive.by_name(name) else {
+            continue;
+        };
+        if entry.size() == 0 || entry.size() > MAX {
+            continue;
+        }
+        let mut out = Vec::with_capacity(entry.size() as usize);
+        if entry.read_to_end(&mut out).is_ok() && !out.is_empty() {
+            return Some(out);
+        }
+    }
+    None
 }
 
 /// 解压整合包里的 `overrides/` 到游戏目录。

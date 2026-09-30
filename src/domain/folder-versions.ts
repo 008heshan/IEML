@@ -20,7 +20,15 @@ import { autoMemory } from './memory.ts';
 export interface FolderMatch {
   /** 账本里**对得上当前文件夹**的实例（顺序与传入的 instances 一致）——能启动的就是这些 */
   instances: Instance[];
-  /** 文件夹里有、账本里没有的版本（界面上显示成「还没建实例」） */
+  /**
+   * 文件夹里有、账本里没有的版本。
+   *
+   * ★★ 2026-09-30（用户）：「**这是不必要的设计，删除它**」——
+   *   他指的是原来那支行（「还没建实例」+「用它建一个」按钮）。
+   *   现在这些版本被当成**普通的版本行**渲染：盘上有版本 = 这个版本就在
+   *   （PCL 的语义）。记录里的名字/内存/Java/隔离在用户第一次动设置时才需要，
+   *   而不是"先建一个才能用"。
+   */
   withoutInstance: FolderVersion[];
 }
 
@@ -123,17 +131,33 @@ export function instanceFromFolderVersion(
  *   从"装完第一个版本"到"启动页有个能点的目标"之间，原来差一次手动点击
  *   （版本列表里那个「建实例」按钮）。这条规则把那一跳补上。
  *
- * 三条边界（都是"不许替用户做决定"）：
+ * ★★ 2026-09-30（用户：「删除实例时……有时还会**诈尸**，删了的又回来」）：
+ *   多了一条输入 `deletedVersions` —— 用户**删掉过**的版本目录名（墓碑）。
+ *   命中墓碑的版本**不再自动认领**。
+ *
+ *   为什么需要它：自动认领的判据本来是"账本里一个实例都没有、而文件夹里有版本"，
+ *   而用户"只把版本从列表里移除、文件留着"之后，账本正好是空的 ——
+ *   于是下一轮启动他刚删掉的版本又出现了。**删掉这件事必须是可信的**，
+ *   所以它要被记下来（写进 `prefs.json` 的 `deletedVersions`），
+ *   而不能只靠"账本里现在没有"来推断。
+ *
+ * 四条边界（都是"不许替用户做决定"）：
  *   · **账本里只要有实例就不认领** —— 有实例说明账本是好的，绝不改写用户的选择；
  *   · 只认领**能在启动器里启动的**（`hasJson`）版本 —— 只有目录、没有 json 的不算；
+ *   · **被用户删过的不认领**（墓碑，大小写无关 —— Windows 上 `Fabric` 与 `fabric`
+ *     是同一个目录）；
  *   · 多个时取**文件夹顺序的第一个**（与版本列表的显示顺序一致，用户看得见是哪一条）。
  */
 export function pickAutoAdopt(
   folderVersions: readonly FolderVersion[] | null,
   instances: readonly Instance[],
+  deletedVersions: readonly string[] = [],
 ): FolderVersion | null {
   if (instances.length > 0) return null;
-  const candidates = (folderVersions ?? []).filter((v) => v.hasJson);
+  const buried = new Set(deletedVersions.map((s) => s.toLowerCase()));
+  const candidates = (folderVersions ?? []).filter(
+    (v) => v.hasJson && !buried.has(v.dir.toLowerCase()),
+  );
   return candidates[0] ?? null;
 }
 

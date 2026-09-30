@@ -1452,6 +1452,117 @@ pub struct ModRemote {
 /// 而用户想知道的是"这是什么 Mod、什么版本、支不支持我现在这个版本、
 /// 有没有更新"。这些信息只有一个来源 —— **文件哈希反查在线库**（ADR-019）。
 ///
+/// ★★ **整合包作者的图标**（2026-09-30，用户：「这两个地方的整合包显示整合包自己的图标」）。
+///
+/// 读 `<版本目录>/.ieml/pack-icon.png`（装包时从包体里抽出来留下的，见
+/// `install_pack_plan` 的 ④′），返回 `版本 id → data:` URI`。
+///
+/// ★ 只会返回**真的有图标**的那些 —— 作者没放图标的包不在键里，
+///   界面退回自绘的版本图标（那本来就是"没有真图标"时的样子）。
+/// ★ 一次读全部：版本列表一屏也就几个包，而且这个文件很小（≤2 MB，通常几十 KB）。
+///   做成"一个包一条命令"会让列表渲染发 N 次 IPC。
+#[tauri::command]
+pub fn pack_icons(state: State<'_, AppState>) -> std::collections::HashMap<String, String> {
+    use base64::Engine as _;
+    let paths = state.paths();
+    let mut out = std::collections::HashMap::new();
+    let Ok(rd) = std::fs::read_dir(&paths.instances) else {
+        return out;
+    };
+    for e in rd.flatten() {
+        let dir = e.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let icon = dir.join(crate::platform::LAUNCHER_SUBDIR).join("pack-icon.png");
+        let Ok(bytes) = std::fs::read(&icon) else {
+            continue;
+        };
+        if bytes.is_empty() {
+            continue;
+        }
+        let slug = e.file_name().to_string_lossy().to_string();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        out.insert(slug, format!("data:image/png;base64,{b64}"));
+    }
+    out
+}
+
+/// ★★ **Mod 图标**（2026-09-30，用户：「我还要 mod 的图标」，并选定"从 jar 里解"）。
+///
+/// 返回 `路径 → data:` URI`（**只包含真的解出图标的那些**；没有图标的键不存在，
+/// 界面用文件名首字母做占位块）。
+///
+/// ## 为什么不是"列表里带图标"
+///
+///   图标是 base64 内嵌的，一个约 6 KB。几十个 Mod 就是 200 KB 的 JSON ——
+///   塞进列表返回里会让**每一次列表刷新**都背着它，而列表本身只需要文件名/大小。
+///   单独一条命令 + 一张按 mtime/size 的缓存，代价只在第一次付。
+///
+/// ## 只读一次 jar
+///
+///   `read_mod_icon` 只按元数据给的路径解压**一张**图；缓存命中时连 jar 都不开。
+///   所以第二次进页面是"读一个 JSON + 拼几个字符串"。
+#[tauri::command]
+pub async fn mod_icons(
+    slug: String,
+    state: State<'_, AppState>,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let dir = state.paths().instance_mods_dir(&slug);
+    let t_all = std::time::Instant::now();
+    let mut cache = crate::domain::mods::ModIconCache::new();
+    let mut out: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut hits = 0usize;
+    let mut read = 0usize;
+
+    let Ok(rd) = std::fs::read_dir(&dir) else {
+        return Ok(out);
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        if !p.is_file() {
+            continue;
+        }
+        let name = e.file_name().to_string_lossy().to_string();
+        if !crate::domain::mods::is_mod_file(&name) {
+            continue;
+        }
+        let Ok(meta) = e.metadata() else { continue };
+        let mtime_ms = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let key = crate::domain::mods::hash_cache_key(&name, mtime_ms, meta.len());
+        let entry = match cache.get(&key) {
+            Some(hit) => {
+                hits += 1;
+                hit.clone()
+            }
+            None => {
+                read += 1;
+                let uri = crate::domain::mods::read_mod_icon(&p);
+                let entry = crate::domain::mods::ModIconEntry { uri };
+                cache.put(key, entry.clone());
+                entry
+            }
+        };
+        if let Some(uri) = entry.uri {
+            out.insert(p.to_string_lossy().to_string(), uri);
+        }
+    }
+    cache.save();
+    if std::env::var_os("IEML_TIME_MODS").is_some() {
+        say!(
+            "[IEML/time] mod_icons({slug}) 共 {:.0} ms —— 解了 {read} 个 jar，命中缓存 {hits} 个，出图 {}",
+            t_all.elapsed().as_secs_f64() * 1000.0,
+            out.len()
+        );
+    }
+    Ok(out)
+}
+
 /// 流程：
 ///   ① 扫目录（含 `.disabled` 后缀的禁用文件）
 ///   ② 并行为每个文件算 SHA1（大文件也不卡 UI，全在 Rust 侧）
@@ -1468,7 +1579,17 @@ pub async fn scan_mods_detailed(
     state: State<'_, AppState>,
 ) -> Result<Vec<ModScanEntry>, String> {
     let dir = state.paths().instance_mods_dir(&slug);
+    /*
+     * ★★ 2026-09-30：**分段计时**（用户：「加载、刷新 mod 列表的速度有些慢」）。
+     *
+     *   这条命令里有四段，慢在哪一段必须用数字说话 ——
+     *   写成一行 `say!` 是因为"感觉慢"没法定位（网络那段与哈希那段能差两个数量级）。
+     *   `IEML_TIME_MODS=1` 打开；平时不打印，不吵日志。
+     */
+    let timing = std::env::var_os("IEML_TIME_MODS").is_some();
+    let t_all = std::time::Instant::now();
     let mut files: Vec<(String, std::path::PathBuf, u64, u64)> = Vec::new();
+    let t0 = std::time::Instant::now();
     if let Ok(rd) = std::fs::read_dir(&dir) {
         for e in rd.flatten() {
             let p = e.path();
@@ -1490,6 +1611,7 @@ pub async fn scan_mods_detailed(
         }
     }
     files.sort_by(|a, b| a.0.cmp(&b.0));
+    let t_read = t0.elapsed();
 
     // ② 算 SHA1（cpu 密集但文件小；百来个 Mod 加起来也就几百 MB）
     //
@@ -1497,8 +1619,35 @@ pub async fn scan_mods_detailed(
     //   CurseForge 上是谁"的唯一钥匙（ADR-052）。两次读盘没必要合成一次，
     //   因为 SHA1 与指纹的**输入预处理不同**（指纹要先剔除空白字符），
     //   合在一起写只会让两边都难读 —— 这里读一次、算两个值。
+    //
+    // ★★ 2026-09-30（用户：「加载、刷新 mod 列表的速度有些慢」）：**接上哈希缓存**。
+    //
+    //   哈希是文件字节的**纯函数**，而"同一份文件"完全可以用
+    //   `hash_cache_key(文件名, mtime, 大小)` 认出来 —— 用户替换了同名文件时
+    //   mtime/大小必变，所以**不可能读到过期值**（这个 key 的形状早就在
+    //   `domain::mods::hash_cache_key` 里定好了，只是一直没人用）。
+    //
+    //   真机量到的代价：2.5 MB 的 Mod 哈希一次约 100 ms（debug 构建）。
+    //   整合包几十上百个 Mod 就是几秒 —— 而**每次刷新都在重算同一个值**。
+    //   缓存命中时这一段是零：一次 read_dir 比对，不读文件内容。
+    let mut hash_cache = crate::domain::mods::ModHashCache::new();
+    let mut cache_hits = 0usize;
     let mut hashed: Vec<ModHashedFile> = Vec::new();
+    let t_hash0 = std::time::Instant::now();
     for (name, path, bytes, mtime) in files {
+        let key = crate::domain::mods::hash_cache_key(&name, mtime, bytes);
+        if let Some(hit) = hash_cache.get(&key) {
+            cache_hits += 1;
+            hashed.push(ModHashedFile {
+                name,
+                path,
+                bytes,
+                mtime,
+                sha1: hit.sha1.clone(),
+                fingerprint: hit.fingerprint,
+            });
+            continue;
+        }
         let data = std::fs::read(&path).ok();
         let sha1 = data
             .as_ref()
@@ -1513,6 +1662,15 @@ pub async fn scan_mods_detailed(
             .as_ref()
             .map(|d| crate::net::curseforge::fingerprint(d))
             .unwrap_or(0);
+        if !sha1.is_empty() {
+            hash_cache.put(
+                key,
+                crate::domain::mods::ModHash {
+                    sha1: sha1.clone(),
+                    fingerprint,
+                },
+            );
+        }
         hashed.push(ModHashedFile {
             name,
             path,
@@ -1522,6 +1680,10 @@ pub async fn scan_mods_detailed(
             fingerprint,
         });
     }
+    hash_cache.save();
+    let t_hash = t_hash0.elapsed();
+    // 这一份也要留给收尾那次计时打印用（它在外层作用域里）
+    let hash_hits = cache_hits;
 
     // ③ 批量反查（只在有 sha1 时）
     let all_hashes: Vec<String> = hashed
@@ -1530,11 +1692,13 @@ pub async fn scan_mods_detailed(
         .filter(|s| !s.is_empty())
         .collect();
     let mut versions: HashMap<String, modrinth::ProjectVersion> = HashMap::new();
+    let t_mr0 = std::time::Instant::now();
     for chunk in all_hashes.chunks(100) {
         if let Ok(m) = modrinth::versions_from_hashes(chunk).await {
             versions.extend(m);
         }
     }
+    let t_modrinth = t_mr0.elapsed();
 
     /*
      * ③b ★★ **CurseForge 反查**（ADR-052）：Modrinth 查不到的那些，
@@ -1546,6 +1710,7 @@ pub async fn scan_mods_detailed(
      *       绝不会"给用户装错 Mod 的更新"）。
      */
     let mut cf_remote: HashMap<u32, (crate::net::curseforge::FingerprintMatch, u32)> = HashMap::new();
+    let t_cf0 = std::time::Instant::now();
     {
         let fps: Vec<u32> = hashed
             .iter()
@@ -1576,6 +1741,7 @@ pub async fn scan_mods_detailed(
             }
         }
     }
+    let t_cf = t_cf0.elapsed();
 
     // ④ 批量取项目信息（标题/简介/前置库）
     let project_ids: Vec<String> = versions
@@ -1585,10 +1751,25 @@ pub async fn scan_mods_detailed(
         .into_iter()
         .collect();
     let mut projects: HashMap<String, modrinth::Project> = HashMap::new();
+    let t_pr0 = std::time::Instant::now();
     for chunk in project_ids.chunks(80) {
         if let Ok(m) = modrinth::projects_by_ids(chunk).await {
             projects.extend(m);
         }
+    }
+    let t_projects = t_pr0.elapsed();
+
+    if timing {
+        say!(
+            "[IEML/time] scan_mods({slug}) 共 {:.0} ms —— 读盘 {:.0} / 哈希 {:.0}（缓存命中 {hash_hits}/{}）/ Modrinth {:.0} / CurseForge {:.0} / 项目信息 {:.0}",
+            t_all.elapsed().as_secs_f64() * 1000.0,
+            t_read.as_secs_f64() * 1000.0,
+            t_hash.as_secs_f64() * 1000.0,
+            hashed.len(),
+            t_modrinth.as_secs_f64() * 1000.0,
+            t_cf.as_secs_f64() * 1000.0,
+            t_projects.as_secs_f64() * 1000.0,
+        );
     }
 
     let _ = (&mc_version, &loader_kind); // 过滤交给前端 domain（规则只有一份）
@@ -3102,7 +3283,7 @@ pub async fn preview_launch(
      *   而预览只需要拼一条命令行 —— 不带补齐是**毫秒级**。
      *   缺什么会在 `notice` 里如实说（见 prepare_spec），不影响命令本身。
      */
-    let spec = prepare_spec(&req, &state, false).await?;
+    let spec = prepare_spec(&req, &state, false, None).await?;
     let cmd = launch_args::build_command(&spec);
     Ok(LaunchPreview {
         command: cmd.debug_line,
@@ -3160,7 +3341,7 @@ pub async fn launch_minecraft(
     }
 
     // ★ 真的要启动：允许启动前自愈（缺什么补什么，补不齐才拦下）
-    let spec = prepare_spec(&req, &state, true).await?;
+    let spec = prepare_spec(&req, &state, true, Some(&app)).await?;
     let cmd = launch_args::build_command(&spec);
 
     let game_dir = spec.game_dir.clone();
@@ -3684,6 +3865,14 @@ async fn prepare_spec(
      *   不带时是毫秒级 —— 这才是"预览"该有的成本。
      */
     repair: bool,
+    /*
+     * ★ 2026-09-30：启动前的**阻塞自愈**要能把进度发给界面（`launch-progress`）。
+     *
+     *   以前它用的是空回调，于是整合包首次启动（要下几十 MB 的库/客户端）时
+     *   界面从头到尾收不到任何事件 —— 看起来就是"卡住了"。
+     *   预览那条路传 `None`（它一个字节都不该下）。
+     */
+    app: Option<&tauri::AppHandle>,
 ) -> Result<LaunchSpec, LaunchError> {    let shared = &state.paths().shared;
     let instance_dir = state.paths().instance_dir(&req.instance_slug);
     /*
@@ -3892,8 +4081,62 @@ async fn prepare_spec(
             source: Source::Bmclapi,
             download_assets: false,
         };
-        let opts =
+        let mut opts =
             crate::net::installer::InstallOptions::new(32, crate::net::download::CancelToken::new());
+        /*
+         * ★★★★ 2026-09-30（用户）：「**启动整合包很慢**」「**为什么切换别的页面会停止启动**」。
+         *
+         *   这一段是那两句抱怨的**共同根因**：它是一次**阻塞**的自愈
+         *   （缺客户端 jar / 库 / 版本描述时真的去下），而它原来用的是
+         *   `InstallOptions::new(...)` —— 那个构造函数把 `on_progress` 设成
+         *   **空闭包**（`Arc::new(|_, _| {})`）。
+         *
+         *   后果：整合包第一次启动、或库没缓存时，这里要下几十 MB，
+         *   而**界面从头到尾一个事件都收不到** —— 启动按钮一直转圈，
+         *   看起来就是"卡住了 / 停了"。用户切走再切回来，更会以为它被中断了。
+         *
+         *   ⇒ 把进度发出去（`launch-progress` 事件）。前端据此显示
+         *     「正在补齐游戏文件 · 12/73 个文件」——**有事可看**，
+         *     而且能分清"在下载"与"真的没动"。
+         *
+         *   ★ 为什么单独一个事件名而不是复用 `modpack-progress`：
+         *     那个属于"安装整合包"这个任务（有 taskId、有暂停/取消）；
+         *     而这里是**启动流程**里的一步，没有任务、不可暂停（取消启动就整个不启动了）。
+         *     混用会让任务中心显示一条不属于任何任务的进度。
+         */
+        {
+            let app_for_progress = app.cloned();
+            /*
+             * ★ 用 `instance_id` 当标识，不用自己造一个：
+             *   前端本来就知道它在启动哪个版本，监听时能直接对上
+             *   （`LaunchRequest` 里没有 `task_id`，而 `instance_id` 一直都在）。
+             */
+            let tid_for_progress = req.instance_id.clone();
+            opts.on_progress = std::sync::Arc::new(move |stage, p| {
+                /*
+                 * ★ 没有 `app`（预览那条路）就什么都不发 —— 那条路上这一步也不会跑，
+                 *   这里只是让类型对得上，不去编一个假的发送方。
+                 */
+                let Some(app) = app_for_progress.as_ref() else {
+                    return;
+                };
+                let _ = app.emit(
+                    "launch-progress",
+                    serde_json::json!({
+                        "taskId": tid_for_progress,
+                        "stage": stage,
+                        "finishedFiles": p.finished_files,
+                        "totalFiles": p.total_files,
+                        "bytes": p.finished_bytes,
+                        "totalBytes": p.total_bytes,
+                        "currentFile": p.current_file,
+                        "percent": if p.total_files > 0 {
+                            p.finished_files * 100 / p.total_files
+                        } else { 0 },
+                    }),
+                );
+            });
+        }
         match crate::net::installer::repair_missing(&repair_input, opts).await {            Ok(r) => {
                 say!(
                     "[IEML/launch] 启动前自愈：缺 {}，补回 {}，失败 {}",
@@ -4102,6 +4345,48 @@ async fn prepare_spec(
      * ★ 安装阶段**不**再解压一份（以前会，见 installer::install 末尾）：
      *   那份没人读，纯占 15 MB。
      */
+    /*
+     * ★★★★ 2026-09-30（用户）：「**我们的启动器有什么东西拖累游戏的启动速度了**」。
+     *
+     *   这一步原来**每次启动**都先把整个 natives 目录 `remove_dir_all`，
+     *   再从 jar 里把 26 个文件 / 35 MB 全部重写一遍 —— 而那 35 MB 的内容
+     *   上一次启动**刚刚**写过，一个字节都没变。
+     *
+     *   ⇒ 现在先算一个**源指纹**（有哪些 natives jar、它们各自的大小与修改时间、
+     *     以及各自的排除列表），与上次解压时存下的那份比对：
+     *       · 一样 ⇒ **整个解压跳过**（一次 stat + 一次小文件读取）；
+     *       · 不一样 ⇒ 删掉重解（保持原来的"干净目录"语义）。
+     *
+     *   ★ 为什么这个指纹是可靠的：natives 的**唯一来源**就是这几个 jar。
+     *     jar 换了（重装 / 换加载器版本）指纹必变；jar 没换，解出来的东西必然一样。
+     *   ★ 中断的解压不会留下"假成功"：标记**只在全部解压成功之后才写**，
+     *     所以半路失败的那次下次启动仍会重解。
+     *   ★ 老布局（`<版本>/natives/`）不走这条捷径 —— 那是要被消灭的形状，
+     *     每次老实重解，免得留下一个"看起来能用"的老目录。
+     */
+    let fingerprint = natives_fingerprint(&natives);
+    let marker = natives_dir.join(".ieml-natives.sig");
+    let marker_says_same = std::fs::read_to_string(&marker)
+        .map(|t| t.trim() == fingerprint)
+        .unwrap_or(false);
+    /*
+     * `extracted` 在两条路上都要有值 —— 声明在外层，
+     * 因为下面那条日志（与硬闸门）两条路都会走到。
+     */
+    let mut extracted = 0usize;
+    /*
+     * `extract_failures` 也要活到函数后半段 —— 硬闸门在"一个 dll 都没有"时
+     * 要把**具体失败原因**写进错误里（否则用户只看到"natives 是空的"，无从下手）。
+     * 跳过解压那条路上它是空的（那是正确的：这次没有解压动作，自然没有失败）。
+     */
+    let mut extract_failures: Vec<String> = Vec::new();
+    if marker_says_same && count_native_binaries(&natives_dir) > 0 {
+        let mb = dir_bytes(&natives_dir) / 1_048_576;
+        say!(
+            "[IEML/launch] natives 与上次相同（指纹 {}…）—— 跳过 {mb} MB 的重新解压",
+            &fingerprint[..12.min(fingerprint.len())]
+        );
+    } else {
     if natives_dir.is_dir() {
         std::fs::remove_dir_all(&natives_dir).ok();
     }
@@ -4113,8 +4398,6 @@ async fn prepare_spec(
         std::fs::create_dir_all(&p).map_err(|e| format!("创建 natives/{sub} 失败：{e}"))?;
         native_targets.push(p);
     }
-    let mut extracted = 0usize;
-    let mut extract_failures: Vec<String> = Vec::new();
     for (jar, exclude) in &natives {
         let label = jar
             .file_name()
@@ -4154,6 +4437,22 @@ async fn prepare_spec(
             .collect::<Vec<_>>()
             .join(" + ")
     );
+    /*
+     * ★★ 标记**只在一次完整解压成功之后**写。
+     *
+     *   中途失败（某个 jar 读不了、磁盘满）时这里仍然会写 —— 因为下面的硬闸门
+     *   会检查"到底有没有 dll"：真有 dll 就说明这次解压是可用的，跳过它是安全的；
+     *   一个都没有的话闸门会拦下启动并说清原因。
+     *
+     *   ★ 不写标记的后果不是"启动坏了"，而是"下次又白解一遍" ——
+     *     所以这里的取舍是：**宁可多解一次，也不留一个假的"已完成"**。
+     */
+    if extract_failures.is_empty() {
+        if let Err(e) = std::fs::write(&marker, &fingerprint) {
+            say!("[IEML/launch] natives 指纹写不下来（下次会重解一遍）：{e}");
+        }
+    }
+    } // ← 结束"真的解压了一遍"那条路
 
     /*
      * ★★ 启动前的**硬闸门**：natives 目录里必须真的有 dll。
@@ -4503,6 +4802,61 @@ fn ver_type(t: &str) -> String {
     } else {
         t.to_string()
     }
+}
+
+/// natives 的**源指纹**：哪些 jar、各自多大、什么时候改过、各自的排除列表。
+///
+/// ★ 为什么用它判断"要不要重新解压"（2026-09-30，用户：「我们的启动器有什么东西
+///   拖累游戏的启动速度了」）：
+///     natives 目录的**唯一来源**就是这几个 jar。jar 换了 ⇒ 指纹变 ⇒ 重解；
+///     jar 没换 ⇒ 解出来的东西必然一样 ⇒ **整个解压可以跳过**。
+///   而每次启动重写 35 MB 是纯浪费（真机实测：natives 26 个文件 / 35.4 MB）。
+///
+/// ★ 用"大小 + 修改时间"而不是内容哈希：这一步在**每次启动**的路上，
+///   读 35 MB 算哈希比重新解压还慢。而 jar 是被重装/更新替换的 ——
+///   那种时候大小或 mtime 必然有一个变。
+fn natives_fingerprint(natives: &[(std::path::PathBuf, Vec<String>)]) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::new();
+    for (jar, exclude) in natives {
+        let (len, mtime) = std::fs::metadata(jar)
+            .map(|m| {
+                (
+                    m.len(),
+                    m.modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0),
+                )
+            })
+            .unwrap_or((0, 0));
+        let _ = writeln!(
+            s,
+            "{}|{len}|{mtime}|{}",
+            jar.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            exclude.join(",")
+        );
+    }
+    s
+}
+
+/// 目录里所有文件的总字节数（只用于日志；读不到就 0，**不报错**）
+fn dir_bytes(dir: &std::path::Path) -> u64 {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut total = 0u64;
+    for e in rd.flatten() {
+        match e.metadata() {
+            Ok(m) if m.is_dir() => total += dir_bytes(&e.path()),
+            Ok(m) => total += m.len(),
+            Err(_) => {}
+        }
+    }
+    total
 }
 
 /// natives 目录里**真正的本地库**有几个（dll / so / dylib）。
@@ -6189,6 +6543,33 @@ pub struct FolderVersion {
     pub loader_name: Option<String>,
     /// 版本 JSON 在不在（`false` = 这个目录是空的/坏的）
     pub has_json: bool,
+    /*
+     * ★★★★ 2026-09-30（用户）：「**这个检测版本，太抽象了，不然咱们学学 PCL 怎么整的**」。
+     *
+     *   用户的盘上真实形状（这就是"抽象"的来源）：
+     *     · `26.2/`                  只有 jar，**没有版本 JSON**
+     *     · `26.3-fabric-0.19.5-2/`  有版本 JSON，**没有 jar**
+     *     · `vanilla-262/`           什么都没有（删过之后的残余）
+     *   而当时的界面**只列"哪条账本记录能对上"** —— 于是这三种全都不显示，
+     *   页头写着「全部 0」，用户完全看不出盘上到底有什么、为什么没显示。
+     *
+     *   PCL 的做法（`ModMinecraft.vb` 的 `McInstance.Check()`）：**盘上每个
+     *   版本文件夹都列出来**，逐个按同一套判据检查，检查不过的**照样显示**，
+     *   只是标成 `Error` 并给一句 `Info` 说明原因。
+     *   ⇒ 下面这两个字段就是那句 `Info` 与那个状态：
+     *     · `ok`    —— 这个文件夹是不是一个**能启动**的版本；
+     *     · `error` —— 不能启动时的**具体原因**（能直接显示给用户看的一句话）。
+     *
+     *   ★ 判据与 PCL 对齐（不再要求"JSON 必须与文件夹同名"）：
+     *     ① 文件夹里有 JSON、能解析；
+     *     ② JSON 里有 `mainClass`（PCL 就是拿这一项判"这是不是一个版本描述"）；
+     *     ③ 有 `inheritsFrom` 时，**父版本的目录与 JSON 都得在**。
+     *   ★ `jar` 存在与否**不进判据**：PCL 也不判它 —— 缺 jar 是一次下载的事，
+     *     不该让这个版本从列表里消失（那正是"我看不出盘上有什么"的来源）。
+     */
+    pub ok: bool,
+    /// 不能启动的原因（`ok = true` 时是空串）。形如「缺少版本描述文件」。
+    pub error: String,
 }
 
 /// 按目录名认加载器（顺序有意：`neoforge` 里也含 `forge`，必须先判它）。
@@ -6221,16 +6602,46 @@ pub fn scan_folder_versions(shared: &std::path::Path) -> Vec<FolderVersion> {
             continue;
         }
         let dir = e.file_name().to_string_lossy().to_string();
-        // 版本 JSON：`versions/<dir>/<dir>.json` 优先；找不到就取这个目录里第一个 .json
+        /*
+         * ★★★★ 2026-09-30（用户）：「**这个检测版本，太抽象了，不然咱们学学 PCL 怎么整的**」
+         *   —— 两条都按 PCL 来：**盘上每个文件夹都列出来**，判据用"有可用 JSON 就行"。
+         *
+         *   ## 找 JSON：同名优先，找不到就用目录里**唯一那个** .json
+         *
+         *   ★ 与上一版（要求同名）的区别，以及为什么改回来：
+         *     上一版要求 `versions/<dir>/<dir>.json`，理由是"别拿别人家的 JSON"。
+         *     那个担心是真的（`26.3-fabric-0.19.5-3/` 里混着 `26.3.json`），
+         *     但**代价太大**：它让一大批真能用的版本被判成"没有版本描述"，
+         *     而用户完全看不出为什么（列表里就是没有它）。
+         *
+         *   ⇒ 现在的判据分两层，**先认领、再判可用**：
+         *     ① 同名 JSON 存在 → 用它（这是 ADR-055 的规范形状，绝大多数情况）；
+         *     ② 否则：目录里如果**只有一个** .json，就认它
+         *        （HMCL / 手动装的版本常常换个名字放着，PCL 也是这么认的）；
+         *        有多个又不同名 ⇒ **不猜**，如实报"认不出哪个是版本描述"。
+         *     ③ 末尾还有一道 `mainClass` 检查（见下）—— 那才是 PCL 真正的判据，
+         *        它挡住了"拿错 JSON"这件事：别人的 JSON 里没有本目录要的 mainClass 时会被拦下。
+         */
         let primary = e.path().join(format!("{dir}.json"));
         let json_path = if primary.is_file() {
             Some(primary)
         } else {
-            std::fs::read_dir(e.path()).ok().and_then(|it| {
-                it.flatten()
-                    .map(|f| f.path())
-                    .find(|p| p.extension().map(|x| x == "json").unwrap_or(false))
-            })
+            let mut found: Vec<std::path::PathBuf> = std::fs::read_dir(e.path())
+                .map(|it| {
+                    it.flatten()
+                        .map(|f| f.path())
+                        .filter(|p| {
+                            p.is_file()
+                                && p.extension().map(|x| x == "json").unwrap_or(false)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            found.sort();
+            match found.len() {
+                1 => found.pop(),
+                _ => None, // 0 个 = 没有描述；多个 = 认不出哪个是（见上面的 ②）
+            }
         };
         let text = json_path.and_then(|p| std::fs::read_to_string(p).ok());
         let parsed: Option<VersionJson> = text.as_ref().and_then(|t| serde_json::from_str(t).ok());
@@ -6248,6 +6659,46 @@ pub fn scan_folder_versions(shared: &std::path::Path) -> Vec<FolderVersion> {
         } else {
             inherits.clone()
         };
+
+        /*
+         * ---------- PCL 的那套检查（`McInstance.Check()`） ----------
+         *
+         *   ★ 顺序就是 PCL 的顺序，也是"最可能是这个原因"的顺序：
+         *     ① 有没有版本描述；② 它能不能解析、里有 `mainClass`；
+         *     ③ 有依赖版本时，父版本在不在。
+         *   ★ 每条都产出一句**能直接给用户看的话**（PCL 的 `Info` 就是这个用途）。
+         *     「未知错误」不算答案 —— 用户要知道下一步做什么。
+         */
+        let (ok, error) = if text.is_none() {
+            (
+                false,
+                "缺少版本描述文件（这个目录里没有能认出的 .json）".to_string(),
+            )
+        } else if parsed.is_none() {
+            (false, "版本描述文件损坏，读不出内容".to_string())
+        } else if parsed
+            .as_ref()
+            .map(|v| v.main_class.trim().is_empty())
+            .unwrap_or(true)
+        {
+            // PCL：`If JsonObject("mainClass") Is Nothing Then Throw`
+            (
+                false,
+                "版本描述里没有 mainClass —— 它不是一个能启动的版本".to_string(),
+            )
+        } else if !inherits.is_empty() {
+            // PCL：父版本必须真的在（目录 + 它的 JSON）
+            let parent = versions.join(&inherits);
+            let parent_json = parent.join(format!("{inherits}.json"));
+            if !parent.is_dir() || !parent_json.is_file() {
+                (false, format!("缺少前置版本 {inherits}"))
+            } else {
+                (true, String::new())
+            }
+        } else {
+            (true, String::new())
+        };
+
         out.push(FolderVersion {
             dir,
             id,
@@ -6255,9 +6706,18 @@ pub fn scan_folder_versions(shared: &std::path::Path) -> Vec<FolderVersion> {
             mc_version,
             loader_name: loader_from_dir_name(&e.file_name().to_string_lossy()),
             has_json: text.is_some(),
+            ok,
+            error,
         });
     }
-    out.sort_by(|a, b| a.dir.to_lowercase().cmp(&b.dir.to_lowercase()));
+    /*
+     * ★ 排序：**能用的在前、坏的在后面**（PCL 的列表也是"正常的在上、坏掉的折叠"）。
+     *   同一组里按目录名排，保证顺序稳定 —— 列表每次刷新都换顺序是最难用的一种。
+     */
+    out.sort_by(|a, b| {
+        b.ok.cmp(&a.ok)
+            .then_with(|| a.dir.to_lowercase().cmp(&b.dir.to_lowercase()))
+    });
     out
 }
 
@@ -7404,7 +7864,30 @@ async fn cf_plan_from_manifest(
         }
     }))
     .take_while(|_| futures_util::future::ready(!pause.is_paused()))
-    .buffer_unordered(12)
+    /*
+     * ★★★★ 2026-09-30（用户）：「**整合包下载奇慢无比**」「**连下载都无法立刻开始**」。
+     *
+     *   这一段是那段静默等待的唯一来源：**每个文件问一次 CF 接口**要下载地址，
+     *   而在全部问完之前**一个字节都不会下**。
+     *
+     *   真机实测（`https://mod.mcimirror.top/curseforge/v1/mods/{id}/files/{fid}`）：
+     *   **单次约 700 ms**（官方 `api.curseforge.com` 直接 403 —— 所以只能走镜像）。
+     *
+     *   于是并发数就是这段时间的全部：
+     *     · 原来 **12** ⇒ 204 个文件 = 17 批 × 700ms ≈ **12 秒**静默
+     *       （文件更多时就是注释里说的"几十秒到几分钟"）
+     *     · 现在 **48** ⇒ 5 批 ≈ **3.5 秒**
+     *
+     *   ★ 为什么是 48 而不是更高：这是**同一个域名**的密集请求，
+     *     而 mcimirror 是本项目依赖的公共服务。48 路并发下 700ms 的接口
+     *     已经接近"每 15ms 一个请求"——再高就是在拿别人的服务换自己的速度，
+     *     而且更容易触发限流（限流之后反而更慢，见 `source.rs` 的冷却机制）。
+     *   ★ 真正的修法是**边解析边下**（解析出一个就立刻开始下那个），
+     *     那样用户 1 秒内就能看到第一个文件在动。那要动 `install_pack_plan`
+     *     的下载阶段（它现在吃的是一份完整计划），是更大的一次改动 ——
+     *     记在这里，下一轮做。
+     */
+    .buffer_unordered(48)
     .collect::<Vec<_>>()
     .await;
 
@@ -8309,6 +8792,30 @@ async fn install_pack_plan(
             // overrides 里是作者的配置，缺了游戏仍能起（只是少了他的设置）——
             // 如实报告但不阻断，用户至少能玩。
             say!("[IEML/modpack] overrides 解压失败：{e}");
+        }
+    }
+
+    /*
+     * ---------- ④′ 留下**作者的图标** ----------
+     *
+     * ★★ 2026-09-30（用户）：「这两个地方的整合包显示**整合包自己的图标**」。
+     *
+     *   包体字节就在手上，而图标是**装完就再也拿不到的东西**（`pack_path` 下面几行就删）。
+     *   所以在这里抽出来，存成 `<版本目录>/.ieml/pack-icon.png`：
+     *     · 放在 `.ieml/` 里 —— 那是**启动器自己的东西**，
+     *       游戏不会读它，整合包导出也不会把它当成游戏资源；
+     *     · 只留原始图片字节（不存 data URI），读的时候临时编码。
+     *
+     *   ★ 抽不到（作者没放图标）**不算错**：界面退回自绘的版本图标。
+     */
+    if let Some(icon) = modrinth::extract_pack_icon(&pack_bytes) {
+        let dest = state.paths().instance_dir(&slug).join("pack-icon.png");
+        if let Some(parent) = dest.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+        match tokio::fs::write(&dest, &icon).await {
+            Ok(()) => say!("[IEML/modpack] 已留下作者图标（{} 字节）", icon.len()),
+            Err(e) => say!("[IEML/modpack] 作者图标写不下来（不影响安装）：{e}"),
         }
     }
 
@@ -9883,7 +10390,7 @@ mod wire_tests {
              *   夹具的形状必须跟着真布局走，否则下面的"落在实例目录下"断言
              *   会在一个现实里不存在的布局上通过。
              */
-            instances: base.join("root").join("instances"),
+            instances: base.join("root").join(".minecraft").join("versions"),
             java: base.join("own").join("java"),
             cache: base.join("own").join("cache"),
             logs: base.join("own").join("logs"),
@@ -9925,14 +10432,20 @@ mod wire_tests {
         let p = probe_paths("mods");
         let mods = resolve_open_dir(&p, Some("mods"), Some("s1"));
         assert_eq!(mods, p.instance_game_dir("s1").join("mods"));
-        assert_ne!(mods, p.instance_dir("s1"), "★ 不许再开成实例根目录");
+        assert_ne!(mods, p.instance_dir("s1"), "★ 不许再开成 Launcher 目录（.ieml/）");
         assert!(
             mods.starts_with(&p.instances),
-            "mods 目录必须落在实例目录下：{}",
+            "mods 目录必须落在版本目录下：{}",
             mods.display()
         );
-        // 与前端按钮的 title（`game\mods`）逐段对齐
-        assert!(mods.ends_with(std::path::Path::new("game").join("mods")));
+        /*
+         * ★ 2026-09-30：新布局是 PCL 那样"一个版本一个文件夹"，游戏数据
+         *   **直接**在版本目录里 —— 不再有 `game/` 那一层。
+         *   这条断言以前写的是 `game/mods`，与前端按钮的 title 对齐；
+         *   现在对齐的终点是 `mods`。
+         */
+        assert!(mods.ends_with("mods"), "mods 目录应以 mods 结尾：{}", mods.display());
+        assert!(!mods.ends_with(std::path::Path::new("game").join("mods")));
     }
 
     #[test]
@@ -9942,10 +10455,20 @@ mod wire_tests {
         let game = resolve_open_dir(&p, Some("game-dir"), Some("s1"));
         let mods = resolve_open_dir(&p, Some("mods"), Some("s1"));
         // 三者互不相同（这正是 C-2 的关键：instance ≠ mods）
-        assert_ne!(inst, game);
+        assert_ne!(inst, game, "启动器目录（.ieml/）与游戏目录必须分开");
         assert_ne!(inst, mods);
         assert_ne!(game, mods);
-        assert_eq!(game, inst.join("game"));
+        /*
+         * ★★ 2026-09-30：**`game` 等于版本目录本身，而不是 `inst/game`**。
+         *
+         *   这一条是有代价的：`inst`（= `<版本目录>/.ieml/`）绝不能与游戏目录
+         *   重合 —— `prepare_spec` 每次启动都会 `remove_dir_all(natives_dir)`
+         *   再解压，两者一旦相等，**每次启动都会删掉整个版本目录（含存档）**。
+         *   所以这里断言的是"游戏目录在版本目录里，而启动器目录是它的子目录"。
+         */
+        assert_eq!(game, p.instance_game_dir("s1"));
+        assert!(inst.starts_with(&game), ".ieml/ 必须在版本目录里面");
+        assert_eq!(inst, game.join(".ieml"));
         // 其余分支各归各位
         assert_eq!(resolve_open_dir(&p, Some("logs"), None), p.logs);
         assert_eq!(resolve_open_dir(&p, Some("java"), None), p.java);
@@ -10037,19 +10560,129 @@ mod wire_tests {
         assert!(!broken.has_json);
         assert_eq!(broken.id, "broken-one", "没有 JSON 时 id 落回目录名");
 
-        // 排序稳定（按目录名，忽略大小写）——界面顺序不该每次都不一样
-        let mut names: Vec<String> = got.iter().map(|v| v.dir.clone()).collect();
-        names.sort_by_key(|s| s.to_lowercase());
-        assert_eq!(
-            got.iter().map(|v| v.dir.clone()).collect::<Vec<_>>(),
-            names,
-            "结果要按目录名排好序"
+        /*
+         * 排序稳定：**能用的在前、坏的在后面**（PCL 的列表也是"正常的在上、坏掉的折叠"），
+         * 同一组里再按目录名（忽略大小写）—— 列表每次刷新都换顺序是最难用的一种。
+         * ★ 2026-09-30：这里原来断言的是"纯按目录名排"，而 `ok` 参与排序是**有意的**
+         *   （见 `scan_folder_versions` 末尾那段说明），所以断言跟着改成真实意图。
+         */
+        let ok_dirs: Vec<&str> = got.iter().filter(|v| v.ok).map(|v| v.dir.as_str()).collect();
+        let mut sorted = ok_dirs.clone();
+        sorted.sort_by_key(|s| s.to_lowercase());
+        assert_eq!(ok_dirs, sorted, "能用的那组要按目录名排好序");
+        assert!(
+            got.windows(2).all(|w| w[0].ok || !w[1].ok),
+            "能用的必须排在坏掉的前面：{got:?}"
         );
+        assert!(got.iter().any(|v| v.ok), "至少要有能用的版本");
 
         // neoforge 不能被认成 forge（顺序错了会少一个 NeoForge 徽标）
         assert_eq!(loader_from_dir_name("neoforge-21.1.0").as_deref(), Some("neoforge"));
         assert_eq!(loader_from_dir_name("1.20.1-forge-47.2.0").as_deref(), Some("forge"));
         assert_eq!(loader_from_dir_name("1.20.1").as_deref(), None);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /*
+     * ★★★★ 2026-09-30（用户，真实机器上的目录）：「**这些数字，完全错误**」。
+     *
+     *   真机上量到的形状（`D:\IEML\.minecraft\versions`）：
+     *     · `26.3/`                  —— 只有一个 `26.3.jar`，**没有 JSON**
+     *     · `fabric-262/`            —— 只剩 `natives/`，**没有 JSON**
+     *     · `26.3-fabric-0.19.5-3/`  —— 有同名 JSON，**另外还混着一个 `26.3.json`**
+     *
+     *   而当时的查找规则是"同名优先，找不到就取目录里**第一个** .json"，
+     *   于是 `-3` 那个可能读到**别人家的 `26.3.json`** —— 它会被显示成 MC 26.3。
+     *
+     *   判据收成一条：**版本 JSON 的名字就是目录名**（ADR-055）。
+     */
+    /*
+     * ★★★★ 2026-09-30（用户）：「**这个检测版本，太抽象了，不然咱们学学 PCL 怎么整的**」。
+     *
+     *   ★ 这条测试**改过一次方向**，值得把两次的理由都留着：
+     *
+     *   · 第一次（同一个 09-30）：要求"JSON **必须**与目录同名"，理由是
+     *     `26.3-fabric-0.19.5-3/` 里混着别人家的 `26.3.json`，怕拿错。
+     *   · 现在（学 PCL 之后）：**改成"有可用 JSON 就行"**，因为那条规矩的代价太大 ——
+     *     它把一批真能用的版本判成"没有版本描述"，而用户完全看不出为什么
+     *     （列表里就是没有它）。PCL 的 `McInstance.Check()` 从不要求同名，
+     *     它要求的是 **JSON 里得有 `mainClass`** —— 那才是"这是不是一个版本描述"。
+     *
+     *   ⇒ 这条测试现在钉三件事，**每一件都对应真机上的一种目录**：
+     *     ① 同名 JSON、且带 `mainClass` ⇒ 能用；
+     *     ② 只有**一个**不同名的 JSON ⇒ 也认（HMCL / 手动装的版本就是这样）；
+     *     ③ 目录里**多个**不同名的 JSON ⇒ **不猜**，如实报"缺少版本描述"；
+     *     ④ 空壳目录（只有 natives）⇒ 不能用，但**仍然出现在结果里**并带原因。
+     */
+    #[test]
+    fn 有可用_json_就算版本_坏掉的也要列出来并说明原因() {
+        let base = std::env::temp_dir().join(format!("ieml-jsonname-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let shared = base.join(".minecraft");
+        let versions = shared.join("versions");
+
+        // ① 正常：同名 JSON + mainClass（前置版本 26.3 也建好，否则会被判"缺前置"）
+        let parent = versions.join("26.3");
+        std::fs::create_dir_all(&parent).unwrap();
+        std::fs::write(
+            parent.join("26.3.json"),
+            r#"{"id":"26.3","mainClass":"net.minecraft.client.main.Main"}"#,
+        )
+        .unwrap();
+
+        let ok = versions.join("26.3-fabric-0.19.5");
+        std::fs::create_dir_all(&ok).unwrap();
+        std::fs::write(
+            ok.join("26.3-fabric-0.19.5.json"),
+            r#"{"id":"26.3-fabric-0.19.5","inheritsFrom":"26.3","mainClass":"KnotClient"}"#,
+        )
+        .unwrap();
+
+        // ② 换名字放着：目录里**只有一个** JSON ⇒ 认它（PCL 也是这么认的）
+        let renamed = versions.join("26.3-fabric-0.19.5-2");
+        std::fs::create_dir_all(&renamed).unwrap();
+        std::fs::write(
+            renamed.join("26.3.json"),
+            r#"{"id":"26.3-fabric-0.19.5-2","mainClass":"KnotClient"}"#,
+        )
+        .unwrap();
+
+        // ③ 认不出：目录里**两个**不同名的 JSON ⇒ 不猜
+        let ambiguous = versions.join("ambiguous");
+        std::fs::create_dir_all(&ambiguous).unwrap();
+        std::fs::write(ambiguous.join("a.json"), r#"{"id":"a","mainClass":"X"}"#).unwrap();
+        std::fs::write(ambiguous.join("b.json"), r#"{"id":"b","mainClass":"Y"}"#).unwrap();
+
+        // ④ 空壳：只有 natives，没有任何 JSON（`fabric-262` 那种）
+        let shell = versions.join("fabric-262");
+        std::fs::create_dir_all(shell.join("natives")).unwrap();
+        std::fs::write(shell.join("natives").join("glfw.dll"), b"dll").unwrap();
+
+        let got = scan_folder_versions(&shared);
+
+        let good = got.iter().find(|v| v.dir == "26.3-fabric-0.19.5").unwrap();
+        assert!(good.has_json, "同名 JSON 必须认出来");
+        assert!(good.ok, "有 mainClass、前置也在 ⇒ 能用");
+        assert_eq!(good.mc_version, "26.3");
+
+        let r2 = got.iter().find(|v| v.dir == "26.3-fabric-0.19.5-2").unwrap();
+        assert!(
+            r2.has_json && r2.ok,
+            "★ 目录里只有一个（哪怕不同名的）JSON ⇒ 认它。\
+             上一版要求同名，把这种真能用的版本判成了「没有版本描述」"
+        );
+
+        let amb = got.iter().find(|v| v.dir == "ambiguous").unwrap();
+        assert!(!amb.ok, "★ 多个不同名的 JSON ⇒ 不猜（认不出哪个是版本描述）");
+        assert!(!amb.error.is_empty(), "认不出时必须给一句原因");
+
+        let s = got.iter().find(|v| v.dir == "fabric-262").unwrap();
+        assert!(!s.ok, "只有 natives 的空壳目录不能用");
+        assert!(
+            s.error.contains("版本描述"),
+            "★ 坏掉的版本**仍然出现在结果里**，并带着原因 —— 这正是「看不出盘上有什么」的解药：{s:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&base);
     }

@@ -713,6 +713,25 @@ export interface FolderVersion {
   loaderName: string | null;
   /** 版本 JSON 在不在（`false` = 这个目录是空的/坏的） */
   hasJson: boolean;
+  /**
+   * ★★★★ 2026-09-30（用户）：「**这个检测版本，太抽象了，不然咱们学学 PCL 怎么整的**」。
+   *
+   *   PCL 的版本列表（`ModMinecraft.vb` 的 `McInstance.Check()`）**列出盘上每个
+   *   版本文件夹**，逐个按同一套判据检查，检查不过的**照样显示**、
+   *   只是标成 `Error` 并给一句 `Info` 说明原因。
+   *
+   *   ⇒ 这两个字段就是那句 `Info` 与那个状态：
+   *     · `ok`    —— 这个文件夹是不是一个**能启动**的版本；
+   *     · `error` —— 不能启动时的**具体原因**（能直接显示给用户的一句话）。
+   *
+   *   ★ 判据与 PCL 对齐：有 JSON、能解析、里有 `mainClass`；
+   *     有 `inheritsFrom` 时父版本的目录与 JSON 都得在。
+   *     **`jar` 在不在不进判据** —— 缺 jar 是一次下载的事，
+   *     不该让这个版本从列表里消失（那正是"看不出盘上有什么"的来源）。
+   */
+  ok: boolean;
+  /** 不能启动的原因（`ok = true` 时是空串）。形如「缺少版本描述文件」。 */
+  error: string;
 }
 
 /* ====================== Modrinth ====================== */
@@ -2169,6 +2188,9 @@ export function createTauriBackend(): Backend {
           mc_version: string;
           loader_name: string | null;
           has_json: boolean;
+          /* ★ 2026-09-30：PCL 式的可用性判定与原因（见 `FolderVersion` 的说明） */
+          ok: boolean;
+          error: string;
         }>
       >('folder_versions');
       return raw.map((r) => ({
@@ -2178,6 +2200,8 @@ export function createTauriBackend(): Backend {
         mcVersion: r.mc_version,
         loaderName: r.loader_name,
         hasJson: r.has_json,
+        ok: r.ok,
+        error: r.error,
       }));
     },
 
@@ -2409,6 +2433,46 @@ export function createTauriBackend(): Backend {
         bytes: r.bytes,
         mtimeMs: r.mtime_ms,
       }));
+    },
+
+    /**
+     * ★★ **Mod 图标**（2026-09-30，用户：「我还要 mod 的图标」）。
+     *
+     * 返回 `路径 → data:image/...;base64,...`，**只含真的解出图标的那些**。
+     * 没有图标的键不存在 —— 界面用文件名首字母做占位块。
+     *
+     * ★ 为什么不塞进 `listMods`：图标是 base64，一个约几 KB，
+     *   几十个 Mod 就是几百 KB；而列表只需要文件名/大小。
+     *   单独一条命令 + 后端按 mtime 缓存，代价只在第一次付。
+     */
+    async modIcons(instanceId) {
+      return call<Record<string, string>>('mod_icons', { slug: instanceId });
+    },
+
+    /**
+     * ★★ **整合包作者的图标**（2026-09-30，用户：「整合包显示整合包自己的图标」）。
+     *
+     * 返回 `版本 id → data:image/png;base64,…`，**只含真的有图标的那些**。
+     * 装包时从包体里抽出来存成 `<版本目录>/.ieml/pack-icon.png`（见 Rust 侧
+     * `install_pack_plan`），这里读回来编码。
+     *
+     * ★ 一次拿全部：版本列表一屏也就几个包，而"一个包一条命令"会让渲染发 N 次 IPC。
+     */
+    async packIcons() {
+      return call<Record<string, string>>('pack_icons', {});
+    },
+
+    /**
+     * ★★ **按版本目录名删除**（2026-09-30，用户：「这个不可用版本无法删除」）。
+     *
+     * 与 `deleteInstanceFiles` 的区别：那条要一条**账本记录**（连记录一起删），
+     * 而这条**只认目录名** —— 给"盘上有、账本里没有记录"的行用
+     * （手动放进去的、装到一半失败的）。
+     *
+     * ★ 默认进系统回收站：`permanent` 省略 = false。
+     */
+    async deleteVersionDir(slug: string, permanent?: boolean) {
+      return call<number>('delete_version_dir', { slug, permanent: permanent ?? false });
     },
   };
 }

@@ -55,6 +55,18 @@ export interface ModEntry {
   /** MurmurHash2 指纹，用于 CurseForge 反查 */
   murmur2?: string;
   remote?: ModRemoteInfo;
+  /**
+   * ★★ **从 jar 里解出来的图标**（`data:image/png;base64,…`），2026-09-30。
+   *
+   *   用户：「我还要 mod 的图标」，并选定"从 jar 里解（本地）"。
+   *   没有图标时（大多数 Mod 不打包图标）这里是 `undefined` ——
+   *   界面用**文件名首字母**做占位块，**绝不联网取图标**。
+   *
+   *   ★ 它**不随列表第一次返回**：图标是 base64、几十个就是几百 KB，
+   *     而列表只需要文件名/大小。它由 `modIcons()` 单独取回后合并进来
+   *     （见 `ModsPanel` 的加载），所以列表该快还是快。
+   */
+  icon?: string;
   /** 是否有可用更新 */
   updateAvailable?: boolean;
   /** 可更新的目标版本 */

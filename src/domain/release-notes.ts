@@ -77,9 +77,43 @@ export function parseReleaseNotes(md: string): ParsedNotes {
       const title = body.slice(3).trim();
       const m = VERSION_RE.exec(title);
       out.version = m?.[1] ?? '';
-      // 标题里 `—` 之后那句话就是头条
-      const rest = title.split(/—|--/).slice(1).join('—').trim();
-      out.headline = rest;
+      /*
+       * ★★★★ 2026-09-30（用户看到界面上的显示）：「**2026-09-30（第一百一十轮：
+       *   下载与启动的等待看得见了）**」——**日期那一行混进了括号里的轮次**。
+       *
+       *   根因：这一行原来写的是
+       *     `title.split(/—|--/).slice(1).join('—').trim()`
+       *   ——也就是"破折号之后的**全部**内容"。而 CHANGELOG 的标题形状是
+       *     `## 0.19.1 — 2026-09-30（第一百一十轮：下载与启动的等待看得见了）`
+       *   日期与轮次都粘在破折号后面，于是它们**一起**被当成了头条。
+       *   ★ 老条目里说明本身还可能带破折号（`… —— 先装能启动的…`），
+       *     所以"按破折号切一刀"这种取法**本来就取不准**。
+       *
+       *   ⇒ 现在按**形状**取值，两条都认：
+       *     · 有括号 ⇒ 取括号里的那句话，并去掉开头的「第N轮：」
+       *       （轮次是**给开发者看的编号**，玩家不需要）；
+       *     · 没有括号 ⇒ 退回"破折号之后"，但**去掉开头的日期**。
+       *
+       *   ★ 内置那份 `release-notes.ts` 的 `headline` 是干净的一句话，不走这里
+       *     （它在 `ChangelogPage` 里直接顶掉解析结果）——所以这次改动只影响
+       *     **实时读回来的那一份**，也就是玩家在"有新版本"时看到的那段。
+       */
+      const paren = /[（(]([^）)]*)[）)]/.exec(title);
+      /*
+       * ★ `?.` 与 `?? ''`：TS 的 `noUncheckedIndexedAccess` 认为 `paren[1]` 可能是
+       *   `undefined`（正则的捕获组在类型上不保证存在）。写成可选链之后
+       *   逻辑不变，但**类型上也成立** —— 不让它靠 `!` 蒙过去。
+       */
+      const inside = paren?.[1]?.trim() ?? '';
+      if (inside) {
+        out.headline = inside
+          .replace(/^第\s*[0-9一二三四五六七八九十百零]+\s*轮\s*[:：]\s*/, '')
+          .trim();
+      } else {
+        const rest = title.split(/—|--/).slice(1).join('—').trim();
+        // 去掉开头可能存在的日期（`2026-09-30 …`）
+        out.headline = rest.replace(/^\d{4}-\d{2}-\d{2}\s*/, '').trim();
+      }
       continue;
     }
     if (!started) continue; // 标题之前的内容不属于任何一版（清单里不会有，但别乱读）

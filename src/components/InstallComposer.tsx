@@ -22,6 +22,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Chip, CustomSelect, Note, SearchBox, Segmented, Skeleton, Spinner } from '../ui';
 import { defaultInstanceName } from '../state/instance-name';
+import { versionDirName } from '../domain/naming.ts';
 import { useApp } from '../state/AppContext';
 import { IconAlert, IconCheck, IconChevronDown, IconChevronRight, IconInfo, IconPlus, IconRefresh } from '../ui/Icons';
 import {
@@ -687,10 +688,27 @@ export function InstallComposer({
    * ★ 只影响**新建**的版本。已有的不改名 —— 改名会让存档/攻略/群里的说法对不上，
    *   那是用户的东西，不该被一次升级改掉。
    */
+  /**
+   * ★★ **目录名与显示名的规范名**（ADR-055 决定八）—— 规则在
+   *   `domain/naming.ts`（Rust `domain::naming` 的镜像）。
+   *
+   *   这一处原来自己拼 `${mcVersion}-${base}-${loaderVer}`，而安装器那边
+   *   （走 Fabric profile 自带的 `id`）拼的是 `fabric-loader-0.19.5-26.3`，
+   *   更早的数据里还有 `vanilla-262` —— 三种名字互不认识，账本 slug 拼不出
+   *   磁盘目录（`docs/DECISIONS.md` 54.1：拿 slug 判目录在不在，把所有版本
+   *   都判成了不存在）。现在两边都调同一个函数。
+   *
+   *   ★ 名字本身就是一份可读的清单：扫一眼就知道装的是什么版本、哪个加载器、
+   *     加载器的哪个构建。
+   */
   const versionLabel = useMemo(() => {
-    if (base === null) return mcVersion;
-    const loaderVer = baseVersion || availableBaseVersions[0] || '';
-    return loaderVer ? `${mcVersion}-${base}-${loaderVer}` : `${mcVersion}-${base}`;
+    return (
+      versionDirName({
+        mcVersion,
+        loader: base === null ? null : { kind: base, version: baseVersion || availableBaseVersions[0] || '' },
+        addons: [],
+      }) ?? mcVersion
+    );
   }, [base, mcVersion, baseVersion, availableBaseVersions]);
 
   const suggestedName = useMemo(() => {
@@ -1131,9 +1149,10 @@ export function InstallComposer({
 
             因为两张表读的是两个不同的东西：版本列表读
             `instances.json`，这一页直接扫 `shared/versions/`。
-            删实例只删 `instances/{slug}/`，**共享的游戏文件**
-            （`shared/versions/`、`libraries/`）故意留着 ——
-            别的实例可能还在用。于是这里照旧扫到那个加载器目录。
+            删实例只删**这一个版本目录**（`.minecraft/versions/{slug}/`），
+            它的版本 JSON 也跟着没了；而 `libraries/`、`assets/` 这些
+            **共享的游戏文件**故意留着 —— 别的实例还在用。
+            于是这里照旧扫到那个加载器目录。
 
             两句话都对，但只写"已装"就是在骗人：
             它让人以为那个版本能用，而其实没有任何版本在用它。

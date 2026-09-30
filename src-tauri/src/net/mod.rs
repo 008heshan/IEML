@@ -464,6 +464,121 @@ pub async fn get_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T> {
         .map_err(|e| NetError::Other(format!("解析 {url} 的 JSON 失败：{e}")))
 }
 
+/* ====================== 第三方 API 的 POST（镜像兜底） ====================== */
+
+/// 发一次 POST（body 原样），**不换源** —— [`post_json_third_party`] 的两条路都用它。
+async fn post_text_once(url: &str, body: &str) -> Result<String> {
+    let resp = api_client()
+        .post(url)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body.to_string())
+        .send()
+        .await?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(NetError::Status {
+            status: status.as_u16(),
+            url: url.to_string(),
+        });
+    }
+    Ok(text)
+}
+
+/// ★★ **第三方 API 的 POST，与 GET 共用同一套"官方优先、错峰换 mcimirror"**。
+///
+/// ## 为什么需要它（2026-09-30 用户：「加载、刷新 mod 列表的速度有些慢」）
+///
+///   真机计时把话说死了（`tests/time_mods_scan.rs`，本机、1 个 Mod）：
+///
+///   | 段 | 耗时 | 说明 |
+///   |---|---|---|
+///   | ① 读盘 | **0.1 ms** | 不可能慢 |
+///   | ② SHA1 + 指纹（2.5 MB） | 98 ms | 本地，还好 |
+///   | ③ Modrinth 按哈希查版本 | **20011 ms** | ← 就是它 |
+///   | ⑤ CurseForge 指纹兜底 | 445 ms | 走镜像，正常 |
+///
+///   原因：`modrinth::versions_from_hashes` 用的是 `api_client().post(...)`
+///   —— **直连官方**，绕过了这里这套镜像兜底。而 `api.modrinth.com`
+///   在国内基本连不上（本机实测：8 秒超时；而同样这个 POST 走
+///   `mod.mcimirror.top/modrinth/v2/version_files` **528 ms 还真的命中了**）。
+///   于是每次加载/刷新 Mod 列表都要白等满 `connect_timeout`（20 秒）。
+///
+///   ★ 顺带说明 **GET 那条路是好的**（`get_text_third_party` 早就有兜底）——
+///     所以"资源中心能搜到东西"而"Mod 列表核对要 20 秒"才同时成立。
+///     这也正是"漏掉一处"最难发现的原因：功能看起来是通的，只是慢。
+///
+/// ## 语义与 GET 那条**逐条一致**（不新造一套）
+///
+///   · 官方立刻发；`OFFICIAL_PATIENCE`（2 秒）还没回 ⇒ 镜像同时发，谁先成功用谁；
+///   · 官方**快失败**（连不上 / 429 / 5xx）⇒ 镜像立刻接手，不白等满 patience；
+///   · **确定结论**（404 之类）⇒ 原样上抛，不换源（镜像就是同一个 API 的反代）；
+///   · 两路都失败 ⇒ 错误信息里两条原因都在，且**保留状态码**。
+pub async fn post_json_third_party(url: &str, body: &str) -> Result<String> {
+    /// 与 GET 那条同一个值（见 `get_text_third_party_with_headers` 的说明）
+    const OFFICIAL_PATIENCE: Duration = Duration::from_secs(2);
+
+    let Some(mirror) = crate::net::mirror::mcimirror_url(url) else {
+        // 这个地址没有镜像可换 —— 老老实实单路
+        return post_text_once(url, body).await;
+    };
+
+    let url_owned = url.to_string();
+    let mirror_owned = mirror.clone();
+    let body_owned = body.to_string();
+    let body_backup = body.to_string();
+
+    let mut primary = tokio::spawn(async move { post_text_once(&url_owned, &body_owned).await });
+    let mut backup = tokio::spawn(async move {
+        tokio::time::sleep(OFFICIAL_PATIENCE).await;
+        say!("[IEML/net] {mirror_owned}：官方 {OFFICIAL_PATIENCE:?} 还没回来，镜像同时上（POST）");
+        post_text_once(&mirror_owned, &body_backup).await
+    });
+
+    tokio::select! {
+        joined = &mut primary => match joined {
+            Ok(Ok(t)) => {
+                backup.abort();
+                Ok(t)
+            }
+            // 确定结论（404 / 410 / 422…）→ 不换源
+            Ok(Err(e)) if is_definitely_absent(&e) => {
+                backup.abort();
+                Err(e)
+            }
+            Ok(Err(e1)) => {
+                say!("[IEML/net] POST {url} 失败（{e1}），换 mcimirror：{mirror}");
+                match backup.await {
+                    Ok(Ok(t)) => Ok(t),
+                    Ok(Err(e2)) => Err(NetError::Other(format!(
+                        "{e1}；换 mcimirror 镜像后仍然失败：{e2}"
+                    ))),
+                    Err(_) => Err(e1),
+                }
+            }
+            Err(_) => match backup.await {
+                Ok(r) => r,
+                Err(e) => Err(NetError::Other(format!("第三方 API（POST）：两路都异常结束（{e}）"))),
+            },
+        },
+        joined = &mut backup => match joined {
+            Ok(Ok(t)) => {
+                primary.abort();
+                Ok(t)
+            }
+            // 备路先失败 → 主路可能只是慢，还有机会（与 GET 一致）
+            Ok(Err(e2)) => match primary.await {
+                Ok(r) => r,
+                Err(_) => Err(e2),
+            },
+            Err(_) => match primary.await {
+                Ok(r) => r,
+                Err(e) => Err(NetError::Other(format!("第三方 API（POST）：两路都异常结束（{e}）"))),
+            },
+        },
+    }
+}
+
 /* ====================== 两路竞速（PCL2 的错峰启动） ====================== */
 
 /// ★★ **第一路先跑，第二路等 `stagger` 再上；谁先成功用谁。**
@@ -689,5 +804,37 @@ mod tests {
             race_with_stagger("test", async { Ok(1u8) }, async { Ok(2u8) }, Some(Duration::from_millis(50)))
                 .await;
         assert!(got.is_ok());
+    }
+
+    /* ============ 第三方 API 的 POST 必须有镜像兜底（2026-09-30） ============ */
+
+    /// ★★★★ **这一条守的是"Mod 列表刷新要 20 秒"那个缺陷**。
+    ///
+    ///   用户报「加载、刷新 mod 列表的速度有些慢」。真机计时（`tests/time_mods_scan.rs`）：
+    ///   `POST https://api.modrinth.com/v2/version_files` **20011 ms**（= 连接超时），
+    ///   而同一个 POST 走 `mod.mcimirror.top/modrinth/v2/version_files` **528 ms 且命中**。
+    ///
+    ///   根因不是"网络慢"，而是**这一条 POST 绕过了镜像兜底**
+    ///   （它当时用 `api_client().post(...)` 直连；而同一个 API 的 GET 早就有兜底）。
+    ///
+    ///   ⇒ 这条测试钉住两件事：
+    ///     ① 那个地址**有**镜像变体（`mcimirror_url` 认它）——
+    ///        否则 `post_json_third_party` 会静默退化成"单路直连"，缺陷原样回来；
+    ///     ② 变体的形状与真机实测的那个一致。
+    ///
+    ///   ★ 它抓不住"调用方又忘了用这个函数"——那种只能靠 review 与这条注释。
+    ///     所以 `modrinth::versions_from_hashes` / `projects_by_ids` 的文档注释里
+    ///     都写着"别再用 api_client 直连"。
+    #[test]
+    fn the_modrinth_hash_lookup_endpoint_has_a_mirror_variant() {
+        let official = "https://api.modrinth.com/v2/version_files";
+        let m = crate::net::mirror::mcimirror_url(official)
+            .expect("这个端点必须有镜像变体 —— 没有它，国内刷新 Mod 列表就是 20 秒超时");
+        assert_eq!(m, "https://mod.mcimirror.top/modrinth/v2/version_files");
+
+        // 项目信息那条 GET 同样必须有（它紧跟其后，漏了就是再等 20 秒）
+        let p = crate::net::mirror::mcimirror_url("https://api.modrinth.com/v2/projects")
+            .expect("批量取项目信息也必须有镜像变体");
+        assert_eq!(p, "https://mod.mcimirror.top/modrinth/v2/projects");
     }
 }

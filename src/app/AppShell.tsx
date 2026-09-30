@@ -78,8 +78,18 @@ function isLong(text: string): boolean {
 }
 
 export function App() {
-  const { state, go, dismissToast, closeVersion, setSubPage, open, setLaunchTarget, update, goDownloadFor } =
-    useApp();
+  const {
+    state,
+    go,
+    dismissToast,
+    closeVersion,
+    setSubPage,
+    open,
+    setLaunchTarget,
+    update,
+    goDownloadFor,
+    folder,
+  } = useApp();
   const [stopping, setStopping] = useState(false);
   /** 顶栏的账号弹窗（正版登录入口） */
   const [accountOpen, setAccountOpen] = useState(false);
@@ -715,14 +725,18 @@ export function App() {
                 const badge =
                   item.id === 'versions'
                     ? /*
-                       * ★★ 2026-09-25（用户：「版本列表的计数不是实时更新的」）：
-                       *   角标 = **当前文件夹里有几个版本**（`machine.versionCount`），
-                       *   与版本列表页头、那页筛选里的"全部 N"是同一个数 ——
-                       *   换目录、装完版本之后都会跟着变。
-                       *   ★ 兜底用 `instances.length`：`machine` 要等启动信息回来才在，
-                       *     那一刻之前宁可显示旧口径，也不要显示 0（0 是一句假话）。
+                       * ★★ 2026-09-30（用户：「这些数字，完全错误」「这个数字什么时候修一下」）：
+                       *   角标 = **这个文件夹里有几个能用的版本** —— 与版本列表页头、
+                       *   那页筛选里的「全部 N」**是同一份数**（`app.folder.versionCount`）。
+                       *
+                       *   ★ 原来它走 `state.machine.versionCount`，那份是
+                       *     "盘上带版本 JSON 的目录数"，**不含墓碑过滤** ——
+                       *     于是真机上同屏出现"角标 3 / 页头 1"，两个都自认为对。
+                       *     一个事实只能有一个来源，这条规矩这次落到了代码上。
+                       *   ★ 还没读到（`null`）时兜底用 `instances.length`：
+                       *     宁可显示旧口径，也不要显示 0（0 是一句假话）。
                        */
-                      (state.machine?.versionCount ?? state.instances.length)
+                      (folder.versionCount ?? state.instances.length)
                     : item.id === 'download'
                       ? state.tasks.filter(
                           (t) => t.status === 'running' || t.status === 'pending',

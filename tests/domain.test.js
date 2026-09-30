@@ -1032,6 +1032,32 @@ test('读不到文件夹（null）→ 不认领（读不到 ≠ 没有）', () =
   assert.equal(pickAutoAdopt(null, []), null);
 });
 
+/*
+ * ★★ 2026-09-30（用户：「删除实例时……有时还会**诈尸**，删了的又回来」）：
+ *   墓碑（`prefs.deletedVersions`）命中 → 不认领。
+ *
+ *   为什么必须有这一条：自动认领的判据是"账本是空的 + 文件夹里有版本"，
+ *   而用户"只移除记录、文件留着"之后账本**正好是空的** —— 于是下一轮启动
+ *   他刚删掉的版本又回来了。**"删掉"这件事必须被记下来**，不能只靠
+ *   "账本里现在没有"去推断。
+ */
+test('★ 被用户删过的版本（墓碑）→ 不再自动认领', () => {
+  assert.equal(pickAutoAdopt([fv()], [], ['1.20.1']), null);
+  // 墓碑之外的那些照旧认领
+  const picked = pickAutoAdopt([fv({ dir: 'a' }), fv({ dir: 'b' })], [], ['a']);
+  assert.equal(picked?.dir, 'b', '墓碑只挡住被删的那一个');
+});
+
+test('墓碑比较大小写无关（Windows 上 Fabric 与 fabric 是同一个目录）', () => {
+  assert.equal(pickAutoAdopt([fv({ dir: 'Fabric-1' })], [], ['fabric-1']), null);
+  assert.equal(pickAutoAdopt([fv({ dir: 'fabric-1' })], [], ['FABRIC-1']), null);
+});
+
+test('墓碑为空 / 不传 → 行为与以前一致（不改变老用户的体验）', () => {
+  assert.equal(pickAutoAdopt([fv()], [], [])?.dir, '1.20.1');
+  assert.equal(pickAutoAdopt([fv()], [])?.dir, '1.20.1');
+});
+
 test('从文件夹版本建实例：slug 撞了加 -2、加载器按目录名认、内存自动算', () => {
   const a = instanceFromFolderVersion(fv({ dir: '1.20.1-forge-47.2.0', loaderName: 'forge' }), {
     takenSlugs: [],

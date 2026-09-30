@@ -21,6 +21,8 @@ import {
 } from 'react';
 import type { Instance, InstanceConfig, JavaRuntime } from '../domain';
 import { instanceFromFolderVersion, matchFolderVersions, pickAutoAdopt } from '../domain/folder-versions.ts';
+// ★ 目录名规范只有一份（Rust `domain::naming` 的镜像）—— 见那个模块的说明
+import { sanitizeDirName, uniqueDirName } from '../domain/naming.ts';
 import type { FolderVersion } from '../bridge/tauri';
 import { MC_PROFILES } from '../domain/loader-caps.ts';
 import type { ModEntry, ModFilter, ModStateResult } from '../domain/mods.ts';
@@ -178,7 +180,38 @@ function sanitizePrefs(raw: unknown): Partial<AppState['prefs']> {
   }
   if (typeof r.globalJvmArgs === 'string') out.globalJvmArgs = r.globalJvmArgs;
   if (typeof r.globalGameArgs === 'string') out.globalGameArgs = r.globalGameArgs;
+  /*
+   * ★★ 2026-09-30：**墓碑**（用户删掉过的版本目录名）。
+   *
+   *   读的时候要当心两件事：它是个数组（不是字符串），而且里面的值会被
+   *   直接当**目录名**用 —— 所以只收"看起来像目录名"的短字符串，
+   *   别把历史遗留的垃圾值（`../`、空串、超长串）带进来。
+   */
+  if (Array.isArray(r.deletedVersions)) {
+    const list = r.deletedVersions
+      .filter((v): v is string => typeof v === 'string')
+      .map((v) => v.trim())
+      .filter((v) => v !== '' && v.length <= 96 && !/[\\/]/.test(v))
+      .slice(-200);
+    out.deletedVersions = list;
+  }
   return out;
+}
+
+/**
+ * 把某个版本目录名**记进墓碑**（见 `AppState['prefs'].deletedVersions`）。
+ *
+ *   返回一份**新的**数组（`slice(-200)` = 最多留最近 200 条，
+ *   免得一个用了两年的列表无限长；超出的是最老的记录，
+ *   而"删了又回来"只会发生在刚删完之后）。
+ *
+ * ★ 比较用大小写无关：Windows 上 `Fabric-1` 与 `fabric-1` 是同一个目录，
+ *   只按字节比会让墓碑挡不住大小写不同的那一条。
+ */
+function burySlug(slug: string, current: readonly string[]): string[] {
+  const lower = slug.toLowerCase();
+  const rest = current.filter((s) => s.toLowerCase() !== lower);
+  return [...rest, slug].slice(-200);
 }
 
 interface AppContextValue {  state: AppState;
@@ -296,6 +329,14 @@ interface AppContextValue {  state: AppState;
     versions: FolderVersion[] | null;
     instancesInFolder: Instance[];
     versionsWithoutInstance: FolderVersion[];
+    /**
+     * ★★ **这个文件夹里有几个能用的版本** —— 唯一的那一份数（2026-09-30）。
+     *
+     *   角标、版本列表页头、筛选「全部 N」**全部用它**。
+     *   判据 = 有版本 JSON 且不在墓碑里（见上面那个 `useMemo` 的说明）。
+     *   `null` = 还没读到（界面显示"读取中"，**不显示 0** —— 0 是一句假话）。
+     */
+    versionCount: number | null;
     reload: () => Promise<void>;
   };
 
@@ -316,6 +357,51 @@ interface AppContextValue {  state: AppState;
    *   而且会**各查一次、各下一次**。状态只有一份，所以挂在全局。
    */
   update: LauncherUpdate;
+
+  /**
+   * ★★ **整合包作者的图标**（`版本 id → data:` URI`）。
+   *
+   *   只含**真的有图标的包** —— 键不存在时界面画自绘的版本图标。
+   *   两个消费方共用这一份（启动页大卡片、版本列表行）。
+   */
+  packIcons: Record<string, string>;
+
+  /**
+   * ★★★★ 2026-09-30（用户）：「**切换页面是开始游戏的按钮的正在启动的效果没了**」。
+   *
+   *   `launching` 原来在 `LaunchPage` 里是**局部状态**：一离开那一页，组件卸载、
+   *   `useState` 归零，切回来时按钮就不转圈了（进度也不显示）。
+   *   而启动**还在跑** —— Rust 侧那条 `await` 根本不受页面影响。
+   *   ⇒ 界面装作没在启动，用户只能靠猜（他前面那句"切换页面会停止启动"就是这么来的）。
+   *
+   *   放到全局的理由与上面的 `update` 一样：**这件事不随页面存活**。
+   *   顺带把刚补的"正在补什么文件"的进度一起搬上来，切走再切回来仍能看到。
+   */
+  launch: {
+    /** 正在准备 / 启动中（含启动前那段阻塞的自愈） */
+    starting: boolean;
+    setStarting: (v: boolean) => void;
+    /**
+     * 启动前的准备进度（来自 `launch-progress` 事件）。
+     * `null` = 还没收到任何进度 —— 文件齐全时自愈是毫秒级结束的，本来就没有进度。
+     */
+    progress: {
+      stage: string;
+      finished: number;
+      total: number;
+      percent: number;
+      current: string;
+    } | null;
+    setProgress: (
+      p: {
+        stage: string;
+        finished: number;
+        total: number;
+        percent: number;
+        current: string;
+      } | null,
+    ) => void;
+  };
 
   /**
    * ★★ 视效档位（**液态玻璃的材质**：弱化 / 适中 / 灵动）。
@@ -728,6 +814,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
   /* ====================== 主题 ====================== */
   useEffect(() => {
     applyTheme(state.theme);
+    /*
+     * ★★★★ 2026-09-30（用户）：「**载入加载器时的加载，先全白一下然后再进 logo**」。
+     *
+     *   主题的真身在 `prefs.json`（**异步**读盘），而启动画面必须在
+     *   **第一帧之前**就知道底色 —— 那时候 prefs 还没读回来呢。
+     *
+     *   ⇒ 所以在这里把主题**镜像一份到 localStorage**（渲染进程里同步可读）。
+     *     `index.html` 里那段内联脚本读的就是这个镜像，于是：
+     *       · 用户换主题之后，下一次启动的画面就已经是他的色；
+     *       · 读不到（第一次运行 / 清过缓存）就用默认深色，**绝不会变白**。
+     *
+     *   ★ 镜像只是"快"，**真值仍然是 `prefs.json`** —— 两者不一致时以 prefs 为准，
+     *     而每次启动这一行都会把它重新对齐。所以它不可能长期漂移。
+     */
+    try {
+      localStorage.setItem('ieml.theme', state.theme);
+    } catch {
+      /* 隐私模式 / 磁盘满：写不进去就算了，最多下次启动用默认深色 */
+    }
   }, [state.theme]);
 
   /*
@@ -776,6 +881,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   /* ====================== 实例变更时落盘 ====================== */
   const instancesRef = useRef(state.instances);
   instancesRef.current = state.instances;
+  /*
+   * 偏好的一份**同步镜像** —— 只给"身份必须稳定"的回调读（目前是
+   * `removeInstance` 里的墓碑列表）。理由与 `instancesRef` 一样：
+   * 回调不能因为设置变了一下就换一个新身份。
+   */
+  const prefsRef = useRef(state.prefs);
+  prefsRef.current = state.prefs;
   useEffect(() => {
     if (!state.ready) return;
     /*
@@ -1174,14 +1286,40 @@ export function AppProvider({ children }: { children: ReactNode }) {
    *   ⇒ 用序号只认最后一次请求的结果（与下载那边的"只认最新一次"同一个思路）。
    */
   const folderSeqRef = useRef(0);
+  /*
+   * ★★ 2026-09-30（用户两次截图：「这些数字，完全错误」「这个数字什么时候修一下」）：
+   *
+   *   **角标、页头、列表行必须是同一个数**，而且它要**同时**满足：
+   *     · 只数**能启动的版本**（带版本 JSON 的目录）—— 空壳目录不是版本；
+   *     · 排除**墓碑里的**（用户删过的）—— 删掉的不算在册。
+   *
+   *   原来的两条尺子（真机上量到的）：
+   *     · 角标 = 盘上带 JSON 的目录数（3）
+   *     · 页头 = 过滤后的账本行数（1）
+   *   于是同屏出现 3 与 1，而**两个都对**——错的是"两把尺子"这件事本身。
+   */
+  const versionCount = useMemo(() => {
+    if (folderVers === null) return null;
+    /*
+     * ★★★★ 2026-09-30（用户）：「**这个检测版本，太抽象了**」+ 列表改学 PCL 之后：
+     *
+     *   这个数现在 = **盘上版本文件夹的个数**（就是版本列表列出来的行数）。
+     *
+     *   ★ 以前它只数"有版本 JSON 的目录"，而列表走的是另一套（账本），
+     *     于是同屏出现两个都自认为对的数（角标 3 / 页头 1）。
+     *     现在列表与这个数**同一个来源**，不可能再打架。
+     *   ★ 坏掉的版本**也算在内**：它们**显示在列表里**（PCL 就是这样），
+     *     数字当然也要算 —— "数字与列表对不上"正是前两轮被投诉的那件事。
+     */
+    return folderVers.length;
+  }, [folderVers]);
+
   const reloadFolderVersions = useCallback(async () => {
     const seq = (folderSeqRef.current += 1);
     try {
       const list = await backend.folderVersions();
       if (seq !== folderSeqRef.current) return; // 有更新的请求了 —— 这次的结果作废
       setFolderVers(list);
-      /* 计数跟着这一份走（页头 / 角标 / 筛选同一个数） */
-      dispatch({ type: 'machine/versionCount', count: list.filter((v) => v.hasJson).length });
     } catch {
       if (seq !== folderSeqRef.current) return;
       /* 读不到就不筛（`null`）——读不到 ≠ 没有；界面宁可多显示，也不要凭空藏东西 */
@@ -1246,10 +1384,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!state.ready || !instancesLoadedRef.current) return;
     if (autoAdoptTriedRef.current) return;
-    const fv = pickAutoAdopt(folderVers, state.instances);
+    const fv = pickAutoAdopt(folderVers, state.instances, state.prefs.deletedVersions);
     if (!fv) return;
     autoAdoptTriedRef.current = true;
     const inst = instanceFromFolderVersion(fv, {
+      /*
+       * ★★ 2026-09-30：这里原来写死 `takenSlugs: []` —— 于是自动认领出来的
+       *   slug 永远等于**版本目录名**（`fv.dir`），与盘上那个目录**就是同一个**。
+       *
+       *   在旧布局下这是错的（slug 是另一套命名，撞了会共用目录）；
+       *   在新布局下它恰恰是**对的、也是必须的**：版本目录只有一个，
+       *   实例记录只是给它补上"你起的名字与设置"。所以这里传空集合是
+       *   有意的，注释留在这里免得下一个人"顺手修好它"。
+       */
       takenSlugs: [],
       totalMemoryGb: state.machine?.totalMemoryGb ?? 16,
       availableMemoryGb: state.machine?.availableMemoryGb ?? 8,
@@ -1281,12 +1428,52 @@ export function AppProvider({ children }: { children: ReactNode }) {
         );
       });
     // `createInstance` / `say` 都是稳定的回调；这里只依赖"那一刻的事实"
+    // ★ 墓碑也在依赖里：它变了（用户又删了一个版本）就必须重新判一次
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.ready, state.instances.length, state.machine, folderVers]);
+  }, [state.ready, state.instances.length, state.machine, folderVers, state.prefs.deletedVersions]);
 
   const setLaunchTarget = useCallback((id: string | null) => {
     dispatch({ type: 'instances/last', id });
   }, []);
+
+  /*
+   * ★★ "正在启动"是**全局状态**（2026-09-30，见接口里那段说明）：
+   *   原来它在 `LaunchPage` 里，一离开那页就归零 —— 启动还在跑，界面却装作没在跑。
+   */
+  const [launchStarting, setLaunchStarting] = useState(false);
+
+  /**
+   * ★★ **整合包作者的图标**（2026-09-30，用户：「这两处的整合包显示整合包自己的图标」）。
+   *
+   *   `版本 id → data:` URI`。**只含真的有图标的包** —— 作者没放图标的包不在里面，
+   *   界面退回自绘的版本图标。
+   *
+   *   放在全局的理由：它有**两个消费方**（启动页大卡片、版本列表行），
+   *   而它一次能拿全部、又不随页面变化 —— 每个页面各查一次就是重复 IPC。
+   *   读失败 / 演示模式 = 空表（界面画自绘图标，**不是空白**）。
+   */
+  const [packIcons, setPackIcons] = useState<Record<string, string>>({});
+  useEffect(() => {
+    let alive = true;
+    void backend
+      .packIcons()
+      .then((m) => {
+        if (alive && m) setPackIcons(m);
+      })
+      .catch(() => {
+        /* 拿不到就画自绘图标 —— 不编、也不报错 */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [backend]);
+  const [launchProgress, setLaunchProgress] = useState<{
+    stage: string;
+    finished: number;
+    total: number;
+    percent: number;
+    current: string;
+  } | null>(null);
 
   /**
    * ★★ 2026-09-23（C5）：打开资源的独立安装页。
@@ -1374,18 +1561,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
         bytes = (await backend.deleteInstanceFiles(inst.config.slug, permanent)) ?? 0;
       } catch (e) {
         throw new Error(
-          `${e instanceof Error ? e.message : String(e)}（目录：instances/${inst.config.slug}/）`,
+          `${e instanceof Error ? e.message : String(e)}（版本目录：.minecraft/versions/${inst.config.slug}/）`,
         );
       }
+      /*
+       * ★★ 2026-09-30：**先记墓碑，再删记录**（用户报的「删了的又回来」）。
+       *
+       *   墓碑写进 `prefs.json` 的 `deletedVersions`，`pickAutoAdopt` 会跳过它。
+       *   为什么删了目录还要记：`deleteInstanceFiles` 在目录**本来就不存在**时
+       *   返回 0 并当成功（那是刻意的，见 Rust 侧说明），而"目录不在而版本
+       *   还在"是可能出现的状态（用户自己在资源管理器里删过、或删到一半失败）。
+       *   只删记录的话，下一轮启动的"自动认领"会照着文件夹里的版本把它建回来。
+       *
+       *   ★ 顺序：墓碑必须**先于** `instances/remove` 落盘 —— 反过来的话，
+       *     中间那一瞬间（记录没了、墓碑也还没写）恰好就是自动认领的条件。
+       */
+      dispatch({
+        type: 'prefs/patch',
+        patch: { deletedVersions: burySlug(inst.config.slug, prefsRef.current.deletedVersions) },
+      });
       // ★ 磁盘处理完了才动记录 —— 顺序反过来就是上面那条缺陷
       dispatch({ type: 'instances/remove', id });
       /*
-       * ★ 2026-09-29：删除动过磁盘（`instances/<slug>/`）—— 广播一句"文件夹变了"，
+       * ★ 2026-09-29：删除动过磁盘（`versions/<slug>/`）—— 广播一句"文件夹变了"，
        *   版本列表与启动页立刻重读，不再等用户手动点「重新探测」。
        */
       window.dispatchEvent(new CustomEvent('ieml:folder-changed'));
       return bytes;
     },
+    // ★ 依赖里**故意没有** `state.prefs`：墓碑读的是 `prefsRef`（见它的说明），
+    //   所以这个回调的身份是稳定的 —— 去掉这一条会让它每次改设置都换一个新身份，
+    //   而它被好几个页面的 useCallback 依赖着。
     [backend],
   );
 
@@ -1434,6 +1640,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
    *   而界面写着"配置照搬一份"。
    *   现在真的复制目录（natives 跳过：启动时按当前架构重新解压）。
    *
+   * ★★ 2026-09-30：目录名现在**就是版本目录名**（`.minecraft/versions/<名字>/`），
+   *   所以副本的名字也必须过一遍规范（`sanitizeDirName`）——
+   *   原 slug 里可能有 Windows 不认的字符（用户自建版本时能写出来），
+   *   不过一遍就会建不出目录，而用户看到的只是"复制失败"。
+   *
    * 返回复制的字节数；失败时抛出（调用方要如实告诉用户）。
    */
   const duplicateInstance = useCallback(
@@ -1441,10 +1652,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const src = instancesRef.current.find((i) => i.id === id);
       if (!src) throw new Error('找不到要复制的实例');
       // slug 必须全局唯一，否则两个实例会共用同一个目录
-      const takenSlugs = new Set(instancesRef.current.map((i) => i.config.slug));
-      const baseSlug = `${src.config.slug}-copy`;
-      let slug = baseSlug;
-      for (let n = 2; takenSlugs.has(slug); n++) slug = `${baseSlug}-${n}`;
+      const takenSlugs = instancesRef.current.map((i) => i.config.slug);
+      const baseSlug = `${sanitizeDirName(src.config.slug) ?? 'copy'}-copy`;
+      const slug = uniqueDirName(baseSlug, takenSlugs);
       // 显示名也要唯一
       const takenNames = new Set(instancesRef.current.map((i) => i.config.name));
       let name = `${src.config.name} 副本`;
@@ -1603,10 +1813,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
       versions: folderVers,
       instancesInFolder: folderMatch.instances,
       versionsWithoutInstance: folderMatch.withoutInstance,
+      versionCount,
       reload: reloadFolderVersions,
     },
     prefsSaveFailed,
     update,
+    packIcons,
+    launch: {
+      starting: launchStarting,
+      setStarting: setLaunchStarting,
+      progress: launchProgress,
+      setProgress: setLaunchProgress,
+    },
     vfx: {
       level: vfxLevel,
       want: vfxWant,

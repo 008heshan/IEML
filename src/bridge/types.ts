@@ -165,8 +165,42 @@ export interface Backend {
 
   /* --- 目录 --- */
   openFolder(path: string): Promise<void>;
-  /** 读某个实例的 mods 目录 */
+  /**
+   * 读某个实例的 mods 目录（**只读盘，不联网** —— 见 `ModsPanel` 的说明）。
+   *
+   * ★★ **必须传 `config.slug`（磁盘目录名），不是 `id`**（2026-09-30 真机 bug）。
+   *
+   *   `id`（`inst-mulcf1gv`）只在启动器内部用；磁盘上的目录名是 `slug`
+   *   （`26.3-fabric-0.19.5`）。传错的话后端会去读
+   *   `.minecraft/versions/inst-mulcf1gv/mods` ⇒ 不存在 ⇒ **列表 0 个**，
+   *   而症状与"这个实例真的没有 Mod"**长得一模一样**。
+   *
+   *   ★ 参数名从 `instanceId` 改成 `slug` 就是为了让类型本身说清这件事 ——
+   *     两个都是 `string`，编译器抓不到，只能靠名字 + 注释拦住下一个人。
+   */
   listMods(
-    instanceId: string,
+    slug: string,
   ): Promise<Array<{ fileName: string; path: string; bytes: number; mtimeMs: number }>>;
+  /**
+   * Mod 图标，`路径 → data:` URI`（**只含真的解出图标的那些**）。
+   *
+   * ★ 从 jar 里解（本地、按 mtime 缓存），不联网。
+   *   没有图标的 Mod 用文件名首字母做占位块。
+   * ★ 与 `listMods` 同理：**传 `config.slug`，不是 `id`**。
+   */
+  modIcons(slug: string): Promise<Record<string, string>>;
+  /**
+   * 整合包作者的图标，`版本 id → data:` URI`（**只含真的有图标的那些**）。
+   *
+   * ★ 装包时从包体里抽出来留下的（作者放在包根目录的那张图），不联网。
+   *   作者没放图标的包不在结果里 —— 界面退回自绘的版本图标。
+   */
+  packIcons(): Promise<Record<string, string>>;
+  /**
+   * **按版本目录名删除**（不依赖账本记录）。默认进回收站。
+   *
+   * ★ 与 `deleteInstanceFiles` 的分工：那条连记录一起删；这条只处理目录，
+   *   给"盘上有、账本里没有记录"的那些行用。
+   */
+  deleteVersionDir(slug: string, permanent?: boolean): Promise<number>;
 }

@@ -257,6 +257,18 @@ fn chunk_count() -> u64 {
 /// 单文件最多重试次数（PCL2 是 3 次，这里同样）
 const MAX_FILE_RETRIES: u32 = 3;
 
+/// **单个候选源的试源上限**（还有备选源时用；最后一个源用完整超时）。
+///
+/// ★★ 2026-09-30（PCL 的对照）：PCL 的多个源是**并行**的（一个文件多线程、各有各的源），
+///   所以"某条路死了"从来不会变成"用户干等"。我们串行试源，就必须给每个源
+///   一个**短到能让用户接受的**证明窗口。
+///
+///   取 8 秒的理由：国内到 Modrinth CDN / 镜像的**正常**首字节在几百毫秒内
+///   （实测镜像接口 396~528 ms），8 秒足够覆盖抖动；而两条死路的总代价
+///   从 40 秒降到约 16 秒、三条降到 24 秒上限。
+///   ★ 最后一个源**不受这个限制** —— 它没有备选了，值得等满完整超时。
+const PROBE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(8);
+
 /// 落盘（改名）撞到"文件被占用"时的重试次数。
 ///
 /// 独立于 `MAX_FILE_RETRIES`：那个是"整份重下"的预算，
@@ -491,7 +503,7 @@ pub async fn download_one_with(
         };
         tried_sources = tried_sources.max(ordered.len());
 
-        for (src, url) in ordered.iter() {
+        for (idx, (src, url)) in ordered.iter().enumerate() {
             if cancel.is_cancelled() {
                 return Err(NetError::Cancelled);
             }
@@ -500,9 +512,50 @@ pub async fn download_one_with(
                 continue;
             }
 
+            /*
+             * ★★★★ 2026-09-30（用户）：「**我点完后，我都不知道开没开是下载，
+             *   连接失败，也是等了一会儿后冷不丁的出来**」。
+             *
+             *   根因在这里：候选源是**串行**试的，而"连接失败"要等满
+             *   HTTP 客户端的 20 秒连接超时才轮到下一个。
+             *   真机实测 `cdn.modrinth.com` 与 `mod.mcimirror.top` **两条路都超时**
+             *   ⇒ 一个文件要静默 **40 秒**才报错。
+             *
+             *   PCL 之所以"立即"，是因为它的多个源是**并行**的
+             *   （`TryBeginThread` 里每个线程用一个源，失败的分片换下一个源接着下）。
+             *   我们不做并行写同一份数据（那是纯浪费，还要处理被 kill 的半截文件），
+             *   但可以拿走它真正的收益：**不要串行等满超时**。
+             *
+             *   ⇒ 规则：**还有备选源时，每个源只给它 [`PROBE_DEADLINE`] 去证明自己能行；
+             *     最后一个源才用完整超时**（它是最后的希望，值得等）。
+             *     于是"两条死路"的代价从 40 秒降到 ~8 秒，而且中途界面一直在动
+             *     （每换一个源都会更新 `current_file`）。
+             *
+             *   ★ 为什么用整体超时而不是只限制"连接"：卡住的形态不止一种 ——
+             *     连不上、连上了不回数据（`Reading` 那一档）、回了几个字节就停住。
+             *     PCL 也是按状态区分这三种的；我们用一条总预算就能覆盖它们，
+             *     而且**已经写进 `.part` 的字节不会丢**（下一个源会续传）。
+             */
+            let has_backup = ordered[idx + 1..].iter().any(|(s2, _)| !manager.is_cooling(*s2));
             let started = std::time::Instant::now();
-            let written =
-                match download_to_part(manager, &url, &part, task, cancel, ordered.len()).await {
+            let attempt_result = if has_backup {
+                match tokio::time::timeout(
+                    PROBE_DEADLINE,
+                    download_to_part(manager, url, &part, task, cancel, ordered.len()),
+                )
+                .await
+                {
+                    Ok(r) => r,
+                    Err(_) => Err(NetError::Other(format!(
+                        "连接 {} 超过 {} 秒没有进展，换下一个源",
+                        src.as_str(),
+                        PROBE_DEADLINE.as_secs()
+                    ))),
+                }
+            } else {
+                download_to_part(manager, url, &part, task, cancel, ordered.len()).await
+            };
+            let written = match attempt_result {
                 Ok(n) => n,
                 Err(NetError::Cancelled) => return Err(NetError::Cancelled),
                 Err(e) => {
@@ -2280,6 +2333,44 @@ async fn run_round(
         handles.push(tokio::spawn(async move {
             let _permit = permit;
             let label = task.label.clone();
+
+            /*
+             * ★★★★ 2026-09-30（用户）：「**我点完后，我都不知道开没开是下载，
+             *   连接失败，也是等了一会儿后冷不丁的出来**」。
+             *
+             *   这一段是那个体验缺陷的**唯一成因**：进度事件原来只在
+             *   "一个文件下载完"之后才发（见下面那段）。于是：
+             *     · 点下载 → 后端开始连（`cdn.modrinth.com` 在国内**会卡满
+             *       20 秒连接超时**，实测官方与 mcimirror **两条路都不通**）；
+             *     · 这 20 秒里**一个事件都没发** → 界面完全静默；
+             *     · 超时了才冷不丁弹出一句失败。
+             *
+             *   ⇒ 在**发起网络请求之前**先报一次"正在连这个文件"。
+             *     界面立刻有事可显示（文件名 + "正在连接"），而且失败时
+             *     用户能看到"它试过这些文件" —— 而不是对着一个不动的界面猜。
+             *
+             *   ★ 为什么可以直接发而不必担心刷屏：这里的 `on_progress` 调用
+             *     发生在**拿到并发许可之后**，而并发上限是 64 ——
+             *     最多 64 条"开始"事件，比起"每个文件完成时一发"只多一点点。
+             *   ★ 进度数字**不变**（`finished_files` 还是完成数）：
+             *     这条事件只是把 `current_file` 更新成"正在连的那个"，
+             *     不许把没下完的文件算进进度里（那才是假进度）。
+             */
+            on_progress(DownloadProgress {
+                finished_files: processed_count(&stats) as usize,
+                total_files,
+                finished_bytes: stats.finished_bytes.load(Ordering::Relaxed),
+                total_bytes,
+                bytes_per_second: run_speed(
+                    stats.finished_bytes.load(Ordering::Relaxed),
+                    round_started,
+                ),
+                current_file: format!("正在连接 {label}"),
+                skipped_files: stats.skipped_files.load(Ordering::Relaxed) as usize,
+                failed_files: failed.lock().await.len(),
+                source: source.as_str().to_string(),
+                retry_round: round,
+            });
 
             // 这一轮里全是网络任务 —— 本地复制已经在批次末尾单独做过（见 CopyJob）
             let outcome = download_one(&task, source, &cancel).await;

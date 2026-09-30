@@ -328,7 +328,7 @@ export function InstanceSetup() {
               const copy = describeDelete({
                 what: `「${active.config.name}」`,
                 items: [
-                  `实例目录 instances/${active.config.slug}/ —— 存档、Mod、配置都在里面`,
+                  `版本目录 .minecraft/versions/${active.config.slug}/ —— 版本 JSON、存档、Mod、配置都在里面`,
                 ],
                 note: '共享的游戏文件不会被删除，其他版本还能用。',
                 intent: deleteIntent(e),

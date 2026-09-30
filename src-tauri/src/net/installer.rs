@@ -1768,6 +1768,30 @@ pub fn extract_natives(jar: &Path, dest: &Path, exclude: &[String]) -> std::io::
         if let Some(p) = out.parent() {
             std::fs::create_dir_all(p)?;
         }
+        /*
+         * ★★★★ 2026-09-30（用户）：「**我们的启动器有什么东西拖累游戏的启动速度了**」。
+         *
+         *   这里原来**无条件**把每个文件重写一遍。而 natives 有 26 个文件 / 35 MB，
+         *   而 `prepare_spec` **每次启动**都会先 `remove_dir_all(natives)` 再来一遍 ——
+         *   于是每开一次游戏都要白白写 35 MB。
+         *
+         *   ⇒ 目标文件已经是**同样大小**就跳过写入。
+         *     判据用 zip 头里的**解压后大小**（`entry.size()`），
+         *     它在中央目录里、**不用解压**就能读到。
+         *
+         *   ★ 为什么"大小相同"够用：natives 是**我们自己写进去的启动器文件**
+         *     （`.ieml/natives/`，游戏不往那儿写），所以不存在"用户改了内容但大小没变"。
+         *     真出现那种情况（dll 被人手工换过），大小几乎必然不同 ——
+         *     而这个判据的收益是**每次启动省掉 35 MB 的写入**。
+         *   ★ 写失败照旧返回错误（不吞）：解压不出来 = 游戏必然崩，
+         *     调用方那里有一道硬闸门会拦住启动并说清原因。
+         */
+        if let Ok(meta) = std::fs::metadata(&out) {
+            if meta.len() == entry.size() {
+                count += 1;
+                continue; // 内容已经对了 —— 一个字节都不用写
+            }
+        }
         let mut f = std::fs::File::create(&out)?;
         std::io::copy(&mut entry, &mut f)?;
         count += 1;
@@ -1809,6 +1833,88 @@ pub async fn file_sha1(path: &Path) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    /*
+     * ★★★★ 2026-09-30（用户）：「**我们的启动器有什么东西拖累游戏的启动速度了**」。
+     *
+     *   启动路径上最重的一段是**启动前自愈**（`repair_missing`）：它先
+     *   `plan_download_tasks` 算出"这个版本该有哪些文件"，再逐个 `is_file()` 判在不在。
+     *   真机规模：`assets/objects` **9,785 个文件 / 1.3 GB**、`libraries` **474 个**、
+     *   资源清单 JSON **600 KB**（要解析）。
+     *
+     *   ⇒ 这一条把**那段成本**量出来（真机、`#[ignore]`）。
+     *     判据必须来自真机：这些全是磁盘上的东西，假夹具量不出规模效应。
+     *
+     *   用法：
+     *     powershell -NoProfile -ExecutionPolicy Bypass -File tools/env/cargo.ps1 `
+     *       test --manifest-path src-tauri/Cargo.toml --lib -- --ignored --nocapture 启动前自愈
+     */
+    #[test]
+    #[ignore = "真机：读用户数据目录，量启动前自愈的成本"]
+    fn 启动前自愈的清单成本() {
+        use std::time::Instant;
+
+        // 真机的实例目录（与 `time_launch.rs` 用同一个根）
+        let shared = std::path::PathBuf::from("D:\\IEML\\.minecraft");
+        let versions = shared.join("versions");
+        let dir_name = "26.3-fabric-0.19.5";
+        let json = versions.join(dir_name).join(format!("{dir_name}.json"));
+        let Ok(text) = std::fs::read_to_string(&json) else {
+            println!("★ 读不到 {} —— 跳过（换一台机器要改路径）", json.display());
+            return;
+        };
+
+        // ① 解 JSON（启动前必做）
+        let t = Instant::now();
+        let version: VersionJson = serde_json::from_str(&text).expect("版本 JSON 应能解析");
+        println!(
+            "① 解析版本 JSON（{} KB）：{:.1} ms",
+            text.len() / 1024,
+            t.elapsed().as_secs_f64() * 1000.0
+        );
+
+        // ② 算出完整任务清单（含读资源清单 JSON、拼几千条路径）
+        let input = PlanInput {
+            version,
+            shared_root: shared.clone(),
+            instance_dir: versions.join(dir_name),
+            source: Source::Mojang,
+            download_assets: true,
+        };
+        let t = Instant::now();
+        let planned = plan_download_tasks(&input, Source::Mojang);
+        let plan_ms = t.elapsed().as_secs_f64() * 1000.0;
+        let Ok((tasks, natives, classpath, _jar, _ai, total)) = planned else {
+            println!("★ plan_download_tasks 失败，量不出成本");
+            return;
+        };
+        println!(
+            "② 算出任务清单：{:.1} ms —— {} 个任务、{} 个库、{} 个 natives 包、{:.1} MB",
+            plan_ms,
+            tasks.len(),
+            classpath.len(),
+            natives.len(),
+            total as f64 / 1_048_576.0
+        );
+
+        // ③ 逐个判"在不在"（这就是 `repair_missing` 里那个 filter）
+        let t = Instant::now();
+        let missing: Vec<&DownloadTask> = tasks.iter().filter(|x| !x.path.is_file()).collect();
+        println!(
+            "③ 逐个 is_file() 判在不在：{:.1} ms —— 缺 {} 个",
+            t.elapsed().as_secs_f64() * 1000.0,
+            missing.len()
+        );
+        /*
+         * ★★ 缺的到底是什么 —— 这一条比总耗时更要紧。
+         *   自愈只要发现"缺"，就会**真的发请求去下**（那是秒级），
+         *   而如果缺的是一个每次都被判缺失的文件，那它**每次启动都会去下一遍**。
+         */
+        for m in &missing {
+            println!("     ★ 缺：{}（{}，{} 字节）", m.label, m.path.display(), m.size);
+        }
+        println!("\n★ 这三段相加就是「Java 起来之前，启动器为自愈花掉的时间」");
+    }
+
     use super::*;
 
     fn vj(id: &str, libs: Vec<Library>, main: &str) -> VersionJson {

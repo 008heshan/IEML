@@ -30,6 +30,15 @@ pub fn set_cache_dir(dir: PathBuf) {
     let _ = CACHE_DIR.set(dir);
 }
 
+/// 缓存目录（没配置时返回 `None`）。
+///
+/// ★ 给**别的**缓存用（目前是 Mod 哈希缓存，见 `domain::mods::ModHashCache`）：
+///   它们与元数据清单共用同一个目录，但各自一个文件。
+///   不配置时一律"不读不写"，**绝不猜一个目录**去落盘。
+pub fn cache_dir() -> Option<PathBuf> {
+    CACHE_DIR.get().cloned()
+}
+
 /// 元数据默认缓存时长：30 分钟。
 const META_TTL: Duration = Duration::from_secs(30 * 60);
 

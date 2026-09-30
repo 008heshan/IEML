@@ -26,7 +26,17 @@ import type {
   ReleaseType,
 } from '../domain';
 import type { RunningGameInfo, IsolationInfo } from '../bridge/tauri';
-import { DEFAULT_THEME, type ThemeId } from '../ui/theme';
+/*
+ * ★ 2026-09-30：这里原来写的是 `'../ui/theme'`（**没有扩展名**）。
+ *   Vite 能解析它，所以界面一直正常 —— 但 Node 的 ESM 解析器不能，
+ *   于是 `node --test tests/multi-instance.test.mjs`（它 `await import('../src/state/store.ts')`）
+ *   在 `ERR_MODULE_NOT_FOUND: src/ui/theme` 上直接挂掉：
+ *   **整个测试文件 0 通过**，而它在 `pnpm test` 的名单里 —— 也就是说这条回归测试
+ *   已经有一段时间没真正跑过了（`tools/verify.mjs` 用的是另一份名单，所以没露出来）。
+ *
+ *   加上扩展名之后两边都能解析。仓库里其余跨模块导入早就带 `.ts` 了。
+ */
+import { DEFAULT_THEME, type ThemeId } from '../ui/theme.ts';
 import type { ModFilter } from '../domain/mods.ts';
 
 /* ====================== 领域侧的数据形状 ====================== */
@@ -249,6 +259,25 @@ export interface AppState {
     windowHeight: number;
     globalJvmArgs: string;
     globalGameArgs: string;
+    /**
+     * ★★ **被用户删掉过的版本目录名**（墓碑，2026-09-30）。
+     *
+     * ## 为什么需要它
+     *
+     *   用户报过一条很气人的现象：「删除实例时，你根本不知道删的是哪里的，
+     *   有时还会**诈尸**，删了的又回来」。
+     *
+     *   根因是**账本被当成了"这个版本存在"的证据**，而盘上那个版本目录还在：
+     *     · 启动时 `platform::adopt_records` 会把老位置那份**陈旧账本**补进来
+     *       （`should_take_record` 只看"目标是不是空列表"，不看目录还在不在）；
+     *     · 前端「账本是空的、而文件夹里有版本 → 自动认领一个」（`pickAutoAdopt`）
+     *       也会把它重新建成一个实例。
+     *
+     *   现在删实例会连**版本目录**一起删（那就彻底没了，诈尸不了）；
+     *   但"只从列表里移除、文件留着"是允许的（用户可能只想让它别再出现）。
+     *   那种情况下只有这份墓碑能挡住自动认领。
+     */
+    deletedVersions: string[];
   };
 }
 
@@ -332,6 +361,8 @@ export const initialState: AppState = {
     windowHeight: 720,
     globalJvmArgs: '',
     globalGameArgs: '',
+    // ★ 墓碑列表（见字段说明）：默认空，"删了又回来"这条缺陷靠它挡住
+    deletedVersions: [],
   },
 };
 

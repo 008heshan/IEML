@@ -794,7 +794,7 @@ pub fn preview_restore(paths: &AppPaths, slug: &str, id: &str) -> Result<Restore
 mod tests {
     use super::*;
 
-    /// 造一个假的实例：`<root>/instances/<slug>/game/...`
+    /// 造一个假的实例：`<root>/.minecraft/versions/<slug>/`（游戏数据直接在里面）
     fn fake_instance(tag: &str) -> (AppPaths, String) {
         let base = std::env::temp_dir().join(format!("ieml-backup-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -804,7 +804,13 @@ mod tests {
         std::fs::create_dir_all(&own).unwrap();
         let mut paths = AppPaths::from_root(root);
         paths.own_root = own;
-        paths.instances = paths.root.join("instances");
+        /*
+         * ★ 2026-09-30：实例目录在 `.minecraft/versions` 里（PCL 布局）。
+         *   `from_root` 已经算对了，这里保留一行的意思是"夹具的形状必须跟着
+         *   真布局走"—— 上一轮就是因为夹具停在 `own/instances` 那个错布局上，
+         *   让"落在实例目录下"的断言在一个现实里不存在的地方通过了。
+         */
+        paths.instances = paths.root.join(".minecraft").join("versions");
         let slug = "pack-test".to_string();
         let game = paths.instance_game_dir(&slug);
         std::fs::create_dir_all(game.join("saves/World1")).unwrap();

@@ -22,8 +22,9 @@
 import { useEffect, useMemo, useState, useRef } from 'react';
 import { useApp } from '../state/AppContext';
 import { isInstanceRunning, runningInfo, runningCount } from '../state/store';
-import { Button, Chip, CustomSelect, EmptyState, Modal, Note } from '../ui';
+import { Button, Chip, CustomSelect, EmptyState, Modal, Note, Spinner } from '../ui';
 import { instanceTitle } from '../state/instance-name';
+import { PackIcon } from '../components/PackIcon';
 import {
   IconAlert,
   IconBox,
@@ -43,8 +44,63 @@ import { VersionIcon } from '../components/VersionIcon';
 import { launchFailureOf, type LaunchPreview, type LaunchRequest } from '../bridge/tauri';
 
 export function LaunchPage() {
-  const { state, target, go, goDownloadTab, backend, toast, setLaunchTarget, openVersion, folder, refreshMachine } = useApp();
+  const {
+    state,
+    /* ★ 2026-09-30：全局那个 `target` 只当"记忆值"用，真正生效的是下面算出来的 `target` */
+    target: rememberedTarget,
+    go,
+    goDownloadTab,
+    backend,
+    toast,
+    setLaunchTarget,
+    openVersion,
+    folder,
+    refreshMachine,
+    launch: launchState,
+    packIcons,
+  } = useApp();
   const { api, isDesktop } = useRealApi();
+
+  /**
+   * ★★★★ 2026-09-30（用户）：「**每次重启都得重新选，而不是记住玩家的选择**」。
+   *
+   *   根因是**两把尺子**（和前面那个"版本数"是同一种毛病）：
+   *     · 下拉列的 `launchable` = **当前文件夹里对得上的实例**；
+   *     · 而 `target` 来自全局 `selectLaunchTarget(state)` = **账本里最后一个实例**。
+   *
+   *   真机上的形状（用户截图）：当前文件夹是 `D:\IEML`（根目录），
+   *   里面只有 `26.3-fabric-0.19.5` 那两个；而记忆值指向 `Sodium Plus`
+   *   （它在 `26.2` 那个文件夹里，换个目录才看得见）。
+   *   ⇒ 下拉的 `value` 在选项里找不到 → 显示回「请选择」。
+   *   **玩家的选择没丢，只是当前文件夹里没有它** —— 而界面看起来就像"忘了"。
+   *
+   *   ⇒ 判据收成一条：**记忆值必须在当前可启动列表里**，否则退回列表第一个。
+   *     并且**把纠正后的结果写回去**（`setLaunchTarget`）—— 不写回去的话，
+   *     下一次重启还会拿那个不在本文件夹的记忆值重演一遍。
+   *
+   *   ★ 为什么"退回第一个"是对的（而不是留着空）：这一页的用途就是"启动一个版本"，
+   *     留空 = 玩家必须先做一次选择才能用。而列表第一个是**盘上真实存在**的版本，
+   *     选它永远不会启动失败。玩过的版本仍会排在前面（`others` 的排序用的就是它）。
+   */
+  const target = useMemo(() => {
+    const list = folder.instancesInFolder;
+    if (list.length === 0) return rememberedTarget;
+    const inFolder = rememberedTarget
+      ? list.find((i) => i.id === rememberedTarget.id)
+      : undefined;
+    return inFolder ?? list[0] ?? null;
+  }, [folder.instancesInFolder, rememberedTarget]);
+
+  /*
+   * 把纠正后的选择**写回**（记忆值不在本文件夹时）。只在真需要改的时候 dispatch，
+   * 所以不会因为 `target` 每次渲染都是新对象而反复写盘。
+   */
+  useEffect(() => {
+    if (!target) return;
+    if (rememberedTarget?.id === target.id) return;
+    setLaunchTarget(target.id);
+  }, [target, rememberedTarget, setLaunchTarget]);
+
   /** 要启动的那个实例的隔离判定（后端算的结论，ADR-005；读不到时 null） */
   const launchIsolation = target ? state.isolation[target.config.slug] ?? null : null;
 
@@ -68,7 +124,14 @@ export function LaunchPage() {
     return () => window.clearInterval(t);
   }, [refreshMachine]);
 
-  const [launching, setLaunching] = useState(false);
+  const [launching, setLaunching] = [launchState.starting, launchState.setStarting] as const;
+  /**
+   * ★★ 启动前的准备进度：**从全局取**（不是本页状态）。
+   *
+   *   理由与 `launching` 一样（见 AppContext 里那段说明）：切走页面时这一页会卸载，
+   *   本页状态归零 —— 而"正在补齐什么文件"这件事**不随页面存活**。
+   */
+  const launchProgress = launchState.progress;
   const [preview, setPreview] = useState<LaunchPreview | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   /** 命令还在拼（窗口已经开了，先显示"正在拼装…"） */
@@ -105,6 +168,41 @@ export function LaunchPage() {
     const t = setInterval(() => tick((n) => n + 1), 1000);
     return () => clearInterval(t);
   }, [isRunning]);
+
+  /*
+   * 监听启动前的自愈进度（见上面 `launchProgress` 的说明）。
+   *
+   * ★ 只认**当前这个版本**的事件（`taskId` 就是 instance_id）：
+   *   多开时两个版本可能同时在准备，混着显示会让人以为进度倒退了。
+   * ★ 监听**一直挂着**（不只在 `launching` 为真时）：
+   *   预览那条路也会跑准备流程，而且事件可能比 `setLaunching(true)` 先到。
+   */
+  useEffect(() => {
+    if (!('__TAURI_INTERNALS__' in window)) return;
+    let unlisten: (() => void) | undefined;
+    void (async () => {
+      const { listen } = await import('@tauri-apps/api/event');
+      unlisten = await listen<{
+        taskId: string;
+        stage: string;
+        finishedFiles: number;
+        totalFiles: number;
+        percent: number;
+        currentFile: string;
+      }>('launch-progress', (ev) => {
+        const p = ev.payload;
+        if (target && p.taskId && p.taskId !== target.id) return;
+        launchState.setProgress({
+          stage: p.stage,
+          finished: p.finishedFiles,
+          total: p.totalFiles,
+          percent: p.percent,
+          current: p.currentFile,
+        });
+      });
+    })();
+    return () => unlisten?.();
+  }, [target, launchState]);
 
   /*
    * ★★ 2026-09-24（A-1 修复）：这里的 `ieml:launch-request` 监听器**搬走了** ——
@@ -179,6 +277,8 @@ export function LaunchPage() {
       return;
     }
     setLaunching(true);
+    // ★ 上一次启动留下的进度不能带进这一次（否则会先显示一个过期的阶段名）
+    launchState.setProgress(null);
     setJavaMissing(null);
     try {
       /*
@@ -500,7 +600,15 @@ export function LaunchPage() {
         */}
         {target ? (
           <div className="launch-hero">
-            <VersionIcon version={target.mcVersion} size={72} />
+            {/*
+              ★★ 2026-09-30（用户）：「这两个地方的整合包显示**整合包自己的图标**，
+                而且要**直接在卡片上，不整那个跟槽一样的东西**」。
+
+              `packIcons[slug]` 是装包时从包体里抽出来的作者图标（Rust 侧
+              `install_pack_plan` 留的）。没有就退回自绘的版本图标 ——
+              那本来就是"这个版本没有真图标"时的样子。
+            */}
+            <PackIcon icon={packIcons[target.config.slug]} version={target.mcVersion} size={72} />
             <div className="lh-main">
               <div className="lh-name">{target.config.name}</div>
               <div className="lh-meta">
@@ -615,6 +723,27 @@ export function LaunchPage() {
             </Button>
           )}
         </div>
+
+        {/*
+          ★★★★ 2026-09-30（用户）：「**启动整合包很慢**」「**为什么切换别的页面会停止启动**」。
+
+          `launching` 期间把**后端正在做什么**显示出来。整合包首次启动时这一步要
+          补齐客户端与库（几十 MB，而且这些文件走的是慢源），**以前是完全静默的** ——
+          看起来就是卡死。现在至少能看到"它在动、动到哪了"。
+
+          ★ 只在真的收到事件时显示。没收到（文件齐全，自愈毫秒级结束）时这一行
+            不出现 —— **不编一个假进度**。
+        */}
+        {launching && launchProgress ? (
+          <div className="launch-prep">
+            <Spinner
+              label={`${launchProgress.stage}（${launchProgress.finished}/${launchProgress.total}）`}
+            />
+            {launchProgress.current ? (
+              <span className="launch-prep-file truncate">{launchProgress.current}</span>
+            ) : null}
+          </div>
+        ) : null}
 
         {/*
           ★★ 多开实例（2026-09-15）：**同时有两个以上在跑**时说一句。

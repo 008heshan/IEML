@@ -11,11 +11,55 @@
       #splash {
         position: fixed; inset: 0; display: flex; flex-direction: column;
         align-items: center; justify-content: center; gap: 16px;
-        background: #0b0d10; z-index: 9999;
+        /*
+         * ★★ 2026-09-30（用户）：「**载入加载器时的加载，先全白一下然后再进 logo**」。
+         *
+         *   这里的颜色**故意不是写死的** —— 由下面那段内联脚本按用户实际的主题设。
+         *   写死 `#0b0d10` 时，用「墨绿」「藏蓝」那些主题的人会看到
+         *   "深灰 → 自己的色"再闪一下，只是把白色换成了另一种色差。
+         *   `var(--boot-bg)` 兜底成默认深色：脚本没跑（或读不到偏好）时也不会变白。
+         */
+        background: var(--boot-bg, #0b0d10);
+        z-index: 9999;
       }
       #splash img { width: 64px; height: 64px; }
       #splash .txt { color: #888; font: 13px system-ui, sans-serif; }
     </style>
+    <script>
+      /*
+       * ★★★★ 2026-09-30：**在浏览器画出第一帧之前**把主题底色定下来。
+       *
+       *   这一段是**同步执行**的（普通 script、没有 defer / module），
+       *   所以它跑在 `<body>` 被解析之前 —— 也就是说：
+       *   背景色在**第一次绘制**时就已经是对的，不存在"先白一下"。
+       *
+       *   ★ 为什么必须在这里、而不能等 React：`main.tsx` 是 module 脚本，
+       *     要等 HTML 解析完、取到那 500 KB 的 bundle、再执行 ——
+       *     那期间窗口已经被画出来好几次了。主题在那时才生效就太晚了。
+       *
+       *   ★ 读的是 `localStorage`（不是 prefs.json）：主题在本机就存那儿，
+       *     而且渲染进程里**同步可读** —— 异步读盘在这里来不及。
+       *
+       *   ★ 键名与色表**与 `ui/theme.ts` 保持一致**。这里是唯一一处必须
+       *     "提前抄一份"的地方（那个文件要等 bundle 加载），所以加了这条注释：
+       *     改主题时**两处都要改**。真值以 `ui/theme.ts` 为准。
+       */
+      (function () {
+        var BG = {
+          dark: '#0b0d10', molv: '#0e1512', zanglan: '#0d1420', jiangzi: '#140f1c',
+          jiuhong: '#170f11', hupo: '#171208', daiqing: '#0a1518', ouhe: '#17121a',
+          kahe: '#15110d'
+        };
+        var id = 'dark';
+        try {
+          id = localStorage.getItem('ieml.theme') || 'dark';
+        } catch (e) { /* 隐私模式下 localStorage 会抛 —— 用默认色 */ }
+        var bg = BG[id] || BG.dark;
+        document.documentElement.setAttribute('data-theme', BG[id] ? id : 'dark');
+        document.documentElement.style.setProperty('--boot-bg', bg);
+        document.documentElement.style.background = bg;
+      })();
+    </script>
   </head>
   <body>
     <div id="splash">
