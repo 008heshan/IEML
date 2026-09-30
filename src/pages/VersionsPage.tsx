@@ -763,7 +763,7 @@ export function VersionsPage() {
                       那正是下面那段 `setTimeout(0)` 注释当年想绕过的坑，
                       而 `setTimeout(0)` 只是把窗口改小、并没有消除它。
                   */}
-                {rec.loader !== null ? (
+                {rec.real && rec.loader !== null ? (
                   <button
                     type="button"
                     role="menuitem"
@@ -775,18 +775,30 @@ export function VersionsPage() {
                     <IconPuzzle /> 安装 Mod
                   </button>
                 ) : null}
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setMenuFor(null);
-                    window.dispatchEvent(
-                      new CustomEvent('ieml:launch-request', { detail: rec.id }),
-                    );
-                  }}
-                >
-                  <IconPlay /> 启动
-                </button>
+                {/*
+                  ★★★★ 2026-09-30（用户）：「**这些版本应该没法启动吧**」。
+                  对 —— 不能用的版本**不该给启动入口**：点下去只会启动失败，
+                  而这一行刚刚才写明"为什么不能用"。给一个注定失败的按钮，
+                  等于把已经说清的话又含糊过去。
+                  ★ 也不做成"灰按钮"：菜单里灰着的一项仍然占位、仍然要人去分辨；
+                    **直接不出现**才是"这条路不存在"。
+                */}
+                {ok ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setMenuFor(null);
+                      window.dispatchEvent(
+                        new CustomEvent('ieml:launch-request', { detail: rec.id }),
+                      );
+                    }}
+                  >
+                    <IconPlay /> 启动
+                  </button>
+                ) : null}
+                {/* ★ 重命名改的是**记录里的显示名** —— 没有记录就没有名字可改 */}
+                {rec.real ? (
                 <button
                   type="button"
                   role="menuitem"
@@ -805,6 +817,8 @@ export function VersionsPage() {
                 >
                   <IconPencil /> 重命名
                 </button>
+                ) : null}
+                {rec.real ? (
                 <button
                   type="button"
                   role="menuitem"
@@ -828,6 +842,7 @@ export function VersionsPage() {
                 >
                   <IconCopy /> 创建副本
                 </button>
+                ) : null}
                 <button
                   type="button"
                   role="menuitem"

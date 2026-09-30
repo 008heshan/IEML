@@ -3156,9 +3156,6 @@
  */
 .ver-bad-group {
   margin-top: var(--space-2);
-  /* 与上面的正常行分开，读起来是「另一个组」 */
-  padding-top: var(--space-2);
-  border-top: 1px dashed var(--border-subtle);
 }
 .ver-bad-head {
   display: flex;
