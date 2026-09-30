@@ -346,8 +346,13 @@ pub async fn get_text_third_party_with_headers(
     url: &str,
     headers: &[(&str, &str)],
 ) -> Result<String> {
-    /// 官方多久不回就让镜像同时上（见上面那段说明）
-    const OFFICIAL_PATIENCE: Duration = Duration::from_secs(2);
+    /// 主路多久不回就让备路同时上
+    ///
+    /// ★★ 2026-09-30：原来是"官方耐心 2 秒"，现在主路换成了**镜像**，
+    ///   所以这个值的含义变成"镜像多久不回就让官方上"。
+    ///   取 3 秒：镜像实测 0.9~3.1 秒，而官方**经常连不上**（20 秒连接超时才失败）——
+    ///   兜底路只需要"有机会"就够了，不需要等很久。
+    const PRIMARY_PATIENCE: Duration = Duration::from_secs(3);
 
     let Some(mirror) = crate::net::mirror::mcimirror_url(url) else {
         // 这个地址没有镜像可换 —— 老老实实单路（原来的行为）
@@ -358,8 +363,41 @@ pub async fn get_text_third_party_with_headers(
         .iter()
         .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
         .collect();
-    let url_owned = url.to_string();
-    let mirror_owned = mirror.clone();
+    /*
+     * ★★★★ 2026-09-30（用户）：「**modrinth 的整合包下载真是无敌了……后者一点反应也没有**」。
+     *
+     *   ## 真机实测（`tests/speed_probe.rs`，同一台机器、同一分钟）
+     *
+     *   | 端点 | 官方 | mcimirror |
+     *   |---|---|---|
+     *   | `/v2/search` | **10822 ms** | **908 ms** |
+     *   | `/v2/project/…/version` | 529 ms | 3108 ms |
+     *   | `cdn.modrinth.com` 文件 | 691 KB/s | **2612 KB/s** |
+     *
+     *   搜索那一条差了 **12 倍**。而"一点反应也没有"就是它：
+     *   这条函数原来**官方先发**，等满 2 秒才让镜像同时上 ——
+     *   于是官方那 10.8 秒里，用户前 2 秒看到的是**什么都不动**，
+     *   后面 8.8 秒是在等一个注定慢的答案。
+     *
+     *   ## 所以 Modrinth 的接口也改成**镜像优先**
+     *
+     *   ★ 这与 `candidate_urls`（文件下载那条）**现在是同一个取向** ——
+     *     那一条早就写着"国内 mcimirror 首选，官方兜底"，而接口这条一直是反的。
+     *     两条路取向不一致，正是"资源中心有时快、有时没反应"的来源。
+     *   ★ 与 CurseForge 也一致了：那边两年前就改成"只走镜像"（见 `net::curseforge`）。
+     *   ★ 官方**仍然是第二个候选**，不是删掉：镜像不通的时候它照样接手
+     *     （错峰逻辑一个都没丢，只是主备对调）。
+     *
+     *   ★ 那条老顾虑（"本机实测镜像比官方慢，146 vs 230 KB/s"）已经被实测推翻：
+     *     现在镜像在**搜索与文件**两条路都更快。网络会变，所以这段注释里
+     *     把**当下的数字**留着 —— 下次要翻回去，得先有相反的数字。
+     */
+    /*
+     * 主路 = 镜像、备路 = 官方（见上面那段说明：**主备已对调**）。
+     * 两个都取 `String`（`tokio::spawn` 需要 `'static`）。
+     */
+    let url_owned = mirror.clone();
+    let mirror_owned = url.to_string();
     let headers_for_backup = headers_owned.clone();
 
     /*
@@ -381,8 +419,10 @@ pub async fn get_text_third_party_with_headers(
         }
     });
     let backup = tokio::spawn(async move {
-        tokio::time::sleep(OFFICIAL_PATIENCE).await;
-        say!("[IEML/net] {url_owned}：官方 {OFFICIAL_PATIENCE:?} 还没回来，镜像同时上");
+        tokio::time::sleep(PRIMARY_PATIENCE).await;
+        say!(
+            "[IEML/net] {mirror_owned}：镜像 {PRIMARY_PATIENCE:?} 还没回来，官方同时上（兜底）"
+        );
         let refs: Vec<(&str, &str)> = headers_for_backup
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
@@ -515,23 +555,30 @@ async fn post_text_once(url: &str, body: &str) -> Result<String> {
 ///   · **确定结论**（404 之类）⇒ 原样上抛，不换源（镜像就是同一个 API 的反代）；
 ///   · 两路都失败 ⇒ 错误信息里两条原因都在，且**保留状态码**。
 pub async fn post_json_third_party(url: &str, body: &str) -> Result<String> {
-    /// 与 GET 那条同一个值（见 `get_text_third_party_with_headers` 的说明）
-    const OFFICIAL_PATIENCE: Duration = Duration::from_secs(2);
+    /// 主路（现在是**镜像**）多久不回就让备路同时上。
+    /// 与 GET 那条同一个值 —— 两条路的取向与耐心**必须一致**，
+    /// 否则同一个 API 的 GET 快、POST 慢，用户看到的还是"有时没反应"。
+    const PRIMARY_PATIENCE: Duration = Duration::from_secs(3);
 
     let Some(mirror) = crate::net::mirror::mcimirror_url(url) else {
         // 这个地址没有镜像可换 —— 老老实实单路
         return post_text_once(url, body).await;
     };
 
-    let url_owned = url.to_string();
-    let mirror_owned = mirror.clone();
+    /*
+     * ★★ 2026-09-30：与 GET 那条**一起对调主备**（镜像优先、官方兜底）。
+     *   理由与实测数字见 `get_text_third_party_with_headers` 的说明 ——
+     *   同一个 API 的两条路取向必须一致，这条纪律这个仓库已经写过一次。
+     */
+    let url_owned = mirror.clone();
+    let mirror_owned = url.to_string();
     let body_owned = body.to_string();
     let body_backup = body.to_string();
 
     let mut primary = tokio::spawn(async move { post_text_once(&url_owned, &body_owned).await });
     let mut backup = tokio::spawn(async move {
-        tokio::time::sleep(OFFICIAL_PATIENCE).await;
-        say!("[IEML/net] {mirror_owned}：官方 {OFFICIAL_PATIENCE:?} 还没回来，镜像同时上（POST）");
+        tokio::time::sleep(PRIMARY_PATIENCE).await;
+        say!("[IEML/net] {mirror_owned}：镜像 {PRIMARY_PATIENCE:?} 还没回来，官方同时上（POST 兜底）");
         post_text_once(&mirror_owned, &body_backup).await
     });
 
