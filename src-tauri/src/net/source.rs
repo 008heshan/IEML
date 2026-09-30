@@ -15,7 +15,7 @@
 
 use super::mirror::{self, Source};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -131,8 +131,17 @@ impl SourceStats {
 /// 如果每个文件各自记，同一批 3000 个文件会各自撞一次 429。
 pub struct SourceManager {
     stats: Mutex<HashMap<Source, SourceStats>>,
-    /// 并发上限的当前建议值（源被限流时下调，见 `note_rate_limited`）
-    concurrency_hint: AtomicU64,
+    /*
+     * ★★★★ 2026-09-30（用户：「两个平台一样慢」「PCL 快很多」）——
+     *   **并发上限原来是全局一个数**，于是 `note_rate_limited(Bmclapi)`
+     *   会把**所有源**（包括 Modrinth CDN、Mojang 官方）的并发一起砍半：
+     *   64 → 32 → 16 → 8 → 4。整合包动辄上百个文件，撞几次限流就到 4，
+     *   而那时真正被限流的那个源早就冷却了 —— 用户看到的是**整批都变慢**。
+     *
+     *   限流是**针对某个源**的（`stats` 本来就是按源记的），
+     *   所以并发上限也必须按源记。BMCLAPI 被限流不该拖慢 Modrinth CDN。
+     */
+    concurrency_hint: Mutex<HashMap<Source, usize>>,
     started: Instant,
 }
 
@@ -177,7 +186,7 @@ impl SourceManager {
     fn new() -> Self {
         Self {
             stats: Mutex::new(HashMap::new()),
-            concurrency_hint: AtomicU64::new(DEFAULT_CONCURRENCY as u64),
+            concurrency_hint: Mutex::new(HashMap::new()),
             started: Instant::now(),
         }
     }
@@ -313,7 +322,7 @@ impl SourceManager {
             // 用别的源成功不该继续踩着这个源的冷却，但也不主动清 ——
             // 冷却到期自己会失效（is_cooling 用时间判断）。
         });
-        self.recover_concurrency();
+        self.recover_concurrency(source);
     }
 
     /// 一次失败的传输。`status` 是 HTTP 状态码（None = 网络层错误/超时）。
@@ -342,11 +351,12 @@ impl SourceManager {
         let until = now_ms() + delay.as_millis() as u64;
         self.with(source, |s| s.cooldown_until_ms = until);
         // 并发减半（不低于下限）—— PCL2 的做法：429 之后降并发 + 延迟重试
-        let cur = self.concurrency_hint.load(Ordering::Relaxed).max(1) as usize;
+        // ★ 只降**这个源**的上限（见 `concurrency_hint` 的说明）
+        let cur = self.hint_of(source);
         let next = (cur / 2).max(MIN_CONCURRENCY);
-        self.concurrency_hint.store(next as u64, Ordering::Relaxed);
+        self.set_hint_of(source, next);
         say!(
-            "[IEML/source] {} 被限流（第 {} 次），冷却 {}s，并发上限降到 {}",
+            "[IEML/source] {} 被限流（第 {} 次），冷却 {}s，该源并发上限降到 {}",
             source.as_str(),
             times,
             delay.as_secs(),
@@ -354,14 +364,14 @@ impl SourceManager {
         );
     }
 
-    /// 冷却结束后慢慢把并发放回去（一次 +25%）。
-    pub fn recover_concurrency(&self) {
-        let cur = self.concurrency_hint.load(Ordering::Relaxed) as usize;
+    /// 冷却结束后慢慢把**这个源**的并发放回去（一次 +25%）。
+    pub fn recover_concurrency(&self, source: Source) {
+        let cur = self.hint_of(source);
         if cur >= DEFAULT_CONCURRENCY {
             return;
         }
         let next = (cur + cur / 4 + 1).min(DEFAULT_CONCURRENCY);
-        self.concurrency_hint.store(next as u64, Ordering::Relaxed);
+        self.set_hint_of(source, next);
     }
 
     /// ★★ **被"限流页"搪塞了** —— 比 429 更隐蔽，但处理方式一样。
@@ -385,20 +395,38 @@ impl SourceManager {
         let until = now_ms() + 5_000;
         self.with(source, |s| s.cooldown_until_ms = until);
 
-        let cur = self.concurrency_hint.load(Ordering::Relaxed).max(1) as usize;
+        let cur = self.hint_of(source);
         let next = (cur / 2).max(MIN_CONCURRENCY);
-        self.concurrency_hint.store(next as u64, Ordering::Relaxed);
+        self.set_hint_of(source, next);
         say!(
-            "[IEML/source] {} 回了一个明显过小的响应（限流页），冷却 5s，并发上限降到 {}",
+            "[IEML/source] {} 回了一个明显过小的响应（限流页），冷却 5s，该源并发上限降到 {}",
             source.as_str(),
             next
         );
     }
 
-    /// 给批次用的并发建议值（与调用方想要的并发取小）
-    pub fn recommended_concurrency(&self, want: usize) -> usize {
-        let hint = self.concurrency_hint.load(Ordering::Relaxed) as usize;
-        want.min(hint.max(MIN_CONCURRENCY)).max(1)
+    /// 给批次用的并发建议值（与调用方想要的并发取小）。
+    ///
+    /// ★ 只看**这个源**的上限：一个源被限流，不该拖慢换到别的源之后的下载。
+    pub fn recommended_concurrency(&self, source: Source, want: usize) -> usize {
+        want.min(self.hint_of(source).max(MIN_CONCURRENCY)).max(1)
+    }
+
+    /// 读某个源当前的并发上限（没被限流过就是默认值）。
+    fn hint_of(&self, source: Source) -> usize {
+        let guard = self
+            .concurrency_hint
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        guard.get(&source).copied().unwrap_or(DEFAULT_CONCURRENCY)
+    }
+
+    fn set_hint_of(&self, source: Source, value: usize) {
+        let mut guard = self
+            .concurrency_hint
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        guard.insert(source, value);
     }
 
     /// 当前应该优先用哪个源（健康分高的）。
@@ -563,9 +591,12 @@ mod tests {
     #[test]
     fn concurrency_hint_drops_on_rate_limit_and_recovers() {
         let m = SourceManager::new();
-        assert_eq!(m.recommended_concurrency(128), DEFAULT_CONCURRENCY);
+        assert_eq!(
+            m.recommended_concurrency(Source::Bmclapi, 128),
+            DEFAULT_CONCURRENCY
+        );
         m.note_rate_limited(Source::Bmclapi);
-        let after = m.recommended_concurrency(128);
+        let after = m.recommended_concurrency(Source::Bmclapi, 128);
         assert!(after < DEFAULT_CONCURRENCY, "429 之后并发必须下调");
         assert!(after >= MIN_CONCURRENCY);
         // 冷却已生效
@@ -573,9 +604,45 @@ mod tests {
         assert!(m.score(Source::Bmclapi) < 0, "冷却中的源健康分必须为负");
         // 反复恢复正常
         for _ in 0..50 {
-            m.recover_concurrency();
+            m.recover_concurrency(Source::Bmclapi);
         }
-        assert_eq!(m.recommended_concurrency(128), DEFAULT_CONCURRENCY);
+        assert_eq!(
+            m.recommended_concurrency(Source::Bmclapi, 128),
+            DEFAULT_CONCURRENCY
+        );
+    }
+
+    /// ★★★★ 2026-09-30（用户：「两个平台一样慢」「PCL 快很多」）。
+    ///
+    ///   **并发上限必须按源记** —— 这条测试就是那个 bug 的回归网。
+    ///
+    ///   以前 `concurrency_hint` 是**全局一个数**：BMCLAPI 撞了 429，
+    ///   于是 Modrinth CDN / Mojang 官方的并发**一起被砍半**，64 → 32 → … → 4。
+    ///   整合包动辄上百个文件，撞几次就到 4，而那时真正被限流的源早就冷却了
+    ///   —— 用户看到的是**整批都变慢**，却不明白为什么。
+    ///
+    ///   ★ 断言的方向很重要：不是"两个源都降"，而是
+    ///     **被限流的那个降、没被限流的那个一点都不受影响**。
+    #[test]
+    fn 限流一个源不许拖慢别的源() {
+        let m = SourceManager::new();
+
+        // BMCLAPI 被限流（整合包里的 Mod 走的是 CDN，根本不经过它）
+        m.note_rate_limited(Source::Bmclapi);
+        m.note_throttled(Source::Bmclapi);
+
+        assert!(
+            m.recommended_concurrency(Source::Bmclapi, 128) < DEFAULT_CONCURRENCY,
+            "被限流的源必须降并发"
+        );
+        assert_eq!(
+            m.recommended_concurrency(Source::Mojang, 128),
+            DEFAULT_CONCURRENCY,
+            "★ 别的源一点都不能被拖累 —— 这正是「整批都变慢」的成因"
+        );
+        // 冷却也只针对那个源
+        assert!(m.is_cooling(Source::Bmclapi));
+        assert!(!m.is_cooling(Source::Mojang));
     }
 
     #[test]

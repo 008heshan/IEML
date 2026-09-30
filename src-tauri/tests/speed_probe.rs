@@ -171,5 +171,44 @@ async fn where_does_the_time_actually_go() {
         }
     }
 
+    println!("\n════ ⑤ 整合包内部的文件：复用连接 vs 每次新建 ════");
+    /*
+     * ★★★★ 为什么必须量这一项（2026-09-30 用户：「两个平台一样慢」「PCL 快很多」）
+     *
+     *   我一开始用 `curl.exe` **一个文件一个进程**去量，得到的是：
+     *     87 KB → 2.2 s（41 KB/s）
+     *     3 MB  → 2.9 s（1.1 MB/s）
+     *   —— **大小差 35 倍、耗时几乎一样**，这就暴露了测法有问题：
+     *   那 2 秒是**进程启动 + DNS + TLS 握手**，不是下载。
+     *
+     *   而**同一个客户端复用连接**时，第二次请求省掉了握手 ——
+     *   这正是"整合包里几百个小文件"能不能快起来的关键：
+     *   22 个文件 × 2 秒握手 = 44 秒；复用连接之后这些钱不用反复付。
+     *
+     *   ⇒ 这一段量三件事：首字节（含握手）、复用后的单个文件、以及
+     *     **一批文件的并发下载总耗时**（那是用户真正等的那个数）。
+     */
+    const FO: &[&str] = &[
+        "https://cdn.modrinth.com/data/m5T5xmUy/versions/r4yqxYQl/BetterGrassify-1.8.7%2Bfabric.26.2.jar",
+        "https://cdn.modrinth.com/data/1KVo5zza/versions/CgcNnB7v/Fabulously.Optimized-v14.0.0-alpha.1.mrpack",
+        "https://cdn.modrinth.com/data/m5T5xmUy/versions/r4yqxYQl/BetterGrassify-1.8.7%2Bfabric.26.2.jar",
+        "https://cdn.modrinth.com/data/1KVo5zza/versions/CgcNnB7v/Fabulously.Optimized-v14.0.0-alpha.1.mrpack",
+    ];
+    for (i, u) in FO.iter().enumerate() {
+        let t = Instant::now();
+        match client.get(*u).send().await {
+            Ok(r) => {
+                let code = r.status().as_u16();
+                let n = r.bytes().await.map(|b| b.len()).unwrap_or(0);
+                println!(
+                    "  同一客户端第 {} 次请求  HTTP {code} {n:>8} 字节 {:>5} ms",
+                    i + 1,
+                    t.elapsed().as_millis()
+                );
+            }
+            Err(e) => println!("  同一客户端第 {} 次请求  ✗ {e}", i + 1),
+        }
+    }
+
     println!("\n★ 读法：① 慢 ⇒ 改并发/批处理；② 慢或失败 ⇒ 只能换源；③ 是启动那条路。");
 }

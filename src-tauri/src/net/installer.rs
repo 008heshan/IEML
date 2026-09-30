@@ -1175,7 +1175,7 @@ pub async fn install(input: &PlanInput, opts: InstallOptions) -> Result<Installe
     }
 
     // 并发：用户要的并发 与 源管理器建议的并发 取小（被限流过就降下来）
-    let concurrency = manager.recommended_concurrency(opts.concurrency);
+    let concurrency = manager.recommended_concurrency(preferred, opts.concurrency);
     if concurrency < opts.concurrency {
         say!(
             "[IEML/installer] 源被限流过，并发从 {} 降到 {concurrency}",
@@ -1322,7 +1322,7 @@ pub async fn install(input: &PlanInput, opts: InstallOptions) -> Result<Installe
                     //   至少 48 路，网络慢时能明显把吞吐顶上去（HTTP/2 复用连接，无副作用）。
                     //   但**仍然受源管理器约束**：吃过 429 就把并发压回去，
                     //   否则"更高并发"只会换来更多 429（PCL2 8.2 的教训）。
-                    concurrency: manager.recommended_concurrency(opts.concurrency.max(48)),
+                    concurrency: manager.recommended_concurrency(preferred, opts.concurrency.max(48)),
                     source: preferred,
                     cancel: opts.cancel.clone(),
                     pause: opts.pause.clone(),
@@ -1657,7 +1657,7 @@ pub async fn repair_missing(
         format!("缺 {} 个文件，正在补", missing_count),
     );
 
-    let concurrency = manager.recommended_concurrency(opts.concurrency);
+    let concurrency = manager.recommended_concurrency(preferred, opts.concurrency);
     let outcome = download_batch(
         missing,
         BatchOptions {

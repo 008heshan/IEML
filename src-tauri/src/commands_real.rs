@@ -9714,7 +9714,7 @@ pub fn download_sources_payload() -> serde_json::Value {
     serde_json::json!({
         "sources": sources,
         "preferred": manager.preferred().as_str(),
-        "concurrencyHint": manager.recommended_concurrency(64),
+        "concurrencyHint": manager.recommended_concurrency(manager.preferred(), 64),
         "uptimeSeconds": manager.uptime().as_secs(),
     })
 }

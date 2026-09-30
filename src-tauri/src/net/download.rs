@@ -1832,7 +1832,7 @@ pub async fn download_batch(tasks: Vec<DownloadTask>, opts: BatchOptions) -> Res
             _ => 1,
         }
         .max(1);
-        let concurrency = manager.recommended_concurrency(want);
+        let concurrency = manager.recommended_concurrency(opts.source, want);
 
         if round > 0 {
             /*
@@ -2764,7 +2764,8 @@ mod tests {
         let (part, dir) = tmp_part("throttle");
 
         let manager = SourceManager::for_test();
-        let before = manager.recommended_concurrency(64);
+        let probe_src = Source::from_url(&server.url());
+        let before = manager.recommended_concurrency(probe_src, 64);
 
         let err = download_single(
             &manager,
@@ -2790,10 +2791,10 @@ mod tests {
             "★ 识别出限流页之后必须冷却这个源（老代码永远走不到这一步）"
         );
         assert!(
-            manager.recommended_concurrency(64) < before,
+            manager.recommended_concurrency(probe_src, 64) < before,
             "★ 并发必须真的降下来：{} → {}",
             before,
-            manager.recommended_concurrency(64)
+            manager.recommended_concurrency(probe_src, 64)
         );
         assert_eq!(server.ranges().len(), 1, "没带 Range 的第一次请求就够判定了");
 
