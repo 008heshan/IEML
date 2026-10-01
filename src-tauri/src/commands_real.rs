@@ -2778,9 +2778,42 @@ pub async fn run_loader_installer(
         let _ = std::fs::write(&profiles, minimal.to_string());
     }
 
-    // ④ 跑 installer（走 BMCLAPI 镜像，避免官方 maven 直连）
+    // ④ 跑 installer
     on_progress(format!("运行 {kind} 安装器（会联网下载库，可能需要几分钟）"));
-    let mirror_maven = format!("{}/maven", mirror::BMCLAPI_BASE);
+    /*
+     * ★★★★ 2026-10-01（用户报的真实错误）：
+     *   `forge 安装器退出码 exit code: 1`
+     *
+     *   Forge 自己的日志（`forge-1.20.1-47.4.20-installer.jar.log`）把原因写得很清楚：
+     *
+     *     java.io.FileNotFoundException:
+     *       https://bmclapi2.bangbang93.com/**mavenorg**/ow2/asm/asm/9.9.1/asm-9.9.1.jar
+     *                                              ^^^^^^ maven 与 org 之间少了一个斜杠
+     *     ...（asm-commons / asm-tree / asm-util / asm-analysis / eventbus / coremods 全是 404）
+     *     Failed to run processor: javax.net.ssl.SSLHandshakeException:
+     *       Remote host terminated the handshake
+     *     There was an error during installation
+     *
+     *   ## 两个原因叠在一起，而且**两个都是我们的**
+     *
+     *   ① **`--mirror` 的值少了结尾斜杠**：原来传 `{BMCLAPI}/maven`，而 Forge 把
+     *      它当**前缀**直接拼相对路径 ⇒ `mavenorg/...`。Forge 自己的 `AddSuffix`
+     *      会保证结尾斜杠，但从**命令行参数**进来时它不补。
+     *
+     *   ② 就算补上斜杠，**那条 maven 本身已经不可用**。真机实测（同一分钟）：
+     *        `…/maven/org/ow2/asm/asm/9.9.1/asm-9.9.1.jar` → **HTTP 000**（连不上）
+     *        `…/mavenorg/…`（拼错的那种）                → HTTP 404
+     *        `repo1.maven.org/maven2/…`（Maven Central） → **HTTP 000**（也不通）
+     *        `maven.minecraftforge.net/…/eventbus-…jar`  → **HTTP 200** ✅
+     *
+     *   ⇒ **不再传 `--mirror`**：让 Forge 用它自己的默认源（Forge 的 maven 实测能通）。
+     *     给一个坏镜像比不给更糟 —— 它会把**每一个**库都变成 404。
+     *
+     *   ★ 为什么原来加它：「避免官方 maven 直连」（见旧注释）。
+     *     那个顾虑在当时可能成立，但现在**实测反过来**：镜像不通、官方通。
+     *     这与本轮在别处踩到的是同一个形状（拿旧结论当永久结论）。
+     *   ★ 将来若要有镜像，判据是**先实测通**再写进来 —— 不是照着印象加。
+     */
     /*
      * ★★ **不弹黑框**（用户报："安装 Forge 调出来个啥也没有的 cmd 是何意味"）。
      *
@@ -2817,9 +2850,12 @@ pub async fn run_loader_installer(
         .arg("-jar")
         .arg(&jar)
         .arg("--installClient")
-        .arg(target_dir)
-        .arg("--mirror")
-        .arg(&mirror_maven);
+        .arg(target_dir);
+    /*
+     * ★ 不再传 `--mirror`（见上面那段说明）：BMCLAPI 的 maven 实测已不可用
+     *   （HTTP 000），而 Forge 的默认源实测 HTTP 200。
+     *   给一个坏镜像会把每一个库都变成 404。
+     */
     if let Some(dir) = jar.parent() {
         installer_cmd.current_dir(dir);
     }
@@ -2830,10 +2866,48 @@ pub async fn run_loader_installer(
         .map_err(|e| format!("运行 {kind} 安装器失败：{e}"))?;
 
     if !output.status.success() {
+        /*
+         * ★★★★ 2026-10-01：**把安装器自己的输出带上**。
+         *
+         *   用户看到的那条错误原来是 `forge 安装器退出码 exit code: 1：` ——
+         *   **冒号后面是空的**，因为 Forge 把细节写进了它自己的日志文件
+         *   （`<installer>.jar.log`），stdout/stderr 上什么都没有。
+         *
+         *   于是"装 Forge 失败"这件事在现场只留下一句没有信息的话，
+         *   而真正的原因（`mavenorg/...` 那个拼错的 URL）要去缓存目录翻日志
+         *   才看得到 —— 这次就是这么查出来的。
+         *
+         *   ⇒ 失败时把 stdout / stderr 的**尾部**带上，并**指名日志文件的路径**。
+         *     尾部而不是全部：安装器输出可以很长，而错误总在最后。
+         *   ★ `.output()` 已经把它们收走了（没有漏到控制台），所以这不涉及
+         *     "弹黑框"那个问题。
+         */
+        let tail = |b: &[u8]| -> String {
+            let s = String::from_utf8_lossy(b);
+            let lines: Vec<&str> = s.lines().rev().take(12).collect();
+            lines.into_iter().rev().collect::<Vec<_>>().join("\n")
+        };
+        let mut detail = String::new();
+        let err_tail = tail(&output.stderr);
+        let out_tail = tail(&output.stdout);
+        if !err_tail.trim().is_empty() {
+            detail.push_str(&format!("\n--- stderr 末尾 ---\n{err_tail}"));
+        }
+        if !out_tail.trim().is_empty() {
+            detail.push_str(&format!("\n--- stdout 末尾 ---\n{out_tail}"));
+        }
+        // 安装器自己写的日志（比 stdout 详细得多）—— 存在就报出路径
+        let log_path = {
+            let mut p = jar.clone().into_os_string();
+            p.push(".log");
+            std::path::PathBuf::from(p)
+        };
+        if log_path.is_file() {
+            detail.push_str(&format!("\n完整日志：{}", log_path.display()));
+        }
         return Err(format!(
-            "{kind} 安装器退出码 {}：{}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
+            "{kind} 安装器退出码 {}{detail}",
+            output.status
         ));
     }
 
