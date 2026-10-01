@@ -302,7 +302,41 @@ pub fn candidate_urls(original: &str, preferred: Source) -> Vec<(Source, String)
     //     这时候选列表再长也没用，只能靠引擎重试。别把候选数当成可用性保证。
     if let Some(m) = mcimirror_url(original) {
         if m != official {
-            return vec![(Source::Bmclapi, m), (preferred, official)];
+            /*
+             * ★★★★ 2026-10-01（用户）：「**开始下载的速度还是很慢**」。
+             *
+             *   ## 这一行原来把 `preferred` 放在**官方**那一侧
+             *
+             *   `[(Bmclapi, 镜像), (preferred, 官方)]` —— 也就是说
+             *   "第二个候选"用的是**全局优先源**的标签。而那个全局优先源
+             *   是**启动期探测**算出来的，探测打的端点是：
+             *
+             *     piston-meta.mojang.com / libraries.minecraft.net / meta.fabricmc.net
+             *
+             *   —— **全是 Mojang 那条路**。它与 `cdn.modrinth.com` /
+             *   `mod.mcimirror.top` **是完全不同的主机**。
+             *   ⇒ 拿 A 路的表现去给 B 路排序，是"整合包被送去慢源"的成因。
+             *
+             *   ## 真机实测（同一分钟、同一台机器）
+             *
+             *     Modrinth 官方 cdn      **10,456 B/s**（10 KB/s）
+             *     mcimirror 镜像        **1,181,902 B/s**（1.15 MB/s）  ← 快 113 倍
+             *     Mojang libraries            2,852 B/s（2.8 KB/s）
+             *
+             *   ⇒ 第三方 CDN 这一类**不再理会 `preferred`**：两个候选的
+             *     标签**写死**（镜像走 Bmclapi、官方走 Mojang），顺序固定为
+             *     "镜像在前"。谁快谁慢由**引擎在这条路上的实测**决定
+             *     （`note_slow` 冷却 + 重试换源），而不是由 Mojang 路的探测决定。
+             *
+             *   ★ 为什么不是"官方在前"：那条路实测 10 KB/s（113 倍差距），
+             *     而且 `note_slow` 现在会在它慢时把它冷却掉 ——
+             *     但**第一次**就不该把它排在前面，用户的时间经不起"先试错的"。
+             *   ★ 保留 `preferred` 的那个分支仍然存在（下面 `mirrored == official`
+             *     那一条）：没有镜像可换的域（Adoptium / Mojang 自己的域）
+             *     该完全听 `preferred` —— 那些域**正是探测打的主机**，
+             *     探测对它们有直接意义。
+             */
+            return vec![(Source::Bmclapi, m), (Source::Mojang, official)];
         }
     }
 
@@ -811,6 +845,48 @@ mod tests {
         assert_eq!(c[0].0, Source::Mojang, "库/资源当前是官方优先（实测镜像 302）");
         assert_eq!(c[1].0, Source::Bmclapi, "镜像必须仍在候选里（兜底）");
         assert_ne!(c[0].1, c[1].1, "两个候选不能是同一个 URL");
+    }
+
+    /// ★★★★ 2026-10-01（用户）：「**开始下载的速度还是很慢**」。
+    ///
+    ///   **第三方 CDN（Modrinth / CurseForge 的文件与接口）不许听 `preferred`。**
+    ///
+    ///   成因是真机上量出来的：`preferred` 由**启动期探测**算出来，而探测
+    ///   只打 `piston-meta.mojang.com` / `libraries.minecraft.net` /
+    ///   `meta.fabricmc.net` —— **全是 Mojang 那条路**。
+    ///   它跟 `cdn.modrinth.com` / `mod.mcimirror.top` 是完全不同的主机。
+    ///
+    ///   同一分钟的实测：
+    ///     Modrinth 官方 cdn    **10,456 B/s**（10 KB/s）
+    ///     mcimirror 镜像      **1,181,902 B/s**（1.15 MB/s）← 快 113 倍
+    ///
+    ///   ⇒ 拿 Mojang 路的探测去给这条路排序，会把用户送去 10 KB/s。
+    ///     所以这里**固定**为"镜像在前"，两个候选的标签也写死 ——
+    ///     谁快谁慢交给**引擎在这条路上的实测**（`note_slow` 冷却 + 换源）。
+    #[test]
+    fn third_party_cdn_ignores_global_preference() {
+        for url in [
+            "https://cdn.modrinth.com/data/AA/versions/BB/x.jar",
+            "https://api.modrinth.com/v2/project/sodium",
+        ] {
+            for pref in [Source::Mojang, Source::Bmclapi] {
+                let c = candidate_urls(url, pref);
+                assert_eq!(c.len(), 2, "{url} 应当有两个候选：{c:?}");
+                assert_eq!(
+                    c[0].0,
+                    Source::Bmclapi,
+                    "★ 第三方 CDN 必须镜像在前（preferred={:?}）—— \
+                     按 Mojang 路的探测排序会送去 10 KB/s：{c:?}",
+                    pref
+                );
+                assert_eq!(
+                    c[1].0,
+                    Source::Mojang,
+                    "官方是第二个候选，标签写死为 Mojang（同样不许被 preferred 改）：{c:?}"
+                );
+                assert_ne!(c[0].1, c[1].1, "两个候选不能是同一个 URL（那是假回退）");
+            }
+        }
     }
 
     #[test]

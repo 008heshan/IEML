@@ -125,6 +125,27 @@ impl SourceStats {
     }
 }
 
+/// 由**实测吞吐**折算的分数（对数刻度，见 `SourceManager::score`）。
+///
+/// ★ 为什么用对数：实测的链路速度会差几个数量级 ——
+///   官方 `cdn.modrinth.com` **10 KB/s**、镜像 **1.15 MB/s**（差 113 倍）。
+///   线性刻度下这个差距会在"成功率 ±100"面前消失（那正是原来的毛病）；
+///   对数把它变成明确的几十点差距，而 10 KB/s 与 20 KB/s 这种小差别
+///   仍然只是几分（不值得为它换源）。
+///
+/// 刻度：64 KB/s → 0 分，1 MB/s → +24，4 MB/s → +36，64 KB/s 以下递减。
+pub fn speed_score(bps: u64) -> i64 {
+    if bps == 0 {
+        // 从来没量到过速度（没成功过）→ 中性偏负，不奖励也不至于判死
+        return -10;
+    }
+    // log2(bps / 64KB)：64KB → 0，128KB → 1，1MB → 4，16MB → 8
+    let ratio = (bps as f64 / (64.0 * 1024.0)).max(0.01);
+    let l = ratio.log2();
+    // 每档 6 分，并夹在 [-30, +60]
+    ((l * 6.0).round() as i64).clamp(-30, 60)
+}
+
 /// 源管理器：全局单例，跨文件共享同一个源的健康状态。
 ///
 /// 为什么必须是全局的：429 是**对源的整体限流**，不是针对某个文件。
@@ -214,6 +235,28 @@ impl SourceManager {
         f(guard.entry(source).or_default())
     }
 
+    /// ★★★★ 2026-10-01：**这个源有没有被真正试过**。
+    ///
+    ///   ★ 目前没有调用方 —— 保留它是为了把下面这条结论留在代码里，
+    ///     免得下一个人（或下一轮的我）再想"用探测去判第三方路"：
+    ///
+    ///   探测只打 `probe::PROBE_URLS`（piston-meta / libraries / fabric meta
+    ///   —— 全是 **Mojang 那条路**），而 Modrinth 整合包走的是
+    ///   `cdn.modrinth.com` / `mcimirror.top`，**完全不同的主机**。
+    ///   拿 A 路的表现去给 B 路排序，正是"整合包被送去 10 KB/s"的成因
+    ///   （真机：官方 10 KB/s vs 镜像 1.15 MB/s，差 113 倍）。
+    ///
+    ///   ★ 但**不能**因此把探测从评分里拿掉：探测打的那些主机正是
+    ///     libraries / piston-meta 的**真实下载主机**，对那条路它有直接意义
+    ///     （三条测试钉着这一点：`dead_domestic_source_yields_to_official`
+    ///     等都要求探测能生效）。
+    ///   ⇒ 正确的修法是**在排序那一层区分资源类别**，见
+    ///     `mirror::candidate_urls` 里"第三方 CDN"那一段：那一段不再理会
+    ///     `preferred`，直接按实测证据排。
+    pub fn has_real_traffic(&self, source: Source) -> bool {
+        self.with(source, |s| s.attempts > 0)
+    }
+
     /// **优先分**：越高越优先。
     ///
     /// 由三部分构成：
@@ -236,10 +279,28 @@ impl SourceManager {
             }
             let attempts = s.attempts.max(1) as i64;
             let successes = s.successes as i64;
-            // 成功率 0~100 为主项，速度做微调（每 MB/s 加 1 分，最多 50 分）
-            let rate = successes * 100 / attempts;
-            let speed_bonus = (s.bytes_per_second() / (1024 * 1024)).min(50) as i64;
-            let mut score = rate + speed_bonus - (s.rate_limited.min(20) as i64) * 2;
+            /*
+             * ★★★★ 2026-10-01：**成功率封顶 100 ⇒ 分不出快慢**。
+             *
+             *   原来只有这一项主判据（`rate` 0~100）：
+             *     · 从没试过 → 0 分；成功过一次 → 100 分（封顶）
+             *   于是"1.15 MB/s 的镜像"与"10 KB/s 的官方"**并列 100 分**，
+             *   谁先谁后由那个跨主机的 TTFB 探测决定 —— 而它判错了（见上）。
+             *
+             *   ⇒ 主判据换成**实测吞吐的对数**（见 `speed_score`）。
+             *     对数是因为链路速度会差几个数量级：10 KB/s 与 1 MB/s
+             *     差 100 倍，线性会把它压成一个可忽略的小差别。
+             */
+            let mut score = speed_score(s.bytes_per_second()) - (s.rate_limited.min(20) as i64) * 2;
+            /*
+             * 从没成功过时给成功率的**惩罚**（而不是奖励 0）：
+             *   0 分意味着"和没试过并列"，而现在我们有更细的速度分了。
+             *   仍然保留一点成功率的影响：反复失败的源该沉下去。
+             */
+            if attempts > 1 {
+                let rate = successes * 100 / attempts;
+                score += (rate - 50) / 5; // 50% 为中性，±10 分封顶
+            }
 
             // ② 策略：国内优先
             if source == Source::Bmclapi {
