@@ -1353,8 +1353,52 @@ pub fn migrate_data_root(old: &Path, new: &Path) -> std::io::Result<u64> {
             flattened.join(" / ")
         );
     }
-    if legacy_instances.is_dir() {
+    /*
+     * ★★★★ 2026-10-01（用户）：「**这些不可用版本，删除后，在重启启动器后会复活**」。
+     *
+     *   ## 这里就是那个"复活"的最后一环
+     *
+     *   真机证据：`%APPDATA%\IEML\instances\`（老数据根）里躺着
+     *   `vanilla-1122`（11 个 `natives` 里的 dll）与 `vanilla-262`（26 个）——
+     *   **与盘上"复活"出来的内容一字不差**，而盘上那两份的创建时间
+     *   正好是每次启动的时刻。⇒ 它们是从这里被**复制回来**的。
+     *
+     *   而这一段**每次启动都跑**（`lib.rs` 遍历 `legacy_data_roots()` 逐个调
+     *   `migrate_data_root`），`instance_catalog_repair` 那套"只做一次"的
+     *   `.instances-merged` 标记**管不到它** —— 这就是同一个"补一次"动作
+     *   存在**两份实现、只有一份带阀门**的老毛病。
+     *
+     *   ## 阀门按"想搬的东西"分，而不是共用一个标记
+     *
+     *   两条合并的**源不同**，所以不能共用一个标记：
+     *     · `instance_catalog_repair`：`<当前游戏根>/instances/` → `versions/`
+     *       （布局迁移，标记 = `versions/.instances-merged`）；
+     *     · 这里：`<老数据根>/instances/` → `versions/`
+     *       （换过数据根的人才会走到）。
+     *   共用会让先跑的那一步把后跑的那一步**永久关掉**（旧根的数据再也搬不过来）。
+     *   ⇒ 这里用**目的地 + 老根路径**算出来的独立标记。
+     *
+     *   ★ 标记只在**真的搬过东西之后**写（`copied` 增量 > 0）：
+     *     老根里暂时没内容时不留痕，将来它真有内容了还能搬过来。
+     *   ★ 墓碑仍然是最外层的保护（`merge_instances_by_mtime` 认它）——
+     *     标记只是省掉"每次都白比一遍"，不是"以后都不管了"。
+     */
+    let legacy_marker = versions_dest.join(legacy_merge_marker_name(old));
+    if legacy_instances.is_dir() && !legacy_marker.is_file() {
+        let before = copied;
         copied += merge_instances_by_mtime(&legacy_instances, &versions_dest)?;
+        if copied > before {
+            let note = format!(
+                "老数据根 {} 的 instances/ 已并入这里（一次性）。\n\
+                 有它就不会再重复比对；删掉它会重新比一次（不会重复下载）。\n",
+                old.display()
+            );
+            if let Err(e) = std::fs::create_dir_all(&versions_dest) {
+                say!("[IEML/paths] 写合并记号前建目录失败（下次启动会再比一遍）：{e}");
+            } else if let Err(e) = std::fs::write(&legacy_marker, note) {
+                say!("[IEML/paths] 写合并记号失败（下次启动会再比一遍）：{e}");
+            }
+        }
     }
 
     /*
@@ -2703,6 +2747,19 @@ fn copy_tree_rule_skip(
     Ok(bytes)
 }
 
+/// **换过数据根时**那一次合并的记号文件名（每个老根一个，见 `migrate_data_root`）。
+///
+/// 与 `LEGACY_MERGED_MARKER`（`instance_catalog_repair` 用的那个）**刻意不同**：
+/// 两条合并的源不一样（当前根 vs 老数据根），共用一个标记会让先跑的
+/// 把后跑的永久关掉。名字里带上老根的路径指纹，换过多个根时各记各的。
+fn legacy_merge_marker_name(old: &Path) -> String {
+    use sha1::{Digest, Sha1};
+    let mut h = Sha1::new();
+    h.update(old.to_string_lossy().as_bytes());
+    let d = h.finalize();
+    format!(".instances-merged-{:x}", &d[..4].iter().fold(0u32, |a, b| (a << 8) | *b as u32))
+}
+
 /// 把目录树列成一个字符串列表（最多 `depth` 层），**只为调试**。
 ///
 ///   `IEML_DEBUG_TREE=1` 时 `migrate_data_root` 会打印老/新两边的树。
@@ -3570,6 +3627,79 @@ mod tests {
             to.join("vanilla-262").join("options.txt").is_file(),
             "没被删过的版本必须照常搬过来（过滤不能误伤）"
         );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// ★★★★ 2026-10-01（用户）：「**这些不可用版本，删除后，在重启启动器后会复活**」。
+    ///
+    ///   真机证据把成因钉死了：`%APPDATA%\IEML\instances\`（**老数据根**）里躺着
+    ///   `vanilla-1122`（11 个 natives dll）与 `vanilla-262`（26 个）——
+    ///   与盘上"复活"出来的内容**一字不差**，而盘上那两份的创建时间
+    ///   正是每次启动的时刻。⇒ 它们是 `migrate_data_root` 从老根合并回来的。
+    ///
+    ///   这条测试钉住两件事（缺一不可）：
+    ///     ① **老根里的版本会被搬过来** —— 这是那个功能本身，不能被修坏
+    ///        （换过数据根的人靠它找回版本）；
+    ///     ② 用户**删过之后**（墓碑里有名字）再启动 —— **不许再搬回来**。
+    ///
+    ///   ★ 为什么 ① 必须写进来：这一段的"阀门"（一次性标记）是**新增**的，
+    ///     而我最容易犯的错就是"加了阀门把功能一起关掉，然后测试全绿"。
+    ///     ——这个仓库为此栽过：那次 `retain` 把**所有**实例都滤掉了，
+    ///     而"同步成功（1 → 0）"那条判据看起来特别漂亮。
+    #[test]
+    fn 换数据根时删过的版本不许被老根搬回来() {
+        let tmp = std::env::temp_dir().join(format!("ieml-root-mig-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let old = tmp.join("old");
+        let new = tmp.join("new");
+        let old_instances = old.join(LEGACY_INSTANCES_NAME);
+        let dest = new.join(GAME_DIR_NAME).join(VERSIONS_DIR_NAME);
+
+        // 老根里有一个**没有被删过**的版本（它必须能搬过来）
+        std::fs::create_dir_all(old_instances.join("keep-me").join("natives")).unwrap();
+        std::fs::write(old_instances.join("keep-me").join("natives").join("a.dll"), b"x").unwrap();
+        std::fs::create_dir_all(new.join(GAME_DIR_NAME)).unwrap();
+
+        let copied = migrate_data_root(&old, &new).expect("第一次搬家");
+        assert!(copied > 0, "老根里的版本必须被搬过来");
+        assert!(
+            dest.join("keep-me").join("natives").join("a.dll").is_file(),
+            "★ 没被删过的版本要照常搬（防止我把这个功能一起修坏）"
+        );
+
+        /*
+         * 用户把它删了 —— 磁盘上那一份没了，而**老根那一份仍然留着**
+         * （真机就是这样：`%APPDATA%\IEML\instances\vanilla-1122` 一直躺在盘上，
+         *  `migrate_data_root` 的注释也写着"源目录原样留着，用户自己删"）。
+         */
+        std::fs::remove_dir_all(dest.join("keep-me")).unwrap();
+        assert!(!dest.join("keep-me").exists(), "删干净了才继续");
+
+        /*
+         * 再启动一次（第二次搬家）。
+         *
+         * ★ 这一刻状态正是"复活"的条件：**目的地没有、老根里有**。
+         *   旧代码在这里会把它原样复制回来 —— 用户看到的就是
+         *   「删除后，重启启动器又复活」，而且创建时间是每次启动的时刻。
+         */
+        migrate_data_root(&old, &new).expect("第二次搬家");
+
+        assert!(
+            !dest.join("keep-me").exists(),
+            "★★ 删掉之后又被老数据根搬回来了 —— 这就是「重启启动器后复活」。\
+             真机上它长这样：`vanilla-1122`（11 个 natives dll）不停地回来，\
+             创建时间是每次启动的时刻。"
+        );
+        /*
+         * ★ 这里靠的是"**真的搬过东西才写、写了就不再搬**"那枚一次性标记。
+         *   墓碑是**更内层**的保护（`merge_instances_by_mtime` 认它），
+         *   由 `合并老目录时不许把墓碑里的版本搬回来` 那条测试钉着 ——
+         *   两条合起来才是完整的判据：
+         *     · 墓碑：**用户删过的**不搬（判据是用户意图）；
+         *     · 标记：**搬过一轮之后**不再重搬（判据是"这个动作是迁移，不是同步"）。
+         *   只有前者的话，没进墓碑的目录每次启动都会被比一遍；
+         *   只有后者的话，迁移那一轮就会把删过的搬回来。
+         */
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

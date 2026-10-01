@@ -217,6 +217,19 @@ function burySlug(slug: string, current: readonly string[]): string[] {
 interface AppContextValue {  state: AppState;
   backend: Backend;
 
+  /**
+   * ★★★★ **把一个版本目录名记进墓碑**（2026-10-01）。
+   *
+   *   存在的理由：删除有**两条路**（有账本记录 → `removeInstance`；
+   *   没有记录 → 版本列表直接删目录）。原来只有前者写墓碑，
+   *   于是后者删掉的目录**下次启动会被 `migrate_data_root` 从老数据根合并回来**
+   *   —— 用户看到的就是「这些不可用版本，删除后，在重启启动器后会复活」。
+   *
+   *   ⇒ 把"记墓碑"这件事暴露出来，让两条路留下**同一个后果**。
+   *     谁删版本目录谁就得调它 —— 判据只有一份（`burySlug`）。
+   */
+  buryVersion: (slug: string) => void;
+
   /* --- 导航 --- */
   go: (page: PageId) => void;
   /** 进入某个版本的二级页（版本列表里双击） */
@@ -1546,6 +1559,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
    *
    * 返回删掉的字节数（0 = 目录本来就不存在）。
    */
+  /**
+   * 记墓碑（两条删除路径共用）。见 `AppContextValue['buryVersion']` 的说明。
+   * ★ 读的是 `prefsRef`（不是 `state.prefs`）—— 与 `removeInstance` 同一个理由：
+   *   回调身份要稳定，否则每次改设置都会换一个新函数。
+   */
+  const buryVersion = useCallback((slug: string) => {
+    if (!slug) return;
+    dispatch({
+      type: 'prefs/patch',
+      patch: { deletedVersions: burySlug(slug, prefsRef.current.deletedVersions) },
+    });
+  }, []);
+
   const removeInstance = useCallback(
     async (id: string, permanent = false): Promise<number> => {
       const inst = instancesRef.current.find((i) => i.id === id);
@@ -1801,6 +1827,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     createInstance,
     updateConfig,
     removeInstance,
+    buryVersion,
     renameInstance,
     duplicateInstance,
     rescanJava,

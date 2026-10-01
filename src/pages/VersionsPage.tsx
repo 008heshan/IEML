@@ -106,7 +106,7 @@ function menuLayout(anchor: DOMRect, height: number): MenuPos {
 export function VersionsPage() {
   /** 应用自己的确认弹窗（`window.confirm` 在这个壳里是坏的，见 `ui/confirm.tsx`） */
   const confirm = useConfirm();
-  const { state, goDownloadTab, goDownloadFor, openVersion, toast, removeInstance, duplicateInstance, renameInstance, refreshInstances, folder, reloadAfterRootChange, packIcons, backend } =
+  const { state, goDownloadTab, goDownloadFor, openVersion, toast, removeInstance, duplicateInstance, renameInstance, refreshInstances, folder, reloadAfterRootChange, packIcons, backend, buryVersion } =
     useApp();
   const { api } = useRealApi();
   /** 隔离判定（ADR-005）：后端算好的结论，列表里只显示 */
@@ -911,8 +911,30 @@ export function VersionsPage() {
                      *
                      *   ★ 不做"先替它建一条记录再删" —— 那是为了删除而创建数据，
                      *     而这个项目已经在"补记录"上栽过两次（删掉的版本又回来）。
+                     *
+                     * ★★★★ 2026-10-01（用户）：「**这些不可用版本，删除后，在重启
+                     *   启动器后会复活**」—— 查到最后，这条分支是**最后一个缺口**：
+                     *
+                     *   删除有两条路，而**只有 `removeInstance` 会写墓碑**。
+                     *   走这条分支删掉的目录（当时在"不能用"分组里、没有账本记录）
+                     *   **没有墓碑** —— 于是下一次启动，`migrate_data_root` 从老数据根
+                     *   （`%APPDATA%\IEML\instances`）**按 mtime 又把它合并回来**：
+                     *   内容一字不差，创建时间是"这次启动"。
+                     *   真机上 `vanilla-1122`（11 个 natives）与 `vanilla-262`
+                     *   （26 个 natives）反复复活，就是这个形状。
+                     *
+                     *   ⇒ **删目录这条路也必须写墓碑**。墓碑是"用户删过它"的记录，
+                     *     与"它有没有账本记录"无关 —— 两条删除路径必须留下同一个后果，
+                     *     否则判据就会从没留的那一条漏过去（这个仓库的老毛病）。
                      */
                     if (!rec.real) {
+                      /*
+                       * ★ 先写墓碑，再删磁盘。顺序与 `removeInstance` 一致：
+                       *   中间万一失败，最坏是"墓碑写了但没删成"（下次列表里
+                       *   仍能看到它，用户可以再删一次）；反过来则是"删成了却没墓碑"
+                       *   —— 那正是复活。
+                       */
+                      buryVersion(rec.dir);
                       return backend
                         .deleteVersionDir(rec.dir, copy.permanent)
                         .then((bytes) =>
