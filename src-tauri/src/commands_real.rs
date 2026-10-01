@@ -3303,6 +3303,61 @@ pub async fn launch_minecraft(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<LaunchStarted, LaunchError> {
+    /*
+     * ★★★★ 2026-10-01（用户）：「**这些不可用版本，删除后，在重启启动器后会复活**」。
+     *
+     *   ## 现场证据（真机 `D:\IEML\.minecraft\versions`）
+     *
+     *   · 删除**是成功的**：回收站里躺着 `vanilla-1122`（两条）、`vanilla-262`、
+     *     `26.3`、`26.3-fabric-0.19.5` …，原位置都是 `…\versions`；
+     *   · 但盘上**又有** `vanilla-1122` 了，**创建时间 = 今天 10:11:56**
+     *     （回收站里那份是 2:32 删的），而里面只有一个 `natives\`，
+     *     装着 **9/25 时间的 11 个 .dll**。
+     *
+     *   ⇒ 「新目录 + 旧文件」只有一个解释：**先删掉、之后又被某种流程重新建了出来**。
+     *     写下 `natives/` 的是**安装/自愈那条路**（`installer` 的
+     *     `instance.join("natives")`），而启动前的自愈正是从
+     *     `launch_minecraft` 这里进去的（下面 `prepare_spec(.., true, ..)`）。
+     *
+     *   ## 所以：**墓碑上的版本不许启动**
+     *
+     *   `prefs.deletedVersions`（墓碑）本来就是"用户删过它"的记录 ——
+     *   `pickAutoAdopt` 早就在用它挡住"自动认领"。但**启动这条路没看它**：
+     *   一个已经被删掉的版本，只要界面上还留着一条目标（或别的页面派发了
+     *   `ieml:launch-request`），就能启动 —— 而启动的第一步是把目录**建回来**。
+     *   目录一回来，下一轮扫盘就又把它列出来："复活"。
+     *
+     *   ★ 判据放在**这里**（启动入口）而不是 `prepare_spec`：自愈也被别处调用，
+     *     而"不许启动"是启动这一件事的规矩。
+     *   ★ 只有墓碑**且目录不完整**时才拦：如果用户后来真的把版本装回来了
+     *     （目录里有版本 JSON），那条墓碑就该失效 —— 否则删过一次的版本
+     *     永远装不回来。
+     */
+    {
+        let slug = req.instance_id.clone();
+        if platform::buried_version_dirs().contains(&slug.to_lowercase()) {
+            let vdir = state.paths().instance_root_dir(&slug);
+            let has_json = std::fs::read_dir(&vdir)
+                .map(|it| {
+                    it.flatten().any(|f| {
+                        f.path().is_file()
+                            && f.path().extension().map(|x| x == "json").unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false);
+            if !has_json {
+                return Err(LaunchError::new(
+                    "deleted-version",
+                    format!(
+                        "这个版本（{slug}）已经被删除过了，不能启动 —— 启动它会把刚删掉的\
+                         目录再建出来（那正是「删了又复活」的成因）。要重新用它请去\
+                         「下载」页重新安装。"
+                    ),
+                ));
+            }
+        }
+    }
+
     {
         /*
          * ★★ 与 `running_games` 同样的修法（2026-09-17）：**不要持注册表锁去抢子进程锁**。
