@@ -911,6 +911,18 @@ function ModpackTab({
                  */
                 projectId: pack.id,
                 versionId: first.id,
+                /*
+                 * ★★★★ 2026-10-01：**把包体的 sha1 传下去**。
+                 *
+                 *   原来包体完全不校验，于是"下下来了但内容坏了"只会在解压时
+                 *   暴露成 `invalid Zip archive: Could not find EOCD` ——
+                 *   一句与"下载"无关的话，用户看了也不知道怎么办。
+                 *
+                 *   而这个 sha1 **早就在手上**（`files[].hashes.sha1`，
+                 *   接口返回过、我们一直在用它显示文件信息）。
+                 *   有了它，坏包在**下载阶段**就被发现并换源重下。
+                 */
+                packSha1: file.hashes.sha1,
               },
               (e) => {
                 patch({

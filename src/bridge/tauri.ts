@@ -1418,6 +1418,17 @@ export const modpack = {
        */
       projectId?: string;
       versionId?: string;
+      /**
+       * ★★★★ 2026-10-01：**包体的 SHA1**（`files[].hashes.sha1`）。
+       *
+       *   原来包体**完全不校验**，于是"下下来了但内容坏了"只会在解压时暴露成
+       *   `invalid Zip archive: Could not find EOCD` —— 一句与"下载"无关的话，
+       *   用户完全不知道该怎么办。
+       *
+       *   有了它，坏包在**下载阶段**就被发现并换源重下。
+       *   ★ 给不出就传 undefined（= 不校验）：**不假装校验过**。
+       */
+      packSha1?: string;
     },
     onProgress?: (e: ModpackProgressEvent) => void,
   ): Promise<ModpackInstallResult> => {
@@ -1439,6 +1450,8 @@ export const modpack = {
         packVersion: opts.packVersion ?? null,
         projectId: opts.projectId ?? null,
         versionId: opts.versionId ?? null,
+        /* ★ 2026-10-01：包体的 sha1 —— 有它，坏包在下载阶段就被发现 */
+        packSha1: opts.packSha1 ?? null,
         concurrency: opts.concurrency ?? null,
         size: opts.size ?? null,
       });

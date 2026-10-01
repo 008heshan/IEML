@@ -7610,6 +7610,18 @@ pub async fn modpack_install(
      */
     project_id: Option<String>,
     version_id: Option<String>,
+    /*
+     * ★★★★ 2026-10-01：**包体的 SHA1**（界面上早就拿得到
+     *   `ModrinthVersion.files[].hashes.sha1`，只是以前没往下传）。
+     *
+     *   真机上出现过「包体下下来了、但内容坏了」：用户看到的是解压阶段的
+     *   `invalid Zip archive: Could not find EOCD` —— 一句与"下载"毫无关系的话。
+     *   而这一行原来是 `String::new()`（不校验）。
+     *
+     *   有了它，坏包在**下载阶段**就被发现并换源重下。
+     *   ★ 拿不到时仍然是空串（= 不校验）：**不假装校验过**。
+     */
+    pack_sha1: Option<String>,
     concurrency: Option<usize>,
     /*
      * `size` = 包体大小（Modrinth 的文件接口给的就是这个数）——**只用来算进度百分比**。
@@ -7648,7 +7660,24 @@ pub async fn modpack_install(
     let task = download::DownloadTask::new(
         pack_path.clone(),
         url.clone(),
-        String::new(),
+        /*
+         * ★★★★ 2026-10-01：**包体也要校验**（这是补上的一个真缺口）。
+         *
+         *   用户的报错是 `invalid Zip archive: Could not find EOCD` ——
+         *   包体下下来了（86.17 / 86.2 MB），但**内容坏了**。
+         *   而这一行原来是 `String::new()`（= 不校验）。
+         *
+         *   ★ 别的安装命令都收 `sha1`（见 `install_version` 那一处：
+         *     "上游给的 sha1 直接用来校验"），唯独包体没传 ——
+         *     因为前端**没把它传下来**（界面早就拿得到
+         *     `ModrinthVersion.files[].hashes.sha1`）。
+         *
+         *   ⇒ 现在由前端把 sha1 传进来。有它，坏包会在**下载阶段**就被发现
+         *     并换源重下，而不是等到解压时才报一句用户看不懂的 EOCD。
+         *   ★ 拿不到 sha1 时仍然是空串（= 不校验）：**不假装校验过** ——
+         *     这与这个仓库其它地方的纪律一致。
+         */
+        pack_sha1.unwrap_or_default(),
         pack_size,
         format!("整合包 {name}"),
     )
@@ -9697,6 +9726,12 @@ pub async fn pack_apply_update(
         Some(v.version_number.clone()),
         Some(project),
         Some(v.id.clone()),
+        /*
+         * ★ 2026-10-01：升级这条路也**带上包体的 sha1**（与首次安装一致）——
+         *   `file.hashes.sha1` 就在这个 `ModrinthVersion` 里。
+         *   少了它，"首次安装会校验、升级不校验"就成了新的不对称。
+         */
+        file.hashes.get("sha1").cloned(),
         concurrency,
         // ★ 包体大小：进度百分比要用它（平台给了就给）
         Some(file.size),
