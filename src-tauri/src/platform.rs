@@ -2727,15 +2727,9 @@ fn copy_tree_rule_skip(
                     dst.display()
                 );
             }
-            // 半截的 .part 不该跟着搬家：新家会用新路径重新下
-            if src
-                .file_name()
-                .map(|n| {
-                    let s = n.to_string_lossy();
-                    s.contains(".part") || s.ends_with(".tmp")
-                })
-                .unwrap_or(false)
-            {
+            // 半截的 .part 与启动器自己的中间产物不该跟着搬家：
+            // 新家会用新路径重新下（判据只有一份，见 `is_launcher_transient_file`）
+            if is_launcher_transient_file(&name) {
                 continue;
             }
             // ★ 真正要写文件了才建目录（见上面的说明：空目录不复制）
@@ -2758,6 +2752,42 @@ fn legacy_merge_marker_name(old: &Path) -> String {
     h.update(old.to_string_lossy().as_bytes());
     let d = h.finalize();
     format!(".instances-merged-{:x}", &d[..4].iter().fold(0u32, |a, b| (a << 8) | *b as u32))
+}
+
+/// 顶层文件里哪些**不该跟着搬家**（与版本目录那套墓碑判据同一个目的）。
+///
+/// ★★★★ 2026-10-01：加它的直接原因是排查「删了又复活」时发现的**对称缺口** ——
+///   同一批 `versions/` 里的东西，保护是**按形状**给的：
+///
+///   | 形状 | 保护 |
+///   |---|---|
+///   | 目录（版本） | 墓碑（`buried_version_dirs`）—— 只有用户删过的才挡 |
+///   | **文件** | **完全没有** |
+///
+///   而 `versions/` 下确实有启动器自己写的文件（整合包安装留下的 `.mrpack`：
+///   真机上量到 **7.3 MB**，名字形如 `mrpack-{taskId}.mrpack`）。它们**永远不会
+///   进墓碑**（墓碑记的是"版本目录名"），于是每次换数据根/合并都会被**原样搬一遍**，
+///   白占空间、白花时间，而且看着像"我删过的东西又出现了"。
+///
+///   ★ 判据是**文件名形状**（启动器自己的中间产物），不是"用户删过的名字"——
+///     这一点与墓碑**刻意不同**：这些文件本来就是临时的，任何一份都不该被
+///     当成"用户的游戏数据"搬来搬去。
+///   ★ 顺带把 `.part` 那一套判据收进来（原来写在 `copy_tree_rule_skip` 里）：
+///     半截的下载片段搬到新家没有意义，新家会用新路径重新下。
+fn is_launcher_transient_file(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    if n.contains(".part") || n.ends_with(".tmp") {
+        return true;
+    }
+    // 整合包安装的中间物（装完就删，但中途失败/取消会留下）
+    if n.starts_with("mrpack-") && n.ends_with(".mrpack") {
+        return true;
+    }
+    // 合并记号本身不必跟着搬（每一侧各自判断"做过没有"）
+    if n.starts_with(".instances-merged") {
+        return true;
+    }
+    false
 }
 
 /// 把目录树列成一个字符串列表（最多 `depth` 层），**只为调试**。
