@@ -240,7 +240,20 @@ async fn 用户给的那个整合包到底慢在哪一步() {
      *     （跨进程比会被 CDN 的瞬时波动淹没 —— 这一点我在 ① 里已经见识过：
      *      同一个 URL 量到过 4 / 28 / 136 / 194 KB/s）。
      */
-    const BIG: &str = "https://cdn.modrinth.com/data/1KVo5zza/versions/CgcNnB7v/Fabulously.Optimized-v14.0.0-alpha.1.mrpack";
+        /*
+     * ★★★★ 2026-10-01（用户给了这个包）：「**这个大**」。
+     *
+     *   Better MC [FORGE] - BMC4 v28：**包体 113 MB**（Modrinth / Forge / 1.20.1）。
+     *   它比上面那个 162 KB 的包大 **700 倍** —— 而"包体"这一格是**单连接**下的
+     *   （`download_pack_body` 用 `concurrency: 1`，且分片已被实测否掉）。
+     *
+     *   所以这一个文件就能决定"整合包下载"是 40 秒还是 8 小时：
+     *     按实测的 4 KB/s   → 约 **8 小时**
+     *     按实测的 2865 KB/s → 约 **40 秒**
+     *   两条都在同一条 CDN 上量到过。
+     */
+    const BIG: &str =
+        "https://cdn.modrinth.com/data/4BV47HRn/versions/IGwlsu0n/Better%20MC%20%5BFORGE%5D%20-%20BMC4%20v28.mrpack";
     for (tag, chunked) in [("默认（单连接）", false), ("分片 8 段", true)] {
         if chunked {
             std::env::set_var("IEML_CHUNKED", "1");

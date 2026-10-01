@@ -705,6 +705,12 @@ function ModpackTab({
      *   ⇒ 删掉旧段，只保留今天成立的说法。
      */
     const isCf = packSource === 'curseforge';
+    /*
+     * ★ 任务 id 在 **try 之前**生成：任务会在读清单**之前**就建出来
+     *   （见下面那段"先建任务、再读清单"），而 catch 里要用同一个 id
+     *   把任务标成失败 —— 声明在 try 里面 catch 就看不见它。
+     */
+    const taskId = `modpack-${Date.now().toString(36)}`;
     setInstalling(true);
     try {
       /*
@@ -722,6 +728,47 @@ function ModpackTab({
        */
       let info: { mc_version: string | null; loader_kind: string | null; loader_version: string | null; client_file_count: number; name: string };
       let cfIds: { projectId: number; fileId: number; fileName: string; downloadUrl: string | null } | null = null;
+      /*
+       * ★★★★ 2026-10-01（用户）：「**任务根本不出现**」—— 根因就在这里。
+       *
+       *   原来的顺序是**先读清单、再建任务**：
+       *     `info = await api.modpack.inspect(file.url)`  ← 要**把整个包下下来**
+       *     ……然后才 `dispatchEvent('ieml:task-add', …)`
+       *
+       *   而 `inspect`（后端 `fetch_mrpack_index`）是按 URL 把整个 `.mrpack`
+       *   读进内存再解压找清单的 —— 用户给的 **Better MC 包体 113 MB**，
+       *   实测单连接下 **48 秒**。那 48 秒里**任务中心什么都没有**，
+       *   界面上就是"点了下载，什么也没发生"。
+       *
+       *   ⇒ **先建任务、再读清单**：任务中心立刻出现一条「正在读取整合包清单」，
+       *     读完再把"要装什么"补进去（`patch`）。这样"没有任何反馈"这段时间
+       *     在界面上就是**可见的**，而不是一片空白。
+       *
+       *   ★ 这也是这一整轮反复出现的那条纪律：**别让用户等一个没有反馈的过程**。
+       *     48 秒不是问题，"48 秒里看不出来在干什么"才是问题。
+       */
+      const taskId = `modpack-${Date.now().toString(36)}`;
+      window.dispatchEvent(
+        new CustomEvent('ieml:task-add', {
+          detail: {
+            id: taskId,
+            kind: 'install',
+            title: `整合包 ${name.trim() || pack.name}`,
+            detail: isCf ? 'CurseForge · 正在读清单' : '正在读取整合包清单',
+            status: 'running',
+            percent: 0,
+            finishedFiles: 0,
+            bytesPerSecond: 0,
+            currentFile: '',
+            etaSeconds: 0,
+          },
+        }),
+      );
+      const patchEarly = (p: Record<string, unknown>) =>
+        window.dispatchEvent(
+          new CustomEvent('ieml:task-patch', { detail: { id: taskId, patch: p } }),
+        );
+
       if (isCf) {
         const projectId = Number(pack.id);
         const fileId = Number(first?.id ?? 0);
@@ -751,32 +798,18 @@ function ModpackTab({
       const packName = name.trim() || info.name || pack.name;
       const slug = `pack-${Date.now().toString(36).slice(-6)}`;
 
-      // ★ 建任务：任务中心里能看到真实阶段与文件计数（不是假的进度条）
-      const taskId = `modpack-${Date.now().toString(36)}`;
-      window.dispatchEvent(
-        new CustomEvent('ieml:task-add', {
-          detail: {
-            id: taskId,
-            kind: 'install',
-            title: `整合包 ${packName}`,
-            /*
-             * ★ CF 的清单在后端读，所以这一刻还不知道"几个文件"——
-             *   如实写"正在读清单"，不要先编一个 0（进度事件随后会把它填上）。
-             */
-            detail: isCf
-              ? 'CurseForge · 正在读清单'
-              : `${info.mc_version}${
-                  info.loader_kind ? ` + ${info.loader_kind} ${info.loader_version ?? ''}` : ''
-                } · ${info.client_file_count} 个文件`,
-            status: 'running',
-            percent: 0,
-            finishedFiles: 0,
-            bytesPerSecond: 0,
-            currentFile: '',
-            etaSeconds: 0,
-          },
-        }),
-      );
+      /*
+       * ★ 清单读到了 —— 把"要装什么"补进那条已经存在的任务里。
+       *   （任务在上面就已经建好了，所以这一步不会再让界面空着。）
+       */
+      patchEarly({
+        title: `整合包 ${packName}`,
+        detail: isCf
+          ? 'CurseForge · 清单已读到'
+          : `${info.mc_version}${
+              info.loader_kind ? ` + ${info.loader_kind} ${info.loader_version ?? ''}` : ''
+            } · ${info.client_file_count} 个文件`,
+      });
       const patch = (p: Record<string, unknown>) =>
         window.dispatchEvent(
           new CustomEvent('ieml:task-patch', { detail: { id: taskId, patch: p } }),
@@ -876,6 +909,19 @@ function ModpackTab({
        *   等于把用户自己的操作说成故障。取消 = 正常结果，说清"停下了、文件保留"。
        */
       const why = e instanceof Error ? e.message : String(e);
+      /*
+       * ★ 2026-10-01：失败时**必须把那条任务标掉** —— 任务现在是**开工之前**
+       *   就建好的（见上面那段"先建任务、再读清单"），所以"读清单失败"
+       *   这种早期错误也会留下一条永远停在"运行中"的任务。
+       *   ★ 这里按 **id** 直接派发，不用下面那个 `patch` 闭包：
+       *     它在这一步可能还**没被赋值**（读清单就失败了的话），
+       *     用它会是暂时性死区（TDZ）报错 —— 把"错误处理"变成第二个错误。
+       */
+      window.dispatchEvent(
+        new CustomEvent('ieml:task-patch', {
+          detail: { id: taskId, patch: { status: 'failed', error: why } },
+        }),
+      );
       if (isCancellation(why)) {
         toast('info', '已取消安装', '已经下载的文件保留着，下次会从断点继续。');
       } else {
