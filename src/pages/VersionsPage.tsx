@@ -304,15 +304,6 @@ export function VersionsPage() {
     };
   }, [refreshDisk]);
 
-  const rows = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return state.instances.filter((i) => {
-      if (q && !i.config.name.toLowerCase().includes(q) && !i.mcVersion.includes(q)) return false;
-      if (filter === 'modded') return i.loader !== null || i.addons.length > 0;
-      if (filter === 'vanilla') return i.loader === null && i.addons.length === 0;
-      return true;
-    });
-  }, [state.instances, filter, query]);
 
   /**
    * ★★ 2026-09-25（用户给的 PCL 截图 + 「主页也有同样问题」）：
@@ -421,25 +412,16 @@ export function VersionsPage() {
    * 两边共用一份实现（不复制 JSX）。
    */
   const renderRow = (entry: VerEntry) => {
-    /* 当前文件夹里一个能用的版本都没有（多半是刚换过目录） */
+    /*
+     * ★ 2026-10-01：`kind === 'empty'` 那一支**删掉了**。
+     *   它渲染的是「这个文件夹里没有可用的版本」，而"这个文件夹里一个版本
+     *   都没有"现在由**组件的提前 return**（判据 `folderVers` 空）统一处理 ——
+     *   一处地方说一句话，不会出现两个空状态互相盖住（那正是"删完不进空状态"的成因）。
+     *   `VerEntry` 里仍留着 `empty` 这个形状，因为 `listEntries` 要用它表达
+     *   "筛选之后没有结果"（见列表底部那一支）。
+     */
     if (entry.kind === 'empty') {
-      return (
-        <div key="empty" className="ver-empty">
-          <EmptyState
-            icon={<IconBox />}
-            title="这个文件夹里没有可用的版本"
-            /*
-             * ★★ 2026-09-28（用户，截图）：这一格原来有两个按钮
-             *   （「去下载页装一份」+「新建/切换游戏目录」）—— 与右上角那排
-             *   是同一批动作，用户要求**全部删掉、永远不再加回来**。
-             *   这一页只说事实：当前这个文件夹里没有可用的版本；
-             *   文件夹路径就写在页头（「N 个版本 · 文件夹 …」），
-             *   要换文件夹用右上角那一个按钮，要装东西去「下载」页。
-             *   ★ 那句话以前由按钮说，现在由页头说（信息没有丢）。
-             */
-          />
-        </div>
-      );
+      return null;
     }
     /*
      * ★★★★ 2026-09-30（用户）：「**这个检测版本，太抽象了，不然咱们学学 PCL 怎么整的**」。
@@ -1106,7 +1088,33 @@ export function VersionsPage() {
   };
 
   /* ---------- 空状态 ---------- */
-  if (state.instances.length === 0) {
+  /*
+   * ★★★★ 2026-10-01（用户）：「**当有版本并删完后，不会进入这个界面**」。
+   *
+   *   ## 判据用的是**账本**，而这个文件夹里已经没有版本了
+   *
+   *   这一句原来写的是 `state.instances.length === 0` —— 也就是"账本里一条
+   *   记录都没有"。而这一页列的**早就不是账本了**：自从学 PCL 之后，
+   *   列表来自**磁盘扫描**（`folderVers`），账本只用来补"你起的名字与设置"。
+   *
+   *   于是真机上出现这个形状（用户截图那一屏之后的状态）：
+   *     · 用户删掉的是"不能用"分组里的目录 —— 它们**没有账本记录**；
+   *     · 所以删完那一刻 `state.instances.length` **仍然是 1**（账本里还留着
+   *       一条对不上盘的记录）→ 这一句判 false → **不走空状态**；
+   *     · 而 `folderVers` 已经空了 → 两个分组都 0 条 → **列表区一片空白**。
+   *   界面上就是"删完了，但什么都没显示"。
+   *
+   *   ⇒ 判据换成**列表的真实来源**：这个文件夹里一个版本都没有
+   *     （`folderVers` 空 或 还没读回来）。
+   *     ★ "还没读回来"（null）也算空 —— 与 `folderVers` 空一样，
+   *       这时候列表本来就无可显示；而它下一轮轮询就会填上
+   *       （`folder` 每 10 秒刷新一次，且删完会广播 `ieml:folder-changed`）。
+   *     ★ 不再看账本：账本里有没有记录**不是**"这一页有没有内容"的判据 ——
+   *       这正是"同一个事实两把尺子"的老毛病，这一页已经为它改过一次
+   *       （见 `listEntries` 上面那段说明）。
+   */
+  if (folderVers === null || folderVers.length === 0) {
+
     return (
       <>
         <div className="page-head">
@@ -1329,7 +1337,21 @@ export function VersionsPage() {
           一页挂三条横幅解释同一件事，正是用户说过的那种"眼花缭乱"。
       */}
 
-      {rows.length === 0 ? (
+      {/*
+        ★★★★ 2026-10-01：这两支空状态原来**是错配的**，顺着"删完不进空状态"
+          那个 bug 一起理顺了。
+
+        判据分清楚（列表有两层筛选：文件夹 → 搜索/页签）：
+          · **这个文件夹里一个版本都没有**（`folderVers` 空）→ 上面那个提前
+            return 的「还没有任何版本」（带"安装游戏 / 导入整合包"两个入口）；
+          · **文件夹里有版本、但当前的搜索或页签把它们全滤掉了** → 就是这一支
+            「没有符合筛选条件的版本」（带"清除筛选"）。
+        以前这一支写的是 `rows.length === 0`，而 `rows` 是**账本**来的：
+        盘上有版本、账本里没记录时它为 0，于是"盘上明明有版本"却报
+        「没有符合筛选条件的版本」——判据与列表的来源又不是同一个。
+        ⇒ 现在看的是列表本身（`listEntries` 只剩那条空标记）。
+      */}
+      {listEntries.length === 1 && listEntries[0]?.kind === 'empty' ? (
         <EmptyState
           title="没有符合筛选条件的版本"
           desc={`当前筛选下没有结果。试试切换筛选，或清空搜索词「${query}」。`}
