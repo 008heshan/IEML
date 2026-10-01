@@ -49,6 +49,23 @@ pub struct DownloadTask {
     pub size: u64,
     /// 展示用的相对路径
     pub label: String,
+    /*
+     * ★★★★ 2026-10-01（用户）：「**是不是我们是同时只下载一件事儿，
+     *   而不是一次性干一堆事儿**」。
+     *
+     *   对 —— 而且他指出了那个最要紧的位置：**整合包的包体**。
+     *   整合包里那几百个文件是并发的（`download_batch`），
+     *   唯独**最大的那一个文件**（包体，Better MC 113 MB）走的是
+     *   `concurrency: 1` 的单连接。单连接实测 75~120 KB/s
+     *   ⇒ 113 MB 要 15~25 分钟。
+     *
+     *   有了这个字段，分片就能**按任务**打开，而不是靠全局环境变量
+     *   （`chunking_enabled`）把**所有**下载都改了 ——
+     *   分片对"包体这种单个大文件"有意义，对"几百个小文件"没有意义
+     *   （小文件本来就靠并发，分片只会多建连接）。
+     */
+    #[serde(default)]
+    pub allow_chunked: bool,
 }
 
 impl DownloadTask {
@@ -61,7 +78,18 @@ impl DownloadTask {
             sha1,
             size,
             label,
+            allow_chunked: false,
         }
+    }
+
+    /// 允许这个任务走分片（多连接）。
+    ///
+    /// ★ 用在**单个大文件**上（整合包包体是最典型的）：那种下载没有
+    ///   "并发一批文件"可言，多连接的唯一办法就是分片。
+    ///   见 `allow_chunked` 字段上的说明。
+    pub fn chunked(mut self) -> Self {
+        self.allow_chunked = true;
+        self
     }
 
     /// 取"可直接跑"的 URL（`file://` 开头的本地复制任务原样返回）
@@ -796,11 +824,14 @@ async fn download_to_part(
     // 断点续传：已有 .part 且**不是**分片残留 → 单连接续传
     let existing = tokio::fs::metadata(part).await.map(|m| m.len()).unwrap_or(0);
 
-    if existing == 0 && chunking_enabled() {
+    if existing == 0 && (chunking_enabled() || task.allow_chunked) {
         // 大文件：先探大小再分片（分片内部自带续传）
         //
-        // ★ 默认不进这里（见 `chunking_enabled()` 的说明）：分片在 BMCLAPI 上
+        // ★ 全局默认不进这里（见 `chunking_enabled()` 的说明）：分片在 BMCLAPI 上
         //   既不快、又会招 429、还带一串只在分片路径上的失败。
+        //   **但 `task.allow_chunked` 是逐任务的**（2026-10-01）：整合包包体
+        //   那种"一个 113 MB 的大文件、没有别的文件可并发"的情形，
+        //   多连接是唯一的加速手段 —— 见 `DownloadTask::chunked`。
         if let Some(total) = probe_content_length(url).await {
             if total >= CHUNKED_THRESHOLD {
                 match download_chunked(url, part, total, cancel).await {

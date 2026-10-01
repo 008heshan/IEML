@@ -593,6 +593,7 @@ mod tests {
             sha1: String::new(),
             size: 0,
             label: "x".into(),
+            allow_chunked: false,
         }
     }
 

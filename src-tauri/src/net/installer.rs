@@ -47,6 +47,9 @@ fn push_task(
         sha1,
         size,
         label,
+        // 库/资源文件**不开分片**：它们是"一堆中小文件"，靠 `download_batch`
+        // 的并发就够了（见 `DownloadTask::allow_chunked` 的说明）
+        allow_chunked: false,
     });
 }
 

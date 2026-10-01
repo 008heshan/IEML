@@ -7630,13 +7630,29 @@ pub async fn modpack_install(
     );
     let pack_path = state.paths().cache.join(format!("mrpack-{task_id}.mrpack"));
     let pack_size = size.unwrap_or(0);
+    /*
+     * ★★★★ 2026-10-01（用户）：「**是不是我们是同时只下载一件事儿，
+     *   而不是一次性干一堆事儿**」。
+     *
+     *   对，而且这正是整包下载最慢的地方：包体是**单个大文件**
+     *   （Better MC 113 MB），`download_pack_body` 用 `concurrency: 1`
+     *   单连接下它 —— 单连接实测只有 75~120 KB/s，113 MB 要 15~25 分钟。
+     *
+     *   包内那几百个文件是并发的，唯独**最大**的这个文件是单连接，
+     *   因为没有第二个文件能跟它并发。**多连接的唯一手段就是分片。**
+     *
+     *   ⇒ `.chunked()` 逐任务打开分片。不改全局 `chunking_enabled()`：
+     *     分片对"几百个小文件"没意义（它们本来就靠并发），
+     *     全局打开会连带改掉那些路径，而那条路上踩过 429 与段文件的坑。
+     */
     let task = download::DownloadTask::new(
         pack_path.clone(),
         url.clone(),
         String::new(),
         pack_size,
         format!("整合包 {name}"),
-    );
+    )
+    .chunked();
     if download_pack_body(
         task,
         src,
@@ -7807,6 +7823,13 @@ pub async fn cf_modpack_install(
         format!("整合包 {name}"),
     );
     task.urls = candidates;
+    /*
+     * ★ 2026-10-01：CurseForge 的包体同样是**单个大文件**（几个 GB 都常见），
+     *   同样该走分片 —— 理由与 Modrinth 那条完全一样
+     *   （见上面 `.chunked()` 那段说明）。两条路必须一起改，
+     *   否则"CF 慢、Modrinth 快"又会变成新的不对称。
+     */
+    task.allow_chunked = true;
     /*
      * ★★ 包体这一段**可暂停**（以前只能取消）。暂停时**不删**已经下到一半的 `.part`：
      *   点「继续」时同一个路径会被复用，断点续传直接接上。
