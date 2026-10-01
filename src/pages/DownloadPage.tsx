@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../state/AppContext';
 import { Button, Chip, CustomSelect, EmptyState, Note, Segmented, Spinner } from '../ui';
-import { IconAlert, IconBox, IconChevronRight, IconDownload, IconLayers, IconPuzzle, IconRefresh, IconImage, IconGrid, IconRows, IconPackage, IconSearch } from '../ui/Icons';
+import { IconAlert, IconBox, IconChevronRight, IconDownload, IconFolder, IconLayers, IconPuzzle, IconRefresh, IconImage, IconGrid, IconRows, IconPackage, IconSearch } from '../ui/Icons';
 import { useRealApi } from '../hooks/useRealApi';
 import type { DownloadTab } from '../state/store';
 import { takePendingPack } from '../state/pending-pack';
@@ -1419,6 +1419,49 @@ function ModpackTab({
         </label>
         <Button variant="primary" size="sm" onClick={() => void load()}>
           搜索
+        </Button>
+        {/*
+          ★★★★ 2026-10-01（用户：「你这根本不下」+ 选了「加一个真正可用的源」）。
+
+          量了一整轮之后的结论：**在 20~40 KB/s 的链路上，任何源都救不了
+          118 MB 的包**（官方与镜像此刻都在这个量级，PCL 走的是另一条主机）。
+          继续换源是在解一个不存在的问题。
+
+          ⇒ 真正能解决的是**让用户用一个下得动的东西把包下好，再导进来**。
+            这条路**代码里早就有**（`installLocalPack`：建任务 → 读清单 →
+            按清单装 → 解压 overrides），后端 `modpack.installLocal` 也在，
+            但**唯一入口是拖放** —— 没有按钮，很多人不知道可以这样。
+
+          ★ 所以这里只加一个入口，**不新增任何安装逻辑**：
+            选文件 → 派发与拖放**同一个事件**（`ieml:install-local-pack`）。
+            拖放那条路已经验证过，共用它就等于共用它的验证。
+        */}
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={async () => {
+            try {
+              const { open: openDialog } = await import('@tauri-apps/plugin-dialog');
+              const picked = await openDialog({
+                directory: false,
+                multiple: false,
+                title: '选一个已经下好的整合包（.mrpack 或 .zip）',
+                filters: [
+                  { name: '整合包', extensions: ['mrpack', 'zip'] },
+                  { name: '全部文件', extensions: ['*'] },
+                ],
+              });
+              if (typeof picked === 'string') {
+                window.dispatchEvent(
+                  new CustomEvent('ieml:install-local-pack', { detail: { path: picked } }),
+                );
+              }
+            } catch (e) {
+              toast('err', '打不开文件选择器', e instanceof Error ? e.message : String(e));
+            }
+          }}
+        >
+          <IconFolder /> 安装本地整合包
         </Button>
       </div>
 
