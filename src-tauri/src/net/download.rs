@@ -1177,6 +1177,12 @@ async fn download_single(
              */
             if watch.dead(this_run, last_data_at.elapsed()) {
                 file.flush().await?;
+                /*
+                 * ★ 2026-10-01：让它**短暂冷却** —— 否则"重试"会又打同一个
+                 *   坏节点（真机实测：那个镜像连打 6 次有 2 次 20 秒零字节）。
+                 *   详见 `SourceManager::note_slow`。
+                 */
+                super::source::global().note_slow(super::mirror::Source::from_url(url));
                 return Err(NetError::Other(format!(
                     "连接已无数据（{} 秒内仅 {:.1} KB，按 PCL2 的 1 KB/s 判据视为断线）\
                      —— URL: {url}",
@@ -1198,8 +1204,20 @@ async fn download_single(
              */
             if let Some(bps) = watch.too_slow(this_run) {
                 file.flush().await?;
+                /*
+                 * ★★★★ 2026-10-01（用户报的真实错误）：
+                 *   「整合包包体下载失败（**换源重试后仍不行**）…… 慢（15 秒内仅
+                 *     4 KB/s，**已换源重试**）—— URL: https://mod.mcimirror.top/…」
+                 *
+                 *   那两句"换源"都是**假的**：这条分支只是返回一个错误，
+                 *   而重试轮的排序按 `is_cooling` 排 —— "慢"从不进冷却，
+                 *   于是重试轮顺序不变、又打同一个坏节点，最后报"仍不行"。
+                 *
+                 *   ⇒ 先让它冷却，那句话才成立。（`SourceManager::note_slow`）
+                 */
+                super::source::global().note_slow(super::mirror::Source::from_url(url));
                 return Err(NetError::Other(format!(
-                    "连接过慢（{} 秒内仅 {:.0} KB/s，已换源重试）—— URL: {url}",
+                    "连接过慢（{} 秒内仅 {:.0} KB/s）—— URL: {url}",
                     SLOW_WINDOW.as_secs(),
                     bps as f64 / 1024.0
                 )));
