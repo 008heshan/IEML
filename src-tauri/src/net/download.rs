@@ -1567,16 +1567,57 @@ async fn download_chunked(url: &str, part: &Path, total: u64, cancel: &CancelTok
 
     // 拼接：part.0 .. part.N-1 顺序追加到 part，然后删掉分段与计划
     let mut out = tokio::fs::File::create(part).await?;
+    let mut assembled = 0u64;
     for span in &spans {
         let seg = segment_path(part, span.idx);
         let mut input = tokio::fs::File::open(&seg).await?;
-        tokio::io::copy(&mut input, &mut out).await?;
+        assembled += tokio::io::copy(&mut input, &mut out).await?;
         drop(input);
         let _ = tokio::fs::remove_file(&seg).await;
     }
     out.flush().await?;
     drop(out);
     let _ = tokio::fs::remove_file(&plan_path).await;
+
+    /*
+     * ★★★★ 2026-10-01（用户）：「**这个 .mrpack 不是有效的压缩包：
+     *   invalid Zip archive: Could not find EOCD**」。
+     *
+     *   ## 这是一个真的正确性缺陷，就出在紧邻的上面那几行
+     *
+     *   原来的收尾是 `Ok(written)`（**没有**任何"拼出来的到底是不是完整文件"
+     *   的断言）。而 `download_range` 在单段重试 3 次耗尽后会返回它**实际写出
+     *   的字节数** —— 一个**短段**也算"成功"。于是：
+     *
+     *     8 段里某一段只下到一半 → 拼装照拼 → 得到一个**截断的文件** → 报成功
+     *
+     *   真机证据（`D:\IEML-launcher\cache`）：
+     *     `mrpack-modpack-muplukvi.mrpack` = **90,351,891 字节**
+     *     而 Better MC v28 应该是 **约 113.8 MB** —— 少了 23 MB。
+     *   然后 `parse_mrpack_bytes` 读它、找不到 zip 的结束记录（EOCD），
+     *   用户看到上面那句错误。
+     *
+     *   ## 为什么调用方也兜不住
+     *
+     *   `download_single` 里确实有长度校验，但只覆盖**单连接**那条路：
+     *   分片成功后是 `return Ok(written)` **提前返回**，一行校验都不经过。
+     *   ⇒ 长度这一关必须**分片自己**把住：它比谁都清楚"期望多少字节"。
+     *
+     *   ## 为什么"报错"是对的，而不是"修一修接着用"
+     *
+     *   截断的包**不能用**：写进去的 Mod 会缺文件，而用户拿到的是一个
+     *   "装完了但起不来"的实例。宁可这里失败 → 上层回退单连接重下
+     *   （`download_single` 的分片失败分支就是干这个的）。
+     *   ★ 同时**删掉这个半成品 `.part`**：留着它，下一轮会被当成
+     *     "断点续传的已有进度"，而它的字节数是错的。
+     */
+    if assembled != total || written != total {
+        let _ = tokio::fs::remove_file(part).await;
+        return Err(NetError::Other(format!(
+            "分片拼装后大小不对（期望 {total} 字节，段合计 {assembled}，上报 {written}）\
+             —— 有段没下完，删掉重来"
+        )));
+    }
 
     Ok(written)
 }
@@ -2740,6 +2781,56 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         (dir.join("file.bin.part"), dir)
+    }
+
+    /// ★★★★ 2026-10-01（用户报的真实错误）：
+    ///   `这个 .mrpack 不是有效的压缩包：invalid Zip archive: Could not find EOCD`
+    ///
+    ///   真机证据：`mrpack-modpack-muplukvi.mrpack` = **90,351,891 字节**，
+    ///   而 Better MC v28 应该是约 **113.8 MB** —— 少了 23 MB，却**被当成完整的包**。
+    ///
+    ///   根因：分片收尾原来是 `Ok(written)`，**没有**"拼出来的到底是不是完整文件"
+    ///   的断言。而 `download_range` 在单段重试耗尽后会返回它**实际写出的字节数**
+    ///   （短读也算成功）⇒ 8 段里有一段短了 → 照拼 → **截断的文件 + 报成功**。
+    ///   调用方也兜不住：`download_single` 的长度校验只覆盖单连接那条路，
+    ///   分片成功后是提前返回。
+    ///
+    ///   这条测试造一个"**每段都只给一半**"的服务端，断言：
+    ///     ① `download_chunked` **必须报错**（而不是返回一个截断的"成功"）；
+    ///     ② 那个半成品 `.part` **必须被删掉**
+    ///        （留着它，下一轮会被当成"断点续传的已有进度"，而它的字节数是错的）。
+    #[tokio::test]
+    async fn short_segment_is_not_silently_truncated() {
+        /// 16 MB：够切成 8 段（`MIN_CHUNK` 是 2 MB），又不必真下很多数据
+        const TOTAL: u64 = 16 * 1024 * 1024;
+
+        // 服务端：Range 请求永远只回**要的一半**（模拟"段没下完"）
+        const HALF: usize = 256 * 1024;
+        let server = FakeServer::start(|_idx, range| match range {
+            Some(_) => (206, vec![], vec![b'Z'; HALF]),
+            None => (200, vec![], vec![b'Z'; 1024]),
+        });
+
+        let (part, dir) = tmp_part("short-segment");
+        let err = download_chunked(&server.url(), &part, TOTAL, &CancelToken::new()).await;
+
+        assert!(
+            err.is_err(),
+            "★ 段没下完时**必须报错** —— 原来这里是 Ok(written)，\
+             于是拼出一个截断的文件却被当成完整的包（真机上就是那个 EOCD 错误）"
+        );
+        let msg = format!("{}", err.unwrap_err());
+        assert!(
+            msg.contains("大小不对") || msg.contains("没下完"),
+            "错误信息要说清是「拼装后大小不对」：{msg}"
+        );
+        assert!(
+            !part.exists(),
+            "★ 半成品 .part 必须删掉 —— 留着它下一轮会被当成断点续传的进度，\
+             而它的字节数是错的"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// ★★ **P0-4**：服务端回的 206 偏移不是我们要的 → 必须**丢掉这份响应**，
