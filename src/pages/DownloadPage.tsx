@@ -717,6 +717,10 @@ function ModpackTab({
        * ★★ 2026-09-23：**页面里挑了版本就用它**；没挑才退回"最新那个"。
        *   内联面板时代只能装最新那个版本 —— 用户在安装页里选了半天，
        *   装的却还是最新，那就成了假控件。
+       *
+       * ★ 2026-10-01：这个 `first` 就是**当前版本的元数据**，后面用它
+       *   把"要装什么"说清楚（不必去下 113 MB 的包体，见下面那段）。
+       *   所以它不只是"挑一个文件"，还是这一整段里**最有信息量的那个变量**。
        */
       const first = version ?? pickedVersion ?? (await api.modrinth.versions(pack.id))[0];
       const file = first?.files.find((f) => f.primary) ?? first?.files[0];
@@ -788,8 +792,56 @@ function ModpackTab({
           client_file_count: 0,
           name: pack.name,
         };
+      } else if (first) {
+        /*
+         * ★★★★ 2026-10-01：**能不下整包就不下整包**。
+         *
+         *   整段调查的落点就在这里。原来的做法是
+         *   `api.modpack.inspect(file.url)` —— 后端把整个 `.mrpack`
+         *   **读进内存再解压**去找 `modrinth.index.json`：
+         *   用户给的 Better MC 包体 **113 MB，实测单连接 48 秒**。
+         *   而那 48 秒里界面能拿到的信息，**其实早就在手上**：
+         *
+         *     从列表点进来的这条正常路径，`version` 就是一个完整的
+         *     `ModrinthVersion` —— `game_versions`（= MC 版本）、
+         *     `loaders`（= 加载器）、`files`（= 文件数与总体积）
+         *     **全都是接口已经返回过的字段**。
+         *
+         *   ⇒ 有 `version` 时不读包体，直接用这些字段把"要装什么"说清楚。
+         *     `inspect` 只留给**拿不到 version** 的那条降级路。
+         *
+         *   ## 为什么这不是"猜"
+         *
+         *   `.mrpack` 里的 `modrinth.index.json` 与 `/version` 接口返回的
+         *   是**同一份元数据**（Modrinth 自己就是这么生成包的）：前者是
+         *   打包时的快照，后者是权威来源。所以这里没有"根据文件名猜版本"
+         *   那种事 —— 用的是同一个接口的同一个字段。
+         *
+         *   ★ 一处**刻意的不精确**要说清楚：这里数的"文件数"是**包内条目数**，
+         *     而界面原来显示的是"客户端相关文件数"（后端会滤掉只给服务端的
+         *     那几条）。所以这个数会**略大**，安装开始后 `modpack-progress`
+         *     会用真实计数覆盖它。宁可先说个略大的数、马上被纠正，
+         *     也不要为了精确先等 48 秒 —— 那 48 秒正是用户报的"什么也没发生"。
+         */
+        const mc = first.game_versions[0] ?? '';
+        if (!mc) {
+          throw new Error('这个整合包的版本信息里没有游戏版本，换个版本再试');
+        }
+        /* 加载器：Modrinth 的 `loaders` 里除了加载器还有 `minecraft` 这类条目 */
+        const loader = first.loaders.find((l) => l !== 'minecraft') ?? null;
+        info = {
+          mc_version: mc,
+          loader_kind: loader,
+          /* 版本号在清单里是 `dependencies`，这里不强求 —— 说得出的才说 */
+          loader_version: null,
+          client_file_count: first.files.length,
+          name: first.name || pack.name,
+        };
       } else {
-        // 先读清单，把"要装什么"如实告诉用户，再动手
+        /*
+         * 降级路：**拿不到 `version`** 时（比如从别处直接给一个下载地址）
+         * 只能读包体。这条路依然要下整个包 —— 所以它能不走就不走。
+         */
         info = await api.modpack.inspect(file.url);
         if (!info.mc_version) {
           throw new Error('这个整合包的清单里没写游戏版本，无法安装');
