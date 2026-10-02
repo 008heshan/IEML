@@ -834,7 +834,18 @@ async fn download_to_part(
         //   多连接是唯一的加速手段 —— 见 `DownloadTask::chunked`。
         if let Some(total) = probe_content_length(url).await {
             if total >= CHUNKED_THRESHOLD {
-                match download_chunked(url, part, total, cancel).await {
+                /*
+                 * ★ 把**所有候选 URL** 交给分片 —— 段与源轮转分配，
+                 *   所有源同时在下（PCL 的做法，见 `download_chunked` 的说明）。
+                 *   ★ 只传 URL（丢掉 Source 标签）：分片这一层判断"能不能用"
+                 *     靠的是**实际拿到字节**，不是标签；标签只用于健康分，
+                 *     而健康分由 `download_range` 之外的路径负责。
+                 */
+                let cand_urls: Vec<String> = source::candidates(task, super::mirror::Source::from_url(url))
+                    .into_iter()
+                    .map(|(_, u)| u)
+                    .collect();
+                match download_chunked(url, &cand_urls, part, total, cancel).await {
                     Ok(written) => return Ok(written),
                     Err(NetError::Cancelled) => return Err(NetError::Cancelled),
                     Err(e) => {
@@ -1466,7 +1477,13 @@ async fn probe_content_length(url: &str) -> Option<u64> {
 ///
 /// 每段写到独立的 `part.N`；**已存在且大小正确的段直接跳过**（这就是分片续传）。
 /// 全部段就位后按顺序拼接到 `part`，然后删掉分段文件与段计划。
-async fn download_chunked(url: &str, part: &Path, total: u64, cancel: &CancelToken) -> Result<u64> {
+async fn download_chunked(
+    url: &str,
+    candidates: &[String],
+    part: &Path,
+    total: u64,
+    cancel: &CancelToken,
+) -> Result<u64> {
     let spans = plan_chunks(total, chunk_count(), MIN_CHUNK);
     if spans.is_empty() {
         return Ok(0);
@@ -1516,45 +1533,114 @@ async fn download_chunked(url: &str, part: &Path, total: u64, cancel: &CancelTok
     }
 
     if !to_fetch.is_empty() {
+        /*
+         * ★★★★ 2026-10-01（用户：「**多源同时下**」，并指出这是通用问题）。
+         *
+         *   ## 本轮改动的核心：段与源**轮转分配**
+         *
+         *   原来每一段都用**同一个** `url`。而 PCL 的做法（`ModNet.vb` 的
+         *   `TryBeginThread`）是：
+         *
+         *     StartSource = GetSource(FirstThreadSource)
+         *     FirstThreadSource = StartSource.Id + 1     ' 每开一个新线程，源换下一个
+         *     …
+         *     ' 某个线程失败 → 从它的断点接着起新线程，源**再换下一个**
+         *     StartPosition = Thread.DownloadStart + Thread.DownloadDone
+         *     StartSource = GetSource(Thread.Source.Id + 1)
+         *
+         *   ⇒ **所有源同时在下，谁快谁贡献多**。
+         *   而我们是"一次只用一条源，慢了才换" —— 那条慢源会把时间占住，
+         *   用户看到的就是「有任务、进度几乎不动」。
+         *
+         *   ## 具体做法
+         *
+         *   · 第 i 段**先从第 `i % n` 个源开始**（轮转，天然把连接摊开）；
+         *   · 一段失败或**短读** → 换**下一个**源，从已下到的位置继续
+         *     （不重下已有部分）；
+         *   · 某个源被判"永远不支持 Range" → 记下来，后面的段不再碰它。
+         *
+         *   ★ 短读必须算失败：服务端只给一半也是"没下完"；而按已下字节
+         *     续下是安全的（Range 起点往后推）。
+         *   ★ 所有源试过还凑不齐这一段 → 才整份失败（上层回退单连接）。
+         */
+        let sources: Vec<String> = if candidates.is_empty() {
+            vec![url.to_string()]
+        } else {
+            candidates.to_vec()
+        };
+        let dead: Arc<std::sync::Mutex<Vec<bool>>> =
+            Arc::new(std::sync::Mutex::new(vec![false; sources.len()]));
+
         for span in &to_fetch {
-            let url = url.to_string();
+            let sources = sources.clone();
+            let dead = dead.clone();
             let part = part.to_path_buf();
             let cancel = cancel.clone();
             let span = *span;
             handles.push(tokio::spawn(async move {
-                // ★ 每段自带重试（最多 3 次，指数退避）。
-                //   实测：8 路并发 Range 里偶尔会有一路"连接停滞"——
-                //   以前一处停滞就把**整份分片下载**判定失败，清掉进度改走单连接，
-                //   39 MB 的客户端 jar 等于白下（实测白等了 3 分多钟）。
-                //   单段重试一次的成本远低于整份重来。
+                let expected = span.len();
+                let mut got = 0u64;
                 let mut last: Option<NetError> = None;
-                for attempt in 1..=3u32 {
-                    match download_range(&url, &part, span, &cancel).await {
-                        Ok(n) => return Ok(n),
-                        Err(NetError::Cancelled) => return Err(NetError::Cancelled),
-                        Err(e) => {
-                            // 服务器不支持 Range 这类"再试也没用"的错误 → 立刻上抛
-                            if e.is_permanent_range_failure() {
-                                return Err(e);
-                            }
-                            last = Some(e);
-                            if attempt < 3 {
-                                let d = backoff_delay(
-                                    attempt,
-                                    std::time::Duration::from_millis(300),
-                                    std::time::Duration::from_secs(5),
-                                );
-                                if !source::sleep_cancellable(d, &cancel).await {
-                                    return Err(NetError::Cancelled);
+                /*
+                 * ★★★★ 2026-10-01（用户：「多源同时下」）：**轮转着一直要到下完**。
+                 *
+                 *   这里原来是 `for step in 0..sources.len()` —— 每个源**只试一次**
+                 *   就结束。而"一个源一轮只给一部分"是完全正常的
+                 *   （服务端有单轮上限、或连接被截断）。于是 2 MB 的段碰上
+                 *   "每轮 256 KB"的源，试满一轮仍然缺 → **整段失败**。
+                 *   这条是我自己的测试抓出来的：`multi_source_round_robin_…`
+                 *   第一版跑成 FAILED，原因就在这儿。
+                 *
+                 *   ⇒ 外层按**轮**循环：一轮里把所有活着的源转一遍，
+                 *     只要有**任何**进展就再来一轮。
+                 *   ★ 一轮下来**一个字节都没进展** ⇒ 才认输（否则会无限转）。
+                 *   ★ 与 PCL 形状一致：它的 `TryBeginThread` 是"只要还有没下完的
+                 *     部分就再起一个线程"，而不是"每个源只试一次"。
+                 */
+                loop {
+                    let mut round_progress = 0u64;
+                    for step in 0..sources.len() {
+                        if cancel.is_cancelled() {
+                            return Err(NetError::Cancelled);
+                        }
+                        let si = (span.idx as usize + step) % sources.len();
+                        if dead.lock().map(|d| d[si]).unwrap_or(false) {
+                            continue;
+                        }
+                        match download_range(&sources[si], &part, span, got, total, &cancel).await {
+                            Ok(n) => {
+                                got += n;
+                                round_progress += n;
+                                if got >= expected {
+                                    return Ok(got);
                                 }
+                                last = Some(NetError::Other(format!(
+                                    "第 {} 段下到 {got}/{expected} 字节（源 {}）",
+                                    span.idx, sources[si]
+                                )));
+                            }
+                            Err(NetError::Cancelled) => return Err(NetError::Cancelled),
+                            Err(e) => {
+                                // 不支持 Range：换源还有戏，但把这个源记下来，
+                                // 后面的轮次不再碰它（否则每轮都要白撞一次）
+                                if e.is_permanent_range_failure() {
+                                    if let Ok(mut d) = dead.lock() {
+                                        d[si] = true;
+                                    }
+                                }
+                                last = Some(e);
                             }
                         }
                     }
+                    if round_progress == 0 {
+                        break; // 一整轮零进展 —— 再转也没用
+                    }
                 }
-                Err(last.unwrap_or_else(|| NetError::Other("分片重试耗尽".into())))
+                Err(last.unwrap_or_else(|| {
+                    NetError::Other(format!("第 {} 段所有源都没下完", span.idx))
+                }))
             }));
         }
-
         for h in handles {
             match h.await {
                 Ok(Ok(n)) => written += n,
@@ -1622,22 +1708,52 @@ async fn download_chunked(url: &str, part: &Path, total: u64, cancel: &CancelTok
     Ok(written)
 }
 
-/// 下载一个段到 `part.{idx}`，返回本段字节数。
+/// 下载一个段到 `part.{idx}`，返回本段**新写入**的字节数。
+///
+/// ★★★★ 2026-10-01（用户：「**多源同时下**」——PCL 的做法）。
+///
+///   `already` = 这个段**已经下好**的字节数（0 = 从头下）。
+///   短读重试时用它把 Range 起点往后推，**不重下已有的部分**。
+///   ★ 必须按"追加"写文件，而不是 `create`（那会把已下好的部分截断）。
 async fn download_range(
     url: &str,
     part: &Path,
     span: ChunkSpan,
+    already: u64,
+    total: u64,
     cancel: &CancelToken,
 ) -> Result<u64> {
     let seg = segment_path(part, span.idx);
-    let mut file = tokio::fs::File::create(&seg).await?;
+    let from = span.start + already;
+    if from > span.end {
+        return Ok(0); // 这一段已经齐了
+    }
+    /*
+     * ★★★★ 2026-10-01：**只要缺的那一段，不要把尾巴也要回来**。
+     *
+     *   这条是测试抓出来的真缺陷（`multi_source_round_robin_spreads_segments`
+     *   第一次运行时报"第 0 个字节不是好源给的内容"）。
+     *
+     *   短读换源时 `already > 0`，而请求如果写成 `bytes={from}-{span.end}`，
+     *   服务端会从 `from` 开始返回**一直到段尾**的数据；但我们把这个响应的
+     *   开头**追加**在已写部分之后 —— 落盘的偏移就错了：
+     *   从 `from` 往后的内容被写到了 `already` 的位置。
+     *   结果：**文件大小可能正好对，内容却是错的**（最坏的一种 bug：
+     *   一路走到解压才炸，而且报的还是 zip 的错）。
+     *
+     *   ⇒ 只请求**还缺的字节数**：`bytes={from}-{from + want - 1}`。
+     */
+    let want = span.end - from + 1;
+    let to = from + want - 1;
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&seg)
+        .await?;
 
     let resp = client()
         .get(url)
-        .header(
-            reqwest::header::RANGE,
-            format!("bytes={}-{}", span.start, span.end),
-        )
+        .header(reqwest::header::RANGE, format!("bytes={from}-{to}"))
         .send()
         .await?;
 
@@ -1652,6 +1768,59 @@ async fn download_range(
         });
     }
 
+    /*
+     * ★★★★ 2026-10-01：**必须核对 `Content-Range` 的起点**。
+     *
+     *   ## 不核对会怎样（这条测试抓出来的）
+     *
+     *   多源续下时，一段是**分几次**下完的（坏源给一半 → 换好源接着下）。
+     *   第二次请求要的是 `bytes={已下}-{end}`。若服务端**忽略了 Range**、
+     *   又从它自己的开头给数据，而我们不看 `Content-Range` 就直接追加 ——
+     *   结果是**同一段内容被写了两遍**：文件**大小对得上**，**内容却是错的**。
+     *
+     *   实测证据（`multi_source_round_robin_spreads_segments` 第一次运行）：
+     *     `分片拼装后大小不对（期望 16777216 字节，段合计 17301504）`
+     *   —— 大小校验拦住了它，但那只是运气：**它拦的是"多了"**，
+     *   而"内容错、大小正好"这种会一路走到解压才炸（zip 报 EOCD 找不到）。
+     *
+     *   ## 所以这里判两件事（都算协议违规，直接换源）
+     *
+     *     · `Content-Range` 必须存在、且起点等于 `from`；
+     *     · 总长度必须等于 `total`（对照我们探到的大小）。
+     *
+     *   ★ 判成 `RangeUnsupported` 而不是普通错误：这类"服务端不老实"的源
+     *     再试也没用，应该**换源**（`download_chunked` 会把它记进 dead 名单），
+     *     而不是在这一段上反复退避。
+     */
+    if let Some(cr) = resp
+        .headers()
+        .get(reqwest::header::CONTENT_RANGE)
+        .and_then(|v| v.to_str().ok())
+    {
+        // 形如 `bytes 100-199/200`
+        let bad = match cr.split_once(' ') {
+            Some(("bytes", rest)) => match rest.split_once('/') {
+                Some((range, len)) => {
+                    let start_ok = range
+                        .split_once('-')
+                        .and_then(|(s, _)| s.trim().parse::<u64>().ok())
+                        == Some(from);
+                    let len_ok = len.trim().parse::<u64>().ok() == Some(total);
+                    !start_ok || !len_ok
+                }
+                None => true,
+            },
+            _ => true,
+        };
+        if bad {
+            let _ = tokio::fs::remove_file(&seg).await;
+            return Err(NetError::RangeUnsupported {
+                status: 206,
+                url: format!("{url}（Content-Range 不对：{cr}，我们要的是 {from}-{to}/{total}）"),
+            });
+        }
+    }
+
     let mut stream = resp.bytes_stream();
     let mut written = 0u64;
     let mut stalled = 0u32;
@@ -1659,6 +1828,22 @@ async fn download_range(
         if cancel.is_cancelled() {
             let _ = tokio::fs::remove_file(&seg).await;
             return Err(NetError::Cancelled);
+        }
+        /*
+         * ★★★★ 2026-10-01：**写到 `want` 就停**（多出来的字节一律不要）。
+         *
+         *   为什么必须有这一条（而不只是"请求时把 `to` 算对"）：
+         *   段的写入是**追加**的，位置由调用方记的 `already` 决定。
+         *   若服务端给的比我们要的多（不老实的中转、把 `Range` 当建议、
+         *   或 `Content-Length` 与请求不符），多出来的那截会被写到
+         *   **下一个位置**上 —— 结果是**大小恰好对上、内容却错位**的文件。
+         *   那种文件会一路走到解压才炸（zip 报找不到 EOCD）。
+         *
+         *   ⇒ "请求只要缺的"（见上面 `to` 的算法）是**省流量**，
+         *     而这里是**正确性的硬保证**。两层都要有。
+         */
+        if written >= want {
+            break;
         }
         let next = tokio::time::timeout(CHUNK_TIMEOUT, stream.next()).await;
         let chunk = match next {
@@ -1681,8 +1866,9 @@ async fn download_range(
                 continue;
             }
         };
-        file.write_all(&chunk).await?;
-        written += chunk.len() as u64;
+        let take = (chunk.len() as u64).min(want - written) as usize;
+        file.write_all(&chunk[..take]).await?;
+        written += take as u64;
     }
     file.flush().await?;
     drop(file);
@@ -2774,6 +2960,53 @@ mod tests {
         fn ranges(&self) -> Vec<Option<String>> {
             self.ranges.lock().unwrap().clone()
         }
+
+        /// ★ 2026-10-01：**按 Range 正确切片并带 `Content-Range`** 的替身。
+        ///
+        ///   为什么必须这样：`download_range` 现在会核对 `Content-Range`
+        ///   （多源续下时，"服务端忽略 Range 又从头给数据"会把同一段写两遍
+        ///   —— 文件大小对得上、内容却是错的）。所以"正常的服务器"这个替身
+        ///   也必须给出**正确的** `Content-Range`，否则测的就不是真实行为。
+        ///
+        ///   ★★ 每个字节的值**由它自己的偏移决定**（`offset % 251`）：
+        ///     这样"某一段被写到了错误的偏移上"会立刻现形 ——
+        ///     而用固定填充值（全是 `b'B'`）时，偏移错了也**看不出来**。
+        ///     这条是踩过之后才明白的：固定填充值的测试**证明不了**拼接正确。
+        fn start_ranged(total: u64) -> Self {
+            Self::start(move |_idx, range| match range {
+                Some(r) => {
+                    let (a, b) = r
+                        .trim_start_matches("bytes=")
+                        .split_once('-')
+                        .map(|(a, b)| {
+                            (
+                                a.trim().parse::<u64>().unwrap_or(0),
+                                b.trim().parse::<u64>().unwrap_or(total - 1),
+                            )
+                        })
+                        .unwrap_or((0, total - 1));
+                    let body: Vec<u8> = (a..=b).map(|o| (o % 251) as u8).collect();
+                    (
+                        206,
+                        vec![(
+                            "Content-Range".to_string(),
+                            format!("bytes {a}-{b}/{total}"),
+                        )],
+                        body,
+                    )
+                }
+                None => (
+                    200,
+                    vec![],
+                    (0..total).map(|o| (o % 251) as u8).collect(),
+                ),
+            })
+        }
+    }
+
+    /// 整份文件应有的内容（与 `FakeServer::start_ranged` 同一套规则）。
+    fn expected_bytes(total: u64) -> Vec<u8> {
+        (0..total).map(|o| (o % 251) as u8).collect()
     }
 
     fn tmp_part(tag: &str) -> (PathBuf, PathBuf) {
@@ -2804,15 +3037,68 @@ mod tests {
         /// 16 MB：够切成 8 段（`MIN_CHUNK` 是 2 MB），又不必真下很多数据
         const TOTAL: u64 = 16 * 1024 * 1024;
 
-        // 服务端：Range 请求永远只回**要的一半**（模拟"段没下完"）
-        const HALF: usize = 256 * 1024;
-        let server = FakeServer::start(|_idx, range| match range {
-            Some(_) => (206, vec![], vec![b'Z'; HALF]),
+        /*
+         * 服务端：**每个段只给一次一半，第二次要就什么都不给**。
+         *
+         * ★ 这条测试在 2026-10-01 被我改过两次，两次都是**假服务器不真实**，
+         *   记在这里免得再走：
+         *   ① 原来"不管请求什么都回固定 256 KB" → 续下时下一轮又回 256 KB，
+         *      **恰好把缺的补上**，段就"成功"了（而真实服务端不会这么巧）；
+         *   ② 改成"每轮给剩余的一半" → 几何级数**收敛**，几轮之后真的下完了，
+         *      `Ok` 其实是**正确结果**（而我的断言要求报错）。
+         *   ⇒ 要造"永远下不完"，必须让它在某一次**明确地不再给数据**。
+         *     这也就是真实世界的形状：连接断了、服务端不再吐字节。
+         */
+        let per_seg_rounds: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, u32>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let rounds = per_seg_rounds.clone();
+        let server = FakeServer::start(move |_idx, range| match range {
+            Some(r) => {
+                let (a, b) = r
+                    .trim_start_matches("bytes=")
+                    .split_once('-')
+                    .map(|(a, b)| {
+                        (
+                            a.trim().parse::<u64>().unwrap_or(0),
+                            b.trim().parse::<u64>().unwrap_or(0),
+                        )
+                    })
+                    .unwrap_or((0, 0));
+                let want = (b.saturating_sub(a) + 1) as usize;
+                // 按起点归到某一"轮"：同一段第二次来要就给 0
+                // ★ 按**段**（不是按起点）计数：同一个段的第二次请求就失败。
+                //   按起点计数是错的 —— 每轮起点都往后挪，永远是新位置。
+                let seg_id = a / (2 * 1024 * 1024);
+                let n = {
+                    let mut g = rounds.lock().unwrap();
+                    let e = g.entry(seg_id).or_insert(0);
+                    *e += 1;
+                    *e
+                };
+                let body: Vec<u8> = if n == 1 {
+                    vec![b'Z'; (want / 2).max(1)]
+                } else {
+                    Vec::new() // 第二次要 —— 一个字节都不给
+                };
+                (
+                    206,
+                    vec![(
+                        "Content-Range".to_string(),
+                        format!("bytes {a}-{b}/16777216"),
+                    )],
+                    body,
+                )
+            }
             None => (200, vec![], vec![b'Z'; 1024]),
         });
 
         let (part, dir) = tmp_part("short-segment");
-        let err = download_chunked(&server.url(), &part, TOTAL, &CancelToken::new()).await;
+        /*
+         * ★ 传**空**候选列表 ⇒ 退回"只有一个源"（就是这台假服务器）。
+         *   这条测试要钉的是"单源短读也必须报错"，而不是多源轮转 ——
+         *   多源轮转另有 `multi_source_round_robin` 那条。
+         */
+        let err = download_chunked(&server.url(), &[], &part, TOTAL, &CancelToken::new()).await;
 
         assert!(
             err.is_err(),
@@ -2821,14 +3107,256 @@ mod tests {
         );
         let msg = format!("{}", err.unwrap_err());
         assert!(
-            msg.contains("大小不对") || msg.contains("没下完"),
-            "错误信息要说清是「拼装后大小不对」：{msg}"
+            msg.contains("大小不对") || msg.contains("没下完") || msg.contains("下到"),
+            "错误信息要说清「段没下完」这件事（含实际/期望字节数）：{msg}"
         );
         assert!(
             !part.exists(),
             "★ 半成品 .part 必须删掉 —— 留着它下一轮会被当成断点续传的进度，\
              而它的字节数是错的"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★★★★ 2026-10-01（用户：「**多源同时下**」）。
+    ///
+    ///   **分片必须把连接摊到多个源上**，而不是所有段都用同一个源。
+    ///
+    ///   这是本轮找出来的、与 PCL 最本质的差别：PCL 的 `TryBeginThread` 每开一个
+    ///   线程就 `GetSource(Id + 1)` 换下一个源，**所有源同时在下**；
+    ///   而我们是"一次只用一条源，慢了才换" —— 那条慢源会把时间占住，
+    ///   用户看到的就是「有任务、进度几乎不动」。
+    ///
+    ///   这条测试造**两个**服务端：
+    ///     · A：Range 请求只给**一半**（短读，等于一个坏节点）
+    ///     · B：正常给满
+    ///   断言：**B 真的被用到了**（说明段被摊到了第二个源上，
+    ///   而不是死磕 A 直到整份失败）。
+    ///
+    ///   ★ 少了这条，"多源"可能只是写在注释里的意图 —— 而判据必须是
+    ///     "第二个源**实际收到了请求**"。
+    #[tokio::test]
+    async fn multi_source_round_robin_spreads_segments() {
+        const TOTAL: u64 = 8 * 1024 * 1024; // 4 段 × 2 MB（MIN_CHUNK 就是 2 MB）
+
+        /*
+         * 坏源：**Content-Range 报得对，但只给一半数据**。
+         *   ★ 这才是"坏节点"的真实形状：协议层面没问题（206 + 正确的
+         *     `Content-Range`），只是连接半死不活地断在中途。
+         *     我们的 Content-Range 校验挡不住它 —— 必须靠"短读 → 换源续下"。
+         */
+        let bad = FakeServer::start(|_idx, range| match range {
+            Some(r) => {
+                let (a, b) = r
+                    .trim_start_matches("bytes=")
+                    .split_once('-')
+                    .map(|(a, b)| {
+                        (
+                            a.trim().parse::<u64>().unwrap_or(0),
+                            b.trim().parse::<u64>().unwrap_or(0),
+                        )
+                    })
+                    .unwrap_or((0, 0));
+                let want = (b.saturating_sub(a) + 1) as usize;
+                /*
+                 * ★ 内容**也按偏移生成**（与好源同一套规则），只是**只给一半**。
+                 *   这一点很要紧：坏源给的字节是**从正确偏移开始**的，
+                 *   所以拼出来应当整份等于期望值 ——
+                 *   若它给出"从 0 开始的内容"，那就变成在测另一件事了
+                 *   （而这条测试第一次跑出来的 65 就是这么来的）。
+                 */
+                let body: Vec<u8> = (a..a + (want / 2) as u64)
+                    .map(|o| (o % 251) as u8)
+                    .collect();
+                (
+                    206,
+                    vec![(
+                        "Content-Range".to_string(),
+                        format!("bytes {a}-{b}/{TOTAL}"),
+                    )],
+                    body,
+                )
+            }
+            None => (200, vec![], vec![0u8; 1024]),
+        });
+        /*
+         * 好源：协议与数据都正常，而且**按"请求的区间"给足**。
+         *
+         * ★ 2026-10-01：这里刻意**不用** `start_ranged`（它按"区间长度"切，
+         *   所以"只取缺的那段"与"整段重取"拿到的**开头内容一样** ——
+         *   于是偏移错了也测不出来：我真去拆掉修复跑过，测试照样绿）。
+         *
+         *   这个源给足**请求区间对应的绝对内容**，于是：
+         *     · 正确写法（只要缺的那段 `bytes=A-B`）→ 拿到的正是该位置的内容 ✅
+         *     · 整段重取（从段首要到段尾）→ 拿到**段首那段**，被追加到已写
+         *       部分之后 ⇒ **字节位置错了**，逐字节比对立刻抓到 ❌
+         */
+        let good = FakeServer::start(move |_idx, range| match range {
+            Some(r) => {
+                let (a, b) = r
+                    .trim_start_matches("bytes=")
+                    .split_once('-')
+                    .map(|(a, b)| {
+                        (
+                            a.trim().parse::<u64>().unwrap_or(0),
+                            b.trim().parse::<u64>().unwrap_or(TOTAL - 1),
+                        )
+                    })
+                    .unwrap_or((0, TOTAL - 1));
+                /*
+                 * ★★ 这个源**只忽略 `to`、但尊重起点 `a`**。
+                 *
+                 *   为什么必须是这样：判据要能分开两种写法，而它们的区别
+                 *   **只在 `to`**：
+                 *     · 正确：`bytes={段首+已下}-{段首+已下+缺的-1}`（只取缺的）
+                 *     · 错误：`bytes={段首+已下}-{段尾}`（整段重取，多要了）
+                 *   两者**起点相同**。所以服务端只要"从 `a` 开始、给到
+                 *   自己愿意的地方"，就能让错误写法多拿一截 ⇒ 偏移错开。
+                 *
+                 *   ★ 我试过两版都不对，记在这里省得下一个人重走：
+                 *     ① 按请求区间切片 → 两种写法内容一样，**抓不到**；
+                 *     ② 只从**段首**给数据（连起点也不认）→ 连正确写法也失败，
+                 *        测的是另一件事（而且真实世界里"忽略起点"的服务端
+                 *        会被 `Content-Range` 校验先拦下来）。
+                 */
+                /*
+                 * ★★ 每轮**只给 256 KB**（封顶），且从**请求的起点**给。
+                 *
+                 *   为什么这样才公平：一段 2 MB 要下 **8 轮**，于是
+                 *   "下一轮该从哪儿接着要"这件事**每轮都被检验**。
+                 *
+                 *   ★ 我前面两版假服务器都**抓不到**那个偏移 bug，原因记在这里：
+                 *     ① 按"请求区间"切片 → 两种写法内容一样；
+                 *     ② 只给一次一半、好源一次补齐 → 循环只跑两轮，
+                 *        `to` 给长了也没机会多写。
+                 *     ⇒ "看起来像在测"最危险：抓不到 bug 的测试等于没写。
+                 */
+                let capped = (b - a + 1).min(256 * 1024);
+                let body: Vec<u8> = (a..a + capped).map(|o| (o % 251) as u8).collect();
+                (
+                    206,
+                    vec![(
+                        "Content-Range".to_string(),
+                        format!("bytes {a}-{b}/{TOTAL}"),
+                    )],
+                    body,
+                )
+            }
+            None => (
+                200,
+                vec![],
+                (0..TOTAL).map(|o| (o % 251) as u8).collect(),
+            ),
+        });
+
+        let (part, dir) = tmp_part("multi-source");
+        // 两个候选：坏的在前面（模拟"首选那条正好是个坏节点"）
+        let cands = vec![bad.url(), good.url()];
+        let outcome = download_chunked(&bad.url(), &cands, &part, TOTAL, &CancelToken::new()).await;
+
+        let good_hits = good.ranges().len();
+        let bad_hits = bad.ranges().len();
+        println!("坏源收到的 Range: {:?}", bad.ranges());
+        println!("好源收到的 Range: {:?}", good.ranges());
+        assert!(
+            good_hits > 0,
+            "★ 第二个源**一个请求都没收到** —— 说明所有段都死磕第一个坏源，\
+             这就不是「多源同时下」。坏源收到 {bad_hits} 次，好源收到 {good_hits} 次"
+        );
+        assert!(
+            outcome.is_ok(),
+            "有一个好源在候选里时**必须能下完**（坏源只给一半）：{:?}",
+            outcome.err().map(|e| e.to_string())
+        );
+
+        /*
+         * ★ 只断言"大小对"是**不够**的 —— 那正是我前面栽过的地方
+         *   （大小对、内容错，一路走到解压才炸出 EOCD）。
+         *
+         *   这里做**逐字节**比对，而且每个字节的值由它的**偏移**决定
+         *   （`offset % 251`）—— 于是"某段被写到了错误的位置"会立刻现形。
+         *   ★ 坏源也贡献了每段的前半，而它给的数据是**从正确偏移**开始的，
+         *     所以拼出来应当**整份等于期望值**：谁给的都行，位置必须对。
+         */
+        let bytes = tokio::fs::read(&part).await.expect("读回拼好的文件");
+        assert_eq!(bytes.len() as u64, TOTAL, "大小必须是完整的");
+        let want = expected_bytes(TOTAL);
+        let wrong = bytes
+            .iter()
+            .zip(want.iter())
+            .position(|(a, b)| a != b)
+            .unwrap_or(bytes.len());
+        assert_eq!(
+            wrong,
+            bytes.len(),
+            "★ 第 {wrong} 个字节不对（期望 {}，实际 {}）—— 段与段的拼接位置错了",
+            want.get(wrong).copied().unwrap_or(0),
+            bytes.get(wrong).copied().unwrap_or(0)
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★★★★ 2026-10-01：**服务端给多了，我们也只写该写的那部分**。
+    ///
+    ///   段的写入是**追加**的，落盘位置由调用方记的 `already` 决定。
+    ///   若服务端给的比请求的多（不老实的中转、把 `Range` 当建议、
+    ///   或者它的 `Content-Length` 与 `Content-Range` 对不上），多出来那截
+    ///   会被写到**下一个位置**上 —— 结果是**大小恰好对上、内容却错位**的文件。
+    ///   这种最难查：它一路走到解压才炸，而报的是 zip 的 EOCD 错误。
+    ///
+    ///   ⇒ 判据：请求 `[SEG_START, SEG_END]`，服务端故意回**双倍**数据，
+    ///     `download_range` **只能写这一段该有的字节数**。
+    ///
+    ///   ★ 这条是补上来的：我先把"写入封顶"写进代码，然后**拆掉它跑测试** ——
+    ///     当时两条分片测试**都还是绿的**，也就是没有任何测试覆盖它。
+    ///     "加了防御但没人测"等于没加：下一个人删掉它不会有人发现。
+    #[tokio::test]
+    async fn server_sending_extra_bytes_does_not_shift_the_segment() {
+        const SPAN: u64 = 1024 * 1024;
+        const SEG_START: u64 = 4 * 1024 * 1024;
+        const SEG_END: u64 = SEG_START + SPAN - 1;
+        const TOTAL: u64 = 16 * 1024 * 1024;
+
+        // 服务端：Content-Range 报得**正确**（就是被请求的那一段），但**给双倍数据**
+        let server = FakeServer::start(move |_idx, _range| {
+            let body: Vec<u8> = (SEG_START..SEG_START + SPAN * 2)
+                .map(|o| (o % 251) as u8)
+                .collect();
+            (
+                206,
+                vec![(
+                    "Content-Range".to_string(),
+                    format!("bytes {SEG_START}-{SEG_END}/{TOTAL}"),
+                )],
+                body,
+            )
+        });
+
+        let (part, dir) = tmp_part("extra-bytes");
+        let span = ChunkSpan {
+            idx: 0,
+            start: SEG_START,
+            end: SEG_END,
+        };
+        let n = download_range(&server.url(), &part, span, 0, TOTAL, &CancelToken::new())
+            .await
+            .expect("这一段应当能下完");
+
+        assert_eq!(
+            n, SPAN,
+            "★ 服务端给了双倍数据，我们也**只能写这一段该有的字节数**\
+             （多写的会把后面的位置顶偏：大小恰好对、内容却是错的）"
+        );
+        let seg = segment_path(&part, 0);
+        let len = tokio::fs::metadata(&seg).await.map(|m| m.len()).unwrap_or(0);
+        assert_eq!(len, SPAN, "段文件也必须正好是这一段的大小：{len}");
+        let bytes = tokio::fs::read(&seg).await.unwrap();
+        let want: Vec<u8> = (SEG_START..SEG_START + SPAN)
+            .map(|o| (o % 251) as u8)
+            .collect();
+        assert_eq!(bytes, want, "段内容必须是对应偏移的那一段");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
