@@ -634,6 +634,27 @@ pub async fn download_one_with(
             match finish_file_with_retry(&part, &task.path, task, cancel, &mut busy_waits).await {
                 Ok(()) => {
                     manager.note_success(*src, written, started.elapsed());
+                    /*
+                     * ★★★★ 2026-10-02：**每个文件下完之后，报出"走的哪条路、多快"**。
+                     *
+                     *   加它的原因：这一整轮我都在猜"引擎到底走的哪条源、速度多少"，
+                     *   而手上只有**失败时**的日志。用户报「有任务、进度几乎不动」
+                     *   时，我连它当时选了哪条源都不知道 —— 只能拿外部 curl 去反推，
+                     *   而 curl 与引擎的行为**不一定一样**（今天已经栽过两次）。
+                     *
+                     *   ★ 为什么不能省这点日志：源的选择是**动态的**
+                     *     （健康分 + 冷却 + 候选顺序 + 多源轮转），
+                     *     光读代码推不出"此刻它会选谁"。只有让它自己说。
+                     *   ★ 用 `say!`（不是 println）：写失败只丢一行日志，不会崩。
+                     */
+                    let secs = started.elapsed().as_secs_f64().max(0.001);
+                    say!(
+                        "[IEML/download] {} ← {}（{:.1} s，{:.0} KB/s）",
+                        task.label,
+                        src.as_str(),
+                        secs,
+                        written as f64 / secs / 1024.0
+                    );
                     return Ok(false);
                 }
                 Err(NetError::Cancelled) => return Err(NetError::Cancelled),
