@@ -118,9 +118,73 @@ pub struct DownloadProgress {
     pub retry_round: u32,
 }
 
+/// **连接观测**（2026-10-02）—— 一把能测"同时在飞的连接数"的尺子。
+///
+/// ## 为什么需要它（这一课很贵）
+///
+///   我连着两次"先动手、后验证"都翻了车，而**两次都不知道自己在改什么数**：
+///     · 把 `CHUNK_COUNT` 调大 ⇒ **整条分片路径 0 字节**（事后才推断出
+///       "段数 = 瞬时并发数"，但那只是推断）；
+///     · 照 PCL 加全局闸门 ⇒ **测试卡死**（同样只有现象，没有数字）。
+///
+///   判据必须来自**数字**，而不是我的推理。这个计数器就是那个数字：
+///   它记录**同一时刻真正有多少条连接在飞**的峰值与当前值。
+///
+/// ## 与 PCL 的对应
+///
+///   PCL 的 `NetTaskThreadCount` / `NetTaskThreadLimit` 正是同一件事，
+///   而且它把这个数**显示在界面上**（`PageSpeedLeft`：`当前 / 上限`）。
+///   我们至少要让**日志与结果**带上它。
+///
+/// ## 为什么用全局 static 而不是参数传递
+///
+///   参数要穿过 `run_round → download_single → download_to_part →
+///   download_chunked → download_range` 五层，而加它**只是观测**，
+///   不该改动五层的签名（那正是"为了观测而把生产代码搅乱"）。
+///   ★ 代价：并发跑两个 `download_batch` 时数字会混在一起 ——
+///     本启动器同一时刻只有一个批次，且每批开始时会重置。
+///     这一点写在 `reset_conn_stats` 里，免得下一个人误用。
+pub(crate) mod conn_stats {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static IN_FLIGHT: AtomicU64 = AtomicU64::new(0);
+    static PEAK: AtomicU64 = AtomicU64::new(0);
+
+    /// 一批开始前重置（必须先重置，否则峰值会跨批次累加）。
+    pub fn reset() {
+        IN_FLIGHT.store(0, Ordering::SeqCst);
+        PEAK.store(0, Ordering::SeqCst);
+    }
+
+    /// 一条连接开始 —— 返回的守卫 drop 时自动减一。
+    ///
+    /// ★ 用守卫而不是手写 `+1 / -1`：`download_range` 有多条 `return Err`
+    ///   分支，手写配对必然会漏（漏了就是"并发数永远偏高"，比测不到更糟）。
+    pub fn begin() -> ConnGuard {
+        let now = IN_FLIGHT.fetch_add(1, Ordering::SeqCst) + 1;
+        PEAK.fetch_max(now, Ordering::SeqCst);
+        ConnGuard
+    }
+
+    pub struct ConnGuard;
+    impl Drop for ConnGuard {
+        fn drop(&mut self) {
+            IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    pub fn peak() -> u64 {
+        PEAK.load(Ordering::SeqCst)
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct DownloadOutcome {
     pub finished_files: usize,
+    /// ★ 2026-10-02：**同时在飞的连接数峰值**（见 `conn_stats`）。
+    ///   有它才能判断「加大段数到底有没有真的把连接铺开」——
+    ///   而不是靠推理（我推理错了两次）。
+    pub peak_connections: u64,
     pub skipped_files: usize,
     pub failed: Vec<(String, String)>,
     pub total_bytes: u64,
@@ -1139,6 +1203,11 @@ async fn download_single(
 
     loop {
         attempt += 1;
+        /*
+         * ★ 2026-10-02：**尺子** —— 这是单连接路径真正发请求的地方。
+         *   守卫活到本次循环体结束，所以它记的包含"读取响应体"的整段时间。
+         */
+        let _conn = conn_stats::begin();
         let mut req = client().get(url);
         if let Some(from) = resume_from {
             req = req.header(reqwest::header::RANGE, format!("bytes={from}-"));
@@ -1836,6 +1905,12 @@ async fn download_range(
         .open(&seg)
         .await?;
 
+    /*
+     * ★ 2026-10-02：**尺子** —— 这里才是真正发分段连接的那一行。
+     *   守卫活到函数结束（连接也就活到那时），所以它记的就是
+     *   "此刻有几条分段连接在飞"。见 `conn_stats`。
+     */
+    let _conn = conn_stats::begin();
     let resp = client()
         .get(url)
         .header(reqwest::header::RANGE, format!("bytes={from}-{to}"))
@@ -2143,6 +2218,8 @@ impl BatchOptions {
 ///   "写入文件失败"，看起来像杀毒软件锁文件，其实是**自己人抢自己人**。
 pub async fn download_batch(tasks: Vec<DownloadTask>, opts: BatchOptions) -> Result<DownloadOutcome> {
     let started = std::time::Instant::now();
+    // ★ 一批开始前重置连接观测 —— 否则峰值会跨批次累加，数字就没意义了
+    conn_stats::reset();
     let manager = source::global();
 
     let (network_tasks, copies) = dedup_pass(tasks);
@@ -2270,6 +2347,7 @@ pub async fn download_batch(tasks: Vec<DownloadTask>, opts: BatchOptions) -> Res
                 opts.source,
             );
             return Ok(DownloadOutcome {
+                peak_connections: conn_stats::peak(),
                 finished_files: stats.finished_files.load(Ordering::Relaxed) as usize,
                 skipped_files: stats.skipped_files.load(Ordering::Relaxed) as usize,
                 failed: failures,
@@ -2419,6 +2497,7 @@ pub async fn download_batch(tasks: Vec<DownloadTask>, opts: BatchOptions) -> Res
     }
 
     Ok(DownloadOutcome {
+        peak_connections: conn_stats::peak(),
         finished_files: stats.finished_files.load(Ordering::Relaxed) as usize,
         skipped_files: stats.skipped_files.load(Ordering::Relaxed) as usize,
         failed,
@@ -2964,6 +3043,14 @@ mod tests {
      * Range 头。够用就好，不引依赖（`tiny_http` 虽然在手边，但这里要断言的
      * 是"我们发了什么"，自己解析更直接）。
      */
+    /// 假服务器里用来数"同时在处理的请求数"的守卫（离开作用域就 -1）。
+    struct InFlightGuard(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    impl Drop for InFlightGuard {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
     struct FakeServer {
         addr: std::net::SocketAddr,
         /// 每一次请求的 `Range` 头（`None` = 这次没带）
@@ -2984,54 +3071,77 @@ mod tests {
             let ranges: std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>> =
                 std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
             let seen = std::sync::Arc::clone(&ranges);
+            // ★ 每个连接一个线程 ⇒ `respond` 要能被多线程共享（见下面那段说明）
+            let respond = std::sync::Arc::new(respond);
 
             std::thread::spawn(move || {
                 use std::io::{Read, Write};
                 for stream in listener.incoming() {
                     let Ok(mut stream) = stream else { continue };
-                    // 读请求头（到空行为止）
-                    let mut buf = Vec::new();
-                    let mut tmp = [0u8; 1024];
-                    loop {
-                        let Ok(n) = stream.read(&mut tmp) else { break };
-                        if n == 0 {
-                            break;
+                    /*
+                     * ★★★★ 2026-10-02：**每个连接一个线程**。
+                     *
+                     *   这里是**真缺陷**（尺子本身的缺陷，比没有尺子更危险）：
+                     *   原来 `for stream in listener.incoming()` 是在**一个线程里
+                     *   顺序处理**每个连接的 —— 于是"同时处理的请求数"**永远
+                     *   是 1**，不管客户端真的开了多少条连接。
+                     *
+                     *   实测后果：`chunked_download_actually_spreads_connections`
+                     *   报「分片：服务器观测峰值 1」（而 8 MB 是完整下下来的），
+                     *   我差点据此认为"引擎没有铺开"。
+                     *   ⇒ 这是**观测仪器把被测对象的并发串行化**了。
+                     *
+                     *   ★ 这个坑很隐蔽：仪器"能用"（数据都下对了），
+                     *     但它测的那个数**恒等于 1**，看起来像个真实的结论。
+                     */
+                    let respond = std::sync::Arc::clone(&respond);
+                    let seen = std::sync::Arc::clone(&seen);
+                    std::thread::spawn(move || {
+                        let respond = &*respond;
+                        // 读请求头（到空行为止）
+                        let mut buf = Vec::new();
+                        let mut tmp = [0u8; 1024];
+                        loop {
+                            let Ok(n) = stream.read(&mut tmp) else { break };
+                            if n == 0 {
+                                break;
+                            }
+                            buf.extend_from_slice(&tmp[..n]);
+                            if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                                break;
+                            }
                         }
-                        buf.extend_from_slice(&tmp[..n]);
-                        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                            break;
+                        let head = String::from_utf8_lossy(&buf).to_string();
+                        let range = head
+                            .lines()
+                            .find(|l| l.to_ascii_lowercase().starts_with("range:"))
+                            .map(|l| l[6..].trim().to_string());
+
+                        let idx = {
+                            let mut g = seen.lock().unwrap();
+                            g.push(range.clone());
+                            g.len() - 1
+                        };
+
+                        let (status, headers, body) = respond(idx, range.as_deref());
+                        let reason = match status {
+                            200 => "OK",
+                            206 => "Partial Content",
+                            416 => "Range Not Satisfiable",
+                            _ => "Status",
+                        };
+                        let mut out = format!(
+                            "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n",
+                            body.len()
+                        );
+                        for (k, v) in headers {
+                            out.push_str(&format!("{k}: {v}\r\n"));
                         }
-                    }
-                    let head = String::from_utf8_lossy(&buf).to_string();
-                    let range = head
-                        .lines()
-                        .find(|l| l.to_ascii_lowercase().starts_with("range:"))
-                        .map(|l| l[6..].trim().to_string());
-
-                    let idx = {
-                        let mut g = seen.lock().unwrap();
-                        g.push(range.clone());
-                        g.len() - 1
-                    };
-
-                    let (status, headers, body) = respond(idx, range.as_deref());
-                    let reason = match status {
-                        200 => "OK",
-                        206 => "Partial Content",
-                        416 => "Range Not Satisfiable",
-                        _ => "Status",
-                    };
-                    let mut out = format!(
-                        "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n",
-                        body.len()
-                    );
-                    for (k, v) in headers {
-                        out.push_str(&format!("{k}: {v}\r\n"));
-                    }
-                    out.push_str("\r\n");
-                    let _ = stream.write_all(out.as_bytes());
-                    let _ = stream.write_all(&body);
-                    let _ = stream.flush();
+                        out.push_str("\r\n");
+                        let _ = stream.write_all(out.as_bytes());
+                        let _ = stream.write_all(&body);
+                        let _ = stream.flush();
+                    });
                 }
             });
 
@@ -3046,52 +3156,136 @@ mod tests {
             self.ranges.lock().unwrap().clone()
         }
 
-        /// ★ 2026-10-01：**按 Range 正确切片并带 `Content-Range`** 的替身。
-        ///
-        ///   为什么必须这样：`download_range` 现在会核对 `Content-Range`
-        ///   （多源续下时，"服务端忽略 Range 又从头给数据"会把同一段写两遍
-        ///   —— 文件大小对得上、内容却是错的）。所以"正常的服务器"这个替身
-        ///   也必须给出**正确的** `Content-Range`，否则测的就不是真实行为。
-        ///
-        ///   ★★ 每个字节的值**由它自己的偏移决定**（`offset % 251`）：
-        ///     这样"某一段被写到了错误的偏移上"会立刻现形 ——
-        ///     而用固定填充值（全是 `b'B'`）时，偏移错了也**看不出来**。
-        ///     这条是踩过之后才明白的：固定填充值的测试**证明不了**拼接正确。
-        fn start_ranged(total: u64) -> Self {
-            Self::start(move |_idx, range| match range {
-                Some(r) => {
-                    let (a, b) = r
-                        .trim_start_matches("bytes=")
-                        .split_once('-')
-                        .map(|(a, b)| {
-                            (
-                                a.trim().parse::<u64>().unwrap_or(0),
-                                b.trim().parse::<u64>().unwrap_or(total - 1),
-                            )
-                        })
-                        .unwrap_or((0, total - 1));
-                    let body: Vec<u8> = (a..=b).map(|o| (o % 251) as u8).collect();
-                    (
-                        206,
-                        vec![(
-                            "Content-Range".to_string(),
-                            format!("bytes {a}-{b}/{total}"),
-                        )],
-                        body,
-                    )
-                }
-                None => (
-                    200,
-                    vec![],
-                    (0..total).map(|o| (o % 251) as u8).collect(),
-                ),
-            })
-        }
     }
 
     /// 整份文件应有的内容（与 `FakeServer::start_ranged` 同一套规则）。
     fn expected_bytes(total: u64) -> Vec<u8> {
         (0..total).map(|o| (o % 251) as u8).collect()
+    }
+
+    /// ★★★★ 2026-10-02：**"完整实现"的替身** —— HEAD 报真实大小、支持 Range。
+    ///
+    /// ## 为什么还要再造一个
+    ///
+    ///   `start` 那个替身对 HEAD 回的是"1024 字节的正文"，而 `probe_content_length`
+    ///   会据此认为文件只有 1024 字节 —— 与 `task.size = 8 MB` 不符 ⇒ **大小校验
+    ///   失败 ⇒ 回退单连接**。
+    ///
+    ///   实测后果（`chunked_download_actually_spreads_connections` 第二次运行）：
+    ///   服务器只收到 3 个请求、**一个分段 Range 都没有**，于是我拿着"峰值 1"
+    ///   差点又得出"引擎没铺开"的结论。**第三次被不真实的假服务器误导。**
+    ///
+    ///   ⇒ 这个替身**按真实服务器的行为**回：
+    ///     · HEAD → `Content-Length: total`、`Accept-Ranges: bytes`、无正文；
+    ///     · GET（无 Range）→ 200 + 整份；
+    ///     · GET（有 Range）→ 206 + `Content-Range` + 对应切片；
+    ///     · 每个连接**一个线程**（否则观测到的并发恒为 1，见 `start` 里那段说明）。
+    ///
+    ///   返回 `(FakeServer, 并发峰值)`。
+    fn start_full(
+        total: u64,
+        hold: std::time::Duration,
+    ) -> (FakeServer, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("绑本地端口");
+        let addr = listener.local_addr().unwrap();
+        let ranges: std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = std::sync::Arc::clone(&ranges);
+        let in_flight = std::sync::Arc::new(AtomicUsize::new(0));
+        let peak = std::sync::Arc::new(AtomicUsize::new(0));
+        let inf = std::sync::Arc::clone(&in_flight);
+        let pk = std::sync::Arc::clone(&peak);
+
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let seen = std::sync::Arc::clone(&seen);
+                let inf = std::sync::Arc::clone(&inf);
+                let pk = std::sync::Arc::clone(&pk);
+                std::thread::spawn(move || {
+                    // ── 读请求头 ──
+                    let mut buf = Vec::new();
+                    let mut tmp = [0u8; 1024];
+                    loop {
+                        let Ok(n) = stream.read(&mut tmp) else { break };
+                        if n == 0 {
+                            break;
+                        }
+                        buf.extend_from_slice(&tmp[..n]);
+                        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let head = String::from_utf8_lossy(&buf).to_string();
+                    let is_head = head.starts_with("HEAD ");
+                    let range = head
+                        .lines()
+                        .find(|l| l.to_ascii_lowercase().starts_with("range:"))
+                        .map(|l| l[6..].trim().to_string());
+
+                    // ★ 并发观测：从这里开始到写完响应为止
+                    let now = inf.fetch_add(1, Ordering::SeqCst) + 1;
+                    pk.fetch_max(now, Ordering::SeqCst);
+                    let _g = InFlightGuard(std::sync::Arc::clone(&inf));
+
+                    {
+                        let mut g = seen.lock().unwrap();
+                        g.push(range.clone());
+                    }
+                    // 停一下，让"同时在处理的请求数"能被观测到
+                    if !hold.is_zero() {
+                        std::thread::sleep(hold);
+                    }
+
+                    let full: Vec<u8> = (0..total).map(|o| (o % 251) as u8).collect();
+                    let (status, extra, body): (u16, String, Vec<u8>) = if is_head {
+                        // HEAD：真实大小 + 声明支持 Range，无正文
+                        (200, "Accept-Ranges: bytes\r\n".to_string(), Vec::new())
+                    } else {
+                        match &range {
+                            Some(r) => {
+                                let (a, b) = r
+                                    .trim_start_matches("bytes=")
+                                    .split_once('-')
+                                    .map(|(a, b)| {
+                                        let a = a.trim().parse::<u64>().unwrap_or(0);
+                                        let b = b
+                                            .trim()
+                                            .parse::<u64>()
+                                            .ok()
+                                            .filter(|b| *b >= a)
+                                            .unwrap_or(total - 1);
+                                        (a, b)
+                                    })
+                                    .unwrap_or((0, total - 1));
+                                let end = b.min(total - 1);
+                                (
+                                    206,
+                                    format!("Content-Range: bytes {a}-{end}/{total}\r\n"),
+                                    full[a as usize..=end as usize].to_vec(),
+                                )
+                            }
+                            None => (200, String::new(), full),
+                        }
+                    };
+                    let reason = if status == 206 { "Partial Content" } else { "OK" };
+                    let len = if is_head { total } else { body.len() as u64 };
+                    let out = format!(
+                        "HTTP/1.1 {status} {reason}\r\nContent-Length: {len}\r\n{extra}Connection: close\r\n\r\n"
+                    );
+                    let _ = stream.write_all(out.as_bytes());
+                    let _ = stream.write_all(&body);
+                    let _ = stream.flush();
+                });
+            }
+        });
+
+        (
+            FakeServer { addr, ranges },
+            peak,
+        )
     }
 
     fn tmp_part(tag: &str) -> (PathBuf, PathBuf) {
@@ -3442,6 +3636,99 @@ mod tests {
             .map(|o| (o % 251) as u8)
             .collect();
         assert_eq!(bytes, want, "段内容必须是对应偏移的那一段");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★★★★ 2026-10-02：**分片到底有没有把连接铺开**（用尺子量，不靠推理）。
+    ///
+    ///   我这一轮连着两次"先动手、后验证"翻车，两次都**不知道自己在改什么数**：
+    ///     · 调大 `CHUNK_COUNT` ⇒ 整条分片路径 0 字节（只有现象）；
+    ///     · 加全局闸门 ⇒ 测试卡死（只有现象）。
+    ///   判据必须来自数字。这条测试就是那个判据。
+    ///
+    ///   ★ 关键设计：假服务器**每个请求停 200 ms**，用的是
+    ///     `std::thread::sleep`（阻塞），而它跑在**独立的 OS 线程**里 ——
+    ///     所以"同时挂起的请求数"就是**真实的并发连接数**，
+    ///     与 tokio 的调度无关。
+    ///
+    ///   ★ 断言两条：
+    ///     ① 分片时峰值 **> 1**（真的铺开了）；
+    ///     ② 分片时峰值 **明显高于** 单连接时（单连接恒为 1）。
+    ///     —— 若①不成立，说明我在闸门/段数上又把它掐回去了。
+    #[tokio::test]
+    async fn chunked_download_actually_spreads_connections() {
+        const TOTAL: u64 = 8 * 1024 * 1024; // 8 MB → 按 MIN_CHUNK(2MB) 切 4 段
+
+        // ★ 用"完整实现"的替身：HEAD 报真实大小（否则引擎会回退单连接，
+        //   于是这条测试测的就不是分片了 —— 已经被误导过三次）
+        let (server, peak) = start_full(TOTAL, std::time::Duration::from_millis(200));
+
+        // ── 分片 ──
+        conn_stats::reset();
+        let dir = std::env::temp_dir().join(format!("ieml-spread-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("chunked.bin");
+        let mut t = DownloadTask::new(p.clone(), server.url(), String::new(), TOTAL, "分片".into());
+        t.allow_chunked = true;
+        let out = download_batch(vec![t], BatchOptions::new(1, Source::Mojang, CancelToken::new()))
+            .await
+            .expect("分片这批不该失败");
+        let peak_chunked = peak.swap(0, std::sync::atomic::Ordering::SeqCst);
+        let reported = out.peak_connections;
+        let got = tokio::fs::metadata(&p).await.map(|m| m.len()).unwrap_or(0);
+
+        println!(
+            "  分片：服务器收到的 Range = {:?}",
+            server
+                .ranges()
+                .iter()
+                .map(|r| r.clone().unwrap_or_else(|| "（无 Range）".into()))
+                .collect::<Vec<_>>()
+        );
+        println!(
+            "  分片：服务器观测峰值 {peak_chunked}，引擎自报峰值 {reported}，\
+             下到 {got} 字节，失败 {}",
+            out.failed.len()
+        );
+        assert!(
+            server.ranges().iter().any(|r| r.is_some()),
+            "★ 一个分段 Range 都没发出去 ⇒ **这条测试没走到分片路径**，\
+             它证明不了任何关于并发的事（我被这个坑误导过三次）"
+        );
+        assert_eq!(got, TOTAL, "分片必须把文件下完整");
+
+        // ── 单连接 ──
+        conn_stats::reset();
+        let p2 = dir.join("single.bin");
+        let t2 = DownloadTask::new(p2.clone(), server.url(), String::new(), TOTAL, "单连接".into());
+        let out2 = download_batch(
+            vec![t2],
+            BatchOptions::new(1, Source::Mojang, CancelToken::new()),
+        )
+        .await
+        .expect("单连接这批不该失败");
+        let peak_single = peak.swap(0, std::sync::atomic::Ordering::SeqCst);
+        println!(
+            "  单连接：服务器观测峰值 {peak_single}，引擎自报峰值 {}",
+            out2.peak_connections
+        );
+
+        assert_eq!(
+            peak_chunked as u64, reported,
+            "★ 引擎自报的峰值与服务器实际观测**必须一致** —— \
+             不一致说明尺子本身是坏的（那比没有尺子更危险）"
+        );
+        assert!(
+            peak_chunked > 1,
+            "★ 分片的连接峰值只有 {peak_chunked} —— **没有铺开**。\
+             这正是我前两次栽的地方（段数被掐、或闸门把并发压回去了）"
+        );
+        assert!(
+            peak_chunked > peak_single,
+            "★ 分片（{peak_chunked}）不比单连接（{peak_single}）铺得宽，分片就白做了"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
