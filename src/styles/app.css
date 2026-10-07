@@ -2015,6 +2015,24 @@ tbody tr.clickable:focus-visible {
   margin-top: 2px;
   line-height: 1.55;
   word-break: break-word;
+  /*
+   * ★★★★ 2026-10-07（用户截图：「**装不下错误信息**」）。
+   *
+   *   与任务面板那边是**同一件事**，两个容器都要修：
+   *
+   *   ① `white-space: pre-wrap` —— 后端那条失败原因是**分行**写的
+   *      （每个失败文件一行），但纯文本进 DOM 后 `\n` 等于空格，
+   *      于是三行并成一坨：既看不清是几个文件，也数不出各差多少字节。
+   *      保留换行之后，下面那个 `.clamped` 的"两三行"预览也才有意义
+   *      （折叠的本来就是"前几个失败文件"，而不是一个长段落的前两行）。
+   *   ② `overflow-wrap: anywhere` —— `word-break: break-word` 对
+   *      **没有空格的长 URL** 不够可靠（那些 `https://…/xxx-1.20.1.jar`
+   *      在经典断行规则下可能整段溢出 520px 的容器）。
+   *      `anywhere` 允许在任意字符间断开，且**参与 min-content 计算**，
+   *      容器不会再被撑宽。
+   */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 /* 长报错默认折叠两三行，点开看全 —— 这样它就不必"永久挂在屏幕上" */
 .toast-d.clamped {

@@ -84,6 +84,20 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.19.4',
+    date: '2026-10-07',
+    headline: '这一版接着上一版修同一件事：报错看得见，但右上角那条提示里的多个失败文件还是挤成一团。',
+    groups: [
+      {
+        title: '修复了',
+        items: [
+          '修复了 右上角的失败提示里多个文件挤成一段、分不清是几个的问题。',
+          '修复了 失败提示里的网址把提示框撑宽的问题。',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.19.3',
     date: '2026-10-07',
     headline: '这一版修的是"下载到最后一步才炸"，并把任务上缺的信息补齐：还有多少、多快、还要多久。',
