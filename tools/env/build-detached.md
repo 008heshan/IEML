@@ -43,6 +43,28 @@ tauri CLI 本来也是跑这一条。**所以不需要 tauri CLI。**
 
 用法：`wscript.exe //nologo tools\env\build-detached.vbs`
 
+## ★★ 2026-10-08：这个脚本**一个字都不许输出**
+
+用户截了一张图：每次构建完都弹一个「Windows Script Host / build exit code = 0」
+的对话框，问"这是什么鬼"。
+
+原因是我在里面写了 `WScript.Echo "build exit code = " & rc` ——
+**`WScript.Echo` 在 `wscript.exe` 下的行为就是弹一个模态对话框**
+（它是给 GUI 宿主用的，不是 stdout；`cscript.exe` 才会打到控制台，
+而我们**故意**不用控制台）。
+
+⇒ 规矩：**这个脚本保持完全静默**。
+
+* 结果看 `E:\IEML\build-out.log`（`build-detached.cmd` 写的）；
+* 成功/失败由**本进程的退出码**表达；
+* 连"找不到 cmd 文件"这种错误也**写日志**、不弹框。
+
+★ 同一天我还写了一个实验性的 `build-silent.vbs`（想彻底不经过 cmd.exe），
+  它也没能跑通（`WshShell.Run` 不经 shell ⇒ 命令行里的 `> log` 重定向
+  **根本不生效**，所以它"成功返回 0 却什么都没做"）。
+  **已经删掉** —— 留着一个坏掉的、还带 `WScript.Echo` 的入口，
+  下次一定又是一个弹窗。
+
 ## 结果
 
 ```
