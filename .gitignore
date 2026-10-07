@@ -62,3 +62,6 @@ instances.json
 #     `"$schema": "../gen/schemas/desktop-schema.json"` 是**编辑器提示**，
 #     本地构建后文件就在，校验不会失效。
 /src-tauri/gen/
+
+# 提交信息临时文件（我用 git commit -F 时写的，不该入库）
+commit-msg.txt
