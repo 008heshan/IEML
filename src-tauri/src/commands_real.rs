@@ -6783,10 +6783,110 @@ pub fn scan_folder_versions(shared: &std::path::Path) -> Vec<FolderVersion> {
             .as_ref()
             .and_then(|v| v.inherits_from.clone())
             .unwrap_or_default();
-        let mc_version = if inherits.is_empty() {
-            id.clone()
-        } else {
+        /*
+         * ★ `mc_version` 要等身份小抄解析完才能定（整合包实例没有自己的 json，
+         *   MC 版本只能来自小抄）—— 所以它移到下面 marker 那一段之后算了。
+         */
+
+        /*
+         * ★★★★ 2026-10-06（用户截图）：「**整合包会被误判成错误版本**」。
+         *
+         *   截图里两个整合包被判"不能用的版本"：
+         *     · `pack-rysfd` 「缺少版本描述文件（这个目录里没有能认出的 .json）」
+         *     · `Fabulously Optimized`（`pack-w8kfea`）同一条
+         *
+         *   ## 为什么**根本没有**那个 JSON（不是安装失败）
+         *
+         *   整合包的加载器装在**共享目录**里（`versions/fabric-loader-0.14.21-1.20.1/`
+         *   或 `versions/1.20.1-forge-47.4.20/`），整合包自己的目录只放
+         *   `mods/ config/ saves/ …`（见 `AppPaths::instances` 的说明：
+         *   实例目录 = 游戏目录 = `versions/<slug>/`）。
+         *   而"跑官方安装器"那一步**只对 Forge / NeoForge 做**
+         *   （`modpack_install` 里那句 "Forge / NeoForge 还要跑官方安装器"），
+         *   Fabric 包连那一步都没有 ⇒ **没有任何代码会往这个目录写版本 JSON**。
+         *   ⇒ 所以"缺少版本描述文件"这句话是**判据错**，不是盘上的东西坏了。
+         *
+         *   ## 判据改成什么（与启动**同一套事实**）
+         *
+         *   启动时是这么定的（`launch_minecraft`）：
+         *     `game_dir` = 这个实例目录本身；版本 JSON 去
+         *     `resolve_loader_version_id(...)` 找到的那份加载器目录里取。
+         *   ⇒ 那么"这个目录能不能启动"的判据也该是**同一件事**：
+         *     它是不是一个**有身份**的实例目录，且那份加载器**真的在盘上**。
+         *
+         *   身份的来源是 `<目录>/.ieml/instance.json`（`INSTANCE_MARKER_NAME`）
+         *   —— 平台层专门为此写的"身份小抄"，里面**自带** `loader.kind/version`
+         *   与 `mcVersion`，正好是判据需要的东西。
+         *
+         *   ★ 为什么不用"目录里有没有 mods/saves"来猜：那是**猜**。
+         *     `instance.json` 是我们自己写的、有结构的身份，用它才是事实。
+         */
+        let marker = e
+            .path()
+            .join(crate::platform::LAUNCHER_SUBDIR)
+            .join(crate::platform::INSTANCE_MARKER_NAME);
+        let marker_text = std::fs::read_to_string(&marker).ok();
+        let marker_json: Option<serde_json::Value> =
+            marker_text.as_ref().and_then(|t| serde_json::from_str(t).ok());
+        let marker_loader_kind = marker_json
+            .as_ref()
+            .and_then(|v| v.get("loader"))
+            .and_then(|l| l.get("kind"))
+            .and_then(|k| k.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        let marker_loader_version = marker_json
+            .as_ref()
+            .and_then(|v| v.get("loader"))
+            .and_then(|l| l.get("version"))
+            .and_then(|k| k.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        let marker_mc = marker_json
+            .as_ref()
+            .and_then(|v| v.get("mcVersion"))
+            .and_then(|k| k.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
+        /*
+         * 找这个实例的加载器目录 —— **与启动完全同一套判据**：
+         *   `resolve_loader_version_id` 是 `launch_minecraft` 用的那个函数
+         *   （它按"名字精确命中 + 按磁盘痕迹扫"两层找）。
+         *   ★ 直接复用它而不是另写一份：两边一旦不一致，就会出现
+         *     "列表说能用、启动说找不到"（那正是用户报过的形状）。
+         */
+        let resolved_parent: Option<String> = match (&marker_loader_kind, &marker_mc) {
+            (Some(k), Some(mc)) => resolve_loader_version_id(
+                /*
+                 * ★ 传 `shared`（**不是** `versions`）—— 这个函数内部会自己
+                 *   拼一次 `shared.join("versions")`（它开头就是那一行）。
+                 *   我第一版传了 `versions`，于是它去找
+                 *   `versions/versions/1.20.1-fabric-0.14.21`，永远找不到，
+                 *   整合包还是被判"缺少前置加载器"。
+                 *   —— 这个错是**新测试抓出来的**，不是我看代码看出来的。
+                 */
+                shared,
+                mc,
+                Some(k.as_str()),
+                marker_loader_version.as_deref(),
+                &[],
+            ),
+            _ => None,
+        };
+
+        /*
+         * ★★ MC 版本：`inheritsFrom` 优先；整合包实例（没有自己的 json）
+         *   来自身份小抄。取不到才落回目录名。
+         *   ★ 不这样做的后果：界面上那行会写 "pack-w8kfea · 原版"，
+         *     用户看不出这个包是 1.20.1 的。
+         */
+        let mc_version = if !inherits.is_empty() {
             inherits.clone()
+        } else if let Some(m) = &marker_mc {
+            m.clone()
+        } else {
+            id.clone()
         };
 
         /*
@@ -6798,7 +6898,28 @@ pub fn scan_folder_versions(shared: &std::path::Path) -> Vec<FolderVersion> {
          *   ★ 每条都产出一句**能直接给用户看的话**（PCL 的 `Info` 就是这个用途）。
          *     「未知错误」不算答案 —— 用户要知道下一步做什么。
          */
-        let (ok, error) = if text.is_none() {
+        let (ok, error) = if text.is_none() && resolved_parent.is_some() {
+            /*
+             * ★★★★ 2026-10-06：**整合包实例**（目录里没有自己的版本 JSON）。
+             *
+             *   判据落在"加载器在不在"上 —— 与启动同一件事（见上面那段说明）。
+             *   加载器在 ⇒ 能启动（启动用的就是它那份 JSON）。
+             */
+            (true, String::new())
+        } else if text.is_none() && marker_json.is_some() {
+            /*
+             * 有身份、但**加载器不在盘上** ⇒ 如实说清缺的是什么，而不是
+             * 含糊地说"缺少版本描述文件"（那句话在这个形状下是**错的**，
+             * 会让用户去找一个根本不该存在的文件）。
+             */
+            (
+                false,
+                match (&marker_loader_kind, &marker_loader_version) {
+                    (Some(k), Some(v)) => format!("缺少前置加载器 {k} {v} —— 请在下载页装一次它"),
+                    _ => "缺少前置版本 —— 这个实例声明的加载器没在盘上".to_string(),
+                },
+            )
+        } else if text.is_none() {
             (
                 false,
                 "缺少版本描述文件（这个目录里没有能认出的 .json）".to_string(),
@@ -10763,7 +10884,7 @@ mod wire_tests {
         );
         assert!(got.iter().any(|v| v.ok), "至少要有能用的版本");
 
-        // neoforge 不能被认成 forge（顺序错了会少一个 NeoForge 徽标）
+    /// neoforge 不能被认成 forge（顺序错了会少一个 NeoForge 徽标）
         assert_eq!(loader_from_dir_name("neoforge-21.1.0").as_deref(), Some("neoforge"));
         assert_eq!(loader_from_dir_name("1.20.1-forge-47.2.0").as_deref(), Some("forge"));
         assert_eq!(loader_from_dir_name("1.20.1").as_deref(), None);
@@ -10869,6 +10990,105 @@ mod wire_tests {
         assert!(
             s.error.contains("版本描述"),
             "★ 坏掉的版本**仍然出现在结果里**，并带着原因 —— 这正是「看不出盘上有什么」的解药：{s:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// ★★★★ 2026-10-06（用户截图）：「**整合包会被误判成错误版本**」。
+    ///
+    ///   截图里的两条：
+    ///     · `pack-rysfd`            「缺少版本描述文件（这个目录里没有能认出的 .json）」
+    ///     · `Fabulously Optimized`  同一条
+    ///
+    ///   而**那是错的**：整合包实例的目录里**本来就没有**版本 JSON ——
+    ///   加载器装在共享目录（`versions/1.20.1-fabric-0.14.21/`），
+    ///   整合包目录只放 `mods/ config/ saves/ …`（实例目录 = 游戏目录）。
+    ///
+    ///   真机证据（`D:\IEML\.minecraft\versions\`）：
+    ///     · `pack-w8kfea`  json=0 jar=0（但有 mods/ config/ saves/ .ieml/）
+    ///     · `1.20.1-fabric-0.14.21` json=2（加载器那份 JSON 在这里）
+    ///     · 账本里 `pack-w8kfea` 记着 loader=fabric 0.14.21 / mc=1.20.1
+    ///
+    ///   判据改成与**启动同一套事实**：目录有 `.ieml/instance.json`（身份），
+    ///   且它声明的加载器**真的在盘上** ⇒ 能启动。
+    #[test]
+    fn modpack_instance_without_its_own_json_is_not_an_error() {
+        let base = std::env::temp_dir().join(format!("ieml-packver-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let shared = base.join(".minecraft");
+        let versions = shared.join("versions");
+
+        // ① 原版 1.20.1（加载器要靠它）
+        let v = versions.join("1.20.1");
+        std::fs::create_dir_all(&v).unwrap();
+        std::fs::write(
+            v.join("1.20.1.json"),
+            r#"{"id":"1.20.1","mainClass":"net.minecraft.client.main.Main"}"#,
+        )
+        .unwrap();
+
+        // ② Fabric 加载器目录（整合包的"前置"）
+        let f = versions.join("1.20.1-fabric-0.14.21");
+        std::fs::create_dir_all(&f).unwrap();
+        std::fs::write(
+            f.join("1.20.1-fabric-0.14.21.json"),
+            r#"{"id":"1.20.1-fabric-0.14.21","inheritsFrom":"1.20.1",
+                "mainClass":"net.fabricmc.loader.impl.launch.knot.KnotClient",
+                "libraries":[{"name":"net.fabricmc:fabric-loader:0.14.21"}]}"#,
+        )
+        .unwrap();
+
+        // ③ 整合包实例：**没有自己的 json**，只有游戏文件 + 身份小抄
+        let pack = versions.join("pack-w8kfea");
+        std::fs::create_dir_all(pack.join("mods")).unwrap();
+        std::fs::create_dir_all(pack.join("saves")).unwrap();
+        std::fs::create_dir_all(pack.join(crate::platform::LAUNCHER_SUBDIR)).unwrap();
+        std::fs::write(
+            pack.join(crate::platform::LAUNCHER_SUBDIR)
+                .join(crate::platform::INSTANCE_MARKER_NAME),
+            r#"{"config":{"slug":"pack-w8kfea","name":"Fabulously Optimized"},
+                "loader":{"kind":"fabric","version":"0.14.21","mcVersion":"1.20.1"},
+                "mcVersion":"1.20.1"}"#,
+        )
+        .unwrap();
+
+        let got = scan_folder_versions(&shared);
+        let p = got.iter().find(|x| x.dir == "pack-w8kfea").expect("整合包那条要在");
+        assert!(
+            p.ok,
+            "★ 整合包实例**不该**被判成错误版本（它本来就没有自己的 json）。\
+             实际原因：{}",
+            p.error
+        );
+        assert_eq!(p.error, "", "能用的时候不该带原因");
+        assert!(!p.has_json, "它确实没有自己的版本 JSON —— 这是正常的");
+        assert_eq!(
+            p.mc_version, "1.20.1",
+            "MC 版本应当来自身份小抄（否则界面上显示不出来）"
+        );
+
+        // ④ 加载器**不在盘上**时，要如实说清缺的是什么（而不是"缺少版本描述文件"）
+        let orphan = versions.join("pack-orphan");
+        std::fs::create_dir_all(orphan.join(crate::platform::LAUNCHER_SUBDIR)).unwrap();
+        std::fs::write(
+            orphan
+                .join(crate::platform::LAUNCHER_SUBDIR)
+                .join(crate::platform::INSTANCE_MARKER_NAME),
+            r#"{"config":{"slug":"pack-orphan"},
+                "loader":{"kind":"forge","version":"47.4.20","mcVersion":"1.20.1"},
+                "mcVersion":"1.20.1"}"#,
+        )
+        .unwrap();
+        let got2 = scan_folder_versions(&shared);
+        let o = got2.iter().find(|x| x.dir == "pack-orphan").expect("缺加载器那条");
+        assert!(!o.ok, "加载器不在盘上就不能算能用");
+        assert!(
+            o.error.contains("forge"),
+            "★ 原因里要说清缺的是**哪个加载器**，而不是含糊的\
+             「缺少版本描述文件」（那句话在这个形状下是错的，\
+             会让用户去找一个根本不该存在的文件）：{}",
+            o.error
         );
 
         let _ = std::fs::remove_dir_all(&base);

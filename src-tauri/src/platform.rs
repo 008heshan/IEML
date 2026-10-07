@@ -2373,8 +2373,40 @@ pub fn instance_catalog_repair(paths: &AppPaths) -> CatalogRepair {
     let ledger = paths.own_json("instances.json");
     for dir_name in &disk_names {
         let dir = paths.instances.join(dir_name);
-        if !dir.join(format!("{dir_name}.json")).is_file() {
-            continue; // 只给真正的版本写
+        /*
+         * ★★★★ 2026-10-06（用户截图：「整合包会被误判成错误版本」）。
+         *
+         *   这里原来是 `if !dir.join(format!("{dir_name}.json")).is_file() { continue }`
+         *   —— **只给"有同名版本 JSON"的目录写身份小抄**。
+         *
+         *   而**整合包实例本来就没有那个 JSON**：它的加载器装在共享目录
+         *   （`versions/1.20.1-fabric-0.14.21/`），自己的目录只放
+         *   `mods/ config/ saves/ …`（实例目录 = 游戏目录）。
+         *   ⇒ 于是整合包目录**永远拿不到 `instance.json`**，
+         *     而 `scan_folder_versions` 又只能靠它认出"这是一个整合包实例" ——
+         *     结果就是截图里那句「缺少版本描述文件」。
+         *
+         *   ★ 判据改成"**是账本里的实例** 或 有同名 JSON"：
+         *     账本里有的目录一定是我们自己创建的实例（整合包实例必在其中），
+         *     给它写一份身份是**正确的**；而"盘上有、账本没有"的目录仍然
+         *     只在有同名 JSON 时才写（那种目录我们不了解它是什么）。
+         */
+        let in_ledger = ledger
+            .as_ref()
+            .and_then(|l| l.get("instances"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter().any(|i| {
+                    i.get("config")
+                        .and_then(|c| c.get("slug"))
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.eq_ignore_ascii_case(dir_name))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false);
+        if !in_ledger && !dir.join(format!("{dir_name}.json")).is_file() {
+            continue;
         }
         let from_ledger = ledger.as_ref().and_then(|l| {
             l.get("instances")?.as_array()?.iter().find(|i| {

@@ -55,14 +55,54 @@ function mojibakeOf(text) {
   return new TextDecoder('gbk', { fatal: false }).decode(bytes);
 }
 
-/** 把一份临时样本目录跑一遍门禁，返回 { code, out } */
+/**
+ * 跑门禁的**子进程**怎么起。
+ *
+ * ★★★★ 2026-10-06：这里原来写死 `execFileSync('node', [GATE, dir])` ——
+ *   在**这个**开发环境里它必然失败，而且失败得**毫无提示**：
+ *
+ *     本机 `node` 是 `…\.desktop-bin\node.cmd`，内容是用
+ *     **`ELECTRON_RUN_AS_NODE=1` + Electron 可执行文件**假装 node
+ *     （`@set ELECTRON_RUN_AS_NODE=1` 然后调 `DSH Desktop.exe %*`）。
+ *     而子进程**不会继承**那个变量 ⇒ 起 `node` 得到 `ENOENT`。
+ *
+ *   实测形状（很容易被误读成"门禁坏了"）：
+ *     `e.status = null`、`e.stdout = undefined`、`e.stderr = undefined`
+ *     ⇒ 拼出来的输出是**空字符串**，于是断言报的是
+ *       「要指出是哪个文件的哪一行：actual ''」——
+ *       看起来像门禁没输出，其实是**子进程根本没起来**。
+ *     ★ `status === null`（而不是 0/1）就是"没起来"的信号；
+ *       `code === 'ENOENT'` 才是真正的原因。判据要认这个。
+ *
+ *   ⇒ 起子进程时把 `ELECTRON_RUN_AS_NODE` 传下去（普通 Node 环境里
+ *     这个变量无害、会被忽略），并且**显式检查"有没有起来"** ——
+ *     没起来就直接报出原因，不让它退化成"门禁没输出"。
+ */
 function runGate(dir) {
+  let out;
   try {
-    const out = execFileSync('node', [GATE, dir], { cwd: ROOT, encoding: 'utf8', stdio: 'pipe' });
-    return { code: 0, out };
+    out = execFileSync(process.execPath, [GATE, dir], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      stdio: 'pipe',
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    });
   } catch (e) {
-    return { code: e.status ?? 1, out: `${e.stdout ?? ''}${e.stderr ?? ''}` };
+    /*
+     * ★ 关键：`status === null` 表示**进程压根没起来**（ENOENT 之类），
+     *   那时 stdout/stderr 都是 undefined。把它如实报出来 ——
+     *   否则一个环境问题会伪装成"门禁没有输出"。
+     */
+    if (e.status === null || e.status === undefined) {
+      throw new Error(
+        `起门禁子进程失败（${e.code ?? '未知'}）：${e.message}\n` +
+          `  execPath = ${process.execPath}\n` +
+          `  ★ status 为 null 表示进程没起来 —— 这不是门禁判红，是本机起不了子进程`,
+      );
+    }
+    return { code: e.status, out: `${e.stdout ?? ''}${e.stderr ?? ''}` };
   }
+  return { code: 0, out };
 }
 
 /** 一份样本目录（进程 id + 名字分隔，不撞别人） */
