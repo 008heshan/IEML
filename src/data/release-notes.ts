@@ -84,6 +84,20 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.19.14',
+    date: '2026-10-08',
+    headline: '这一版修的是两处页面级版式。',
+    groups: [
+      {
+        title: '修复了',
+        items: [
+          '修复了 往下滚动时页面标题被顶出视野、看不到自己在哪一页的问题。',
+          '修复了 页面最后一行贴着窗口底部的问题。',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.19.13',
     date: '2026-10-08',
     headline: '这一版把上一版改错的两处改回来。',
