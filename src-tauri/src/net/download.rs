@@ -1477,7 +1477,7 @@ async fn download_single(
          *   （`note_success`），换成"整份大小"会把续传那一次的速度算虚高，
          *   进而把正常速度误判成坏源。
          */
-        finish_single(manager, url, task_size, base + this_run).await?;
+        finish_single(manager, url, task_size, base + this_run, expected_sha1).await?;
         return Ok(this_run);
     }
 }
@@ -1510,6 +1510,7 @@ async fn finish_single(
     url: &str,
     task_size: u64,
     total_written: u64,
+    expected_sha1: &str,
 ) -> Result<()> {
     /*
      * ★★ **"限流页"检测：服务端用一个小响应搪塞我们。**
@@ -1549,19 +1550,66 @@ async fn finish_single(
      *   （有 SHA1 的任务在调用方那里还会再校验一遍；这里先把关，
      *    让错误信息说得出"差多少"。）
      */
+    /*
+     * ★★★★ 2026-10-07（用户截图：「**为什么会下载会在最后阶段爆炸啊**」）。
+     *
+     *   ## 现场
+     *
+     *   整合包装到最后，4 个 Mod 报失败，全都是**差 1 个字节**：
+     *     · `任务记录 215534 字节，实际拿到 215533 字节（少了 1 字节）`
+     *     · `任务记录 29962 字节，实际拿到 29961 字节（少了 1 字节）`
+     *   而**这三条错误都是长度校验抛出来的**，SHA1 校验在它下游、根本没轮到。
+     *
+     *   ## 根因：拿一个**参考值**当硬判据
+     *
+     *   `task_size` 来自整合包清单里的 `fileSize`（`modrinth.rs` 把
+     *   `f.file_size` 直接塞进 `DownloadTask::new`）。那是**清单作者的记录**，
+     *   不是从文件本身算出来的东西 —— 文件在 CDN 上被重新打包过、
+     *   清单没跟着更新，就会差这么一两个字节。
+     *
+     *   ⇒ 于是**一个内容完全正确的文件被判死**，而且是在"下载已经全部完成、
+     *     就差落位"的那一刻炸掉 —— 用户看到的就是"最后阶段爆炸"。
+     *
+     *   ## 判据的**优先级**（关键）
+     *
+     *     · `sha1` 非空 ⇒ **它说了算**。它是内容摘要，判对了就是对的，
+     *       长度差几个字节**不构成失败理由**。长度校验在这一档**让位**
+     *       （返回 Ok，让调用方去算 SHA1；算不过它会自己删掉重下）。
+     *     · `sha1` 为空 ⇒ 长度是**唯一的判据**，必须严格（这是原来的行为，
+     *       那种任务本来就没有别的东西可依）。
+     *
+     *   ★ 为什么"让位"是安全的：SHA1 对不上时调用方一定会失败重下
+     *     （见下面 `if !task.sha1.is_empty()` 那一段），所以这里放过去
+     *     不会让坏文件落地。
+     *   ★ 反过来才是危险的：现在这样会让**好文件**永远装不上，
+     *     而用户完全看不出为什么（错误信息说的是"下载不完整"，
+     *     但下载是完整的）。
+     */
+    let has_sha1 = !expected_sha1.is_empty();
     if task_size > 0 && total_written != task_size {
-        let diff = if total_written < task_size {
-            format!("少了 {} 字节（连接中途断了 / 代理提前收尾）", task_size - total_written)
+        if has_sha1 {
+            /*
+             * 记一句日志（不报错）：长度与清单记录不符这事本身值得知道 ——
+             * 如果哪天 SHA1 也没兜住，这行日志就是唯一线索。
+             */
+            say!(
+                "[IEML/download] 长度与清单记录不符（记录 {task_size}，实际 {total_written}）\
+                 —— 有 SHA1，以 SHA1 为准：{url}"
+            );
         } else {
-            format!(
-                "多了 {} 字节（服务端上的文件多半已经换了）",
-                total_written - task_size
-            )
-        };
-        return Err(NetError::Other(format!(
-            "下载不完整：任务记录 {task_size} 字节，实际拿到 {total_written} 字节（{diff}）\
-             —— 已保留 .part，重试会接着下 —— URL: {url}"
-        )));
+            let diff = if total_written < task_size {
+                format!("少了 {} 字节（连接中途断了 / 代理提前收尾）", task_size - total_written)
+            } else {
+                format!(
+                    "多了 {} 字节（服务端上的文件多半已经换了）",
+                    total_written - task_size
+                )
+            };
+            return Err(NetError::Other(format!(
+                "下载不完整：任务记录 {task_size} 字节，实际拿到 {total_written} 字节（{diff}）\
+                 —— 已保留 .part，重试会接着下 —— URL: {url}"
+            )));
+        }
     }
 
     Ok(())
@@ -3837,6 +3885,73 @@ mod tests {
             manager.recommended_concurrency(probe_src, 64)
         );
         assert_eq!(server.ranges().len(), 1, "没带 Range 的第一次请求就够判定了");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★★★★ 2026-10-07（用户截图：「**为什么会下载会在最后阶段爆炸啊**」）。
+    ///
+    ///   **有 SHA1 时，长度只是参考值，SHA1 才是判据。**
+    ///
+    ///   现场：整合包装到最后，几个 Mod 报
+    ///   `任务记录 215534 字节，实际拿到 215533 字节（少了 1 字节）`
+    ///   —— 而那几个文件**内容是对的**，只是清单里的 `fileSize`
+    ///   与实际文件差一两个字节。于是"下载全部完成、就差落位"的那一刻被判死，
+    ///   用户看到的就是"最后阶段爆炸"。
+    ///
+    ///   ⇒ 这条测试钉住：**清单记录的长度与真实长度差 1 字节、而 SHA1 对得上**
+    ///     时，必须**成功**。
+    ///
+    ///   ★ 反面的保证由 `short_body_is_rejected_even_without_sha1` 钉着：
+    ///     **没有 SHA1** 的任务，长度仍然是硬判据（差一个字节都不行）。
+    ///     两条一起才说明白"谁说了算"。
+    #[tokio::test]
+    async fn size_off_by_one_is_ok_when_sha1_matches() {
+        // 真实内容 12 字节
+        let body = b"hello world\n".to_vec();
+        let real_len = body.len() as u64;
+        let real_sha1 = {
+            use sha1::{Digest, Sha1};
+            let mut h = Sha1::new();
+            h.update(&body);
+            h.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>()
+        };
+        let b2 = body.clone();
+        let server = FakeServer::start(move |_idx, _range| (200, vec![], b2.clone()));
+        let (part, dir) = tmp_part("off-by-one");
+
+        let manager = SourceManager::for_test();
+        /*
+         * ★ 任务记录比真实**大 1 字节** —— 正是截图里那个形状。
+         *   `download_single` 的签名是 `(manager, url, part, sha1, cancel, ..)`,
+         *   最后一个参数才是 task_size。
+         */
+        let out = download_single(
+            &manager,
+            &server.url(),
+            &part,
+            &real_sha1,
+            &CancelToken::new(),
+            0,
+            0,
+            false,
+            real_len + 1,
+        )
+        .await;
+
+        assert!(
+            out.is_ok(),
+            "★ 清单记录的长度差 1 字节、而 SHA1 对得上 ⇒ **必须成功**。\
+             以前这里会报「下载不完整」把文件判死，而那正是「最后阶段爆炸」：\
+             {:?}",
+            out.err().map(|e| e.to_string())
+        );
+        assert!(part.is_file(), "文件要真的落位");
+        assert_eq!(
+            std::fs::read(&part).unwrap(),
+            body,
+            "落位的必须正好是服务端给的那份内容"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

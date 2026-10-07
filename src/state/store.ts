@@ -59,6 +59,21 @@ export interface TaskItem {
   percent: number;
   finishedFiles: number;
   totalFiles: number;
+  /*
+   * ★★★★ 2026-10-07（用户截图：「**这个下载显示，有bug啊，信息不全**」）：
+   *   `finishedBytes` / `totalBytes` 是**新加的**。
+   *
+   *   在这之前任务卡片只有"第 N/M 个文件"和"X /s"两行，
+   *   而**一个 66 MB 的整合包体**几乎全花在**单个文件**上 ——
+   *   "第 1/380 个文件"这个数字在那几分钟里**根本不动**，
+   *   用户看到的就是"信息不全、像卡住了"。
+   *
+   *   字节数才是那个阶段唯一在动的量：
+   *     · `finishedBytes / totalBytes` 能回答"还有多少"（文件数回答不了）；
+   *     · 剩余时间要用**字节**算才准（用文件数算是拿"剩余文件数×平均"瞎估）。
+   */
+  finishedBytes: number;
+  totalBytes: number;
   bytesPerSecond: number;
   currentFile: string;
   etaSeconds: number;
@@ -685,7 +700,43 @@ export function reducer(state: AppState, action: Action): AppState {
 
     /* ---------- 任务 ---------- */
     case 'task/add':
-      return { ...state, tasks: [...state.tasks, action.task] };
+      /*
+       * ★★★★ 2026-10-07（用户截图：「这个下载显示，有bug啊，信息不全」）。
+       *
+       *   **默认值必须补在这里，不能只靠调用方。**
+       *
+       *   任务是通过 `window.dispatchEvent(new CustomEvent('ieml:task-add', …))`
+       *   建的，而接收端用的是 `(e as CustomEvent<TaskItem>).detail` ——
+       *   一个**强制转型**。于是：
+       *     · 事件里少写一个字段，TypeScript **不会报错**（这是断言，不是检查）；
+       *     · 这个对象又被原样存进 state；
+       *     · 界面上那个字段就是 `undefined`，而渲染处写的是 `t.totalBytes > 0`
+       *       —— `undefined > 0` 是 false，于是整块**静默不显示**。
+       *
+       *   实测就是这样：我加了 `finishedBytes` / `totalBytes` 之后跑 `tsc`，
+       *   **零报错**，而三处创建点里有两处根本没带这两个字段。
+       *
+       *   ⇒ 收口在这一处补齐：谁忘了带都不会让界面缺一块。
+       *     ★ 与 `patchTask` 的分工：这里管"建的时候就有个合理的零"，
+       *       进度事件负责往后填真值。
+       */
+      return {
+        ...state,
+        tasks: [
+          ...state.tasks,
+          {
+            ...action.task,
+            /*
+             * ★ 显式 `?? 0`，而且**放在展开之后**。
+             *   写成 `{ finishedBytes: 0, ...action.task }` 是错的 ——
+             *   后展开的会覆盖默认值，字段仍然是 `undefined`
+             *   （TypeScript 会报 TS2783，这一条就是它替我挡下来的）。
+             */
+            finishedBytes: action.task.finishedBytes ?? 0,
+            totalBytes: action.task.totalBytes ?? 0,
+          },
+        ],
+      };
 
     case 'task/patch':
       return {

@@ -92,6 +92,34 @@
   color: var(--danger);
   font-size: var(--text-xs);
   line-height: 1.55;
+  /*
+   * ★★★★ 2026-10-07（用户截图：「**装不下错误信息**」）。
+   *
+   *   ## 两个原因叠在一起
+   *
+   *   ① **没有断词规则**：错误文本里全是**长 URL** 和长路径
+   *      （`https://mod.mcimirror.top/data/…/netherportalfix-fabric-….jar`）。
+   *      它们没有空格可断，于是整块**横向溢出** 400px 的面板 ——
+   *      截图里那几行正是这么顶出去的。
+   *   ② **换行被 HTML 吃掉了**：后端那条错误是**分行**写的
+   *      （每个失败文件一行，见 `installer` 里拼 `failed` 那段），
+   *      但纯文本进 DOM 之后 `\n` 等于空格 ⇒ 三行并成一坨，
+   *      既看不清是几个文件，也数不出各差多少字节。
+   *
+   *   ## 修法
+   *
+   *   · `white-space: pre-wrap` —— **保留换行**（一个文件一行），
+   *     同时仍然允许自动折行（`pre` 会横向溢出，不能用）；
+   *   · `overflow-wrap: anywhere` —— 长 URL 在**任意位置**都能断，
+   *     不再撑破面板；
+   *   · `max-height` + `overflow-y: auto` —— 失败文件多的时候**限高可滚**，
+   *     不让一条任务把整个面板撑到天上（面板自己有 `max-height: 62vh`，
+   *     但一条超长错误足以吃掉全部高度，把别的任务挤没）。
+   */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 14em;
+  overflow-y: auto;
 }
 /*
  * ★★ 2026-09-30（用户）：「我点完后，我都不知道开没开是下载，连接失败，

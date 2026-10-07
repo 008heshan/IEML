@@ -358,6 +358,9 @@ export function createWebBackend(): Backend {
             bytesPerSecond: speed,
             currentFile: `${step.phase}/${String(i).padStart(3, '0')}`,
             etaSeconds: Math.max(1, Math.round(remainingBytes / speed)),
+            // ★ 2026-10-07：与 Tauri 那条路同一组字段（浏览器预览用）
+            finishedBytes: Math.max(0, totalBytes - remainingBytes),
+            totalBytes,
             phase: step.label,
           });
         }

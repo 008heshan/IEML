@@ -30,6 +30,32 @@ import type { Instance } from '../domain';
 import type { ModrinthVersion, ModpackInstallResult, ResourceKindName } from '../bridge/tauri';
 import { registerTaskReplay } from '../flows/install';
 
+/**
+ * 由**字节数**算剩余秒数（拿不到就返回 0 = 界面不显示这一项）。
+ *
+ * ★★★★ 2026-10-07（用户截图：「这个下载显示，有bug啊，信息不全」）：
+ *   加它是因为界面上那一行原来**根本不显示**，而另有一处（`bridge/tauri.ts`）
+ *   用文件数算剩余时间 —— 那个式子写的是
+ *   `(totalFiles - finishedFiles) * 0 + 30`，**恒等于 30 秒**：
+ *   不是估算，是写死的。
+ *
+ *   ★ 为什么必须按字节算：一个 66 MB 的整合包体几乎全花在**单个文件**上，
+ *     文件数在那几分钟里不动 —— 拿它算出来的"剩余时间"没有任何意义。
+ *   ★ 拿不到总字节数（老后端 / 还没上报）⇒ 返回 0，**界面宁可不显示**，
+ *     也不显示一个假数字。
+ */
+function etaOfBytes(
+  bytesPerSecond: number | undefined,
+  finishedBytes: number | undefined,
+  totalBytes: number | undefined,
+): number {
+  const bps = bytesPerSecond ?? 0;
+  const done = finishedBytes ?? 0;
+  const total = totalBytes ?? 0;
+  if (bps <= 0 || total <= done) return 0;
+  return Math.round((total - done) / bps);
+}
+
 /** 后四格页签 ↔ 资源种类（**一一对应**，界面不自己编种类） */
 const RESOURCE_TABS: Array<{ tab: DownloadTab; kind: ResourceKindName; label: string }> = [
   { tab: 'mod', kind: 'mod', label: 'Mod' },
@@ -762,6 +788,8 @@ function ModpackTab({
             status: 'running',
             percent: 0,
             finishedFiles: 0,
+            finishedBytes: 0,
+            totalBytes: 0,
             bytesPerSecond: 0,
             currentFile: '',
             etaSeconds: 0,
@@ -886,6 +914,19 @@ function ModpackTab({
                   detail: e.stage,
                   percent: e.percent,
                   finishedFiles: e.finishedFiles,
+                  /*
+                   * ★★★★ 2026-10-07（用户截图：「这个下载显示，有bug啊，
+                   *   信息不全」）：**速度、字节数、剩余时间都要接过来**。
+                   *
+                   *   这里原来只接 `percent` / `finishedFiles` / `currentFile`
+                   *   —— 于是任务卡片上**永远没有速度和剩余时间**，
+                   *   而一个 66 MB 的包体几乎全花在**单个文件**上
+                   *   （"第 N/M 个文件"在那几分钟里根本不动）。
+                   */
+                  bytesPerSecond: e.bytesPerSecond ?? 0,
+                  finishedBytes: e.bytes ?? 0,
+                  totalBytes: e.totalBytes ?? 0,
+                  etaSeconds: etaOfBytes(e.bytesPerSecond, e.bytes, e.totalBytes),
                   currentFile: e.currentFile,
                 });
               },
@@ -929,6 +970,19 @@ function ModpackTab({
                   detail: e.stage,
                   percent: e.percent,
                   finishedFiles: e.finishedFiles,
+                  /*
+                   * ★★★★ 2026-10-07（用户截图：「这个下载显示，有bug啊，
+                   *   信息不全」）：**速度、字节数、剩余时间都要接过来**。
+                   *
+                   *   这里原来只接 `percent` / `finishedFiles` / `currentFile`
+                   *   —— 于是任务卡片上**永远没有速度和剩余时间**，
+                   *   而一个 66 MB 的包体几乎全花在**单个文件**上
+                   *   （"第 N/M 个文件"在那几分钟里根本不动）。
+                   */
+                  bytesPerSecond: e.bytesPerSecond ?? 0,
+                  finishedBytes: e.bytes ?? 0,
+                  totalBytes: e.totalBytes ?? 0,
+                  etaSeconds: etaOfBytes(e.bytesPerSecond, e.bytes, e.totalBytes),
                   currentFile: e.currentFile,
                 });
               },
@@ -1127,6 +1181,8 @@ function ModpackTab({
           status: 'running',
           percent: 0,
           finishedFiles: 0,
+          finishedBytes: 0,
+          totalBytes: 0,
           bytesPerSecond: 0,
           currentFile: '',
           etaSeconds: 0,

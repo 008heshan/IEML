@@ -115,9 +115,24 @@ export function TaskCenter() {
                       <span>
                         {t.phase} · {t.finishedFiles} / {t.totalFiles} 个文件
                       </span>
+                      {/*
+                        ★★★★ 2026-10-07（用户截图：「这个下载显示，有bug啊，
+                          信息不全」）：**加上"已下 / 总共多少字节"**。
+
+                          在那之前这里只有"第 N/M 个文件"和一行速度，而一个
+                          66 MB 的整合包体几乎全花在**单个文件**上 ——
+                          "第 1/380 个文件"在那几分钟里**根本不动**。
+                          字节数是那个阶段唯一在动的量，它才能回答"还有多少"。
+                      */}
+                      {t.status === 'running' && t.totalBytes > 0 ? (
+                        <span className="mono">
+                          {formatBytes(t.finishedBytes)} / {formatBytes(t.totalBytes)}
+                        </span>
+                      ) : null}
                       {t.status === 'running' && t.bytesPerSecond > 0 ? (
                         <span className="mono">
-                          {formatBytes(t.bytesPerSecond)}/s · 剩余 {formatDuration(t.etaSeconds)}
+                          {formatBytes(t.bytesPerSecond)}/s
+                          {t.etaSeconds > 0 ? ` · 剩余 ${formatDuration(t.etaSeconds)}` : ''}
                         </span>
                       ) : null}
                     </div>

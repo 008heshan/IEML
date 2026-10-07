@@ -134,6 +134,9 @@ export interface Backend {
       bytesPerSecond: number;
       currentFile: string;
       etaSeconds: number;
+      /** 已下 / 总共多少字节（2026-10-07 加：单个大文件时唯一在动的量） */
+      finishedBytes: number;
+      totalBytes: number;
       phase: string;
     }) => void,
   ): Promise<{ ok: true } | { ok: false; error: string }>;

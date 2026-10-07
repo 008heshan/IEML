@@ -619,7 +619,13 @@ export interface InstallProgressEvent {
   source?: 'auto' | 'mojang' | 'bmclapi' | '';
   /** 失败补下轮次：0 = 第一轮，>0 = 正在重试第 N 轮 */
   retryRound?: number;
+  /** 总共要下多少字节（用于"还有多少"与准确的剩余时间） */
   totalBytes?: number;
+  /**
+   * ★ 2026-10-07：**已下多少字节** —— 分母本来就有，缺的是这个分子。
+   *   只有它才能在"单个大文件"那几分钟里显示出真实进展。
+   */
+  finishedBytes?: number;
 }
 
 /** 单个下载源的健康状态（对应后端 `download_sources`） */
@@ -2038,6 +2044,18 @@ export interface ModpackProgressEvent {
   finishedFiles: number;
   totalFiles: number;
   bytes: number;
+  /**
+   * ★★★★ 2026-10-07（用户：「这个下载显示，有bug啊，信息不全」）：
+   *   下面两个字段是**新加的** —— 后端本来就在 `DownloadProgress` 里算好了
+   *   它们，只是**这条事件没带**，于是任务卡片上的速度与剩余时间恒为 0、
+   *   整行永远不显示。
+   *
+   *   ★ 总字节数尤其重要：一个 66 MB 的整合包体几乎全花在**单个文件**上，
+   *     而"第 N/M 个文件"在那几分钟里根本不动。
+   *   ★ 可选（`?`）：老后端不发这两个字段时不该崩，只是不显示而已。
+   */
+  bytesPerSecond?: number;
+  totalBytes?: number;
   currentFile: string;
   percent: number;
   failedFiles?: number;
@@ -2275,10 +2293,26 @@ export function createTauriBackend(): Backend {
               totalFiles: e.totalFiles,
               bytesPerSecond: e.bytesPerSecond,
               currentFile: e.currentFile,
+              /*
+               * ★★★★ 2026-10-07：**这里原来是个假值**。
+               *
+               *   老代码：`Math.round((e.totalFiles - e.finishedFiles) * 0 + 30)`
+               *   —— 那个 `* 0` 让它**恒等于 30**，也就是"剩余时间"在任何情况下
+               *   都显示 30 秒。不是估算，是写死的。
+               *
+               *   ⇒ 有字节数之后按**真实剩余字节**算：`(总 - 已下) / 速度`。
+               *     拿不到总字节数（老后端 / 还没报）就回到 0，
+               *     界面上那一行**不显示** —— 那比显示一个假的 30 秒好。
+               */
               etaSeconds:
-                e.bytesPerSecond > 0
-                  ? Math.round((e.totalFiles - e.finishedFiles) * 0 + 30)
+                e.bytesPerSecond > 0 &&
+                (e.totalBytes ?? 0) > (e.finishedBytes ?? 0)
+                  ? Math.round(
+                      ((e.totalBytes ?? 0) - (e.finishedBytes ?? 0)) / e.bytesPerSecond,
+                    )
                   : 0,
+              finishedBytes: e.finishedBytes ?? 0,
+              totalBytes: e.totalBytes ?? 0,
               phase: e.stage,
             }),
         );

@@ -2997,6 +2997,12 @@ pub async fn install_version(
                         "finishedFiles": p.finished_files,
                         "totalFiles": p.total_files,
                         "bytesPerSecond": p.bytes_per_second,
+                        /*
+                         * ★ 2026-10-07：加"已下多少字节"。`totalBytes` 原本就在
+                         *   （上面那行），缺的是分子 —— 只有分母算不出剩余时间。
+                         *   见 `TaskItem` 里那段说明。
+                         */
+                        "finishedBytes": p.finished_bytes,
                         "currentFile": p.current_file,
                         "skippedFiles": p.skipped_files,
                         "failedFiles": p.failed_files,
@@ -8822,6 +8828,21 @@ async fn install_pack_plan(
                         "finishedFiles": p.finished_files,
                         "totalFiles": p.total_files,
                         "bytes": p.finished_bytes,
+                        /*
+                         * ★★★★ 2026-10-07（用户截图：「这个下载显示，有bug啊，
+                         *   信息不全」）：**速度与总字节数必须发出去**。
+                         *
+                         *   这两个数 `DownloadProgress` 里**本来就有**
+                         *   （`bytes_per_second` / `total_bytes`），只是这一条
+                         *   事件没带 —— 于是界面上那一行恒为 0，
+                         *   任务卡片上**永远不显示速度和剩余时间**。
+                         *
+                         *   ★ 为什么总字节数尤其重要：一个 66 MB 的整合包体
+                         *     几乎全在**单个文件**上，而"第 N/M 个文件"在那几分钟
+                         *     里根本不动。没有字节数，用户只能看到一个不动的数字。
+                         */
+                        "bytesPerSecond": p.bytes_per_second,
+                        "totalBytes": p.total_bytes,
                         "currentFile": p.current_file,
                         "percent": if p.total_files > 0 { p.finished_files * 100 / p.total_files } else { 0 },
                     }),
@@ -9032,6 +9053,9 @@ async fn install_pack_plan(
                             "finishedFiles": p.finished_files,
                             "totalFiles": p.total_files,
                             "bytes": p.finished_bytes,
+                            // ★ 与上面那条同一处修复（见它的说明）：速度与总字节数要发出去
+                            "bytesPerSecond": p.bytes_per_second,
+                            "totalBytes": p.total_bytes,
                             "currentFile": p.current_file,
                             "percent": if p.total_files > 0 { p.finished_files * 100 / p.total_files } else { 0 },
                             "failedFiles": p.failed_files,
