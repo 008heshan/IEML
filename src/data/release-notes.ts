@@ -84,6 +84,19 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.19.15',
+    date: '2026-10-08',
+    headline: '这一版把分页条的位置改回它该在的地方。',
+    groups: [
+      {
+        title: '修复了',
+        items: [
+          '修复了 Mod、资源包、光影、数据包列表的上一页下一页位置太靠下的问题。',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.19.14',
     date: '2026-10-08',
     headline: '这一版修的是两处页面级版式。',
