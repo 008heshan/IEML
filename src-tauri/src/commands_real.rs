@@ -6726,7 +6726,8 @@ fn loader_from_dir_name(dir: &str) -> Option<String> {
 }
 
 /// 扫一遍 `<shared>/versions`：**每次都真读盘**（与 `scan_version_dir` 同一条纪律）。
-pub fn scan_folder_versions(shared: &std::path::Path) -> Vec<FolderVersion> {
+pub fn scan_folder_versions(paths: &crate::platform::AppPaths) -> Vec<FolderVersion> {
+    let shared = &paths.shared;
     let versions = shared.join("versions");
     let Ok(entries) = std::fs::read_dir(&versions) else {
         return Vec::new();
@@ -6827,13 +6828,41 @@ pub fn scan_folder_versions(shared: &std::path::Path) -> Vec<FolderVersion> {
          *   ★ 为什么不用"目录里有没有 mods/saves"来猜：那是**猜**。
          *     `instance.json` 是我们自己写的、有结构的身份，用它才是事实。
          */
-        let marker = e
-            .path()
-            .join(crate::platform::LAUNCHER_SUBDIR)
-            .join(crate::platform::INSTANCE_MARKER_NAME);
-        let marker_text = std::fs::read_to_string(&marker).ok();
-        let marker_json: Option<serde_json::Value> =
-            marker_text.as_ref().and_then(|t| serde_json::from_str(t).ok());
+        let marker_json: Option<serde_json::Value> = {
+            let on_disk = e
+                .path()
+                .join(crate::platform::LAUNCHER_SUBDIR)
+                .join(crate::platform::INSTANCE_MARKER_NAME);
+            match std::fs::read_to_string(&on_disk)
+                .ok()
+                .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            {
+                Some(v) => Some(v),
+                None => {
+                    /*
+                     * ★★★★ 2026-10-07（用户截图：「**又来了，下载完后，整合包被误判为
+                     *   不可用**」）：**盘上没有小抄时，现场算一份**。
+                     *
+                     *   上一版把"认整合包"的判据改成了读 `.ieml/instance.json`，
+                     *   而**写小抄只在启动时跑一次**
+                     *   （`lib.rs` 启动 → `instance_catalog_repair`）。
+                     *   于是用户"装完包、不重启就看列表"时，那些目录**必然没有小抄**
+                     *   —— 列表照样把它们判成「缺少版本描述文件」。
+                     *
+                     *   ⇒ 判据不能依赖"磁盘上有没有写下来"，而要能**现场算**。
+                     *     同一个事实只该有一份实现（`instance_marker_value`），
+                     *     启动修整与这里都调它。
+                     *   ★ 顺手补写一份（幂等）——这样这个目录从此"自带身份"，
+                     *     下次列表也不必再算（那正是小抄存在的意义）。
+                     */
+                    let v = paths.instance_marker_value(&dir);
+                    if v.is_some() {
+                        paths.ensure_instance_marker(&dir);
+                    }
+                    v
+                }
+            }
+        };
         let marker_loader_kind = marker_json
             .as_ref()
             .and_then(|v| v.get("loader"))
@@ -6980,7 +7009,7 @@ pub fn scan_folder_versions(shared: &std::path::Path) -> Vec<FolderVersion> {
 /// 当前游戏文件夹里有哪些版本（界面「版本列表」的数据源）。
 #[tauri::command]
 pub fn folder_versions(state: State<'_, AppState>) -> Vec<FolderVersion> {
-    scan_folder_versions(&state.paths().shared)
+    scan_folder_versions(&state.paths())
 }
 
 /// 把用户选的目录**规整成"根目录"**：他要是选了 `.minecraft` 本身，就用它的上一级。
@@ -10847,7 +10876,10 @@ mod wire_tests {
     fn folder_versions_reads_the_folder_not_the_ledger() {
         let base = std::env::temp_dir().join(format!("ieml-folderver-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
-        let shared = base.join(".minecraft");
+        // ★ 2026-10-07：`scan_folder_versions` 现在要 `AppPaths`（整合包实例的身份
+        //   小抄在实例目录里，光有 `shared` 找不到）—— 这里从同一个 base 拼
+        let paths = crate::platform::AppPaths::from_root(base.clone());
+        let shared = paths.shared.clone();
         let versions = shared.join("versions");
 
         // ① 原版：目录名 = id，没有 inheritsFrom
@@ -10871,7 +10903,7 @@ mod wire_tests {
         // ③ 空壳目录（没有 JSON）—— 也要出现在结果里，只是 `has_json = false`
         std::fs::create_dir_all(versions.join("broken-one")).unwrap();
 
-        let got = scan_folder_versions(&shared);
+        let got = scan_folder_versions(&paths);
         assert_eq!(got.len(), 3, "三个目录都要读出来：{got:?}");
 
         let vanilla = got.iter().find(|v| v.dir == "26.2").expect("原版那条");
@@ -10908,10 +10940,91 @@ mod wire_tests {
         );
         assert!(got.iter().any(|v| v.ok), "至少要有能用的版本");
 
-    /// neoforge 不能被认成 forge（顺序错了会少一个 NeoForge 徽标）
+        // neoforge 不能被认成 forge（顺序错了会少一个 NeoForge 徽标）
         assert_eq!(loader_from_dir_name("neoforge-21.1.0").as_deref(), Some("neoforge"));
         assert_eq!(loader_from_dir_name("1.20.1-forge-47.2.0").as_deref(), Some("forge"));
         assert_eq!(loader_from_dir_name("1.20.1").as_deref(), None);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// ★★★★ 2026-10-07（用户截图：「**又来了，下载完后，整合包被误判为不可用**」）。
+    ///
+    ///   **刚装完、还没重启时，整合包实例盘上还没有身份小抄。**
+    ///
+    ///   上一版把"认整合包"的判据改成了读 `<目录>/.ieml/instance.json`，
+    ///   而**写小抄只在启动时跑**（`lib.rs` → `instance_catalog_repair`）。
+    ///   于是"装完包、不重启就看列表"这条路必然判错 —— 用户就是这么撞上的。
+    ///
+    ///   ⇒ 这条测试**刻意不写小抄**，只在账本里放一条实例记录，
+    ///     断言列表仍然认得出来。判据必须能**现场算**，不能依赖"磁盘上写没写"。
+    ///
+    ///   ★ 顺带断言它**补写了小抄**（幂等的那一步）——这样下次列表更快，
+    ///     而且这个目录从此自带身份（那正是小抄存在的意义）。
+    #[test]
+    fn freshly_installed_pack_has_no_marker_yet_but_is_still_usable() {
+        let base = std::env::temp_dir().join(format!("ieml-freshpack-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let paths = crate::platform::AppPaths::from_root(base.clone());
+        let versions = paths.shared.join("versions");
+
+        // ① 原版 + Fabric 加载器（整合包的前置，真实布局里它们先在盘上）
+        let v = versions.join("1.20.1");
+        std::fs::create_dir_all(&v).unwrap();
+        std::fs::write(
+            v.join("1.20.1.json"),
+            r#"{"id":"1.20.1","mainClass":"net.minecraft.client.main.Main"}"#,
+        )
+        .unwrap();
+        let f = versions.join("1.20.1-fabric-0.14.21");
+        std::fs::create_dir_all(&f).unwrap();
+        std::fs::write(
+            f.join("1.20.1-fabric-0.14.21.json"),
+            r#"{"id":"1.20.1-fabric-0.14.21","inheritsFrom":"1.20.1",
+                "mainClass":"net.fabricmc.loader.impl.launch.knot.KnotClient",
+                "libraries":[{"name":"net.fabricmc:fabric-loader:0.14.21"}]}"#,
+        )
+        .unwrap();
+
+        // ② 刚装完的整合包：**只有游戏文件，没有小抄，也没有版本 json**
+        let pack = versions.join("pack-news1");
+        std::fs::create_dir_all(pack.join("mods")).unwrap();
+        std::fs::create_dir_all(pack.join("resourcepacks")).unwrap();
+        assert!(
+            !pack.join(crate::platform::LAUNCHER_SUBDIR).exists(),
+            "前提：这个目录里**没有** .ieml/ —— 模拟刚装完、还没重启"
+        );
+
+        // ③ 账本里有它（装包时写的），带加载器信息
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(paths.own_root.clone()).unwrap();
+        std::fs::write(
+            paths.own_root.join("instances.json"),
+            r#"{"instances":[{"config":{"slug":"pack-news1","name":"新装的包"},
+                "loader":{"kind":"fabric","version":"0.14.21","mcVersion":"1.20.1"},
+                "mcVersion":"1.20.1"}],"active_id":null}"#,
+        )
+        .unwrap();
+
+        let got = scan_folder_versions(&paths);
+        let p = got
+            .iter()
+            .find(|x| x.dir == "pack-news1")
+            .expect("刚装完的整合包也要出现在列表里");
+        assert!(
+            p.ok,
+            "★ 刚装完（还没有身份小抄）的整合包**不该**被判成不可用 —— \
+             判据必须能现场算，不能依赖磁盘上写没写。实际原因：{}",
+            p.error
+        );
+        assert_eq!(p.mc_version, "1.20.1", "MC 版本要来自身份（现场算的那一份）");
+
+        // ④ 顺带：判据跑过之后，小抄应该被补上了
+        assert!(
+            paths.instance_marker_file("pack-news1").is_file(),
+            "★ 列表跑过之后应当**顺手补写**身份小抄（幂等），\
+             这样这个目录从此自带身份、下次列表也不必再算"
+        );
 
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -10951,7 +11064,10 @@ mod wire_tests {
     fn 有可用_json_就算版本_坏掉的也要列出来并说明原因() {
         let base = std::env::temp_dir().join(format!("ieml-jsonname-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
-        let shared = base.join(".minecraft");
+        // ★ 2026-10-07：`scan_folder_versions` 现在要 `AppPaths`（整合包实例的身份
+        //   小抄在实例目录里，光有 `shared` 找不到）—— 这里从同一个 base 拼
+        let paths = crate::platform::AppPaths::from_root(base.clone());
+        let shared = paths.shared.clone();
         let versions = shared.join("versions");
 
         // ① 正常：同名 JSON + mainClass（前置版本 26.3 也建好，否则会被判"缺前置"）
@@ -10991,7 +11107,7 @@ mod wire_tests {
         std::fs::create_dir_all(shell.join("natives")).unwrap();
         std::fs::write(shell.join("natives").join("glfw.dll"), b"dll").unwrap();
 
-        let got = scan_folder_versions(&shared);
+        let got = scan_folder_versions(&paths);
 
         let good = got.iter().find(|v| v.dir == "26.3-fabric-0.19.5").unwrap();
         assert!(good.has_json, "同名 JSON 必须认出来");
@@ -11040,7 +11156,10 @@ mod wire_tests {
     fn modpack_instance_without_its_own_json_is_not_an_error() {
         let base = std::env::temp_dir().join(format!("ieml-packver-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
-        let shared = base.join(".minecraft");
+        // ★ 2026-10-07：`scan_folder_versions` 现在要 `AppPaths`（整合包实例的身份
+        //   小抄在实例目录里，光有 `shared` 找不到）—— 这里从同一个 base 拼
+        let paths = crate::platform::AppPaths::from_root(base.clone());
+        let shared = paths.shared.clone();
         let versions = shared.join("versions");
 
         // ① 原版 1.20.1（加载器要靠它）
@@ -11077,7 +11196,7 @@ mod wire_tests {
         )
         .unwrap();
 
-        let got = scan_folder_versions(&shared);
+        let got = scan_folder_versions(&paths);
         let p = got.iter().find(|x| x.dir == "pack-w8kfea").expect("整合包那条要在");
         assert!(
             p.ok,
@@ -11104,7 +11223,7 @@ mod wire_tests {
                 "mcVersion":"1.20.1"}"#,
         )
         .unwrap();
-        let got2 = scan_folder_versions(&shared);
+        let got2 = scan_folder_versions(&paths);
         let o = got2.iter().find(|x| x.dir == "pack-orphan").expect("缺加载器那条");
         assert!(!o.ok, "加载器不在盘上就不能算能用");
         assert!(

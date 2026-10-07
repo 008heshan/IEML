@@ -279,6 +279,100 @@ impl AppPaths {
         self.instance_meta_dir(slug).join(INSTANCE_MARKER_NAME)
     }
 
+    /// **算出**这个实例该有的身份小抄（**不写盘**）；目录不存在时 `None`。
+    ///
+    /// ★ 为什么要把"算"与"写"分开：`scan_folder_versions` 在**启动修整之后**
+    ///   才跑，但用户完全可能"装完包、不重启就看列表" ——
+    ///   那一刻盘上还没有小抄。判据必须能**现场算出来**，
+    ///   而不是"读不到就当这个实例不存在"（那正是本轮这条 bug）。
+    pub fn instance_marker_value(&self, slug: &str) -> Option<serde_json::Value> {
+        if !self.instances.join(slug).is_dir() {
+            return None;
+        }
+        /*
+         * ★★★★ 2026-10-07：**只在账本里真有这个实例时才合成**。
+         *
+         *   第一版这里写成"目录在就合成一份"，结果把**空壳目录**也变成了
+         *   "有身份的实例" —— 已有的测试立刻抓到：
+         *   `fabric-262/`（只剩一个 `natives/`，没有 JSON、也不在账本里）
+         *   的原因从「缺少版本描述文件」变成了「缺少前置版本 —— 这个实例声明的
+         *   加载器没在盘上」。**那句原因是错的**：它根本没有声明过任何加载器。
+         *
+         *   ⇒ 判据与账本对齐（与 `instance_catalog_repair` 第 ⑤ 步同源）：
+         *     · 账本里有 ⇒ 抄账本那一条（整合包实例必在其中）；
+         *     · 账本里没有 ⇒ **不合成**，交给调用方按"盘上有、我们不了解它是什么"
+         *       处理（有同名 JSON 的仍会被认成版本，空壳则如实报缺描述）。
+         *   ★ 这正是不用"目录里有没有 mods/saves"去猜的原因：那是猜。
+         */
+        self.instance_json(slug)
+    }
+
+    /// **确保**这个实例目录有一份身份小抄；返回是否真的写了。
+    ///
+    /// ## 为什么要有这个函数（两次栽在同一个形状上）
+    ///
+    ///   ① 2026-10-06（用户截图：「整合包会被误判成错误版本」）：
+    ///      写小抄的那一步原来要求"目录里有同名版本 JSON"，
+    ///      而**整合包实例本来就没有** ⇒ 它永远拿不到小抄。
+    ///   ② 2026-10-07（用户截图：「又来了，下载完后，整合包被误判为不可用」）：
+    ///      上一条修完之后，判据变成了"看小抄认身份"，
+    ///      **而写小抄只在启动时跑一次**
+    ///      （`lib.rs` 启动时调 `instance_catalog_repair`）——
+    ///      于是**刚装完的实例在本次会话里必然没有小抄**，列表照样判它错。
+    ///
+    ///   ⇒ 两次都是"**同一个事实在两个地方各判一次**，而两次判断的条件不同"。
+    ///     所以这里把它收成**唯一实现**：
+    ///       · 启动时的目录修整（`instance_catalog_repair` 第 ⑤ 步）；
+    ///       · 版本列表按需补（`folder_versions` → `scan_folder_versions`）；
+    ///     两处都调它，不再各自写一份。
+    ///
+    /// ## 写什么
+    ///
+    ///   · 账本里有这个 slug ⇒ **直接抄账本那一条**（它带 `loader` / `mcVersion`，
+    ///     正是列表判据要用的）；
+    ///   · 账本里没有（盘上有、账本没补上）⇒ `synthesize_instance` 现场推一份。
+    ///
+    /// ★ 幂等：已有且内容相同就不重写（避免每次列版本都动磁盘）。
+    pub fn ensure_instance_marker(&self, slug: &str) -> bool {
+        let dir = self.instances.join(slug);
+        if !dir.is_dir() {
+            return false;
+        }
+        let marker = match self.instance_marker_value(slug) {
+            Some(m) => m,
+            None => {
+                /*
+                 * 账本里没有它。**只有当目录里真有同名版本 JSON 时才合成** ——
+                 * 那种目录是一个"自己说得清自己是谁"的版本（手动装 / HMCL 装的），
+                 * 给它写一份身份是合适的；而空壳目录（只剩 `natives/`、
+                 * 什么都没有）**不合成**，否则会凭空造出一个"有身份的实例"，
+                 * 列表里那句原因就变成假的
+                 * （实测：`fabric-262` 会从「缺少版本描述文件」变成
+                 *  「这个实例声明的加载器没在盘上」—— 它从没声明过加载器）。
+                 */
+                if !dir.join(format!("{slug}.json")).is_file() {
+                    return false;
+                }
+                synthesize_instance(&self.instances, slug)
+            }
+        };
+        let path = self.instance_marker_file(slug);
+        let text = match serde_json::to_string_pretty(&marker) {
+            Ok(t) => t,
+            Err(_) => return false,
+        };
+        // 已有且一样 ⇒ 不动盘
+        if let Ok(old) = std::fs::read_to_string(&path) {
+            if old == text {
+                return false;
+            }
+        }
+        if let Some(p) = path.parent() {
+            let _ = std::fs::create_dir_all(p);
+        }
+        std::fs::write(&path, text).is_ok()
+    }
+
     /* ============ 隔离判定（ADR-005）：游戏目录到底在哪 ============ */
 
     /// 启动器自己的一个 JSON 记录（`instances.json` / `prefs.json`）。
@@ -2408,26 +2502,16 @@ pub fn instance_catalog_repair(paths: &AppPaths) -> CatalogRepair {
         if !in_ledger && !dir.join(format!("{dir_name}.json")).is_file() {
             continue;
         }
-        let from_ledger = ledger.as_ref().and_then(|l| {
-            l.get("instances")?.as_array()?.iter().find(|i| {
-                i.get("config")
-                    .and_then(|c| c.get("slug"))
-                    .and_then(|s| s.as_str())
-                    .map(|s| s.eq_ignore_ascii_case(dir_name))
-                    .unwrap_or(false)
-            })
-        });
-        let marker = match from_ledger {
-            Some(i) => i.clone(),
-            None => synthesize_instance(&paths.instances, dir_name),
-        };
-        let path = paths.instance_marker_file(dir_name);
-        if let Some(p) = path.parent() {
-            let _ = std::fs::create_dir_all(p);
-        }
-        if let Ok(text) = serde_json::to_string_pretty(&marker) {
-            let _ = std::fs::write(&path, text);
-        }
+        /*
+         * ★★★★ 2026-10-07（用户截图：「又来了，下载完后，整合包被误判为不可用」）：
+         *   **收成唯一实现** —— 这里不再自己拼小抄，调
+         *   `ensure_instance_marker`（与 `folder_versions` 用的是同一个函数）。
+         *
+         *   上一次修复栽在"两处各判一次、条件不同"：判据改成"看小抄"之后，
+         *   而写小抄只在启动时跑 ⇒ 刚装完的实例在本次会话里必然没有小抄。
+         *   ⇒ 只要"读小抄"和"写小抄"不是同一份实现，这个形状就会再来一次。
+         */
+        paths.ensure_instance_marker(dir_name);
     }
 
     report

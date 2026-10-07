@@ -84,6 +84,20 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.19.5',
+    date: '2026-10-07',
+    headline: '这一版修的是上一版留下的尾巴：装完整合包不重启启动器，列表里还是会把它标成不能用。',
+    groups: [
+      {
+        title: '修复了',
+        items: [
+          '修复了 装完整合包后不重启启动器、版本列表仍把它标成不能用的问题。',
+          '修复了 有些目录会被说成"缺少加载器"、而它其实什么都没声明的问题。',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.19.4',
     date: '2026-10-07',
     headline: '这一版接着上一版修同一件事：报错看得见，但右上角那条提示里的多个失败文件还是挤成一团。',
