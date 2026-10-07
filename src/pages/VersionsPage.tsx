@@ -57,7 +57,14 @@ import type { FolderVersion } from '../bridge/tauri';
 import type { Instance } from '../domain/types';
 import { instanceTitle } from '../state/instance-name';
 
-type Filter = 'all' | 'modded' | 'vanilla';
+/*
+ * ★★★★ 2026-10-07（用户：「「全部」的左边应该增设一个「收藏夹」」）。
+ *
+ *   `faved` 与另外两个筛选**不是同一类**：`modded`/`vanilla` 按"这个版本是什么"
+ *   分，`faved` 按"用户标了什么"分。用户要的正是后者，而且要求它排在最左边
+ *   （"全部"的左边）—— 那是筛选条上的第一个位置，也就是**默认视线的落点**。
+ */
+type Filter = 'faved' | 'all' | 'modded' | 'vanilla';
 
 /**
  * 「⋯」菜单算好的位置。
@@ -370,6 +377,15 @@ export function VersionsPage() {
     const shown = (folderVers ?? []).filter((v: FolderVersion) => {
       if (q && !v.dir.toLowerCase().includes(q) && !v.mcVersion.toLowerCase().includes(q)) {
         return false;
+      }
+      /*
+       * ★ 「收藏夹」：只留收藏过的。
+       *   判定要看**账本记录**（收藏存在 `config.favorite` 上），
+       *   所以这里不能只看 `FolderVersion` —— 得沿 dir 找回那一条记录。
+       */
+      if (filter === 'faved') {
+        const rec = instancesInFolder.find((i) => i.config.slug === v.dir);
+        return rec?.config.favorite === true;
       }
       if (filter === 'modded') return v.loaderName !== null;
       if (filter === 'vanilla') return v.loaderName === null;
@@ -780,6 +796,19 @@ export function VersionsPage() {
           }
         }}
       >
+        {/*
+          ★★★★ 2026-10-07（用户截图：「**多选会导致出现两个图标**」）。
+
+            多选时行首原本挤着**勾选框 + 星**两个图标，看起来像画重了。
+            ⇒ 多选模式下**只显示勾选框**，星收起来。
+
+            ★ 为什么不是"把星留着、只是变灰"：多选时整行点击 = 勾选，
+              而星是一个**会改变数据**的按钮 —— 并排摆着，用户很容易
+              对着它点而以为自己在勾选（或反过来）。少一个可点的东西，
+              这个模式的语义就干净："现在每一次点击都是选择"。
+            ★ 星只在**非多选**时才渲染 —— 用条件渲染而不是 CSS 隐藏：
+              隐藏的元素仍在 tab 序里，键盘会停到一个看不见的按钮上。
+        */}
         {multi ? (
           /*
            * 勾选框：**只在多选模式下出现**。
@@ -796,27 +825,46 @@ export function VersionsPage() {
             tabIndex={-1}
             aria-label={`选择 ${showName}`}
           />
-        ) : null}
-        {/*
-          ★★★★ 2026-10-07（用户）：「给全部的左侧加一个收藏」。
-            收藏态由 `inst.config.favorite` 决定（存账本，不另建表）。
-            ★ 没有实例记录时**不禁用就点不了**：那颗星渲染成暗的，
-              点了也没有地方存 —— 与其假装能收藏，不如看得出来它不行。
-        */}
-        <button
-          type="button"
-          className={`ver-fav${faved ? ' on' : ''}`}
-          disabled={!canFav}
-          aria-pressed={faved}
-          aria-label={faved ? `取消收藏 ${showName}` : `收藏 ${showName}`}
-          onClick={(e) => {
-            // 别让这次点击穿透到整行（那会打开设置页 / 切勾选）
-            e.stopPropagation();
-            if (canFav) void setFavorite(inst.id, !faved);
-          }}
-        >
-          <IconStar />
-        </button>
+        ) : (
+          /*
+           * ★★★★ 2026-10-07（用户）：「给全部的左侧加一个收藏」。
+           *   收藏态由 `inst.config.favorite` 决定（存账本，不另建表）。
+           * ★ 没有实例记录时**不禁用就点不了**：那颗星渲染成暗的，
+           *   点了也没有地方存 —— 与其假装能收藏，不如看得出来它不行。
+           */
+          <button
+            type="button"
+            className={`ver-fav${faved ? ' on' : ''}`}
+            disabled={!canFav}
+            aria-pressed={faved}
+            aria-label={faved ? `取消收藏 ${showName}` : `收藏 ${showName}`}
+            onClick={(e) => {
+              // 别让这次点击穿透到整行（那会打开设置页）
+              e.stopPropagation();
+              if (!canFav) return;
+              const next = !faved;
+              void setFavorite(inst.id, next);
+              /*
+               * ★★★★ 2026-10-07（用户：「「全部」的左边应该增设一个「收藏夹」」）。
+               *
+               *   在**没有按任何筛选**的视图里点星 ⇒ **顺手切到收藏夹**。
+               *
+               *   理由：点星这个动作本身就是"我要的就是这个版本"，
+               *   而切过去之后正好看见它躺在收藏夹里 —— 用户不必再点一次
+               *   页签去确认"到底收进去没有"。
+               *
+               *   ★ 只在 `filter === 'all'` 时切：别的页签（可装 Mod / 原版 /
+               *     已经在收藏夹里）都有明确的语义，替用户换掉它就成了"我点的
+               *     筛选怎么自己变了"。
+               *   ★ **取消收藏时也不切** —— 那一下的意图是"拿走"，
+               *     留在原地才看得见它确实离开了收藏夹。
+               */
+              if (next && filter === 'all') setFilter('faved');
+            }}
+          >
+            <IconStar />
+          </button>
+        )}
 
         {/*
           ★★ 版本图标（0.1.0-beta.1）：自绘等距方块，按**世代**配色
@@ -1632,6 +1680,14 @@ export function VersionsPage() {
           onChange={setFilter}
           options={[
             /*
+             * ★★★★ 2026-10-07（用户：「「全部」的左边应该增设一个「收藏夹」」）。
+             *
+             *   放在**最左**（第一个位置）。★ 这里**不带计数**：收藏是用户自己
+             *   标的，数量他心里有数；而"收藏夹 0"这种空状态用下面的空列表
+             *   去说更直接（也顺便给出了"怎么收藏"的提示，见空状态那一支）。
+             */
+            { value: 'faved', label: '收藏夹' },
+            /*
              * ★★ 2026-09-30（用户：「欸，把这个删了吧」）：
              *   页头那个数删掉之后，这里也不能再报一个**屏幕上看不到的数**。
              *   「全部 N」现在就是**这一页列出来的行数**（筛选前的全部行）——
@@ -1719,21 +1775,39 @@ export function VersionsPage() {
         ⇒ 现在看的是列表本身（`listEntries` 只剩那条空标记）。
       */}
       {listEntries.length === 1 && listEntries[0]?.kind === 'empty' ? (
-        <EmptyState
-          title="没有符合筛选条件的版本"
-          desc={`当前筛选下没有结果。试试切换筛选，或清空搜索词「${query}」。`}
-          actions={
-            <Button
-              variant="secondary"
-              onClick={() => {
-                setFilter('all');
-                setQuery('');
-              }}
-            >
-              清除筛选
-            </Button>
-          }
-        />
+        /*
+         * ★★★★ 2026-10-07（用户：「「全部」的左边应该增设一个「收藏夹」」）：
+         *   收藏夹空了要**说清怎么收藏**，而不是复用那句泛泛的"没有符合
+         *   筛选条件的版本" —— 用户第一次点进收藏夹时，唯一的疑问就是
+         *   "收藏在哪点"。
+         */
+        filter === 'faved' ? (
+          <EmptyState
+            title="收藏夹还是空的"
+            desc="在版本列表里点每行最左边那颗星，收藏的版本会排到列表最前面，也会出现在这里。"
+            actions={
+              <Button variant="secondary" onClick={() => setFilter('all')}>
+                看全部版本
+              </Button>
+            }
+          />
+        ) : (
+          <EmptyState
+            title="没有符合筛选条件的版本"
+            desc={`当前筛选下没有结果。试试切换筛选，或清空搜索词「${query}」。`}
+            actions={
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setFilter('all');
+                  setQuery('');
+                }}
+              >
+                清除筛选
+              </Button>
+            }
+          />
+        )
       ) : null}
 
       {/*
