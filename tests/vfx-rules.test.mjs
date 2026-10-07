@@ -175,7 +175,23 @@ test('三档都有名字和说明（用户给的三个词，原样用）', () =>
   assert.equal(VFX_LABEL.weak, '弱化视效');
   assert.equal(VFX_LABEL.mid, '适中视效');
   assert.equal(VFX_LABEL.aura, '灵动视效');
-  for (const lv of VFX_LEVELS) {
+  /*
+   * ★★ 2026-10-08（用户给的截图：「这些文本都不要」）：
+   *   灵动那一档的说明被点名删掉了 —— 它现在是**空串**。
+   *
+   *   ⇒ 判据跟着改成"**要么空、要么足够长**"：
+   *     · `weak` / `mid`：用户没提，仍然必须有说明（这一条本来就是它守的）；
+   *     · `aura`：允许为空 —— 但**不许是半句话**（`length > 8` 那条对
+   *       非空值照样生效）。空串是"这一档不写说明"，不是"随便写点什么"。
+   *   ★ 渲染那一侧也配合了：空串时**不画那一行**（见 `SettingsPage`），
+   *     所以"空"在界面上等于"没有这一行"，而不是一行空白。
+   */
+  for (const lv of ['weak', 'mid']) {
     assert.ok(VFX_HINT[lv] && VFX_HINT[lv].length > 8, `${lv} 缺说明`);
   }
+  assert.equal(typeof VFX_HINT.aura, 'string', 'aura 这一项必须存在（哪怕是空串）');
+  assert.ok(
+    VFX_HINT.aura === '' || VFX_HINT.aura.length > 8,
+    'aura 要么不写说明（空串），要么写够一句 —— 不许留半句话',
+  );
 });

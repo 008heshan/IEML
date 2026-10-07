@@ -284,7 +284,14 @@ export function SettingsPage() {
           <div className="field-row">
             <span className="field-label">
               动效
-              <span className="field-hint">{MOTION_HINT[motion]}</span>
+              {/*
+                ★ 2026-10-08：提示可能是**空串**（用户点名删掉了灵韵档那句）。
+                  空的时候**不画这一行** —— 画一个空的 `<span>` 会占掉
+                  一段行高，界面看起来像"这里少了点什么"。
+              */}
+              {MOTION_HINT[motion] ? (
+                <span className="field-hint">{MOTION_HINT[motion]}</span>
+              ) : null}
               {systemReduced ? (
                 <span className="field-hint">
                   <Chip tone="warning">被系统设置覆盖</Chip>
@@ -354,7 +361,10 @@ export function SettingsPage() {
           <div className="field-row">
             <span className="field-label">
               视效
-              <span className="field-hint">{VFX_HINT[vfx.level]}</span>
+              {/* ★ 与动效那一处同一个判据：提示为空就不画那一行 */}
+              {VFX_HINT[vfx.level] ? (
+                <span className="field-hint">{VFX_HINT[vfx.level]}</span>
+              ) : null}
               {vfx.clamped ? (
                 <span className="field-hint">
                   <Chip tone="warning">已自动降到「{VFX_LABEL[vfx.level]}」</Chip>

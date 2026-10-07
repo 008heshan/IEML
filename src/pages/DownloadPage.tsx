@@ -17,7 +17,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../state/AppContext';
 import { Button, Chip, CustomSelect, EmptyState, Note, Segmented, Spinner } from '../ui';
-import { IconAlert, IconBox, IconChevronRight, IconDownload, IconFolder, IconLayers, IconPuzzle, IconRefresh, IconImage, IconGrid, IconRows, IconPackage, IconSearch } from '../ui/Icons';
+import { IconAlert, IconChevronRight, IconDownload, IconFolder, IconLayers, IconPuzzle, IconRefresh, IconImage, IconGrid, IconRows, IconPackage, IconSearch } from '../ui/Icons';
 import { useRealApi } from '../hooks/useRealApi';
 import type { DownloadTab } from '../state/store';
 import { takePendingPack } from '../state/pending-pack';
@@ -298,7 +298,6 @@ export function DownloadPage() {
         <ModpackTab
           go={go}
           toast={toast}
-          isDesktop={isDesktop}
           onInstallViewChange={setInModpackInstall}
           target={target}
         />
@@ -416,13 +415,11 @@ interface PackCard {
 function ModpackTab({
   go,
   toast,
-  isDesktop,
   onInstallViewChange,
   target,
 }: {
   go: (p: 'launch' | 'versions' | 'download' | 'settings') => void;
   toast: (k: 'ok' | 'err' | 'info' | 'warning', t: string, d?: string) => void;
-  isDesktop: boolean;
   /**
    * ★★ 2026-09-23（用户：「mod 页面会进入自己的专属页，是一个全屏页，**为什么整合包的还会显示**」）：
    *   进了整合包安装页要通知外层把**下载页的页头与页签**收起来 —— 这样它和
@@ -473,9 +470,13 @@ function ModpackTab({
   const [selected, setSelected] = useState<PackCard | null>(null);
   const [name, setName] = useState('');
   const [installing, setInstalling] = useState(false);
-  /** 安装面板（在 20 张卡片之后 —— 不滚过去用户会以为"点了没反应"） */
-  const installPanelRef = useRef<HTMLDivElement | null>(null);
-  const installNameRef = useRef<HTMLInputElement | null>(null);
+  /*
+   * ★ 2026-10-08：`installPanelRef` / `installNameRef` 随底部那块**内联配置面板**
+   *   一起删掉了（用户：「最下面这是什么啊，不要这个」）——
+   *   它们唯一的作用就是把那块面板滚进视野、并聚焦它的输入框。
+   *   ★ 留着两个永远指向 `null` 的 ref 比删掉更坏：下一个人会去满仓库找"哪块面板"。
+   */
+
   /** 页码与总数（0 基）—— 翻页靠它俩，不再写死前 20 个 */
   const [page, setPage] = useState(0);
   const [total, setTotal] = useState(0);
@@ -596,15 +597,20 @@ function ModpackTab({
    *   面板本身一直在 DOM 里（点也确实生效了），只是用户看不见，
    *   于是体验就是"点了没反应、根本装不了"。
    *
-   *   现在选中就把它**滚进视野**并聚焦输入框：点完立刻看到"可以装"。
+   *   当时在这里加了一段"选中就把它滚进视野并聚焦输入框"。
+   *
+   * ★★★★ 2026-10-08（用户截图：「**最下面这是什么啊，不要这个**」）：
+   *   **那段滚动的 `useEffect` 删掉了 —— 连同它服务的那个面板一起。**
+   *
+   *   因为点卡片后来改成了"整页切到安装页"（`installTarget` 那条提前 return），
+   *   而 `selected` 在点卡片时也一起被设上 ⇒ 这个 effect **照样触发**，
+   *   把页面滚到列表最底部、露出一个**谁也用不到**的旧面板。
+   *   用户看到的就是"下面冒出一块东西"，而且它的文字穿过 sticky 页头的
+   *   毛玻璃，糊成一片。
+   *
+   *   ⇒ 面板没了，滚过去看它的理由也就没了。**留着空转的滚动是更坏的选择**：
+   *     它会继续把用户从"刚点的那张卡"上拽走。
    */
-  useEffect(() => {
-    if (!selected) return;
-    installPanelRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    // 聚焦要等滚动起步之后再给，否则浏览器会把页面拉回去
-    const t = window.setTimeout(() => installNameRef.current?.focus({ preventScroll: true }), 320);
-    return () => window.clearTimeout(t);
-  }, [selected]);
 
   /*
    * ★ 搜索词变了要回到第 1 页（不然会停在一个"搜出来只有 3 个"的第 7 页上）。
@@ -1292,12 +1298,7 @@ function ModpackTab({
               里面只有文件编号，安装时要逐个去问下载地址（进度看顶栏任务中心）。
               <b>作者不允许第三方下载的包装不了</b>，那种会明确告诉你是哪几个文件。
             </>
-          ) : (
-            <>
-              版本、加载器、Mod 清单都由包里的 <span className="mono">modrinth.index.json</span> 定死 ——
-              下面按**游戏版本**分类列出它发布的版本。
-            </>
-          )}
+          ) : null}
         </div>
 
         {targetVersions === null ? <Spinner label="正在取版本列表…" /> : null}
@@ -1687,54 +1688,32 @@ function ModpackTab({
         </div>
       ) : null}
 
-      {/* 配置面板（内联展开，不用弹窗 —— 弹窗会遮住刚选的包） */}
-      {selected ? (
-        <div className="setup-panel" ref={installPanelRef}>
-          <div className="setup-head">
-            <span className="si">
-              <IconBox />
-            </span>
-            <div>
-              <div className="setup-t">安装「{selected.name}」</div>
-              <div className="setup-s">{selected.summary}</div>
-            </div>
-            <Button size="sm" variant="ghost" onClick={() => setSelected(null)}>
-              取消
-            </Button>
-          </div>
+      {/*
+        ★★★★ 2026-10-08（用户两张截图：「**最下面这是什么啊，不要这个**」、
+          「到下面后，下载文本会画上去，只剩下一片模糊」）：
+          **底部这块内联配置面板删掉了。**
 
-          <div className="setup-body">
-            <div className="setup-block">
-              <div className="setup-label">实例名称</div>
-              <div className="setup-field">
-                <input
-                  ref={installNameRef}
-                  className="input"
-                  value={name}
-                  aria-label="实例名称"
-                  onChange={(e) => setName(e.target.value)}
-                />
-              </div>
-            </div>
+        ## 它为什么会冒出来
 
-            <div className="setup-foot">
-              <span className="dim">版本、加载器、Mod 清单都由包里的 modrinth.index.json 定死</span>
-              <div className="spacer" />
-              <Button variant="ghost" onClick={() => setSelected(null)}>
-                取消
-              </Button>
-              <Button
-                variant="primary"
-                loading={installing}
-                disabled={!isDesktop}
-                onClick={() => void install()}
-              >
-                确认并开始安装
-              </Button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+          它是"点卡片 → 在列表底部展开配置面板"那套**旧流程**留下的。
+          2026-09-23 之后点卡片改成**整页切到安装页**（`installTarget` 那条提前
+          return），于是它成了一段**谁也用不到、却仍然会渲染**的东西：
+
+            · `selected` 在点卡片时就一起被设上了（见 `.pack-card` 的 onClick）；
+            · 而下面那个 `useEffect` 监听的是 `selected` —— 它**照样
+              `scrollIntoView` 并把输入框聚焦**，于是页面被滚到最底下，
+              露出这个面板。用户看到的就是"最下面这是什么啊"。
+            · 而"一片模糊"是第二个后果：面板的文字滚到 `position: sticky`
+              的**页头**（`backdrop-filter` 毛玻璃）底下穿过，被糊成一片。
+
+        ## 为什么可以直接删（而不是挪个位置）
+
+          它的**唯一**用途是那个"实例名称"输入框，而单开安装页**有意没有**它 ——
+          见上面那段注释：「点某个版本的『安装这个版本』就直接装，
+          实例名默认用整合包名（点卡片时已经写进 name，装完还能在版本列表里改名）」。
+          ⇒ 它已经是**死代码**：留着只会自己滚出来吓人。
+          ★ 实例名仍然可改（版本列表里改名），没有任何能力因此丢失。
+      */}
     </div>
   );
 }

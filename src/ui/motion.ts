@@ -44,11 +44,19 @@ export const MOTION_LABEL: Record<MotionLevel, string> = {
   aura: '灵韵动效',
 };
 
-/** 每个档位**具体多了什么** —— 写在设置页那一行下面，别让用户猜 */
+/**
+ * 每个档位**具体多了什么** —— 写在设置页那一行下面，别让用户猜。
+ *
+ * ★★ 2026-10-08（用户给的截图：「这些文本都不要」）：
+ *   `aura` 那一条被点名删掉了，留空。
+ *   ★ 空串是**有含义**的：渲染那一侧要据此**不画那一行**
+ *     （不是画一行空白）。见 `SettingsPage` 里对 `MOTION_HINT` 的用法。
+ *   ★ `lite` / `mid` 两条用户没提，**不动** —— 只删他点名的那些。
+ */
 export const MOTION_HINT: Record<MotionLevel, string> = {
   lite: '不放任何动画：状态直接切换，不做过渡',
   mid: '页面进出、弹窗、提示条有轻过渡；快、不抢戏',
-  aura: '在「适中」之上再加：背景光晕缓慢漂移、卡片错峰入场、悬停辉光、启动按钮呼吸',
+  aura: '',
 };
 
 function isLevel(v: string | null): v is MotionLevel {

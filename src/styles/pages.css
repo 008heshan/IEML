@@ -1170,80 +1170,20 @@
   margin-top: var(--space-1);
 }
 
-/* 整合包/加载器安装面板（内联展开，弹窗会遮住刚选的包） */
-.setup-panel {
-  margin-top: var(--space-4);
-  border: 1px solid var(--accent-border);
-  border-radius: var(--radius-lg);
-  background: var(--bg-raised);
-  overflow: hidden;
-}
-.setup-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  background: var(--accent-subtle);
-}
-.setup-head .si {
-  width: 30px;
-  height: 30px;
-  flex: 0 0 auto;
-  display: grid;
-  place-items: center;
-  border-radius: var(--radius-md);
-  background: var(--bg-raised);
-  color: var(--accent);
-}
-.setup-head .si svg {
-  width: 16px;
-  height: 16px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2;
-  stroke-linecap: round;
-}
-.setup-head > div:nth-child(2) {
-  flex: 1;
-  min-width: 0;
-}
-.setup-t {
-  font-size: var(--text-md);
-  font-weight: 600;
-}
-.setup-s {
-  font-size: var(--text-xs);
-  color: var(--text-secondary);
-  margin-top: 1px;
-  line-height: 1.5;
-}
-.setup-body {
-  padding: var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-.setup-block {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-.setup-label {
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
-}
-.setup-field {
-  max-width: 420px;
-}
-.setup-foot {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--border-subtle);
-}
-
-/* 键值事实块（启动命令预览里复用） */
+/*
+ * ★★★★ 2026-10-08（用户：「最下面这是什么啊，不要这个」）：
+ *   这里原来有一整块 `.setup-panel` / `.setup-head` / `.setup-body` /
+ *   `.setup-foot` / `.setup-block` / `.setup-label` / `.setup-field` /
+ *   `.setup-t` / `.setup-s` 的样式（约 70 行）—— 服务的是**整合包列表底部
+ *   那块内联配置面板**。
+ *
+ *   那块面板已经删了（它是"点卡片 → 列表底部展开配置"那套旧流程的遗留，
+ *   见 `DownloadPage` 里那段说明）。⇒ 这些类**一个都没有人再用**，
+ *   留着只会让下一个人以为"界面上还有这么一块东西"。
+ *
+ *   ★ 注意 `.setup-summary` **不在这里、也保留着** —— 它是 `InstanceSetup`
+ *     在用的另一件事（同名不同物，删了会真的弄坏界面）。
+ */
 .pack-locks {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));

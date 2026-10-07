@@ -75,14 +75,28 @@ function humanBytes(bytes: number): string {
  *
  * ★ 铁律：`permanent` 与 `message` 必须同时来自这里 ——
  *   界面文案和实际行为不允许由两处代码各自决定。
+ *
+ * ★★★★ 2026-10-08（用户给的截图：「**这些文本都不要**」）：
+ *   去掉了两处**解释性文字**：
+ *     · `将被删除的内容：` —— 下面那几行本来就长得像清单，不需要小标题；
+ *     · `会移入系统回收站，误删还能捞回来。`
+ *       —— "进了回收站"这件事**结果提示里已经说了**（`doneVerb`
+ *          = "已移到回收站"），在动手之前再念一遍是多余的。
+ *
+ *   ★ `args.note` **保留**：它是**调用方给的一句话**，六处调用各传各的
+ *     （例如设置页那句"如果还有版本在用它，启动时会提示重新指定"，
+ *     那是一句真有用的提醒）。用户点名删掉的是**版本列表那两句**
+ *     "共享的游戏文件…" —— 那两处已经不再传 note 了，见调用点。
+ *     ★ 差点犯的错：我第一版把 `note` 的渲染整个删掉 ——
+ *       那等于**顺手替用户删了他没点名的东西**。
+ *
+ *   ★ 也**保留** `⚠ 你按住了 Shift` 那一句：它不是解释，是
+ *     **一个不可逆动作的最后一道警告**（永久删除、不进回收站）。
  */
 export function describeDelete(args: DescribeArgs): DeleteCopy {
   const lines: string[] = [`确定删除${args.what}？`, ''];
   const items = (args.items ?? []).filter((s) => s.trim().length > 0);
-  if (items.length > 0) {
-    lines.push('将被删除的内容：');
-    for (const it of items) lines.push(it.startsWith('·') ? it : `· ${it}`);
-  }
+  for (const it of items) lines.push(it.startsWith('·') ? it : `· ${it}`);
   if (args.bytes !== undefined && args.bytes > 0) {
     lines.push(`· 磁盘上约 ${humanBytes(args.bytes)}`);
   }
@@ -93,6 +107,5 @@ export function describeDelete(args: DescribeArgs): DeleteCopy {
     lines.push('', '⚠ 你按住了 Shift：直接永久删除，不进回收站，删掉就找不回来了。');
     return { permanent: true, message: lines.join('\n'), doneVerb: '已永久删除' };
   }
-  lines.push('', '会移入系统回收站，误删还能捞回来。');
   return { permanent: false, message: lines.join('\n'), doneVerb: '已移到回收站' };
 }

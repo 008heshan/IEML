@@ -912,16 +912,16 @@ export function ResourceCenterBody({
       </div>
 
       {/*
-        ★★ 2026-09-26 用户：「去掉所有悬停显示描述」——
-          "这个筛选器为什么不能用"原来只挂在外层 `title` 上（悬停可见），
-          现在挪到明面上写成一行小字。禁用一个控件就必须说得出理由，
-          只是理由不该藏在悬停里。
+        ★★★★ 2026-10-08（用户给的截图：「**这些文本都不要**」）：
+          这一行小字（"资源包与加载器无关，游戏不按加载器读它 —— 所以这里
+          不按加载器过滤"）被点名删掉了 —— **连外面那层 `gameFilters` 判据
+          一起删**，而不是只把文字留空：一个"永远渲染不出东西"的条件留着，
+          下一个人会以为这里本来就该有东西。
+
+        ★ 那条规矩（"禁用一个控件必须给得出理由"）**没有失效**：
+          加载器筛选在这几种资源里**根本不显示**（见上面那段 `needs_loader_filter`
+          的说明），所以不存在"禁用了却不说为什么"的情况。
       */}
-      {gameFilters && current && !current.needs_loader_filter ? (
-        <p className="field-hint res-hint">
-          {current.display}与加载器无关，游戏不按加载器读它 —— 所以这里不按加载器过滤。
-        </p>
-      ) : null}
 
       <div className="res-search">
         <label className="res-search-box">
