@@ -281,6 +281,11 @@ interface AppContextValue {  state: AppState;
    * 三个调用点不需要各写一遍）。见实现处的说明。
    */
   renameInstance: (id: string, name: string) => string | null;
+  /**
+   * 收藏 / 取消收藏一个版本（版本列表左侧那颗星）。
+   * ★ 会**当场落盘**，不只是改内存 —— 见实现里那段说明。
+   */
+  setFavorite: (id: string, favorite: boolean) => Promise<void>;
   duplicateInstance: (id: string) => Promise<number>;
 
   /* --- Java --- */
@@ -1658,6 +1663,41 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   /**
+   * 收藏 / 取消收藏一个版本（列表里那颗星）。
+   *
+   * ★★★★ 2026-10-07（用户：「给全部的左侧加一个收藏」）。
+   *
+   *   ## 为什么不是"只 dispatch 就完事"
+   *
+   *   `renameInstance` 那种只 `dispatch` 是够的 —— 因为别处（启动、切页）
+   *   迟早会把账本整体写回去。**收藏不行**：用户点完星标很可能什么都不做就关掉
+   *   启动器，那一趟落盘永远不来，收藏就丢了。
+   *   ⇒ 这里**当场落盘**（`saveInstances`）。
+   *
+   *   ## 为什么把"新数组"算出来再发，而不是在 reducer 里改
+   *
+   *   落盘的必须是**改完之后**的那一份。`instancesRef.current` 是当前值，
+   *   在它上面映射出 `next` 再一起做两件事（dispatch + save），
+   *   两边的来源就是同一个 `next`，不会出现"界面已改、盘上没改"。
+   */
+  const setFavorite = useCallback(async (id: string, favorite: boolean) => {
+    const next = instancesRef.current.map((i) =>
+      i.id === id ? { ...i, config: { ...i.config, favorite } } : i,
+    );
+    if (!next.some((i) => i.id === id)) return;
+    dispatch({ type: 'instances/set', instances: next });
+    try {
+      await backend.saveInstances(next, state.lastInstanceId);
+    } catch (e) {
+      /*
+       * 落盘失败要**说出来**：否则用户看到星星已亮、重启却没了，
+       * 而那正是最难查的一类"改了没生效"。
+       */
+      toast('err', '收藏没存下来', e instanceof Error ? e.message : String(e));
+    }
+  }, [backend, state.lastInstanceId, toast]);
+
+  /**
    * 创建一个副本。
    *
    * ★ 审计发现：以前只克隆实例记录，**目录从来没建过** ——
@@ -1829,6 +1869,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     removeInstance,
     buryVersion,
     renameInstance,
+    setFavorite,
     duplicateInstance,
     rescanJava,
     refreshJava,

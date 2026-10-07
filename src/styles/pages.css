@@ -472,6 +472,99 @@
 }
 
 /* ============================================================================
+ * 收藏星标 + 多选勾选（2026-10-07，用户：「给全部的左侧加一个收藏」「加一个多选按钮」）
+ *
+ * 两个都放在行首（图标之前）—— 用户说的是"左侧"，而且左侧是扫视时
+ * 最先落在眼睛里的位置。
+ * ========================================================================== */
+
+/* 收藏那颗星。
+ * ★ 常态**很暗**：一屏十行全是亮星星会把版本名淹掉；收藏过的才亮起来。
+ * ★ `flex: 0 0 auto` 是必须的 —— 行是 flex 布局，不加会被压扁。 */
+.ver-fav {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-tertiary);
+  opacity: 0.45;
+  cursor: pointer;
+  transition: opacity var(--dur-fast), color var(--dur-fast);
+}
+.ver-fav svg {
+  width: 15px;
+  height: 15px;
+}
+/* 悬停在整行上时把星提亮一点 —— 让"这里有个可以点的东西"被发现 */
+.ver-item:hover .ver-fav {
+  opacity: 0.8;
+}
+.ver-fav:hover {
+  opacity: 1;
+  color: var(--accent);
+}
+/* 已收藏：实心 + 强调色。`fill: currentColor` 是唯一的实心手段 ——
+ * `IconStar` 画的是描边路径（见 `ui/Icons.tsx`），没有单独的实心图标。 */
+.ver-fav.on {
+  opacity: 1;
+  color: var(--accent);
+}
+.ver-fav.on svg {
+  fill: currentColor;
+}
+/* 没有实例记录 ⇒ 没地方存收藏。禁用但**仍然显示**（藏起来用户会以为
+ * 这功能时有时无），只是看得出来点不了。 */
+.ver-fav:disabled {
+  opacity: 0.2;
+  cursor: not-allowed;
+}
+.ver-fav:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent);
+  opacity: 1;
+}
+
+/* 多选勾选框（只在多选模式下渲染）。 */
+.ver-pick {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* 多选操作条：在列表上方，选中项与三个动作都在这上面。 */
+.ver-batchbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-default);
+}
+.ver-batchcount {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+/* 把按钮推到右边（一个弹性占位，比 `margin-left: auto` 更好读） */
+.ver-batchspacer {
+  flex: 1;
+}
+.ver-batchbusy {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+/* ============================================================================
    ★★ 2026-09-25（用户给的 PCL 截图）：版本列表按**当前文件夹**说话 ——
       正常的版本在上、坏掉的收进下面这个可折叠的「错误的版本（N）」，
       文件夹里有、但还没建实例的版本用 `.ver-item-new` 标出来。

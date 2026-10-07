@@ -28,6 +28,8 @@ import {
   IconPlay,
   IconPuzzle,
   IconRefresh,
+  // ★ 2026-10-07：收藏那颗星（用户：「给全部的左侧加一个收藏」）
+  IconStar,
 } from '../ui/Icons';
 import { useRealApi } from '../hooks/useRealApi';
 import { DataRootPicker } from '../components/DataRootPicker';
@@ -106,7 +108,7 @@ function menuLayout(anchor: DOMRect, height: number): MenuPos {
 export function VersionsPage() {
   /** 应用自己的确认弹窗（`window.confirm` 在这个壳里是坏的，见 `ui/confirm.tsx`） */
   const confirm = useConfirm();
-  const { state, goDownloadTab, goDownloadFor, openVersion, toast, removeInstance, duplicateInstance, renameInstance, refreshInstances, folder, reloadAfterRootChange, packIcons, backend, buryVersion } =
+  const { state, goDownloadTab, goDownloadFor, openVersion, toast, removeInstance, duplicateInstance, renameInstance, setFavorite, refreshInstances, folder, reloadAfterRootChange, packIcons, backend, buryVersion } =
     useApp();
   const { api } = useRealApi();
   /** 隔离判定（ADR-005）：后端算好的结论，列表里只显示 */
@@ -394,6 +396,255 @@ export function VersionsPage() {
    *     但**计数一直显示** —— 收起不等于藏起来，那是两码事。
    */
   const [badOpen, setBadOpen] = useState(false);
+
+  /*
+   * ★★★★ 2026-10-07（用户：「给全部的左侧加一个收藏」，收藏的**自动置顶**）。
+   *
+   *   排序键在**能用的那一组**里生效：收藏的排前面，其余保持原顺序。
+   *   ★ 为什么用"稳定分区"而不是 `sort`：`Array.sort` 在同一键值上**不保证稳定**
+   *     的写法很容易把相邻两行的顺序换来换去 —— 而列表每次刷新都换顺序
+   *     是这个仓库明确记为"最难用的一种"的行为。两次 `filter` 天然稳定。
+   *   ★ 也**不**对"不能用"的那一组置顶：那一组的价值在于"盘上有什么"，
+   *     而不是用户的偏好；而且它默认折叠着。
+   */
+  const isFaved = useCallback(
+    (e: VerEntry) => e.kind === 'row' && e.inst?.config.favorite === true,
+    [],
+  );
+
+  /*
+   * ★★★★ 2026-10-07（用户：「**加一个多选按钮**」，勾完之后要能
+   *   **批量删除 / 批量备份 / 批量检查完整性**）。
+   *
+   *   ## 状态放哪
+   *
+   *   `multi` 是模式开关，`picked` 用**目录名**（`fv.dir`）而不是实例 id：
+   *   盘上每个版本目录都有 `dir`，而"账本里有没有记录"是可选的 ——
+   *   于是**没有记录的版本也能被选中、也能被批量删掉**
+   *   （那正是坏版本最需要的能力：一次清掉几个装了一半的空壳）。
+   *
+   *   ## 为什么退出多选要清空勾选
+   *
+   *   留着的话，下次进来会看到"上次勾的那些"又被勾上，
+   *   而用户完全不知道它们是什么时候勾的 —— 批量删除最怕这个。
+   */
+  const [multi, setMulti] = useState(false);
+  const [picked, setPicked] = useState<Set<string>>(() => new Set());
+  const [busy, setBusy] = useState<string>('');
+
+  const togglePick = useCallback((dir: string) => {
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(dir)) next.delete(dir);
+      else next.add(dir);
+      return next;
+    });
+  }, []);
+
+  const exitMulti = useCallback(() => {
+    setMulti(false);
+    setPicked(new Set());
+  }, []);
+
+  /** 勾选的那些条目（按列表顺序，便于报告时稳定） */
+  const pickedEntries = useMemo(
+    () =>
+      listEntries.filter(
+        (e): e is Extract<VerEntry, { kind: 'row' }> =>
+          e.kind === 'row' && picked.has(e.fv!.dir),
+      ),
+    [listEntries, picked],
+  );
+
+  /**
+   * **批量删除**。
+   *
+   * ★ 判据与单行删除**同源**（见那一支里的长注释）：
+   *   · 有账本记录 ⇒ `removeInstance`（连记录一起删，且它会写墓碑）；
+   *   · 没有记录   ⇒ **先写墓碑**（`buryVersion`）再 `deleteVersionDir`。
+   *   两条路都必须留墓碑 —— 少写一处，"删掉的版本重启又回来"就会重演
+   *   （那正是用户报过的：老数据根按 mtime 把目录合并回来）。
+   *
+   * ★ 回收站不可用（`trash::delete` 失败）时**不静默降级成永久删除**：
+   *   逐个汇报失败，让用户自己决定要不要永久删 —— 批量场景下尤其不能
+   *   悄悄换一种"删法"（那是不可逆的）。
+   */
+  const batchDelete = useCallback(async () => {
+    const items = pickedEntries;
+    if (items.length === 0) return;
+    const names = items.map((e) => e.inst?.config.name ?? e.fv!.dir);
+    const copy = describeDelete({
+      what: `${items.length} 个版本`,
+      items: names.map((n) => `「${n}」`),
+      note: '共享的游戏文件（libraries / assets）不会被删除，其他版本还能用。',
+      // 批量删除**永远不当场判永久**：这一步的风险比单行高一档，
+      // 让用户在确认框里明确选（`shift: false` ⇒ 走回收站）
+      intent: { shift: false },
+    });
+    if (
+      !(await confirm({
+        title: `删除这 ${items.length} 个版本`,
+        danger: true,
+        confirmText: copy.permanent ? '永久删除' : '删除',
+        message: copy.message,
+      }))
+    ) {
+      return;
+    }
+
+    setBusy('删除中…');
+    let done = 0;
+    let freed = 0;
+    const failed: string[] = [];
+    for (const e of items) {
+      const fv = e.fv!;
+      const inst = e.inst ?? null;
+      try {
+        if (inst) {
+          freed += await removeInstance(inst.id, copy.permanent);
+        } else {
+          buryVersion(fv.dir);
+          freed += await backend.deleteVersionDir(fv.dir, copy.permanent);
+        }
+        done++;
+      } catch (err) {
+        failed.push(`${fv.dir}：${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    setBusy('');
+    if (failed.length === 0) {
+      toast(
+        'warning',
+        `已删除 ${done} 个版本`,
+        freed > 0 ? `磁盘上释放了 ${formatBytes(freed)}` : '磁盘上本来就没有这些目录',
+      );
+    } else {
+      toast(
+        'err',
+        `${done} 个删掉了、${failed.length} 个没删成`,
+        failed.slice(0, 3).join('\n'),
+      );
+    }
+    exitMulti();
+    void reloadFolderVersions();
+  }, [pickedEntries, confirm, removeInstance, buryVersion, backend, toast, exitMulti, reloadFolderVersions]);
+
+  /**
+   * **批量备份**。
+   *
+   * 复用现有备份机制（`api.backup.create`，与实例概览页那个按钮同一套）。
+   * ★ 只有**有账本记录**的版本能备份 —— 备份记录的 key 是 slug + mcVersion，
+   *   而没记录的目录连"这是哪个版本"都还没有定论；那种**如实报出来**，
+   *   不假装备份过。
+   */
+  const batchBackup = useCallback(async () => {
+    const items = pickedEntries;
+    if (items.length === 0) return;
+    // 浏览器预览（`web.ts` 那套假后端）里备份是没有实现的能力 —— 如实说，不假装备份过
+    if (!api) {
+      toast('info', '这里不能备份', '预览模式下没有真正的磁盘，备份没有意义');
+      return;
+    }
+    const withRec = items.filter((e) => e.inst);
+    const skipped = items.length - withRec.length;
+    setBusy('备份中…');
+    let done = 0;
+    const failed: string[] = [];
+    for (const e of withRec) {
+      const inst = e.inst!;
+      try {
+        await api.backup.create({
+          slug: inst.config.slug,
+          name: inst.config.name,
+          mcVersion: inst.mcVersion,
+          reason: '手动',
+        });
+        done++;
+      } catch (err) {
+        failed.push(
+          `${inst.config.name}：${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    setBusy('');
+    if (failed.length === 0 && skipped === 0) {
+      toast('ok', `已备份 ${done} 个版本`, '在各自的实例设置里能看到这些备份');
+    } else {
+      toast(
+        failed.length ? 'err' : 'warning',
+        `备份完成 ${done} 个`,
+        [
+          skipped ? `${skipped} 个没有实例记录，跳过（备份要先知道它是哪个版本）` : '',
+          ...failed.slice(0, 3),
+        ]
+          .filter(Boolean)
+          .join('\n'),
+      );
+    }
+    exitMulti();
+  }, [pickedEntries, api, toast, exitMulti]);
+
+  /**
+   * **批量检查完整性**。
+   *
+   * 走 `api.installer.verify(mcVersion, [slug])` —— 与实例概览页那个
+   * "检查完整性"是同一个命令，所以两处结论必然一致。
+   * ★ 只查**能用的**版本：坏掉的目录连版本 JSON 都没有，
+   *   `verify` 无从下手（它要按 mcVersion 去核对文件表）。
+   */
+  const batchVerify = useCallback(async () => {
+    const items = pickedEntries.filter((e) => e.fv!.ok && e.inst);
+    if (items.length === 0) {
+      toast('info', '没有可检查的版本', '选中的这几个都不能启动，检查无从下手');
+      return;
+    }
+    if (!api) {
+      toast('info', '这里不能检查', '预览模式下没有真正的磁盘，检查没有意义');
+      return;
+    }
+    setBusy('检查中…');
+    const bad: string[] = [];
+    let okCount = 0;
+    for (const e of items) {
+      const inst = e.inst!;
+      try {
+        const r = await api.installer.verify(inst.mcVersion, [inst.config.slug]);
+        if (r.missing_count > 0) {
+          bad.push(`${inst.config.name}：缺 ${r.missing_count} 个文件`);
+        } else {
+          okCount++;
+        }
+      } catch (err) {
+        bad.push(
+          `${inst.config.name}：${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    setBusy('');
+    if (bad.length === 0) {
+      toast('ok', `${okCount} 个版本文件都齐`, '一个都不缺');
+    } else {
+      toast(
+        'warning',
+        `${okCount} 个完整、${bad.length} 个有问题`,
+        bad.slice(0, 5).join('\n'),
+      );
+    }
+    exitMulti();
+  }, [pickedEntries, api, toast, exitMulti]);
+
+  /*
+   * Esc 退出多选。挂在 window 上而不是行上：用户在多选时鼠标可能停在
+   * 任何地方，而"想退出"这个意图与指针在哪无关。
+   */
+  useEffect(() => {
+    if (!multi) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') exitMulti();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [multi, exitMulti]);
   const { goodEntries, badEntries } = useMemo(() => {
     const good: typeof listEntries = [];
     const bad: typeof listEntries = [];
@@ -401,8 +652,20 @@ export function VersionsPage() {
       if (e.kind !== 'row') continue;
       (e.fv!.ok ? good : bad).push(e);
     }
-    return { goodEntries: good, badEntries: bad };
-  }, [listEntries]);
+    /*
+     * ★★★★ 2026-10-07（用户：「给全部的左侧加一个收藏」，收藏置顶）：
+     *   把收藏的挪到**能用那一组的最前面**。
+     *
+     *   ★ 用两次 `filter` 做**稳定分区**，而不是 `sort` —— 同键值的相对顺序
+     *     必须保住（"列表每次刷新都换顺序"是这个仓库明确记为最难用的行为，
+     *     见 `scan_folder_versions` 末尾那段）。
+     *   ★ 只对**能用**的那一组置顶：坏版本分组的价值是"盘上有什么"，
+     *     不是用户偏好，而且它默认折叠着。
+     */
+    const faved = good.filter((e) => isFaved(e));
+    const rest = good.filter((e) => !isFaved(e));
+    return { goodEntries: [...faved, ...rest], badEntries: bad };
+  }, [listEntries, isFaved]);
 
   /*
    * 一行的渲染（两组共用）。
@@ -436,6 +699,19 @@ export function VersionsPage() {
      */
     const fv = entry.fv!;
     const inst = entry.inst ?? null;
+    /*
+     * ★★★★ 2026-10-07（用户：「**给全部的左侧加一个收藏**」「加一个多选按钮**」）。
+     *
+     *   收藏与勾选都放在**行首**（图标之前）—— 用户说的是"左侧"，
+     *   而且左侧是扫视时最先落在眼睛里的位置。
+     *
+     *   ★ 收藏态只认**账本记录**（`inst.config.favorite`）：
+     *     没有记录 = 没有可收藏的东西（那颗星点了也没地方存）——
+     *     所以没记录的行走"禁用但可见"（见下面的 `canFav`），
+     *     而不是把星藏起来（藏起来用户会以为这功能时有时无）。
+     */
+    const canFav = inst !== null;
+    const faved = inst?.config.favorite === true;
     /* PCL 式的可用性判定（Rust 侧算好的，这里只呈现） */
     const ok = fv.ok;
     const showName = inst ? instanceTitle(inst.config.name, fv.mcVersion, inst.loader) : fv.dir;
@@ -481,16 +757,67 @@ export function VersionsPage() {
         tabIndex={0}
         aria-label={ok ? `打开 ${showName} 的设置` : `${showName} 不可用`}
         onClick={() => {
+          /*
+           * ★ 多选模式下**整行就是勾选**（不再进设置页）：
+           *   这正是"多选"这个模式存在的意义 —— 进去之后每一次点击都是选择，
+           *   而不是又一次跳页。退出靠顶部那颗按钮或 Esc。
+           */
+          if (multi) {
+            togglePick(fv.dir);
+            return;
+          }
           // ★ 坏掉的版本点不进去（点进去也是一页空设置）—— 原因就写在行里
           if (inst && ok) openVersion(inst.id);
         }}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
-            if (inst && ok) openVersion(inst.id);
+            if (multi) {
+              togglePick(fv.dir);
+            } else if (inst && ok) {
+              openVersion(inst.id);
+            }
           }
         }}
       >
+        {multi ? (
+          /*
+           * 勾选框：**只在多选模式下出现**。
+           * ★ 用真 `<input type="checkbox">`：键盘（Space）与无障碍都白拿，
+           *   自己画一个 div 就得把这两件事重新实现一遍。
+           * `readOnly` 是因为"勾"这件事由整行的 onClick 统一处理 ——
+           *   这里再挂一个 onChange 会出现"点一下切两次"。
+           */
+          <input
+            type="checkbox"
+            className="ver-pick"
+            checked={picked.has(fv.dir)}
+            readOnly
+            tabIndex={-1}
+            aria-label={`选择 ${showName}`}
+          />
+        ) : null}
+        {/*
+          ★★★★ 2026-10-07（用户）：「给全部的左侧加一个收藏」。
+            收藏态由 `inst.config.favorite` 决定（存账本，不另建表）。
+            ★ 没有实例记录时**不禁用就点不了**：那颗星渲染成暗的，
+              点了也没有地方存 —— 与其假装能收藏，不如看得出来它不行。
+        */}
+        <button
+          type="button"
+          className={`ver-fav${faved ? ' on' : ''}`}
+          disabled={!canFav}
+          aria-pressed={faved}
+          aria-label={faved ? `取消收藏 ${showName}` : `收藏 ${showName}`}
+          onClick={(e) => {
+            // 别让这次点击穿透到整行（那会打开设置页 / 切勾选）
+            e.stopPropagation();
+            if (canFav) void setFavorite(inst.id, !faved);
+          }}
+        >
+          <IconStar />
+        </button>
+
         {/*
           ★★ 版本图标（0.1.0-beta.1）：自绘等距方块，按**世代**配色
             （现代=绿 / 中期=蓝 / Mod 黄金期=琥珀 / 快照=紫）。
@@ -504,7 +831,7 @@ export function VersionsPage() {
               没有才退回上面那个自绘方块。两者的取舍收在 `PackIcon` 里。
         */}
         <PackIcon icon={packIcons[fv.dir]} version={fv.mcVersion} size={34} />
-
+        <PackIcon icon={packIcons[fv.dir]} version={fv.mcVersion} size={34} />
         {/* 中间：名称与元信息（一行主 + 一行次；冲突只给徽标） */}
         <div className="ver-info">
           <div className="ver-title">
@@ -1254,8 +1581,48 @@ export function VersionsPage() {
               <IconRefresh /> 重新探测
             </Button>
           ) : null}
+          {/*
+            ★★★★ 2026-10-07（用户：「**加一个多选按钮**」）。
+
+            进多选之后整行点击 = 勾选（见 `renderRow` 的 onClick），
+            勾完的操作在下方的操作条上；退出用这颗按钮或 Esc。
+            ★ 按钮文案跟着模式变（「多选」↔「退出多选」）——
+              这样用户不必回想"我现在在哪个模式里"。
+          */}
+          <Button
+            size="sm"
+            variant={multi ? 'primary' : 'ghost'}
+            onClick={() => (multi ? exitMulti() : setMulti(true))}
+          >
+            {multi ? '退出多选' : '多选'}
+          </Button>
         </div>
       </div>
+
+      {/*
+        多选时的操作条。
+        ★ 只在**选中了东西**时才出现（`picked.size > 0`）：一个"0 项已选"的
+          工具栏只会占地方，而且它上面的按钮点了也没反应。
+      */}
+      {multi && picked.size > 0 ? (
+        <div className="ver-batchbar">
+          <span className="ver-batchcount">已选 {picked.size} 个</span>
+          <Button size="sm" variant="ghost" onClick={() => setPicked(new Set())}>
+            清空
+          </Button>
+          <div className="ver-batchspacer" />
+          {busy ? <span className="ver-batchbusy">{busy}</span> : null}
+          <Button size="sm" variant="ghost" onClick={() => void batchVerify()}>
+            检查完整性
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => void batchBackup()}>
+            备份
+          </Button>
+          <Button size="sm" variant="danger" onClick={() => void batchDelete()}>
+            <IconTrash /> 删除
+          </Button>
+        </div>
+      ) : null}
 
       <div className="row row-wrap" style={{ marginBottom: 'var(--space-3)' }}>
         <Segmented

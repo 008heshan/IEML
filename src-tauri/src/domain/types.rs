@@ -281,6 +281,18 @@ pub struct InstanceConfig {
     /// 实例级游戏参数覆盖
     #[serde(default)]
     pub game_args: Option<String>,
+    /**
+     * 收藏（星标）；收藏的版本在版本列表里置顶。
+     *
+     * ★★★★ 2026-10-07（用户：「给全部的左侧加一个收藏」）：
+     *   必须**同时**加在前端 `src/domain/types.ts` 的 `InstanceConfig` 上 ——
+     *   账本是来回跑的（前端改完 `save_instances` 发回来，这里反序列化再写盘），
+     *   少一边就会在那趟里被丢掉，表现是"点了星标，重启就没了"。
+     *   ★ 这就是 `memory_mb` 那次栽过的同一个形状（见上面那段说明）。
+     *   `#[serde(default)]` 保证老账本（没有这个字段）照样能读。
+     */
+    #[serde(default)]
+    pub favorite: bool,
 }
 
 /// Java 版本区间（与前端 `src/domain/types.ts` 的 `JavaRange` **逐字段对齐**）
@@ -378,6 +390,42 @@ mod wire_format {
         let back = serde_json::to_value(&c).unwrap();
         assert!(back.get("memoryMb").is_some(), "回给前端必须还是 camelCase");
         assert!(back.get("memory_mb").is_none(), "不能混进 snake_case");
+    }
+
+    /// ★★★★ 2026-10-07（用户：「给全部的左侧加一个收藏」）：
+    ///   **收藏必须能穿过账本往返而不丢**。
+    ///
+    ///   账本是**来回跑**的：前端改完 `save_instances` 发回来，这里按
+    ///   `InstanceConfig` 反序列化、再序列化写盘。任何一边少一个字段，
+    ///   那一趟就会把它**静默丢掉** —— 表现是"点了星标，重启就没了"。
+    ///
+    ///   ★ 这与上面 `memoryMb` 那条是**同一个形状**（那次是字段名对不上，
+    ///     这次是字段不存在），所以判据也一样：拿前端的真实载荷走一趟往返。
+    ///   ★ 老账本（没有 `favorite` 字段）也必须能读 —— `#[serde(default)]`
+    ///     管这件事，这里一并钉住。
+    #[test]
+    fn favorite_survives_the_round_trip() {
+        // ① 前端发来 favorite: true ⇒ 必须收下
+        let with_fav = CONFIG.replace(
+            "\"javaMode\": \"auto\"",
+            "\"javaMode\": \"auto\", \"favorite\": true",
+        );
+        let c: InstanceConfig =
+            serde_json::from_str(&with_fav).expect("前端发来的 favorite 必须能收下");
+        assert!(c.favorite, "favorite: true 要真的读成 true");
+
+        // ② 写回前端仍然叫 favorite（camelCase，与 TS 那边一致）
+        let back = serde_json::to_value(&c).unwrap();
+        assert_eq!(
+            back.get("favorite").and_then(|v| v.as_bool()),
+            Some(true),
+            "回给前端必须还是 favorite=true"
+        );
+
+        // ③ 老账本没有这个字段 ⇒ 读成 false，不许报错
+        let old: InstanceConfig =
+            serde_json::from_str(CONFIG).expect("老账本（没有 favorite）必须照样能读");
+        assert!(!old.favorite, "缺字段时默认 false（未收藏）");
     }
 
     #[test]

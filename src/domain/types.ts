@@ -113,6 +113,19 @@ export interface InstanceConfig {
   jvmArgs?: string;
   /** 游戏参数覆盖 */
   gameArgs?: string;
+  /**
+   * 收藏（星标）。收藏的版本在版本列表里**置顶**。
+   *
+   * ★★★★ 2026-10-07（用户：「给全部的左侧加一个收藏」）：
+   *   存在**实例自己的记录里**（`instance.json` / 账本那一条），不另建一份表 ——
+   *   删掉实例，它的收藏自然一起消失，不会留下一条指向不存在版本的脏记录。
+   *
+   *   ★ 为什么必须**同时**加到 Rust 的 `InstanceConfig`：账本是**来回跑**的
+   *     （前端改完 `save_instances` 发回后端，后端按结构体反序列化再写盘）。
+   *     只在 TS 这边加字段，那一趟就会被丢掉 —— 表现是"点了星标，重启就没了"。
+   *     这个仓库为同一件事栽过（见 `domain/types.rs` 里 memoryMb 那段）。
+   */
+  favorite?: boolean;
 }
 
 /** Java 选择四模式（ADR-030） */
