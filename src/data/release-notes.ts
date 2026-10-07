@@ -84,6 +84,21 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.19.13',
+    date: '2026-10-08',
+    headline: '这一版把上一版改错的两处改回来。',
+    groups: [
+      {
+        title: '修复了',
+        items: ['修复了 整合包页签顶部看不到下载标题的问题。'],
+      },
+      {
+        title: '修改了',
+        items: ['修改了 资源列表分页条下方的留白，改回原来的间距。'],
+      },
+    ],
+  },
+  {
     version: '0.19.12',
     date: '2026-10-08',
     headline: '这一版修的是下载页资源列表底部的两处版式。',
