@@ -355,7 +355,12 @@ interface AppContextValue {  state: AppState;
      *   `null` = 还没读到（界面显示"读取中"，**不显示 0** —— 0 是一句假话）。
      */
     versionCount: number | null;
-    reload: () => Promise<void>;
+    /**
+   * 重扫 `versions/`。**返回扫到的清单**（2026-10-08）—— 调用方要如实报出
+   * "发现几个版本"，而报结果时**不能**去读 state（setState 是异步的，
+   * 那会报出上一次的数字）。失败时抛出，由调用方决定怎么提示。
+   */
+  reload: () => Promise<FolderVersion[]>;
   };
 
   /**
@@ -1332,17 +1337,38 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return folderVers.length;
   }, [folderVers]);
 
-  const reloadFolderVersions = useCallback(async () => {
+  /**
+   * 重扫 `versions/`，把结果放进 state。
+   *
+   * ★★★★ 2026-10-08（用户：「版本列表的重新探测就跟没反应似的」）：
+   *   **改成返回扫到的清单、并且失败时抛出**。原来它 `catch {}` 一吞了事 ——
+   *   读盘失败时列表**静默不变**，用户看到的就是"点了没反应"，
+   *   连一句"读不到"都没有。
+   *
+   *   ★ 返回值的用处：调用方（「重新探测」按钮）要**如实报出扫到了几个**。
+   *     报结果时必须用这个返回值，**不能**去读 `folderVers` state ——
+   *     setState 是异步的，那会报出上一次的数字。
+   *   ★ 抛出的用处：让调用方决定怎么提示。**不在这里直接 toast** ——
+   *     AppContext 在启动时也会调它，那时候弹一个错误框很吵；
+   *     而"用户手点的那一次"才需要说话（见 `VersionsPage`）。
+   */
+  const reloadFolderVersions = useCallback(async (): Promise<FolderVersion[]> => {
     const seq = (folderSeqRef.current += 1);
+    let list: FolderVersion[];
     try {
-      const list = await backend.folderVersions();
-      if (seq !== folderSeqRef.current) return; // 有更新的请求了 —— 这次的结果作废
-      setFolderVers(list);
-    } catch {
-      if (seq !== folderSeqRef.current) return;
-      /* 读不到就不筛（`null`）——读不到 ≠ 没有；界面宁可多显示，也不要凭空藏东西 */
-      setFolderVers(null);
+      list = await backend.folderVersions();
+    } catch (e) {
+      if (seq === folderSeqRef.current) {
+        /* 读不到就不筛（`null`）——读不到 ≠ 没有；界面宁可多显示，也不要凭空藏东西 */
+        setFolderVers(null);
+      }
+      throw e;
     }
+    // 有更新的请求了 —— 这次的结果作废（但已经扫到了，照样把它交给调用方）
+    if (seq === folderSeqRef.current) {
+      setFolderVers(list);
+    }
+    return list;
   }, [backend]);
   const folderMatch = useMemo(
     () => matchFolderVersions(state.instances, folderVers),

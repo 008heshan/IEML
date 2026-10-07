@@ -84,6 +84,26 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.19.9',
+    date: '2026-10-08',
+    headline: '这一版修的是版本列表那个按下去像没反应的按钮。',
+    groups: [
+      {
+        title: '修复了',
+        items: [
+          '修复了 点「重新探测」时没有任何反应、也不说结果的问题。',
+          '修复了 版本列表重新扫描失败时一声不吭的问题。',
+        ],
+      },
+      {
+        title: '修改了',
+        items: [
+          '修改了 「重新探测」按钮：探测期间显示正在探测并暂时不可再点，完成后报出找到几个版本。',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.19.8',
     date: '2026-10-08',
     headline: '这一版修的是删东西时整个启动器顿住的问题。',

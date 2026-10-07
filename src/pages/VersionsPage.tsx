@@ -152,6 +152,18 @@ export function VersionsPage() {
    */
   const [menuFor, setMenuFor] = useState<string | null>(null);
   /**
+   * 「重新探测」正在跑（按钮据此转圈并禁用）。
+   *
+   * ★★★★ 2026-10-08（用户：「**版本列表的重新探测就跟没反应似的**」）：
+   *   以前这个按钮 `onClick` 里就是两句 `void xxx()` ——
+   *   **点下去界面一个字都不变、也不转圈、也没有任何结果提示**。
+   *   而它的数据几乎总是原样（列表本来就每 5 秒自动刷新一次），
+   *   于是"点了没反应"和"点了有反应但看不出来"在用户眼里是同一件事。
+   *   ⇒ 现在有在跑状态 + 结果提示，见下面那个 `onClick`。
+   */
+  const [rescanning, setRescanning] = useState(false);
+
+  /**
    * 菜单的锚点（打开那一刻，按钮的屏幕坐标）。
    *
    * ★ 为什么要把锚点也存下来：菜单最终位置要**量过它自己的高度**才能定
@@ -265,7 +277,28 @@ export function VersionsPage() {
    */
   const [diskLoaded, setDiskLoaded] = useState(false);
 
-  const refreshDisk = useCallback(async () => {
+  /*
+   * ★★★★ 2026-10-08：「重新探测」的**在线那一半**。
+   *
+   *   ## 名字曾经骗了人（也包括我）
+   *
+   *   它原来叫 `refreshDisk`，而它做的事是 `api.metadata.manifest('bmclapi')`
+   *   —— **拉 BMCLAPI 的在线版本清单**，用来给列表补"盘上装了哪些加载器"的角标。
+   *   真正"读盘"的是 `reloadFolderVersions()`（`backend.folderVersions()`）。
+   *   一个名字把两件事说成一件，是后面所有误判的起点。
+   *
+   *   ## 为什么"重新探测"看起来没反应（用户报的）
+   *
+   *   ① 它**每 5 秒本来就会自动跑一遍**（见下面那个 useEffect 里的 interval），
+   *      所以手点一次几乎必然拿到**一模一样的数据** ⇒ 界面零变化；
+   *   ② 它**不报结果**：成功了不说什么，失败了只写在一个不显眼的角标上；
+   *   ③ 点它的那两句是 `void xxx()`，**连"正在跑"都不表达**。
+   *   ⇒ 于是"点了没反应"与"点了有反应但看不出来"在用户眼里是同一件事。
+   *
+   *   ★ 改名 `refreshMeta`：**只改名字与注释，行为一行没动**
+   *     （功能没坏，坏的是它和"读盘"被混为一谈）。
+   */
+  const refreshMeta = useCallback(async () => {
     if (!api) {
       // 浏览器演示模式没有磁盘可读：标记成"读过"，否则角标永远不出现也不会消失
       setDiskLoaded(true);
@@ -287,10 +320,10 @@ export function VersionsPage() {
   }, [api]);
 
   useEffect(() => {
-    void refreshDisk();
-    const t = window.setInterval(() => void refreshDisk(), 5000);
+    void refreshMeta();
+    const t = window.setInterval(() => void refreshMeta(), 5000);
     // 切回窗口时立刻补一次（用户刚在别处装完东西，最可能这时候回来看）
-    const onFocus = () => void refreshDisk();
+    const onFocus = () => void refreshMeta();
     window.addEventListener('focus', onFocus);
     /*
      * ★★ ADR-008 的"增量更新"：后端"先返回缓存、后台刷新"之后会发
@@ -301,7 +334,7 @@ export function VersionsPage() {
     void (async () => {
       try {
         const { listen } = await import('@tauri-apps/api/event');
-        unlisten = await listen('meta-refreshed', () => void refreshDisk());
+        unlisten = await listen('meta-refreshed', () => void refreshMeta());
       } catch {
         /* 浏览器演示模式没有事件总线：轮询那一条仍然管用 */
       }
@@ -311,7 +344,7 @@ export function VersionsPage() {
       window.removeEventListener('focus', onFocus);
       unlisten?.();
     };
-  }, [refreshDisk]);
+  }, [refreshMeta]);
 
 
   /**
@@ -1619,13 +1652,56 @@ export function VersionsPage() {
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => {
-                void refreshDisk();
-                /* ★ 2026-09-25：这一页的数据源是"文件夹里有什么"，所以重探也要重扫文件夹 */
-                void reloadFolderVersions();
+              /*
+               * ★★★★ 2026-10-08（用户：「版本列表的重新探测就跟没反应似的」）：
+               *   这个按钮现在**有在跑状态、也报结果**。
+               *
+               *   以前它是两句 `void xxx()` —— 点下去不转圈、不说结果，
+               *   而数据本来每 5 秒就自动刷一遍，于是必然"看起来没反应"。
+               */
+              loading={rescanning}
+              disabled={rescanning}
+              onClick={async () => {
+                setRescanning(true);
+                try {
+                  /*
+                   * 两件事**并行**：它们一个走网络（在线清单，给角标用）、
+                   * 一个走本地磁盘（这一页真正的数据源）。串行没有理由。
+                   */
+                  const [, list] = await Promise.all([
+                    refreshMeta(),
+                    reloadFolderVersions(),
+                  ]);
+                  /*
+                   * ★ 报的是**扫盘那一半**的结果 —— 那才是用户点这个按钮时
+                   *   想确认的事（"盘上现在到底有什么"）。
+                   * ★ 这里读的是 `reloadFolderVersions` 的返回值，而不是 state：
+                   *   点了之后立刻读 `folderVers` 会读到**上一次渲染**的那一份
+                   *   （React 的 setState 是异步的），那正是"报了个旧数"的经典写法。
+                   */
+                  toast('ok', `发现 ${list.length} 个版本`, '列表已按磁盘上的文件夹刷新');
+                } catch (e) {
+                  /*
+                   * ★★ **失败也必须说话** —— 这条不是补充，是这次修复的另一半。
+                   *
+                   *   用户报的「跟没反应似的」有两个来源：成功时与旧数据一模一样，
+                   *   以及**失败时一片沉默**（`reloadFolderVersions` 原来 `catch {}`
+                   *   把异常吞了）。
+                   *   ⇒ 现在它把异常抛出来，这里就必须接住并说清 ——
+                   *     否则我只是把"静默不变"换成了"静默抛异常"，
+                   *     用户看到的仍然是"点了没反应"。
+                   */
+                  toast(
+                    'err',
+                    '重新探测失败了',
+                    e instanceof Error ? e.message : String(e),
+                  );
+                } finally {
+                  setRescanning(false);
+                }
               }}
             >
-              <IconRefresh /> 重新探测
+              <IconRefresh /> {rescanning ? '正在探测…' : '重新探测'}
             </Button>
           ) : null}
           {/*
@@ -1714,7 +1790,7 @@ export function VersionsPage() {
           tone="warning"
           icon={<IconAlert />}
           actions={
-            <Button size="sm" variant="secondary" onClick={() => void refreshDisk()}>
+            <Button size="sm" variant="secondary" onClick={() => void refreshMeta()}>
               <IconRefresh /> 重试
             </Button>
           }
