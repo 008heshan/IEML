@@ -29,31 +29,38 @@
 @rem   Started via build-detached.vbs so this is not a descendant of the agent
 @rem   shell, and with window style 0 so no cmd window flashes on screen.
 @rem
-@rem Output: E:\IEML\build-out.log
+@rem Output: %TEMP%\ieml-build.log
+@rem
+@rem 2026-10-08: this log used to go to E:\IEML\build-out.log -- the repo root.
+@rem The repo has a gate (tools\gates\check-repo-root.mjs) whose whole point is
+@rem "the root is the public face of the repo, nothing extra lives there", and
+@rem it flags any *.log. The `*.log` line in .gitignore hid the file from git
+@rem but not from the gate -- and the gate is right: %TEMP% is where logs go.
+@rem Keep this writing to %TEMP%.
 
 setlocal
 cd /d E:\IEML
 set "ELECTRON_RUN_AS_NODE="
 
-echo ==== build started %DATE% %TIME% ==== > E:\IEML\build-out.log
+echo ==== build started %DATE% %TIME% ==== > %TEMP%\ieml-build.log
 
-echo ---- step 1/2: vite build (frontend -> dist) ---- >> E:\IEML\build-out.log
-call "%APPDATA%\dsh-desktop\harness\.desktop-bin\pnpm.cmd" exec vite build >> E:\IEML\build-out.log 2>&1
+echo ---- step 1/2: vite build (frontend -> dist) ---- >> %TEMP%\ieml-build.log
+call "%APPDATA%\dsh-desktop\harness\.desktop-bin\pnpm.cmd" exec vite build >> %TEMP%\ieml-build.log 2>&1
 set "RC1=%ERRORLEVEL%"
-echo ---- vite rc=%RC1% ---- >> E:\IEML\build-out.log
+echo ---- vite rc=%RC1% ---- >> %TEMP%\ieml-build.log
 if not "%RC1%"=="0" goto done
 
-echo ---- step 2/2: cargo build --release (embeds dist) ---- >> E:\IEML\build-out.log
-powershell -NoProfile -ExecutionPolicy Bypass -File "E:\IEML\tools\env\cargo.ps1" build --release --manifest-path "E:\IEML\src-tauri\Cargo.toml" >> E:\IEML\build-out.log 2>&1
+echo ---- step 2/2: cargo build --release (embeds dist) ---- >> %TEMP%\ieml-build.log
+powershell -NoProfile -ExecutionPolicy Bypass -File "E:\IEML\tools\env\cargo.ps1" build --release --manifest-path "E:\IEML\src-tauri\Cargo.toml" >> %TEMP%\ieml-build.log 2>&1
 set "RC2=%ERRORLEVEL%"
-echo ---- cargo rc=%RC2% ---- >> E:\IEML\build-out.log
+echo ---- cargo rc=%RC2% ---- >> %TEMP%\ieml-build.log
 if not "%RC2%"=="0" goto done
 
-echo ---- step 3/3: deploy to Desktop ---- >> E:\IEML\build-out.log
-powershell -NoProfile -ExecutionPolicy Bypass -File "E:\IEML\tools\env\deploy-desktop.ps1" >> E:\IEML\build-out.log 2>&1
-echo ---- deploy rc=%ERRORLEVEL% ---- >> E:\IEML\build-out.log
+echo ---- step 3/3: deploy to Desktop ---- >> %TEMP%\ieml-build.log
+powershell -NoProfile -ExecutionPolicy Bypass -File "E:\IEML\tools\env\deploy-desktop.ps1" >> %TEMP%\ieml-build.log 2>&1
+echo ---- deploy rc=%ERRORLEVEL% ---- >> %TEMP%\ieml-build.log
 
 :done
-echo ==== build finished %DATE% %TIME% ==== >> E:\IEML\build-out.log
+echo ==== build finished %DATE% %TIME% ==== >> %TEMP%\ieml-build.log
 @endlocal
 exit /b 0

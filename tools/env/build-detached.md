@@ -39,7 +39,7 @@ tauri CLI 本来也是跑这一条。**所以不需要 tauri CLI。**
   （代理 shell 会把 `ELECTRON_RUN_AS_NODE=1` 注入每条命令，
   而且**清不掉**：实测 `set "X=" & echo [%X%]` 仍打印 `[1]`）；
 * 窗口样式 0 ⇒ **不弹 cmd 窗口**（用户明确抱怨过疯狂弹窗）；
-* 三步都写进 `build-out.log`：`vite build` → `cargo build --release` → 部署。
+* 三步都写进 `%TEMP%\ieml-build.log`：`vite build` → `cargo build --release` → 部署。
 
 用法：`wscript.exe //nologo tools\env\build-detached.vbs`
 
@@ -55,7 +55,7 @@ tauri CLI 本来也是跑这一条。**所以不需要 tauri CLI。**
 
 ⇒ 规矩：**这个脚本保持完全静默**。
 
-* 结果看 `E:\IEML\build-out.log`（`build-detached.cmd` 写的）；
+* 结果看 `%TEMP%\ieml-build.log`（`build-detached.cmd` 写的）；
 * 成功/失败由**本进程的退出码**表达；
 * 连"找不到 cmd 文件"这种错误也**写日志**、不弹框。
 

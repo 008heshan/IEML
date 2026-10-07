@@ -21,12 +21,12 @@
 '   it would print to the console, but we are deliberately not using a console.
 '
 '   => This script must stay SILENT. The build result already goes to
-'      E:\IEML\build-out.log (written by build-detached.cmd). Read that file;
+'      %TEMP%\ieml-build.log (written by build-detached.cmd). Read that file;
 '      never make this script talk to the user.
 '      Errors are reported the same way: the log plus the process exit code.
 '
 ' Usage: wscript.exe //nologo tools\env\build-detached.vbs
-'   Result: E:\IEML\build-out.log      Exit code: this process's exit code.
+'   Result: %TEMP%\ieml-build.log      Exit code: this process's exit code.
 
 Option Explicit
 
@@ -37,7 +37,7 @@ Set sh = CreateObject("WScript.Shell")
 If Not fso.FileExists("E:\IEML\tools\env\build-detached.cmd") Then
   ' ★ 连错误也不能弹框（见上面那段）。写进日志，用退出码表达失败。
   Dim f
-  Set f = fso.CreateTextFile("E:\IEML\build-out.log", True)
+  Set f = fso.CreateTextFile(sh.ExpandEnvironmentStrings("%TEMP%") & "\ieml-build.log", True)
   f.WriteLine "ERROR: tools\env\build-detached.cmd not found"
   f.Close
   WScript.Quit 2

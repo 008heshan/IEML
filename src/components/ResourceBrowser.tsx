@@ -38,6 +38,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Chip, CustomSelect, Modal, Note, Segmented, Spinner } from '../ui';
 import { IconChevronRight, IconDownload, IconGrid, IconRefresh, IconRows, IconSearch } from '../ui/Icons';
 import { groupKeyOf, useVersionGroups } from './resource-groups';
+import { filterVersionsForInstance } from './version-filter';
 import { useRealApi } from '../hooks/useRealApi';
 import { useApp } from '../state/AppContext';
 import { BASE_LOADER_NAME, compareVersion, isSnapshotVersion, knownVersions } from '../domain';
@@ -145,6 +146,7 @@ export function VersionPicker({
   onPick,
   onRetry,
   recommend,
+  target,
 }: {
   hit: ModrinthHit;
   versions: ModrinthVersion[] | null;
@@ -164,6 +166,32 @@ export function VersionPicker({
    *     所以这里**只有明确要求的地方才显示**，不是全局加回来。
    */
   recommend?: string;
+  /**
+   * ★★★★ 2026-10-08（用户：「**少世代分组的大版本**」）。
+   *
+   *   "装到哪个实例" —— 有它才能把版本列表**筛成兼容这个实例的那些**。
+   *
+   *   ## 为什么要按**种类**分开处理（这是这次的关键）
+   *
+   *   | 种类 | 该不该按当前实例的 MC 版本筛？ |
+   *   |---|---|
+   *   | 整合包 | **不该**。整合包的"版本"本来就是**跨世代的一条谱系** —— |
+   *   |        | 同一个包在 1.16 / 1.18 / 1.20 / 1.21 上各有一串， |
+   *   |        | 而且装上 1.21 那版就是一个新实例、不是"升级"当前这个。 |
+   *   | Mod / 其余 | **该**。用户就是要把东西装进这个实例里， |
+   *   |            | 不兼容的版本列出来只会让人点错（2026-09-30 那条性能优化同理）。 |
+   *
+   *   ## 为什么过滤放在这里、而不是接口请求里
+   *
+   *   请求层过滤有个副作用：**谱系被砍掉之后就再也拿不回来了** ——
+   *   用户在这里看到的是"只有一个分组"，而不是"能选的分组只有一个"。
+   *   放在渲染层，接口给全量、这一层按种类决定显示什么：
+   *   整合包保留全部（分组才有意义），其余照旧筛掉。
+   *
+   *   ★ 加载器**不在这里筛**：那是硬约束（整合包必须匹配加载器），
+   *     已经由调用方在请求里传了 `loader` —— 两处都筛会让人以为有两套规则。
+   */
+  target?: { mcVersion: string; loader?: { kind: string } | null } | null;
 }) {
   if (loading) {
     return (
@@ -239,6 +267,22 @@ export function VersionPicker({
     });
   }, [versions]);
 
+  /**
+   * 按当前实例**筛掉不兼容的版本** —— 判据在 `version-filter.ts`（纯函数，有测试）。
+   *
+   * ★ 为什么不在这段里内联判断：这条判据"**整合包不筛、其余筛**"很容易被
+   *   下一个人"顺手统一"成一种规则。写成一个具名函数 + 测试它才活得下来
+   *   （那个文件头有张对照表，解释为什么两种规则不一样）。
+   */
+  const compatibleVersions = useMemo(
+    () =>
+      filterVersionsForInstance(sortedVersions, {
+        projectType: hit.project_type,
+        target,
+      }),
+    [sortedVersions, target, hit.project_type],
+  );
+
   /*
    * ★★ 2026-09-23（C4）：按 MC 版本分组 + 折叠 + 顶部 chips 筛选。
    *   分组逻辑在 `resource-groups.ts`（纯函数，好测）。
@@ -247,8 +291,8 @@ export function VersionPicker({
    * ★ 推荐版本所在的组要**自动展开** —— 否则推荐落在折叠组里，用户看不到它
    *   （真机实测：分类对、推荐数 0，就是这个原因）。
    */
-  const recommendGroupKey = recommend ? groupKeyOf({ id: recommend, game_versions: sortedVersions.find((x) => x.id === recommend)?.game_versions ?? [] }, compareVersion) : null;
-  const { groups, shown, only, setOnly, isOpen, toggle } = useVersionGroups(sortedVersions, compareVersion, recommendGroupKey);
+  const recommendGroupKey = recommend ? groupKeyOf({ id: recommend, game_versions: compatibleVersions.find((x) => x.id === recommend)?.game_versions ?? [] }, compareVersion) : null;
+  const { groups, shown, only, setOnly, isOpen, toggle } = useVersionGroups(compatibleVersions, compareVersion, recommendGroupKey);
 
   return (
     <div className="res-versions">
@@ -258,7 +302,7 @@ export function VersionPicker({
             "第一个是上游最新发布的，不代表'最适合你'"。
         */}
         <span>
-          <b>{hit.title}</b> 的全部版本（{versions.length} 个）
+          <b>{hit.title}</b> 的全部版本（{compatibleVersions.length} 个）
         </span>
       </div>
 
@@ -277,7 +321,7 @@ export function VersionPicker({
             aria-pressed={only === null}
             onClick={() => setOnly(null)}
           >
-            全部 {versions.length}
+            全部 {compatibleVersions.length}
           </button>
           {groups.map((g) => (
             <button
@@ -405,8 +449,13 @@ export interface ResourceCenterBodyProps {
   instance: Instance | null;
   onInstalled?: (kind: ResourceKindName, title: string) => void;
   toast: (kind: 'ok' | 'warning' | 'err' | 'info', title: string, desc?: string) => void;
-  /** 页面形态下由外面给标题（弹窗形态下写在 Modal 上） */
-  compactHead?: boolean;
+  /*
+   * ★ 2026-10-08：原来的 `compactHead?: boolean` 删掉了 ——
+   *   它唯一的用途是"页面形态下要不要画那块页脚小字"，
+   *   而那块小字已经按用户要求整块删除（见渲染处那段说明）。
+   *   ★ 一个只为控制"不存在的东西"而存在的开关，留着比删掉更容易误导人：
+   *     下一个人会去找"compactHead 到底控制什么"。
+   */
   /**
    * 隐藏种类页签（下载页用）。
    *
@@ -436,7 +485,6 @@ export function ResourceCenterBody({
   instance,
   onInstalled,
   toast,
-  compactHead = false,
   hideKindTabs = false,
   gameFilters = false,
 }: ResourceCenterBodyProps) {
@@ -1176,27 +1224,24 @@ export function ResourceCenterBody({
       ) : null}
 
       {/*
-        页面形态下把"这一屏到底按什么筛出来的"放在最后一行小字里，不占首屏。
+        ★★★★ 2026-10-08（用户给的截图，指着一行小字：「**光影包需要 Iris 或
+          OptiFine 才能生效 —— 原版游戏里看不到它。**」+「光影包和数据包的
+          页脚的文本去掉**」）。
 
-        ★★ 2026-09-17 改口径：以前这里写死一句"只列适配当前加载器的版本"——
-          现在版本与加载器都是**玩家自己选的**，而且**默认不选**（= 不限），
-          那句写死的话就会在两个下拉都显示「不限」时说谎。
-          所以这里改成**如实复述当前筛选**（没选也要说"没限定"，
-          否则玩家不知道自己在看什么）。
+          这一整块 `res-fineprint` 删掉了，不再渲染 `current.install_note`。
+
+        ## 为什么是"整块删"而不是"只对光影/数据包不显示"
+
+          · 这块**只剩这一个内容**了：2026-09-26 那句"装到 mods/，认 .jar。
+            没限定版本、没限定加载器"已经按用户要求删掉，注释还留在这里；
+          · 它是**表单下方的最后一行**，用户点名的正是它；
+          · `install_note` 想表达的"装之前要知道的事"，现在有更好的地方说 ——
+            安装流程自己会报（`flows/resource-install.ts` 里那句 `note`
+            跟着**安装结果**一起出现），而不是提前堆在列表页脚下。
+
+          ★ 一并去掉的还有"分页条下面还挂一句小字"这个版式本身 ——
+            它正是分页条看起来"贴着底"的原因之一（见 `.pager` 那段注释）。
       */}
-      {compactHead && current ? (
-        <div className="dim res-fineprint">
-          {/*
-            ★★ 2026-09-26 用户（截图，指着一行小字）：「**图二这个也不要**」——
-              那一行是「装到 mods/，认 .jar。 没限定版本、没限定加载器。」
-              ⇒ 整行删掉：
-                · 装到哪个目录 —— 上面「装到「X」的 mods 目录」那行已经说了；
-                · 没限定版本 / 加载器 —— 两个下拉自己就写着「不限版本 / 不限加载器」。
-              再用一句小字复述一遍，只是把界面填满。
-          */}
-          {current.install_note ? <span>{current.install_note}</span> : null}
-        </div>
-      ) : null}
     </div>
   );
 }

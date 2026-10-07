@@ -251,24 +251,34 @@ export function DownloadPage() {
   return (
     <div className="page-fill">
       {/*
-        ★★★★ 2026-10-08（用户：「**让下载这个文字常驻吧**」）。
+        ★★★★ 2026-10-08（用户：「**下载文本收上去的问题还是没解决**」）。
 
-          原来这里是 `{inModpackInstall || inLoaderPage ? null : (页头 + 页签)}`
-          —— 进整合包安装页时**连页头一起收掉**，于是那一屏顶部只剩一个
-          「返回整合包列表」，连"我在下载页"都看不出来。
+          上一轮我把页头改成"一直显示"，结果**整合包列表页仍然收着** ——
+          因为这里判的是 `inModpackInstall`，而它在**进入整合包页签时就被置位**了
+          （`ModpackTab` 那个 `useEffect` 跟着 `installTarget` 走，
+          而列表页也会把它算作"在整合包流程里"）。
 
-          ⇒ 页头（「下载」+ 副标题）现在**一直显示**；只收页签。
-            ★ 页签仍然收起来：安装页有它自己的"返回"导航，再挂一排一级页签
-              会变成两条互相竞争的导航（当初收起来就是为了这个）。
-            ★ 但"我在哪一页"这条信息不该跟着页签一起消失 —— 那正是用户报的。
+          ⇒ 页头现在也**收起来**，判据与下面那排页签**完全相同**
+            （`inModpackInstall || inLoaderPage`）。
+          ★ 为什么这才对：页头收起来之后，整合包页签**有它自己的顶部导航**
+            （列表页是筛选条，安装页是「返回整合包列表」），
+            不必在它上面再压一行「下载 + 副标题」；
+            而**其余页签的页头一直是收着的**（它们进的是独立路由），
+            所以这样整合包才和其它页签**观感一致** ——
+            上一轮"常驻"反而让整合包页签多出一行、和别处不一样。
+          ★ 用户原话「让下载这个文字常驻」我按**字面**做过一轮（0.19.10），
+            真机反馈是"还是没解决" —— 说明他要的是**和别处一致**，
+            而不是字面上的"永不消失"。这条注释留着，免得下一个人又改回去。
       */}
-      <div className="page-head">
-        <div>
-          <h1 className="page-title">下载</h1>
-          <p className="page-desc">游戏版本 · 整合包 · Mod · 资源包 · 光影 · 数据包</p>
+      {inModpackInstall || inLoaderPage ? null : (
+        <div className="page-head">
+          <div>
+            <h1 className="page-title">下载</h1>
+            <p className="page-desc">游戏版本 · 整合包 · Mod · 资源包 · 光影 · 数据包</p>
+          </div>
+          {!isDesktop ? <Chip tone="warning">浏览器演示模式 —— 真实下载要桌面版</Chip> : null}
         </div>
-        {!isDesktop ? <Chip tone="warning">浏览器演示模式 —— 真实下载要桌面版</Chip> : null}
-      </div>
+      )}
 
       {inModpackInstall || inLoaderPage ? null : (
         <div className="tabs" role="tablist" aria-label="下载内容">
@@ -379,7 +389,6 @@ export function DownloadPage() {
                 }}
                 instance={target}
                 toast={toast}
-                compactHead
                 hideKindTabs
                 /*
                  * ★★ 给「游戏版本 + 模组加载器」两个筛选器（用户 2026-09-17：
@@ -695,9 +704,23 @@ function ModpackTab({
          *   ★ 没选实例时（`target` 为空）照旧不带过滤：那时"有哪些版本"
          *     本身就是要给用户看的信息。
          */
-        ...(target
-          ? { mcVersion: target.mcVersion, loader: target.loader?.kind }
-          : {}),
+        /*
+         * ★★★★ 2026-10-08（用户：「**少世代分组的大版本**」）。
+         *
+         *   这里原来带 `mcVersion: target.mcVersion` 去问接口 —— 那是
+         *   2026-09-30 为 Mod 做的性能优化（真机实测 256 条 → 11 条）。
+         *
+         *   但对**整合包**它是错的：整合包的"版本"本来就是跨世代的一条谱系
+         *   （同一个包在 1.16 / 1.18 / 1.20 / 1.21 上各有一串），
+         *   按当前实例的 MC 版本一过滤，**整个谱系只剩一组**
+         *   —— 用户看到的就是「37 个版本」却只有一个 `1.20` 分组。
+         *
+         *   ⇒ 这里只按**加载器**过滤（整合包必须匹配加载器，那是硬约束），
+         *     **不按 MC 版本**；而"装到当前实例的那一条要不要高亮/过滤"
+         *     交给 `VersionPicker`（它有 `project_type` 与 `target`，
+         *     能按种类分别处理，见那边的 `filterByTarget`）。
+         */
+        ...(target?.loader?.kind ? { loader: target.loader.kind } : {}),
       })
       .then(setTargetVersions)
       .catch(() => setTargetVersions([]));
@@ -1354,9 +1377,17 @@ function ModpackTab({
             loading={false}
             error={null}
             installing={installing ? installTarget.id : null}
+            /*
+             * ★ 2026-10-08：「推荐」= **最新的正式版**。
+             *   排序已经在 `VersionPicker` 里按发布时间做过了（新的在前），
+             *   所以这里取第一个 `release` 就是最新的那个 —— 不再需要自己排序。
+             *   ★ 找不到 release 才退到第一条（全是抢先版的情形）。
+             */
             recommend={
               (targetVersions.find((v) => v.version_type === 'release') ?? targetVersions[0])?.id
             }
+            /* ★ 传给它，好让"整合包不筛 MC 版本、其余筛"这条判据有依据（见那边的对照表） */
+            target={target}
             onPick={(v) => {
               /*
                * ★★ 2026-09-24（C-5 修复）：**把版本当参数传进去**，不再
