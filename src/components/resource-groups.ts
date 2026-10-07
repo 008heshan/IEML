@@ -118,18 +118,35 @@ export function useVersionGroups<T extends VersionLike>(
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [only, setOnly] = useState<string | null>(null);
 
-  const firstKey = groups[0]?.key;
+  /**
+   * ★★★★ 2026-10-08（用户：「**整合包页会出现版本显示不全的问题**」）。
+   *
+   *   ## 为什么"显示不全"
+   *
+   *   这一行原来是：
+   *     `if (key === firstKey) return collapsed[key] !== true;`
+   *     `return collapsed[key] === false;`
+   *   —— 也就是**只展开第一组，其余全部折叠**，要逐个手点才看得见。
+   *   真机形状（用户截图）：标题写着「全部版本（37 个）」，
+   *   而屏幕上只有第一组的 6 行 —— 剩下 31 个版本"存在但看不见"。
+   *
+   *   ## 为什么原来那样写（那条理由现在不成立了）
+   *
+   *   注释里给的理由是"全折叠的话第一眼什么都没有"。那个顾虑在
+   *   **一个 Mod 有 362 组**（每一组 1~2 条）时是对的 —— 平铺比折叠更难看。
+   *   但那只说明"分组要有上限"，不说明"默认只开一组"：
+   *   分组本来就是**给眼睛用的路标**，把内容藏在路标后面是反的。
+   *
+   *   ## 现在的语义
+   *
+   *   **默认全展开**；用户收起过的组才收起（`collapsed[key] === true`）。
+   *   ★ `forceOpenKey`（推荐版本那一组）**保留**：它保证"推荐"那一条
+   *     不会因为用户恰好收起过那一组而看不见 —— 那条需求没变。
+   */
   const isOpen = (key: string) => {
-    /*
-     * ★★ 2026-09-23 用户（截图）：「**有推荐版本的那一栏没办法收起**」——
-     *   这里原来写的是 `collapsed[key] !== false`：用户点一下收起会写进 `true`，
-     *   而 `true !== false` 仍然成立 → **照样展开**，于是"点了没反应"。
-     *   正确语义与下面第一组那条**完全一样**：**只有明确收起过（=== true）才收起**；
-     *   没点过（undefined）时靠强制展开把推荐露出来。
-     */
-    if (forceOpenKey && key === forceOpenKey) return collapsed[key] !== true;
-    if (key === firstKey) return collapsed[key] !== true;
-    return collapsed[key] === false;
+    if (collapsed[key] === true) return false;
+    if (forceOpenKey && key === forceOpenKey) return true;
+    return true;
   };
   /*
    * ★★ 2026-09-23 真机打脸第二版：原来写的是 `!isOpen(key)` —— **反了**。

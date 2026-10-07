@@ -250,32 +250,42 @@ export function DownloadPage() {
 
   return (
     <div className="page-fill">
-      {inModpackInstall || inLoaderPage ? null : (
-        <>
-          <div className="page-head">
-            <div>
-              <h1 className="page-title">下载</h1>
-              <p className="page-desc">游戏版本 · 整合包 · Mod · 资源包 · 光影 · 数据包</p>
-            </div>
-            {!isDesktop ? <Chip tone="warning">浏览器演示模式 —— 真实下载要桌面版</Chip> : null}
-          </div>
+      {/*
+        ★★★★ 2026-10-08（用户：「**让下载这个文字常驻吧**」）。
 
-          <div className="tabs" role="tablist" aria-label="下载内容">
-            {tabs.map((t) => (
-              <button
-                key={t.key}
-                type="button"
-                role="tab"
-                aria-selected={tab === t.key}
-                className={`tab${tab === t.key ? ' on' : ''}`}
-                onClick={() => setDownloadTab(t.key)}
-              >
-                {t.icon}
-                <span>{t.label}</span>
-              </button>
-            ))}
-          </div>
-        </>
+          原来这里是 `{inModpackInstall || inLoaderPage ? null : (页头 + 页签)}`
+          —— 进整合包安装页时**连页头一起收掉**，于是那一屏顶部只剩一个
+          「返回整合包列表」，连"我在下载页"都看不出来。
+
+          ⇒ 页头（「下载」+ 副标题）现在**一直显示**；只收页签。
+            ★ 页签仍然收起来：安装页有它自己的"返回"导航，再挂一排一级页签
+              会变成两条互相竞争的导航（当初收起来就是为了这个）。
+            ★ 但"我在哪一页"这条信息不该跟着页签一起消失 —— 那正是用户报的。
+      */}
+      <div className="page-head">
+        <div>
+          <h1 className="page-title">下载</h1>
+          <p className="page-desc">游戏版本 · 整合包 · Mod · 资源包 · 光影 · 数据包</p>
+        </div>
+        {!isDesktop ? <Chip tone="warning">浏览器演示模式 —— 真实下载要桌面版</Chip> : null}
+      </div>
+
+      {inModpackInstall || inLoaderPage ? null : (
+        <div className="tabs" role="tablist" aria-label="下载内容">
+          {tabs.map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              role="tab"
+              aria-selected={tab === t.key}
+              className={`tab${tab === t.key ? ' on' : ''}`}
+              onClick={() => setDownloadTab(t.key)}
+            >
+              {t.icon}
+              <span>{t.label}</span>
+            </button>
+          ))}
+        </div>
       )}
 
       {/*

@@ -197,6 +197,49 @@ export function VersionPicker({
     );
   }
   /*
+   * ★★★★ 2026-10-08（用户：「**modrinth 的版本是倒叙，反正就是推荐的是老版本，
+   *   而且不是从新到旧**」）。
+   *
+   *   ## 两个问题，一起修
+   *
+   *   ① **顺序反了**：`useVersionGroups(versions, compareVersion, …)` 把这批
+   *      版本原样交给分组，而分组内部并不排序 —— 于是顺序完全取决于**上游接口
+   *      返回的次序**。Modrinth 返回的就是**从旧到新**，屏幕上因此是
+   *      `5.4.1 / 5.4.0 / 5.3.3 …`（用户截图里那六行）。
+   *      `.sort((a,b) => compareVersion(b,a))` 那种写法也别扭：
+   *      `compareVersion` 的约定是 `a<b ⇒ -1`，所以要让"新"在前必须写
+   *      `compareVersion(b, a)`；可读性差，而且很容易被下一个人"顺手改正"
+   *      成正序（这就是它一直错着的原因）。
+   *
+   *   ② **不能按版本号字符串排**：`5.10.0` 与 `5.9.0` 比字符串会排错，
+   *      而整合包的版本号五花八门（`v1.2`、`1.20.1-3.2.0`、带 hotfix 后缀）。
+   *      **发布时间才是"新/旧"的真正判据**，所以主判据用 `date_published`。
+   *
+   *   ⇒ 排序：**新的在前**；时间取不到（CurseForge 那条路可能不给）时
+   *     退回版本号比较（同样新的在前）。两次都是**稳定的显式排序**，
+   *     不再依赖接口给的次序。
+   *
+   *   ★ 排序放在**渲染这一层**：与"接口怎么给"解耦，资源中心四个种类
+   *     （Mod / 资源包 / 光影 / 数据包）走的是同一个 `VersionPicker`，
+   *     所以它们一起被修正。
+   */
+  const sortedVersions = useMemo(() => {
+    const t = (v: { date_published?: string }) => {
+      const ms = Date.parse(v.date_published ?? '');
+      return Number.isFinite(ms) ? ms : null;
+    };
+    return [...versions].sort((a, b) => {
+      const ta = t(a);
+      const tb = t(b);
+      if (ta !== null && tb !== null && ta !== tb) return tb - ta; // 新的在前
+      if (ta === null && tb === null) return compareVersion(b.version_number, a.version_number);
+      if (ta === null) return 1; // 没时间的排后面（不假装知道它新）
+      if (tb === null) return -1;
+      return tb - ta;
+    });
+  }, [versions]);
+
+  /*
    * ★★ 2026-09-23（C4）：按 MC 版本分组 + 折叠 + 顶部 chips 筛选。
    *   分组逻辑在 `resource-groups.ts`（纯函数，好测）。
    */
@@ -204,8 +247,8 @@ export function VersionPicker({
    * ★ 推荐版本所在的组要**自动展开** —— 否则推荐落在折叠组里，用户看不到它
    *   （真机实测：分类对、推荐数 0，就是这个原因）。
    */
-  const recommendGroupKey = recommend ? groupKeyOf({ id: recommend, game_versions: versions.find((x) => x.id === recommend)?.game_versions ?? [] }, compareVersion) : null;
-  const { groups, shown, only, setOnly, isOpen, toggle } = useVersionGroups(versions, compareVersion, recommendGroupKey);
+  const recommendGroupKey = recommend ? groupKeyOf({ id: recommend, game_versions: sortedVersions.find((x) => x.id === recommend)?.game_versions ?? [] }, compareVersion) : null;
+  const { groups, shown, only, setOnly, isOpen, toggle } = useVersionGroups(sortedVersions, compareVersion, recommendGroupKey);
 
   return (
     <div className="res-versions">
