@@ -64,4 +64,4 @@ instances.json
 /src-tauri/gen/
 
 # 提交信息临时文件（我用 git commit -F 时写的，不该入库）
-commit-msg.txt
+commit-msg.*
