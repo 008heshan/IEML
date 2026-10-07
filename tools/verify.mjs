@@ -362,6 +362,21 @@ results.push([
 ]);
 
 /*
+ * ★★ **命令里的阻塞重活必须离开主线程 / worker**
+ *   （用户 2026-10-08：「**删除版本的操作会使启动器变卡顿**」）。
+ *
+ *   `pub fn` 与 `pub async fn` 只差一个词，而把 `dir_size`（递归遍历整棵目录树）
+ *   写在里面完全合法、编译通过、单测也过 —— 只有在真机上对着界面点一下
+ *   才发现卡住。这条门禁就是在"加代码的那一刻"把它拦住。
+ *   ★ 判据只认 `spawn_blocking`：`async` 本身不算数（阻塞调用会占住 tokio worker）。
+ *   见 `tools/gates/check-blocking-commands.mjs`。
+ */
+results.push([
+  '命令里的阻塞重活',
+  run('命令里的阻塞重活', 'node', ['tools/gates/check-blocking-commands.mjs']),
+]);
+
+/*
  * ★★ **版本号怎么走**（`docs/VERSIONING.md` §3.2.1，用户 2026-09-27 定）。
  *
  *   "小修小改 1.0.x、大修大改 1.x.0、下一个大版本 x.0.0，X 是要改的那一位" ——

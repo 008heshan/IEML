@@ -879,7 +879,6 @@ export function VersionsPage() {
               没有才退回上面那个自绘方块。两者的取舍收在 `PackIcon` 里。
         */}
         <PackIcon icon={packIcons[fv.dir]} version={fv.mcVersion} size={34} />
-        <PackIcon icon={packIcons[fv.dir]} version={fv.mcVersion} size={34} />
         {/* 中间：名称与元信息（一行主 + 一行次；冲突只给徽标） */}
         <div className="ver-info">
           <div className="ver-title">

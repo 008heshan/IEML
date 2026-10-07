@@ -84,6 +84,21 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.19.8',
+    date: '2026-10-08',
+    headline: '这一版修的是删东西时整个启动器顿住的问题。',
+    groups: [
+      {
+        title: '修复了',
+        items: [
+          '修复了 删除版本时启动器卡住几秒、点什么都没反应的问题。',
+          '修复了 删除 Java 与删除游戏目录时同样会卡住的问题。',
+          '修复了 版本列表每行画出两个版本图标的问题。',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.19.7',
     date: '2026-10-07',
     headline: '这一版接着上一版的收藏与多选改两处：多一个收藏夹页签，多选时不再并排两个图标。',

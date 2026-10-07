@@ -60,33 +60,51 @@ pub async fn scan_java(
 /// **默认进系统回收站**（`permanent = false`）：一个 JDK 几百 MB，
 /// 用户往往在"这个 Java 是哪个实例在用的"没想清楚时就点了删除。
 #[tauri::command]
-pub fn remove_java(
+pub async fn remove_java(
     state: State<'_, AppState>,
     path: String,
     permanent: Option<bool>,
 ) -> Result<(), String> {
-    let p = std::path::Path::new(&path);
+    let p = std::path::PathBuf::from(&path);
     // 只允许删除位于 IEML 数据目录里的 Java，避免误删系统安装的
-    let java_root = &state.paths().java;
-    if !p.starts_with(java_root) {
+    let java_root = state.paths().java.clone();
+    if !p.starts_with(&java_root) {
         return Err(format!(
             "只能删除 IEML 自己下载的 Java（位于 {}）。系统安装的 Java 请用系统的方式卸载。",
             java_root.to_string_lossy()
         ));
     }
-    let home = p.ancestors().nth(2).unwrap_or(p);
-    if !home.exists() {
-        return Ok(()); // 本来就不在 —— 不算错误
-    }
-    if permanent.unwrap_or(false) {
-        return std::fs::remove_dir_all(home).map_err(|e| format!("永久删除失败：{e}"));
-    }
-    trash::delete(home).map_err(|e| {
-        format!(
-            "移到回收站失败（{e}）—— 这个位置可能没有回收站；\
-             确认要永久删除的话，按住 Shift 再点一次删除"
-        )
+    /*
+     * ★★★★ 2026-10-08：这条命令被新加的门禁 `check-blocking-commands.mjs`
+     *   **抓出来了** —— 它和 `delete_instance_files` 是同一个形状：
+     *   同步命令 + `trash::delete` / `remove_dir_all`（一个 JDK 几百 MB、
+     *   几万个文件）。用户只报了"删除版本卡顿"，但**这一条一样会卡**，
+     *   只是他还没点到那儿。
+     *
+     *   ⇒ 同样交给 `spawn_blocking`。
+     */
+    let home = p
+        .ancestors()
+        .nth(2)
+        .map(|h| h.to_path_buf())
+        .unwrap_or(p);
+    let permanent = permanent.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || {
+        if !home.exists() {
+            return Ok(()); // 本来就不在 —— 不算错误
+        }
+        if permanent {
+            return std::fs::remove_dir_all(&home).map_err(|e| format!("永久删除失败：{e}"));
+        }
+        trash::delete(&home).map_err(|e| {
+            format!(
+                "移到回收站失败（{e}）—— 这个位置可能没有回收站；\
+                 确认要永久删除的话，按住 Shift 再点一次删除"
+            )
+        })
     })
+    .await
+    .map_err(|e| format!("删除任务没能启动：{e}"))?
 }
 
 #[tauri::command]
@@ -686,7 +704,7 @@ pub fn save_prefs(state: State<'_, AppState>, prefs: serde_json::Value) -> Resul
 /// ★ **默认进系统回收站**（`permanent = false`）。版本目录里有存档，
 ///   这是最不该"删错了就没了"的东西；确认要永久删除时前端按住 Shift 调用。
 #[tauri::command]
-pub fn delete_instance_files(
+pub async fn delete_instance_files(
     slug: String,
     permanent: Option<bool>,
     state: State<'_, AppState>,
@@ -694,34 +712,20 @@ pub fn delete_instance_files(
     if slug.is_empty() {
         return Err("实例 slug 为空".into());
     }
-    let root = state.paths().instances.clone();
-    let dir = state.paths().instance_root_dir(&slug);
-    // 越界校验：解析后的路径必须以 versions/ 开头，且不等于它本身
-    let canon_root = root.canonicalize().unwrap_or_else(|_| root.clone());
-    let canon_dir = dir.canonicalize().unwrap_or_else(|_| dir.clone());
-    if canon_dir == canon_root || !canon_dir.starts_with(&canon_root) {
-        return Err(format!(
-            "拒绝删除：{} 不在版本目录下（versions/）",
-            dir.display()
-        ));
-    }
-    if !dir.is_dir() {
-        return Ok(0); // 目录本来就不在 —— 不算错误
-    }
-    // 统计一下删了多少字节，让前端能如实报告
-    let bytes = dir_size(&dir);
-    if permanent.unwrap_or(false) {
-        std::fs::remove_dir_all(&dir).map_err(|e| format!("永久删除实例目录失败：{e}"))?;
-    } else {
-        // ★ 进回收站：存档还能捞回来
-        trash::delete(&dir).map_err(|e| {
-            format!(
-                "移到回收站失败（{e}）—— 这个位置可能没有回收站；\
-                 确认要永久删除的话，按住 Shift 再点一次删除"
-            )
-        })?;
-    }
-    Ok(bytes)
+    // ★ 校验留在命令这一层（同步、极快）；重活进后台线程
+    let dir = checked_version_dir(&state, &slug)?;
+    let permanent = permanent.unwrap_or(false);
+    /*
+     * ★ 整个"统计 + 删除"放进 `spawn_blocking`（见上面那一大段说明）。
+     *   `.await` 会等它做完，但**主线程与 tokio worker 都不被占住** ——
+     *   删除期间界面照样能响应（这正是用户要的"不卡顿"）。
+     */
+    let display = dir.display().to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        delete_dir_blocking(&dir, permanent, "实例目录").map_err(|e| format!("{e}（{display}）"))
+    })
+    .await
+    .map_err(|e| format!("删除任务没能启动：{e}"))?
 }
 
 /// ★★★★ **按版本目录名删除**（2026-09-30，用户：「**这个不可用版本无法删除**」）。
@@ -746,7 +750,7 @@ pub fn delete_instance_files(
 ///
 /// ★ **默认进系统回收站**：这些目录里可能有存档，而它们恰恰是"用户没怎么管过"的那些。
 #[tauri::command]
-pub fn delete_version_dir(
+pub async fn delete_version_dir(
     slug: String,
     permanent: Option<bool>,
     state: State<'_, AppState>,
@@ -754,24 +758,67 @@ pub fn delete_version_dir(
     if slug.trim().is_empty() {
         return Err("版本目录名为空".into());
     }
-    let root = state.paths().instances.clone();
-    let dir = state.paths().instance_root_dir(&slug);
-    let canon_root = root.canonicalize().unwrap_or_else(|_| root.clone());
-    let canon_dir = dir.canonicalize().unwrap_or_else(|_| dir.clone());
-    if canon_dir == canon_root || !canon_dir.starts_with(&canon_root) {
-        return Err(format!(
-            "拒绝删除：{} 不在版本目录下（versions/）",
-            dir.display()
-        ));
-    }
+    // ★ 与 `delete_instance_files` **同一份**越界校验（见 `checked_version_dir`）
+    let dir = checked_version_dir(&state, &slug)?;
+    let permanent = permanent.unwrap_or(false);
+    /*
+     * 与 `delete_instance_files` 同一个形状：重活进 `spawn_blocking`。
+     * 用户报的"删除会让启动器卡顿"两条路径都走这里 —— 只修一条等于没修。
+     */
+    tauri::async_runtime::spawn_blocking(move || {
+        delete_dir_blocking(&dir, permanent, "版本目录")
+    })
+    .await
+    .map_err(|e| format!("删除任务没能启动：{e}"))?
+}
+
+/*
+ * ★★★★ 2026-10-08（用户：「**删除版本的操作会使启动器变卡顿**」）。
+ *
+ *   ## 根因：同步命令 + 两件重活，全都压在主线程上
+ *
+ *   `delete_instance_files` / `delete_version_dir` 原来是 `pub fn`（**同步命令**），
+ *   Tauri 的同步命令**跑在主线程**上。而它们各干两件重活：
+ *
+ *     ① `dir_size(&dir)` —— **递归遍历整棵目录树**，每个文件一次 `metadata`。
+ *        整合包目录实测有几千个文件（mods + config + saves + 几千个资源），
+ *        这一步就是**几万次系统调用**。
+ *     ② `trash::delete` / `remove_dir_all` —— 真的把那几千个文件搬走/删掉，
+ *        不是回收站还好，进回收站还要跨卷搬运。
+ *
+ *   ⇒ 这几秒里主线程被占住，界面**完全不动** —— 用户看到的就是"删除会让启动器卡顿"。
+ *
+ *   ## 为什么改成 `async` 就够了（而不是自己开线程）
+ *
+ *   Tauri 2 里 `pub async fn` 标记的命令**不在主线程执行**，而是交给异步运行时
+ *   的线程池。所以"把 `pub fn` 改成 `pub async fn`"本身就解开了主线程。
+ *   ★ 但还不够：`dir_size` 与 `trash::delete` 都是**阻塞**调用，
+ *     直接在 async 里调会占住 tokio 的 worker（worker 数量有限，
+ *     几个大删除就能把整个异步运行时堵住 —— 那时别的命令**也会一起卡**）。
+ *   ⇒ 真正该做的是把阻塞那一段扔进 `spawn_blocking`：
+ *     它给的是**专用于阻塞任务的线程池**，堵住它不影响别的命令。
+ *
+ *   ## 顺带：为什么返回值仍然要"删了多少字节"
+ *
+ *   那个数只为了给用户看一句"磁盘上释放了 X"。它**不值得**让界面卡 3 秒 ——
+ *   所以统计与删除一起放进 blocking 段（同一次遍历的开销远小于两次）。
+ */
+
+/// 删除的**阻塞部分**：统计大小 → 删除。返回释放的字节数。
+///
+/// ★ 抽成一个纯函数是为了让 `spawn_blocking` 能整段搬走，
+///   也为了"越界校验"留在命令那一层（那是**参数校验**，不该进后台线程）。
+fn delete_dir_blocking(dir: &std::path::Path, permanent: bool, what: &str) -> Result<u64, String> {
     if !dir.is_dir() {
         return Ok(0); // 目录本来就不在 —— 不算错误
     }
-    let bytes = dir_size(&dir);
-    if permanent.unwrap_or(false) {
-        std::fs::remove_dir_all(&dir).map_err(|e| format!("永久删除版本目录失败：{e}"))?;
+    // 统计一下删了多少字节，让前端能如实报告
+    let bytes = dir_size(dir);
+    if permanent {
+        std::fs::remove_dir_all(dir).map_err(|e| format!("永久删除{what}失败：{e}"))?;
     } else {
-        trash::delete(&dir).map_err(|e| {
+        // ★ 进回收站：存档还能捞回来
+        trash::delete(dir).map_err(|e| {
             format!(
                 "移到回收站失败（{e}）—— 这个位置可能没有回收站；\
                  确认要永久删除的话，按住 Shift 再点一次删除"
@@ -781,6 +828,29 @@ pub fn delete_version_dir(
     Ok(bytes)
 }
 
+/// 版本目录的越界校验（两条删除命令共用一份实现）。
+///
+/// ★ 必须**只有一份**：这个判据一旦两处不一致，就有一条路会删到 `versions/`
+///   之外 —— 而那是不可逆的。返回解析后的目标路径。
+fn checked_version_dir(
+    state: &AppState,
+    slug: &str,
+) -> Result<std::path::PathBuf, String> {
+    let root = state.paths().instances.clone();
+    let dir = state.paths().instance_root_dir(slug);
+    // 越界校验：解析后的路径必须以 versions/ 开头，且不等于它本身
+    let canon_root = root.canonicalize().unwrap_or_else(|_| root.clone());
+    let canon_dir = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+    if canon_dir == canon_root || !canon_dir.starts_with(&canon_root) {
+        return Err(format!(
+            "拒绝删除：{} 不在版本目录下（versions/）",
+            dir.display()
+        ));
+    }
+    Ok(dir)
+}
+
+/// 递归统计目录大小（**阻塞**，只在 `spawn_blocking` 里调）。
 fn dir_size(dir: &std::path::Path) -> u64 {
     let mut total = 0u64;
     let Ok(rd) = std::fs::read_dir(dir) else {

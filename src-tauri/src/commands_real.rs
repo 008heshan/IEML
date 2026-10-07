@@ -7147,12 +7147,30 @@ pub async fn delete_data_root(path: String, state: State<'_, AppState>) -> Resul
         return Err(format!("{} 不是一个目录。", target.display()));
     }
 
-    // 删除前**先量一下**（删完就量不到了）—— 这个数字要写进结果里
-    let bytes = crate::platform::dir_size(&target);
-
-    tokio::fs::remove_dir_all(&target)
-        .await
-        .map_err(|e| format!("删不掉 {}：{e}", target.display()))?;
+    /*
+     * ★★★★ 2026-10-08：**这两步都是重活，必须离开 tokio worker**。
+     *
+     *   ① `platform::dir_size` 是**阻塞**的：递归遍历整棵游戏目录
+     *      （真机上几万个文件）—— 直接在 async 里调会占住 worker；
+     *   ② `tokio::fs::remove_dir_all` 虽然是异步 API，但它的实现**就是在
+     *      blocking 池里跑同步 `remove_dir_all`** —— 这座游戏目录几百 MB、
+     *      几万个文件，占的是同一份阻塞池。
+     *
+     *   ⇒ 一起扔进一个 `spawn_blocking`，让"量大小 + 删"成为**一段**阻塞工作，
+     *     别的命令不受影响。（这与 `delete_instance_files` 是同一个形状 ——
+     *     那条已经改了，这条是被新加的门禁 `check-blocking-commands.mjs`
+     *     抓出来的：用户只报了"删除版本卡顿"，但删整个数据目录更重。）
+     */
+    let target_for_blocking = target.clone();
+    let bytes = tauri::async_runtime::spawn_blocking(move || -> Result<u64, String> {
+        // 删除前**先量一下**（删完就量不到了）—— 这个数字要写进结果里
+        let bytes = crate::platform::dir_size(&target_for_blocking);
+        std::fs::remove_dir_all(&target_for_blocking)
+            .map_err(|e| format!("删不掉 {}：{e}", target_for_blocking.display()))?;
+        Ok(bytes)
+    })
+    .await
+    .map_err(|e| format!("删除任务没能启动：{e}"))??;
 
     // 删完把它从"用过的列表"里也去掉（否则会留下一条指向不存在目录的记录）
     crate::platform::forget_root(&target);
