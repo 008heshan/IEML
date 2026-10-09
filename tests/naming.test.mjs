@@ -1,5 +1,5 @@
 /**
- * 目录名与版本名规范的**跨语言一致**测试（ADR-055 决定八）。
+ * 目录名与版本名规范的**跨语言一致**测试（决定八）。
  * ------------------------------------------------------------------
  * ★★ 2026-09-30（用户：「游戏数据目录有些杂乱和不规范，按 PCL 的来规范一下」）
  *
@@ -10,7 +10,7 @@
  *   为什么值得为它单开一个测试文件：这已经不是"好习惯"的问题 —— 真机上
  *   盘子里有**三种**名字（`26.3-fabric-0.19.5` / `fabric-loader-0.19.5-26.3` /
  *   `vanilla-262`），而账本里的 slug 拼不出磁盘目录，导致
- *   "拿 slug 判目录在不在"把所有版本都判成了不存在（`docs/DECISIONS.md` 54.1）。
+ *   "拿 slug 判目录在不在"把所有版本都判成了不存在。
  *   Rust 那一半由 `domain::naming::tests::the_shared_case_table_holds` 跑同一张表。
  */
 import { test } from 'node:test';
@@ -40,7 +40,7 @@ function parts(c) {
   };
 }
 
-test('目录名：ADR-055 的规范写法（与 Rust 逐字一致）', () => {
+test('目录名：规范的写法（与 Rust 逐字一致）', () => {
   assert.ok(cases.dir.length >= 10, '用例表不能是空的');
   for (const c of cases.dir) {
     const got = versionDirName(parts(c));

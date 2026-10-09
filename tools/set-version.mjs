@@ -114,17 +114,16 @@ const TARGETS = [
 /**
  * **只校验、不改写**的目标。
  *
- * `CHANGELOG.md` 的最新一节标题必须等于当前版本 —— 但它**不能**被
- * `set-version` 改写：那一节的正文是"这个版本改了什么"，
- * 换版本号只能由人写一节新的出来。所以它进的是这张表。
+ * ★ 2026-10-09：这张表**空了**（原来只有 `CHANGELOG.md` 一项）。
+ *   用户的要求是「所有开发日志、记忆之类的都不要，我们只存对启动器有用的」
+ *   + 「记忆，日志之类的，只在本地存」—— 变更记录（CHANGELOG / ADR / 探针）
+ *   已经搬出仓库，只留在本机的开发记录目录里。
+ *   ⇒ 版本号的落点只剩"产品里真的会被人读到"的那些（见 `TARGETS`），
+ *     而它们全都可以被这个脚本改写，所以不再需要第二张表。
+ *   ★ 表还留着（而不是删掉这个概念）：将来若有"必须和版本号对齐、但只能人手写"
+ *     的文件（比如某个签名清单），它就该进这里。
  */
-const CHECK_ONLY = [
-  {
-    file: 'CHANGELOG.md',
-    what: 'CHANGELOG 最新一节（每完成一轮加一节，见文件头部的规矩）',
-    find: /^## (\S+) —/m,
-  },
-];
+const CHECK_ONLY = [];
 
 function readVersionAt(target) {
   const text = readFileSync(join(ROOT, target.file), 'utf8');
@@ -141,11 +140,6 @@ function readAll() {
   ];
 }
 
-/** 文档口径这一组（README + CHANGELOG）—— `--docs` 只查这些 */
-function docTargets() {
-  return readAll().filter((f) => /\.md$/.test(f.t.file));
-}
-
 function reportMismatch(found, headline) {
   const versions = [...new Set(found.map((f) => f.v))];
   console.error(headline);
@@ -153,7 +147,7 @@ function reportMismatch(found, headline) {
     console.error(`    ${String(f.v).padEnd(16)} ${f.t.file}  —— ${f.t.what}`);
   }
   console.error(`\n  找到 ${versions.length} 个不同的版本号：${versions.join(' / ')}`);
-  console.error('  修法：node tools/set-version.mjs <版本号>（CHANGELOG 那一节要人手补）');
+  console.error('  修法：node tools/set-version.mjs <版本号>');
   process.exit(1);
 }
 
@@ -161,7 +155,6 @@ function main() {
   const argv = process.argv.slice(2);
   const arg = argv[0];
   const check = arg === '--check';
-  const docsOnly = arg === '--docs';
 
   /*
    * `--bump patch|minor|major`：按规则算出下一个号（见 `nextVersion` 的说明）。
@@ -185,23 +178,7 @@ function main() {
     return main();
   }
 
-  /* ---------- ① 只查文档口径（verify.mjs 里的「文档版本口径一致」） ---------- */
-  if (docsOnly) {
-    const found = docTargets();
-    const missing = found.filter((f) => f.v === null);
-    if (missing.length) {
-      console.error('✗ 这些文档里找不到版本号：');
-      for (const f of missing) console.error(`    ${f.t.file}（${f.t.what}）`);
-      process.exit(1);
-    }
-    const uniq = new Set(found.map((f) => f.v));
-    if (uniq.size > 1) {
-      reportMismatch(found, '✗ 文档里的版本号与最新变更记录对不上：');
-    }
-    console.log(`✓ 文档版本口径一致：${found[0].v}（README 与 CHANGELOG 逐字相同）`);
-    return;
-  }
-
+  /* ---------- ① 只校验一致性（verify.mjs 里的「版本号一致性」） ---------- */
   if (check) {
     const found = readAll();
     const bad = found.filter((f) => f.v === null);
@@ -229,7 +206,6 @@ function main() {
     console.error('用法：node tools/set-version.mjs <版本号>');
     console.error('      node tools/set-version.mjs --bump patch|minor|major   # 按规则算下一个号');
     console.error('      node tools/set-version.mjs --check   只校验一致性（verify 里会跑）');
-    console.error('      node tools/set-version.mjs --docs    只校验文档口径（README / CHANGELOG）');
     console.error('  版本号规则见 docs/VERSIONING.md（§3.2.1：小修小改→修订位，大修大改→次版本，下一个大版本→主版本）');
     process.exit(1);
   }
@@ -277,8 +253,8 @@ function main() {
   console.log('  只改 Cargo.toml 不重新编译，界面上的版本号不会变。');
   console.log('  pnpm desktop:build');
   console.log('');
-  console.log('★ CHANGELOG 不会被自动改写：请**人手**加一节 `## <版本号> — <日期>`，');
-  console.log('  然后 `node tools/set-version.mjs --docs` 会证明文档口径一致。');
+  console.log('★ 用户可见的更新说明写在 src/data/release-notes.ts（应用内「更新日志」页读它）；');
+  console.log('  开发过程的记录（变更记录 / ADR / 探针）不进仓库，只留在本机。');
 }
 
 main();

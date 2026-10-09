@@ -1,12 +1,12 @@
 {
   "_readme": [
-    "CurseForge 指纹（MurmurHash2）的**跨语言判据表**（ADR-052）。",
+    "CurseForge 指纹（MurmurHash2）的**跨语言判据表**。",
     "",
     "算法：MurmurHash2（32 位，种子 1），先把 \\t \\n \\r 空格 全部剔除再算。",
     "这份向量由 tools/gen-curseforge-fingerprint-cases.mjs 生成，",
     "而那份 JS 实现**被 CurseForge 接口自己验证过**：",
     "下载真实文件（项目 1558643 / 文件 #8600126）算指纹，",
-    "POST /v1/fingerprints 能把该文件原样认回来（见 tools/probe/probe-curseforge-deep.mjs 第 ⑤ 节）。",
+    "POST /v1/fingerprints 能把该文件原样认回来。",
     "",
     "消费方：",
     "  · Rust  src-tauri/src/net/curseforge.rs 的 fingerprint_of_file（cargo test --lib net::curseforge）",

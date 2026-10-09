@@ -1,6 +1,6 @@
 /**
  * 领域规则测试 —— 用 Node 内置 test runner 跑，不需要额外依赖。
- * 这些用例全部来自 docs/LAUNCHER_SOURCE_STUDY.md 的源码事实，
+ * 这些用例全部来自对上游启动器行为的实测与源码研读结论，
  * 任何一条挂了都说明规则实现跑偏了。
  */
 import test from 'node:test';
@@ -16,7 +16,7 @@ import {
   availableFilters, hashCacheKey, oldFilesToDrop,
 } from '../src/domain/mods.ts';
 import { compareVersion, forgeVersionSatisfies, parseRange, inRange } from '../src/domain/version.ts';
-/* ★ 整合包实例的 Mod 更新锁定（ADR-018 第 ⑥ 条） */
+/* ★ 整合包实例的 Mod 更新锁定 */
 import { modUpdateLock } from '../src/domain/pack-lock.ts';
 /* ★★ 2026-09-29：文件夹里的版本 ↔ 实例（"装完第一个版本自动选中它"那条规则） */
 import {
@@ -127,7 +127,7 @@ test('纯原版 + OptiFine：规则合法，dev.4 起真的可以装', () => {
    */
   const r = addonCompatibility('1.20.1', null, 'optifine');
   assert.equal(r.ok, true, 'dev.4 已实装 OptiFine 安装，纯原版 + OptiFine 应该放行');
-  // 文案不许出现"覆盖原版文件"（ADR-003：是打补丁，不是覆盖）
+  // 文案不许出现"覆盖原版文件"（是打补丁，不是覆盖）
   assert.doesNotMatch(r.note ?? '', /覆盖/);
   assert.doesNotMatch(r.reason ?? '', /不兼容/);
 });
@@ -805,10 +805,10 @@ test('Java 四模式：找不到时给出可行动的说明', () => {
 });
 
 /*
- * ★★ 版本隔离那五条测试**搬去 Rust 了**（2026-09-27，ADR-005 实现记录）。
+ * ★★ 版本隔离那五条测试**搬去 Rust 了**（2026-09-27）。
  *
  *   原来这里测的是 `src/domain/isolation.ts` 里的 `resolveIsolation` —— 前端自己
- *   算一份判定。而 ADR-006 说的是"规则只写一次，且写在 Rust 侧"：真机上
+ *   算一份判定。而"规则只写一次，且写在 Rust 侧"这条原则说的是：真机上
  *   后端另有一份 `resolve_isolation`，而**真正决定游戏目录的那一行两份都不看**，
  *   于是「不隔离」选了等于没选。
  *
@@ -817,7 +817,7 @@ test('Java 四模式：找不到时给出可行动的说明', () => {
  *   这里删掉不是"少测了"，而是**不再让两份规则同时存在**。
  */
 
-/* ====================== 整合包实例的 Mod 更新锁定（ADR-018 ⑥） ====================== */
+/* ====================== 整合包实例的 Mod 更新锁定 ====================== */
 
 test('整合包实例：单个 Mod 的更新被锁住，并说得出为什么', () => {
   const lock = modUpdateLock({ name: 'RLCraft', version: '2.9.3', source: 'curseforge' });

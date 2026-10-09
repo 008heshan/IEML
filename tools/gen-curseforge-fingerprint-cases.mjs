@@ -11,10 +11,10 @@
  *      并把 `\t \n \r 空格` **全部剔除**后再算；
  *   2. 这份 JS 实现被**接口自己验证过**：用真实文件（CF 项目 1558643 的
  *      文件 #8600126）下载后算指纹，`POST /v1/fingerprints` 把那个文件
- *      **原样认了回来**（见 tools/probe-curseforge-deep.mjs 的第 ⑤ 节）。
+ *      **原样认了回来**。
  *      也就是说：算法错一个字节，接口就不会返回 exactMatch。
  *   3. 生成的向量表由 Rust 侧（`net::curseforge::fingerprint`）逐条对齐 ——
- *      两边不一致就红。这正是 ADR-051 立下的规矩：**同一判据只实现一次**，
+ *      两边不一致就红。这正是本仓库的规矩：**同一判据只实现一次**，
  *      真的必须两份时，用同一张表钉住。
  */
 import { writeFileSync } from 'node:fs';
@@ -83,13 +83,13 @@ const CASES = [
 
 const out = {
   _readme: [
-    'CurseForge 指纹（MurmurHash2）的**跨语言判据表**（ADR-052）。',
+    'CurseForge 指纹（MurmurHash2）的**跨语言判据表**。',
     '',
     '算法：MurmurHash2（32 位，种子 1），先把 \\t \\n \\r 空格 全部剔除再算。',
     '这份向量由 tools/gen-curseforge-fingerprint-cases.mjs 生成，',
     '而那份 JS 实现**被 CurseForge 接口自己验证过**：',
     '下载真实文件（项目 1558643 / 文件 #8600126）算指纹，',
-    'POST /v1/fingerprints 能把该文件原样认回来（见 tools/probe-curseforge-deep.mjs 第 ⑤ 节）。',
+    'POST /v1/fingerprints 能把该文件原样认回来。',
     '',
     '消费方：',
     '  · Rust  src-tauri/src/net/curseforge.rs 的 fingerprint_of_file（cargo test --lib net::curseforge）',

@@ -20,25 +20,38 @@ const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
 
 check(m.version === pkg.version, `版本号一致：${m.version}`, `版本号不一致：清单 ${m.version}，package.json ${pkg.version}`);
 
-// CHANGELOG 的 notes 必须是能读的中文，不能是乱码
-check(!m.notes.includes('\uFFFD'), 'notes 无乱码', 'notes 含替换字符 U+FFFD —— 编码坏了');
-check(/^## /.test(m.notes.trim()), 'notes 是 CHANGELOG 里的一节', 'notes 为空或不是 CHANGELOG 小节');
-check(m.notes.includes(m.version), `notes 提到了 ${m.version}`, `notes 里没有 ${m.version}，可能抓错了小节`);
 /*
- * ★★ 2026-09-24 新增（这两条是**故意加严**的）：
- *   上面三条在"notes 只有标题那一行"时**全都成立** —— 于是发布工具里那个
- *   `m` 标志的 bug（`$` 匹配行尾 ⇒ 惰性匹配停在第一行）藏了好几版都没被发现，
- *   线上 notes 一直只有 85 字的标题（rc.3 上传后才发现）。
- *   现在把它变成**会红的判据**：notes 必须像"一节更新说明"。
+ * notes 必须是能读的中文，而且是**这一版**的说明。
+ *
+ * ★ 2026-10-09：notes 的来源从 `CHANGELOG.md` 换成了 `src/data/release-notes.ts`
+ *   （用户要求开发日志只留本地、仓库只放产品需要的东西）。
+ *   渲染出来的形状是：`<版本>（<日期>）` + 一句头条 + 分段条目 ——
+ *   所以"是不是一节 CHANGELOG"那条判据换成了"第一行就是版本号"。
+ */
+check(!m.notes.includes('\uFFFD'), 'notes 无乱码', 'notes 含替换字符 U+FFFD —— 编码坏了');
+check(
+  m.notes.trim().split('\n')[0].includes(m.version),
+  'notes 第一行就是版本号',
+  `notes 第一行不是 ${m.version}：${m.notes.trim().split('\n')[0]?.slice(0, 40)}`,
+);
+check(m.notes.includes(m.version), `notes 提到了 ${m.version}`, `notes 里没有 ${m.version}，可能抓错了版本`);
+/*
+ * ★★ 2026-09-24 新增、2026-10-09 调过门槛（这条是**故意加严**的判据）：
+ *   它当初是为一个真 bug 立的 —— 发布工具里那个 `m` 标志的 bug（`$` 匹配行尾
+ *   ⇒ 惰性匹配停在第一行），线上 notes 只有标题那一行，而当时三条断言全都成立。
+ *   ⇒ 判据必须是"notes 里真的有正文"。
+ *   ★ 门槛从 200 字降到 **40 字**：200 是照着"CHANGELOG 里一节很长"定的，
+ *     而现在的来源是**给玩家看的更新说明**（故意写得短，一条一件事）。
+ *     40 字足以拦住"只有标题"（那种情况 ≈ 20 字），又不会把正常的一版判红。
  */
 check(
-  m.notes.trim().length >= 200,
+  m.notes.trim().length >= 40,
   `notes 有正文（${m.notes.trim().length} 字）`,
-  `notes 只有 ${m.notes.trim().length} 字 —— 多半只抓到了标题那一行（发布工具的 section 正则出问题了）`,
+  `notes 只有 ${m.notes.trim().length} 字 —— 多半只抓到了标题那一行（渲染更新说明时出问题了）`,
 );
 check(
-  m.notes.split('\n').filter((l) => l.trim() && !l.trim().startsWith('#')).length >= 3,
-  'notes 至少 3 行非空正文',
+  m.notes.split('\n').filter((l) => l.trim() && !l.trim().startsWith('#')).length >= 2,
+  'notes 至少 2 行非空正文（一句头条 + 至少一条改动）',
   'notes 里没有正文行，只有标题',
 );
 

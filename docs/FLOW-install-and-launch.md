@@ -82,7 +82,7 @@
 
 - 程序：`%LOCALAPPDATA%\IEML`
 - 数据：**`D:\IEML`**（本机实际）—— `platform.rs` 选址，**刻意避开系统盘**
-  （见 `docs/DEV-PLAN-dev3.md` 的选址记录：C: 是系统盘，选到 D:）
+  （选址记录：C: 是系统盘，选到 D:）
 - 数据根下是 `.minecraft`（**PCL 同款命名**）；老布局叫 `shared`（0.1.0-beta.2 及以前）
   → 有**一次性迁移**，且**不覆盖已有文件**（有 5 条迁移测试守着）
 
@@ -255,7 +255,7 @@ setup.exe（NSIS，currentUser，不需要管理员）
 
 - 选源是 **Adoptium 官方**。★ **没有可用的国内镜像**（逐站实测：TUNA 整站 403、
   NJU/BFSU/SJTU/ZJU/PKU/阿里云 404、USTC 文件被反爬拦死、CERNET 302 跳回 TUNA、
-  BMCLAPI 的 java-runtime 跳 Cloudflare）—— 详见 ADR-057
+  BMCLAPI 的 java-runtime 跳 Cloudflare）
 - 版本判据是 **13 条带优先级的规则**，不能做成"MC 版本 → Java 版本"的查表
 - 下载后**真的执行 `java -version` 验证能跑**，不验可能装个坏包到启动时才炸
 
@@ -297,7 +297,7 @@ setup.exe（NSIS，currentUser，不需要管理员）
 | 项 | 文档 | 代码实际 | 状态 |
 |---|---|---|---|
 | 下载并发度 | `ARCHITECTURE.md` 曾写「默认 **16**（可配 8–64）」 | **`DEFAULT_CONCURRENCY = 64`**（`source.rs:142`），下限 4 | **已对齐**（2026-09-20 核对：ARCHITECTURE 已按代码写成 64 + 按源自适应） |
-| Java 镜像 | 「**有国内镜像可换**」 | **没有**（见 ADR-057） | 已更正 |
+| Java 镜像 | 「**有国内镜像可换**」 | **没有**（逐站实测） | 已更正 |
 
 → 并发 64 是有实测依据的（429 后自动减半、成功后再逐步放回），
 真凭据在 `source.rs` 的 `note_rate_limited` / `recover_concurrency`。

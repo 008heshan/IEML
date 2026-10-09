@@ -13,14 +13,16 @@
  *
  * ## 判据（白名单，而不是黑名单）
  *
- *   根目录**允许**的条目是有限的几类：配置文件、README/CHANGELOG/LICENSE、
+ *   根目录**允许**的条目是有限的几类：配置文件、README/LICENSE、
  *   源码与文档目录、以及构建产物目录（它们由 .gitignore 挡着）。
  *   出现白名单以外的东西 ⇒ 红，并说清"它属于哪儿"。
  *
  * ★ 为什么不顺手把"混合行尾"也做成硬门禁：那会逼着一次上千行的**全文件重写**
  *   （正是这类判据想防的"无关改动"）。行尾改在 README 门禁里**提示**，见
- *   `check-readme-truth.mjs` 与 `docs/CLEANUP-PLAN-2026-09-25.md`。
- *
+ *   `check-readme-truth.mjs`。
+ * ★ 2026-10-09：白名单里去掉了 `CHANGELOG.md` 与 `design/` ——
+ *   用户要求「开发日志、记忆之类的都不要，只存对启动器有用的」+「只留本地」，
+ *   它们已经搬出仓库（另见 `docs/VERSIONING.md` 里那段说明）。
  * 用法：node tools/gates/check-repo-root.mjs
  */
 import { readdirSync, existsSync, statSync } from 'node:fs';
@@ -46,7 +48,6 @@ const ALLOWED_FILES = new Set([
   'vite.config.ts',
   'index.html',
   'README.md',
-  'CHANGELOG.md',
   'LICENSE',
 ]);
 
@@ -55,7 +56,6 @@ const ALLOWED_DIRS = new Set([
   '.git',
   '.github',
   '.workbuddy', // ★ 已 gitignore：本地开发记忆（含本机路径），不入库
-  'design',
   'dist', // 构建产物（gitignore）
   'docs',
   'node_modules', // 依赖（gitignore）

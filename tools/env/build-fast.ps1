@@ -14,8 +14,8 @@
 #
 #   ★★ **不许**在构建跑的时候拿 `target/release/ieml.exe` 跑探针 ——
 #      exe 被占用会让 `tauri build` / `cargo` 以 `拒绝访问 (os error 5)` 失败
-#      （本轮就这么白等了一次 6 分钟的构建）。`tools/live/lib/cdp.mjs` 现在
-#      会在启动探针前拦住这种情况。
+#      （本轮就这么白等了一次 6 分钟的构建）。★ 所以：**跑探针之前先确认
+#      没有构建在跑** —— 一边构建一边拿 exe 去验，两边都会白等一场。
 #
 # 用法：
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools/env/build-fast.ps1

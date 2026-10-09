@@ -178,24 +178,59 @@ const installer = pick('-setup.exe');
 const signature = readFileSync(sig, 'utf8').trim();
 
 /*
- * ★★ 2026-09-24 修：这条正则原来带 `m` 标志 —— 于是 `$` 匹配的是**行尾**，
- *   惰性匹配 `*?` 立刻停在第一行 ⇒ 推上去的 notes **只有标题那一行**
- *   （rc.3 实测：线上 notes 长度 85 字，就是 `## 0.1.0-rc.3 — …` 那一行）。
- *   ★ 而这个 bug 一直没被发现，是因为"notes 是 CHANGELOG 里的一节"这条自检
- *     在**只有标题**时同样成立 —— 判据太弱。
- *   现在：去掉 `m`（`^` 只认串首、`$` 只认串尾），用 `(?:^|\n)` 兜住"标题在行首"，
- *   于是 notes = 从这一节开头到**下一节之前**的全部内容。
- *   ★ 另加一条硬判据（verify-manifest 里）：notes 少于 200 字直接报错。
+ * 更新说明的正文 —— **从 `src/data/release-notes.ts` 渲染**（2026-10-09 起）。
+ *
+ * ## 为什么不再从 CHANGELOG 里切一节
+ *
+ *   用户的要求：「所有开发日志，记忆之类的都不要，我们只存对启动器有用的」
+ *   +「记忆，日志之类的，只在本地存」⇒ 变更记录（CHANGELOG / ADR / 探针）
+ *   搬出了仓库。而"玩家看到的更新说明"**本来就是产品的一部分** ——
+ *   它是 `src/data/release-notes.ts`（应用内「更新日志」页读的就是它）。
+ *
+ * ## 于是两处变成**同一份来源**
+ *
+ *   · `tools/check-release-notes.mjs` 守它的格式（五段 / 类别词 / 长度 / 不写归属、
+ *     不写实现细节）；
+ *   · 这里把它渲染成清单里的 `notes`（更新弹窗里显示的那段字）。
+ *   ★ 顺带修好了一个老隐患：以前格式门禁守的是 CHANGELOG，而"玩家看到什么"
+ *     取决于发布脚本从 CHANGELOG 里切得对不对 —— 两处一旦错位没人会发现。
+ *     现在门禁守的就是玩家看到的那一份。
+ *
+ * ★ 不引 TS 运行时：按源码文本抽（与 `check-release-notes.mjs` 同一套路，
+ *   那份文件里记着两个必须按版本切开、否则会误报的坑）。
  */
-function sectionOf(changelog, version) {
-  const re = new RegExp(`(?:^|\\n)## ${version.replace(/\./g, '\\.')}[\\s\\S]*?(?=\\n## |$)`);
-  // 顺手去掉尾部那条分隔线（`\n\n---`）：它是给 CHANGELOG 排版用的，不该进更新说明
-  return changelog.match(re)?.[0]?.trim().replace(/\n+---\s*$/, '') ?? '';
+function notesOf(version) {
+  const src = readFileSync('src/data/release-notes.ts', 'utf8');
+  const chunk = src
+    .split(/version:\s*'/)
+    .slice(1)
+    .find((c) => c.startsWith(`${version}'`));
+  if (!chunk) return '';
+  const one = (re) => chunk.match(re)?.[1] ?? '';
+  const date = one(/date:\s*'([^']*)'/);
+  const headline = one(/headline:\s*'([^']*)'/);
+  const groups = [];
+  const groupRe = /title:\s*'([^']+)'\s*,\s*items:\s*\[([\s\S]*?)\]/g;
+  for (const m of chunk.matchAll(groupRe)) {
+    groups.push({ title: m[1], items: [...m[2].matchAll(/'([^']*)'/g)].map((x) => x[1]) });
+  }
+  /*
+   * ★ 用**和当年 CHANGELOG 一样的 Markdown 形状**（`## 版本 — 日期` / `### 段名` / `* 条目`）：
+   *   更新弹窗那边有一个 Markdown 渲染器（`src/domain/release-notes.ts`），
+   *   它认的就是这几个记号 —— 换成纯文本会被当成一整段。
+   */
+  const lines = [`## ${version}${date ? ` — ${date}` : ''}`, '', headline, ''];
+  for (const g of groups) {
+    lines.push(`### ${g.title}`, '');
+    for (const it of g.items) lines.push(`* ${it}`);
+    lines.push('');
+  }
+  return lines.join('\n').trim();
 }
 
 const latest = {
   version,
-  notes: sectionOf(readFileSync('CHANGELOG.md', 'utf8'), version),
+  notes: notesOf(version),
   pub_date: new Date().toISOString(),
   platforms: {
     // Tauri 的 target triple 命名；本机只出 Windows x64

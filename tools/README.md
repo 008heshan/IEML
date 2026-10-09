@@ -1,4 +1,4 @@
-# tools/ —— 脚本按**用途**分目录（ADR-053）
+# tools/ —— 脚本按**用途**分目录
 
 > 规矩：**一个脚本只回答一个问题**，名字里说清它回答什么。
 > 目录名说清"什么时候该跑它"。
@@ -6,10 +6,10 @@
 ```
 tools/
 ├─ verify.mjs                          一键门禁总入口（其余检查都由它串起来）
-├─ set-version.mjs                     版本号：六处一起改 + --check / --docs
+├─ set-version.mjs                     版本号：六处一起改 + --check
 ├─ clean-artifacts.mjs                 清构建/测试废弃产物（历史安装包 + %TEMP% 残留）
 ├─ make-installer-assets.mjs           生成安装程序的头部图/侧边图（手写 BMP 编码，无依赖）
-├─ make-icons.mjs                      从 design/mockup.html 生成 Tauri 图标
+├─ make-icons.mjs                      生成应用图标（手写 PNG/ICO 编码，无依赖）
 ├─ gen-curseforge-fingerprint-cases.mjs  CurseForge 指纹判据表（生成/离线复算）
 │
 ├─ gates/     ★ 静态门禁：跟网络无关、进 `pnpm verify`，红了就别交付
@@ -36,48 +36,6 @@ tools/
 ├─ ci/        给 CI 用的上报（把流水线结果写成公开可读的一份产物）
 │   └─ report-status.mjs               CNB 的 endStages 调它；本地无 token 时只打印
 │
-├─ live/      ★ 真机验证：要桌面版 / 要联网 / 要看真实 DOM（默认手动跑）
-│   ├─ live-ui-check.mjs               用 WebView2 的 CDP 读真实 DOM 并跑断言
-│   ├─ live-inuse-check.mjs            「盘上有」与「有版本在用」是不是分开说的
-│   ├─ live-java-display-check.mjs     界面上显示的 Java 要求与真实要求一致
-│   ├─ live-ms-login-check.mjs         正版登录（要自己的 client_id）
-│   ├─ live-optifine-incompat-check.mjs Fabric + 高清修复：有桥接包 / 真不兼容两段
-│   ├─ live-resource-check.mjs         资源中心：四种资源都能查到
-│   ├─ live-single-instance-check.mjs  单实例：再开一次是「调起在跑的那个」而不是多开
-│   ├─ live-glass-check.mjs            ★ 液态玻璃三档：折射状态 / 高光跟手 / 取色 / 帧时间（40 条）
-│   ├─ live-glass-round4-check.mjs     ★ 顶部液态玻璃（fixed + 滚动后淡入 + 模糊的像素证据）、
-│   │                                    指针高光（光斑元素跟手 / 钳投影 / 远离熄灭）、
-│   │                                    前台 GPU 与后台停渲染（22 条）
-│   ├─ live-glass-pages-check.mjs      ★ 跨页面体检：每页的玻璃、报错、帧时间、截图
-│   ├─ live-glass-degrade-check.mjs    ★ 降级验收：用 --disable-webgl 真的关掉 WebGL2，
-│   │                                    验"默认适中 + 不开放灵动 + 材质仍在"
-│   ├─ live-glass-resize-check.mjs     ★ 改窗口尺寸：折射要重烘、法线图要回收、GL 不泄漏
-│   ├─ live-glass-lowperf-check.mjs    ★ 低性能损耗模式 × 视效档位：压得住、也回得来
-│   ├─ live-theme-check.mjs            ★ 九套主题：逐套换、逐套算对比度、逐套截图（39 条）
-│   ├─ live-glass-memory-check.mjs     按部件拆内存（GPU 进程 / 渲染进程 / 专有显存）
-│   ├─ live-pager-footer-check.mjs     ★ 下载页页脚：分页条离窗口下沿 24px + 滚到底页头仍吸顶
-│   │                                    （五个列表页签各两条）+ 安装页"高度仍被卡住"的反向判据
-│   ├─ live-backtotop-check.mjs        ★ 右下角「回到顶部」：顶部不出现 / 滚下去出现在右下角 /
-│   │                                    点它真的回 0，以及"版本下载"那屏里层清单滚到底也不出现
-│   ├─ diag-bottom-layout.mjs          上面那条的红绿诊断：量 `.page-fill` / `.page-head` /
-│   │                                    `.pager` 的包围盒，并用 CSSOM 注入候选写法对比截图
-│   ├─ live-cf-modpack-check.mjs       ★ CF 整合包：来源切换 / 一键装 / 暂停继续 / 装到底（17 条）
-│   ├─ live-backup-check.mjs           ★ 备份与回滚：真的备份了、回滚回得去、jar 不进备份（13 条）
-│   ├─ probe-webview-glass.mjs         ★ 先证明"能不能真折射"：backdrop-filter 里的 SVG 滤镜
-│   │                                    + 截图像素对照（含"坏引用"正对照）—— 换机器先跑它
-│   └─ shot.mjs                        按 plan.json 驱动浏览器截图
-│
-├─ probe/     ★ 打上游接口，先证明事实再写代码（要联网；结论会被固化成测试）
-│   ├─ probe-cf-mirror-keyless.mjs     ★ CF：确认"不带任何 key 也全通"（镜像这一路）
-│   ├─ probe-ms-devicecode.ps1         微软设备码流程的原型探测
-│   ├─ probe-ms-clientids.ps1          ★ 哪个 client_id 真能用（带随机编造的对照组）
-│   ├─ probe-browse.mjs                ★ 空关键词"列热门"有没有内容 / 翻页重不重复
-│   ├─ probe-bmclapi.mjs / probe-mirrors.mjs / probe-sources.mjs   镜像与源
-│   ├─ probe-assets.mjs / probe-chunk-throttle.mjs / probe-dev.mjs
-│   ├─ probe-fabric-sources.mjs / probe-java-dll.mjs
-│   ├─ probe-legacy-endpoint-bridge.mjs  ★ 旧发布仓那座"桥"还通不通（决定能不能彻底删老仓）
-│   └─ （一次性探针用完就删：结论已经写成单元测试/live 测试，留着只是噪音）
-│
 └─ diag/      ★ 一次性诊断与考古：看本机数据目录、回答"盘上到底怎么了"
     ├─ find-orphans.mjs                找出没有任何地方引用的源文件
     ├─ clean-stale-parts.mjs           清理卡死的 .part / .part.N（默认只报告）
@@ -96,8 +54,6 @@ tools/
 | 我想… | 去哪儿 |
 |---|---|
 | 交付前确认一切正常 | `pnpm verify`（= 门禁 + 测试 + 构建） |
-| 证明"上游到底是不是这样" | `tools/probe/`（**先证明再写代码**，ADR-050） |
-| 证明"用户真的点得到、真的能起来" | `tools/live/`（要桌面版） |
 | 查"这台机器上盘里到底怎么了" | `tools/diag/` |
 | 改版本号 | `node tools/set-version.mjs <版本>` |
 
