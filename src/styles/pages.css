@@ -11,6 +11,21 @@
 .task-center {
   position: relative;
 }
+/*
+ * ★★★★ 2026-10-09（用户）：「**下载引擎开始下载时，不会自己弹出，不明显**」。
+ *
+ *   两半都在这一轮补：
+ *     · **自己弹出** —— 新任务一出现就展开面板（见 `TaskCenter.tsx` 里那个 effect）；
+ *     · **明显** —— 有任务在跑时角标**呼吸**（这条 CSS）。
+ *
+ *   ★ 直接复用 `app.css` 里那个 `@keyframes pulse`（"运行中的绿点"用的同一个）：
+ *     一屏里"活着"的东西只该有一种呼吸节奏，两套动画看着就是两个系统。
+ *   ★ 只用 token 里的缓动；`prefers-reduced-motion: reduce` 在 `tokens.css` 里
+ *     把**无限动画直接停掉**（不是加速它），所以这里不必再写一遍媒体查询。
+ */
+.task-center-live .badge-dot {
+  animation: pulse 1.6s var(--ease-in-out) infinite;
+}
 .task-panel {
   position: absolute;
   top: calc(100% + var(--space-2));
@@ -460,8 +475,25 @@
 .ver-item + .ver-item {
   border-top: 1px solid var(--border-subtle);
 }
-.ver-item:hover {
+/* ★★ 2026-10-09：行的悬浮提示 —— **底色抬亮 + 行首一条 2px 强调色竖条**。
+ *
+ * 这已经是第三版，前面两版都被否掉了，理由都留着（免得下一个人再走一遍）：
+ *   ① "底色 + 一圈描边 + 内侧光晕"  —— 用户：「有点不好看」。整宽的行上那一圈
+ *      描边像是给它套了个框；内侧光晕又把整行染成一片紫，而且与"已选中"那一行
+ *      （也是强调色的一块）撞在一起，两种状态分不出来。
+ *   ② "一团跟着指针跑的柔光斑"     —— 用户：「不要光斑」。
+ *   ③ **现在**：底色抬亮一点点 + 行首 2px 竖条。用户从三条退路里挑的就是这条
+ *      （「做成 1 吧」）——最克制，像编辑器里的"当前行"，不跟内容抢注意力。
+ *
+ * ★ 用 `inset 2px 0 0` 这条 box-shadow 而不是伪元素：一根竖条不需要新的层，
+ *   而且它会**跟着圆角裁**（`.wz-item` 是圆角行），伪元素要自己再处理一次圆角。
+ * ★ 行样式里**绝不能**再留 `:hover` 高亮：滚动时 `:hover` 不重算，
+ *   留着就会出现两行同时亮（判据见 `tools/live/live-hover-scroll-check.mjs`）。
+ * ★ 两个列表**共用这一条规则**（选择器写在一起）：它是"一处写、两处一样"的唯一保证。 */
+.ver-item[data-hover],
+.wz-item[data-hover] {
   background: var(--bg-hover);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 .ver-item:focus-visible {
   outline: none;
@@ -474,8 +506,17 @@
 /* ============================================================================
  * 收藏星标 + 多选勾选（2026-10-07，用户：「给全部的左侧加一个收藏」「加一个多选按钮」）
  *
- * 两个都放在行首（图标之前）—— 用户说的是"左侧"，而且左侧是扫视时
- * 最先落在眼睛里的位置。
+ * ★★★★ 2026-10-09（用户）：「**收藏移到三个点的左边**，然后当鼠标悬浮到那一版本时，
+ *   **显示收藏按钮和三个点**」。
+ *
+ *   ⇒ 星从行首搬到行尾的操作区（`.ver-actions` 里，≡ 之前），
+ *     并且与三个点一起**默认隐形、悬停（或键盘聚焦）才显形** ——
+ *     一屏十行都挂着两个常驻按钮，版本名和信息反而看不清。
+ *   ★ 隐形用 `opacity + pointer-events` 而不是 `display`/`visibility`：
+ *     前者能让它**淡入**（有过渡），而且按钮**仍在 tab 序里** ——
+ *     键盘用户 Tab 到它时 `:focus-within` 会让它显形（见下）。
+ *   ★ **已收藏的星不藏**（`.ver-fav.on` 强制可见）：它是"状态"，
+ *     不是一个"可以做的动作"；藏起来会让用户以为收藏丢了。
  * ========================================================================== */
 
 /* 收藏那颗星。
@@ -500,19 +541,18 @@
   width: 15px;
   height: 15px;
 }
-/* 悬停在整行上时把星提亮一点 —— 让"这里有个可以点的东西"被发现 */
-.ver-item:hover .ver-fav {
-  opacity: 0.8;
-}
 .ver-fav:hover {
   opacity: 1;
   color: var(--accent);
 }
 /* 已收藏：实心 + 强调色。`fill: currentColor` 是唯一的实心手段 ——
- * `IconStar` 画的是描边路径（见 `ui/Icons.tsx`），没有单独的实心图标。 */
+ * `IconStar` 画的是描边路径（见 `ui/Icons.tsx`），没有单独的实心图标。
+ * ★ 还带一条 `pointer-events: auto`：外层 `.ver-actions` 默认 `none`（见下），
+ *   而"已收藏的星一直看得见"必须配一句"也点得到"，否则是一颗看得见点不动的星。 */
 .ver-fav.on {
   opacity: 1;
   color: var(--accent);
+  pointer-events: auto;
 }
 .ver-fav.on svg {
   fill: currentColor;
@@ -527,6 +567,30 @@
   outline: none;
   box-shadow: 0 0 0 2px var(--accent);
   opacity: 1;
+}
+
+/* 「悬停才显形」——星与三个点共用这一条（2026-10-09）。
+ * ★ 三个条件：鼠标在整行上、键盘焦点落在操作区里、或者那个菜单正开着
+ *   （`aria-expanded`）—— 少了最后一条，菜单一打开按钮就自己隐形了
+ *   （菜单是 `createPortal` 到 `body` 的，指针移过去之后整行的 `:hover` 会失效）。 */
+.ver-actions {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+.ver-item[data-hover] .ver-actions,
+.ver-item:focus-within .ver-actions,
+.ver-actions:has([aria-expanded='true']) {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* ★ 触摸屏（没有"悬停"这回事）⇒ 一直显形。否则那一行上的两个按钮
+ *   **永远点不到** —— 隐藏规则只在真有指针悬停的设备上才是对的。 */
+@media (hover: none) {
+  .ver-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 /* 多选勾选框（只在多选模式下渲染）。 */
@@ -677,6 +741,8 @@
   display: flex;
   align-items: center;
   gap: var(--space-1);
+  /* ★ 2026-10-09：「收藏星 + 三个点」默认隐形、悬停才显形 ——
+     规则与理由在下面「收藏星标 + 多选勾选」那一节里（只有一处）。 */
 }
 
 /* 下载页的版本行（比版本列表更扁，且信息更少） */
@@ -1249,9 +1315,8 @@
   text-align: left;
   cursor: pointer;
 }
-.wz-item:hover {
-  background: var(--bg-hover);
-}
+/* ★ 悬浮提示的样式**写在 `.ver-item` 那一段里**（两个选择器共用一条规则，
+   免得两处各改一遍慢慢跑偏）——这里只留这句话当路标。 */
 .wz-item.on {
   background: var(--accent-subtle);
   border-color: var(--accent-border);
@@ -2810,8 +2875,18 @@
    *   ★ 教训（这条比数值重要）：**"贴底"和"太靠下"是两个相反的方向。**
    *     用户说的是哪一个，必须问清再动手 —— 我从"贴底"这个词直接推断出
    *     "空间不够"，然后连着四轮往同一个方向加，每一轮都被真机否定。
+   *
+   * ★★★★ 2026-10-08 晚（用户：「上下页太靠底边」+「（整包的）留白不错」）：
+   *   **前四轮全都改错了地方** —— 真机量出来的：
+   *     · Mod / 资源包 / 光影 / 数据包：分页条下沿到窗口下沿 **0px**（贴边、下边框被切），
+   *       而且**改这里的下边距一点用都没有**（它掉在可滚动区之外，见 app.css
+   *       `.page-fill[data-fill='auto']` 那段）；
+   *     · 整包：**8px** —— 用户说"不错"的就是它。
+   *   ⇒ 根因在 `.page-fill` 的高度卡死，不在这里。解开之后这个下边距**才真的算数**，
+   *     于是它从"改不动的死值"变回"唯一的旋钮"：现在 8px → **24px**
+   *     （用户从三个候选里选的，真机 1180×760：8 / 24 / 48 三个都截过图）。
    */
-  margin: var(--space-6) 0 var(--space-2);
+  margin: var(--space-6) 0 var(--space-6);
   padding-top: var(--space-3);
   border-top: 1px solid var(--border-subtle);
 }
@@ -2819,8 +2894,99 @@
   font-size: var(--text-sm);
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
-  min-width: 148px;
+}
+
+/*
+ * ★★ 2026-10-08 晚（用户：「优化一下这里的排版，并加一个可以让玩家自己输入的地方
+ *   来看玩家想要看的页」）—— 分页条中间那一段：「第 [1] / 935 页 · 共 18690 个」。
+ *
+ * 改前：三样东西**同色同重**（一行 `第 1 / 935 页 · 共 18690 个`），
+ *   看不出"我现在在哪一页"；而且那行文字（行高 19px）与两侧按钮（26px）
+ *   靠 flex 居中，基线并不齐。
+ * 改后：**当前页码是输入框**（最亮、可改，52×26 —— 与按钮同高），
+ *   两侧 `第` / `/ 935 页` 与末尾的总数退到次要色，层级一眼可辨。
+ *   ★ `tabular-nums`：翻页时这行字**不左右抖**（等宽数字）。
+ */
+.pager-go {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+.pager-word {
+  color: var(--text-tertiary);
+}
+/*
+ * 复用全局 `.input`（底色 / 边框 / 焦点环都在那儿，一处判据）——
+ * 这里只把它压到分页条的尺度。`.input` 在 app.css，本文件在它之后加载，
+ * 所以同权重（都是单类）时这条生效。
+ */
+.input.pager-input {
+  width: 52px;
+  height: 26px;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
   text-align: center;
+}
+
+/*
+ * 回到顶部（下载页右下角那个圆钮）
+ * ------------------------------------------------------------------
+ * ★★ 2026-10-08 晚（用户：「给下载页除了版本下载之外的页面，在启动器右下角加一个
+ *   一键回到顶部的按键，就像 dsh 的这个一样」）。
+ *
+ * ★ 形状照用户给的那张参考图（深色圆钮 + 一个向上的折角），**颜色走令牌**：
+ *   这个启动器有九套主题，写死深色在浅色主题上就是一块补丁。
+ * ★ `position: fixed` 在这里是安全的：它是 `.page-fill` 的直接子元素，而
+ *   `.page-fill` 不带 transform / filter / will-change（2026-09-24 起它被有意
+ *   排除在入场动画之外，就是为了不造层叠上下文）⇒ 包含块仍是视口。
+ * ★ z-index 取 `--z-sticky`（20）：要盖住卡片，但要在下拉（60）/ 弹窗（90）/
+ *   提示条（100）之下 —— 那三样打开时不该被这个钮压住。
+ * ★ 按下去**不改 `transform`**：入场动画（`ieml-rise` / `ieml-page-fade`）
+ *   带 `animation-fill-mode: both`，动画的 `transform: none` 会一直压着普通声明，
+ *   于是 `:active { transform: scale(.94) }` 在中/灵动档**永远不生效**。
+ *   所以按压反馈走底色（这条在九套主题下都成立）。
+ */
+.to-top {
+  position: fixed;
+  right: var(--space-5);
+  bottom: var(--space-5);
+  z-index: var(--z-sticky);
+  width: 42px;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 50%;
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  box-shadow: var(--shadow-card);
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+.to-top:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+.to-top:active {
+  background: var(--bg-active);
+}
+.to-top svg {
+  width: 18px;
+  height: 18px;
+}
+/* 低动效档：不加过渡（那一档承诺"不动"） */
+:root[data-motion='lite'] .to-top {
+  transition: none;
 }
 
 /* 卡片网格：宽屏两列，窄屏一列 */

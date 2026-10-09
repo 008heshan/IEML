@@ -55,6 +55,12 @@ tools/
 │   ├─ live-glass-lowperf-check.mjs    ★ 低性能损耗模式 × 视效档位：压得住、也回得来
 │   ├─ live-theme-check.mjs            ★ 九套主题：逐套换、逐套算对比度、逐套截图（39 条）
 │   ├─ live-glass-memory-check.mjs     按部件拆内存（GPU 进程 / 渲染进程 / 专有显存）
+│   ├─ live-pager-footer-check.mjs     ★ 下载页页脚：分页条离窗口下沿 24px + 滚到底页头仍吸顶
+│   │                                    （五个列表页签各两条）+ 安装页"高度仍被卡住"的反向判据
+│   ├─ live-backtotop-check.mjs        ★ 右下角「回到顶部」：顶部不出现 / 滚下去出现在右下角 /
+│   │                                    点它真的回 0，以及"版本下载"那屏里层清单滚到底也不出现
+│   ├─ diag-bottom-layout.mjs          上面那条的红绿诊断：量 `.page-fill` / `.page-head` /
+│   │                                    `.pager` 的包围盒，并用 CSSOM 注入候选写法对比截图
 │   ├─ live-cf-modpack-check.mjs       ★ CF 整合包：来源切换 / 一键装 / 暂停继续 / 装到底（17 条）
 │   ├─ live-backup-check.mjs           ★ 备份与回滚：真的备份了、回滚回得去、jar 不进备份（13 条）
 │   ├─ probe-webview-glass.mjs         ★ 先证明"能不能真折射"：backdrop-filter 里的 SVG 滤镜

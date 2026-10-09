@@ -240,9 +240,35 @@ export const IconChevronRight = (p: P) => (
   </svg>
 );
 
+/**
+ * ← 返回箭头。
+ *
+ * ★★ 2026-10-09（用户：「所有页面的返回按钮做一个固定位置，不然很麻烦」）：
+ *   在这之前全仓有**四处**返回按钮，其中三处是"把右箭头转 180°"
+ *   （`style={{ transform: 'rotate(180deg)' }}`）—— 同一件事三份写法，
+ *   而且转出来的箭头在窄按钮里会被裁掉一点。现在有真正的左箭头，四处统一用它。
+ */
+export const IconChevronLeft = (p: P) => (
+  <svg {...base(p)}>
+    <path d="m15 18-6-6 6-6" />
+  </svg>
+);
+
 export const IconChevronDown = (p: P) => (
   <svg {...base(p)}>
     <path d="m6 9 6 6 6-6" />
+  </svg>
+);
+
+/*
+ * ★★ 2026-10-08 晚：给「回到顶部」那个圆钮用的。
+ *   为什么补一个图标而不是把 `IconChevronDown` 转 180°：这个仓库里
+ *   "转一下当另一个图标"的写法散落过几处，读代码时得先确认它到底朝哪边；
+ *   图标集里配对给全（上/下/左/右）比省三行更值。
+ */
+export const IconChevronUp = (p: P) => (
+  <svg {...base(p)}>
+    <path d="m18 15-6-6-6 6" />
   </svg>
 );
 

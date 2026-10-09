@@ -197,14 +197,14 @@ export function InstanceOverview() {
         downloadAssets: true,
       });
       // ★ 暂停 / 失败要分开说（P0-3）—— 暂停不是错误
-      if (outcome === 'paused') {
+      if (outcome.outcome === 'paused') {
         setVerifyResult({
           ok: false,
           text: '已暂停 —— 点顶栏任务中心的「继续」接着补',
         });
         return;
       }
-      if (outcome !== 'done') {
+      if (outcome.outcome !== 'done') {
         setVerifyResult({ ok: false, text: '补齐没完成 —— 失败原因在顶栏任务中心' });
         return;
       }

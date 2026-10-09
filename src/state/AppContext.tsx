@@ -20,7 +20,7 @@ import {
   type ReactNode,
 } from 'react';
 import type { Instance, InstanceConfig, JavaRuntime } from '../domain';
-import { instanceFromFolderVersion, matchFolderVersions, pickAutoAdopt } from '../domain/folder-versions.ts';
+import { burySlug, unburySlugs, instanceFromFolderVersion, matchFolderVersions, pickAutoAdopt } from '../domain/folder-versions.ts';
 // ★ 目录名规范只有一份（Rust `domain::naming` 的镜像）—— 见那个模块的说明
 import { sanitizeDirName, uniqueDirName } from '../domain/naming.ts';
 import type { FolderVersion } from '../bridge/tauri';
@@ -63,6 +63,7 @@ export interface LauncherUpdate {
 }
 import {
   initialState,
+  hasRunningTask,
   isForgeLike,
   launchTarget as selectLaunchTarget,
   openInstance as selectOpenInstance,
@@ -199,20 +200,11 @@ function sanitizePrefs(raw: unknown): Partial<AppState['prefs']> {
 }
 
 /**
- * 把某个版本目录名**记进墓碑**（见 `AppState['prefs'].deletedVersions`）。
- *
- *   返回一份**新的**数组（`slice(-200)` = 最多留最近 200 条，
- *   免得一个用了两年的列表无限长；超出的是最老的记录，
- *   而"删了又回来"只会发生在刚删完之后）。
- *
- * ★ 比较用大小写无关：Windows 上 `Fabric-1` 与 `fabric-1` 是同一个目录，
- *   只按字节比会让墓碑挡不住大小写不同的那一条。
+ * 把某个版本目录名**记进墓碑** / **从墓碑里撤掉** —— 两个判据都搬到了
+ * `domain/folder-versions.ts`（那边是 `.ts`，能进 `node --test`；
+ * 这一对函数是"删了又回来"与"重装却收藏不了"两条缺陷的分界线，必须有测试）。
+ * 这里只留 import：**别在 `.tsx` 里再抄一份**。
  */
-function burySlug(slug: string, current: readonly string[]): string[] {
-  const lower = slug.toLowerCase();
-  const rest = current.filter((s) => s.toLowerCase() !== lower);
-  return [...rest, slug].slice(-200);
-}
 
 interface AppContextValue {  state: AppState;
   backend: Backend;
@@ -801,9 +793,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const first = !prefsLoadedRef.current;
     prefsLoadedRef.current = true;
     const t = setTimeout(() => {
-      // 主题和偏好一起存（主题是顶层字段，但用户当然希望它记住）
-      const payload = { ...state.prefs, theme: state.theme } as unknown as Record<string, unknown>;
       /*
+       * ★ 主题 / 视效档位与偏好一起存 —— payload 由 `prefsWriteRef` 提供
+       *   （**只拼一处**：`createInstance` 撤墓碑时也要写整份偏好，
+       *    两边各拼一份必然会漏字段，那一漏就把主题抹回默认值）。
+       *
        * ★★ 视效档位也要落到 `prefs.json`（2026-09-22）。
        *
        *   为什么不能只留 localStorage：**Rust 侧要在创建 WebView2 之前读它** ——
@@ -812,7 +806,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
        *   而 localStorage 在 WebView2 的 profile 里，Rust 启动时读不到。
        *   所以这里多写一份到 prefs.json，给 `lib.rs::request_high_performance_gpu` 看。
        */
-      payload.vfx = vfxWant;
+      const payload = prefsWriteRef.current;
       void backend.savePrefs(payload).then(
         () => {
           if (first) {
@@ -911,6 +905,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
    */
   const prefsRef = useRef(state.prefs);
   prefsRef.current = state.prefs;
+  /*
+   * ★★ **要写进 `prefs.json` 的那份 payload**（只在这里拼一次）。
+   *
+   *   为什么要有它（2026-10-08）：`createInstance` 在"撤墓碑"那一步需要
+   *   **立刻**把整份偏好落盘（顺序必须是"先撤墓碑、再写账本"，见那里）。
+   *   而偏好 effect 里那份 payload 带了两个**不在 `state.prefs` 里**的字段
+   *   （`theme` 顶层字段、`vfx` 给 Rust 启动期读的档位）——
+   *   少了它们，一次"撤墓碑"的写盘就会把主题与视效档位抹掉。
+   *   ⇒ 拼 payload 这件事收成一个 ref：谁要写偏好都从它取（**一处拼、处处一致**）。
+   */
+  const prefsWriteRef = useRef<Record<string, unknown>>({});
+  prefsWriteRef.current = {
+    ...state.prefs,
+    theme: state.theme,
+    vfx: vfxWant,
+  } as unknown as Record<string, unknown>;
   useEffect(() => {
     if (!state.ready) return;
     /*
@@ -1419,15 +1429,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
    *
    *   三条纪律（都是"不许替用户做决定"的边界）：
    *     · **只在 0 个实例时**跑 —— 有实例就说明账本是好的，绝不改写用户的选择；
-   *     · 只认领**能在启动器里启动的**（`hasJson`）版本；多个时按文件夹顺序取第一个
+   *     · 只认领**能在启动器里启动的**（`ok`）版本；多个时按文件夹顺序取第一个
    *       （与版本列表的显示顺序一致，用户看得见是哪一条）；
    *     · 认领过就不再跑（认领之后 `instances.length === 1`），不会反复建。
    *   ★ 用的是与「建实例」按钮**同一个函数**（`instanceFromFolderVersion`）。
+   *
+   * ★★★★ 2026-10-08（用户）：「……**甚至模组加载器被识别为了可启动游戏版本**」。
+   *
+   *   多了一条**闸门**：**有安装任务在跑时，一步都不认领**。
+   *
+   *   为什么这条必须有（用户报的就是它）：安装是**一边下一边往盘上写**的
+   *   （版本描述先落盘，jar 与库随后），所以那一刻盘上的目录**是半成品**。
+   *   自动认领看的是同一份盘上事实 —— 于是它会抢先把那个"安装器目录"
+   *   认领成"用户唯一的版本"：账本里那条记录落在加载器目录上，
+   *   而**用户真正要用的那个版本反而没有记录**（收藏就存在记录上 ⇒
+   *   星星是禁用的，他报的"那个正确版本无法被收藏"），
+   *   并且"只在 0 个实例时认领"这条边界会让正确的版本**再也没机会**被认领。
+   *   ⇒ 判据：**盘上还在变的时候不做决定**（`hasRunningTask`）。
+   *     装完（任务变成 done/成功）之后这一支自然会再跑一次 —— 那时认领才是对的。
    */
   const autoAdoptTriedRef = useRef(false);
   useEffect(() => {
     if (!state.ready || !instancesLoadedRef.current) return;
     if (autoAdoptTriedRef.current) return;
+    /*
+     * ★ 注意顺序：这条闸门**不能**写 `autoAdoptTriedRef.current = true`
+     *   —— 那等于"因为正在安装所以永远不认领了"。它只是**这一次不判**，
+     *   任务结束后 effect 会因为 `state.tasks` 变化再跑一遍。
+     */
+    if (hasRunningTask(state.tasks)) return;
     const fv = pickAutoAdopt(folderVers, state.instances, state.prefs.deletedVersions);
     if (!fv) return;
     autoAdoptTriedRef.current = true;
@@ -1473,8 +1503,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       });
     // `createInstance` / `say` 都是稳定的回调；这里只依赖"那一刻的事实"
     // ★ 墓碑也在依赖里：它变了（用户又删了一个版本）就必须重新判一次
+    // ★★ 任务表也在依赖里（2026-10-08）：安装**装完那一刻**（任务从 running 变
+    //    done）要再判一次 —— 否则"安装中不认领"就变成了"永远不认领"。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.ready, state.instances.length, state.machine, folderVers, state.prefs.deletedVersions]);
+  }, [
+    state.ready,
+    state.instances.length,
+    state.machine,
+    folderVers,
+    state.prefs.deletedVersions,
+    state.tasks,
+  ]);
 
   const setLaunchTarget = useCallback((id: string | null) => {
     dispatch({ type: 'instances/last', id });
@@ -1550,14 +1589,71 @@ export function AppProvider({ children }: { children: ReactNode }) {
    */
   const dismissToast = useCallback((id: string) => exitToast(id), [exitToast]);
 
+  /**
+   * **写账本之前，先把这些 slug 的墓碑撤掉**（`prefs.deletedVersions`）。
+   *
+   * ★★★★ 2026-10-08（用户第二次报）：「下载带模组加载器的版本……**模组加载器版本的
+   *   mc 还没办法收藏**」。
+   *
+   *   根因不是安装，而是**墓碑与账本在互相否定**：
+   *   用户在更早的轮次删过 `26.3-fabric-0.19.5`，墓碑里留着这个名字；
+   *   这一次他**重新装**了同一个版本 —— 文件写回了、记录也建了，可
+   *   `list_instances` 每次读账本都按墓碑把这条记录滤掉（还把过滤后的结果写回文件），
+   *   于是刚装好的版本在账本里消失 ⇒ 行上没有记录 ⇒ 收藏星禁用（收藏存在记录上），
+   *   版本名退回目录名，连身份小抄都拿不到。
+   *
+   *   ⇒ 规则：**账本里出现某个 slug 的记录 ⇒ 那个名字的墓碑作废**。
+   *     "用户删过它"这个前提已经被"用户又把它装回来了"推翻。
+   *     判据在 `domain/folder-versions.ts::unburySlug`（与 `burySlug` 成对、有测试）。
+   *
+   * ★ 顺序在这里是语义：**墓碑必须先落到盘上，再写账本**。反过来的话，
+   *   中间那一瞬间是"记录在、墓碑也在"，而 `list_instances` 会把记录滤掉并写回
+   *   文件 —— 安装刚完成、界面正好刷新一次，记录就没了（真机实测到的形状：
+   *   账本里没有那条记录，却留着它的 `active_id`）。
+   * ★ 所以这里**当场落盘**，不靠 400ms 的偏好 effect（那个只是兜底）。
+   * ★ 只有"建记录"这条路调它；删除、改名、收藏那些写入**不许**调 ——
+   *   删除过程中账本里那一瞬间还留着旧记录，撤墓碑会把它变成"诈尸"。
+   */
+  const unburyBeforeLedgerWrite = useCallback(
+    async (slugs: readonly string[]) => {
+      const current = prefsRef.current.deletedVersions;
+      const kept = unburySlugs(slugs, current);
+      if (kept === current) return;
+      dispatch({ type: 'prefs/patch', patch: { deletedVersions: kept } });
+      try {
+        /*
+         * ★ 必须带**整份**偏好：`save_prefs` 是整文件覆盖，只写一个字段
+         *   会把主题 / 账号 / 下载源一起抹掉。payload 与偏好 effect 同源
+         *   （`prefsWriteRef` —— 那份 payload 只拼一处）。
+         */
+        await backend.savePrefs({ ...prefsWriteRef.current, deletedVersions: kept });
+        console.info(`[IEML] ${slugs.join('、')} 又装回来了 —— 已撤掉它的墓碑`);
+      } catch (e) {
+        /*
+         * 撤不掉也不能拦着建记录：账本照写（用户能看到版本），
+         * 只是这一轮读的时候可能还被滤一次 —— 偏好 effect 会把内存里
+         * 那份（已撤墓碑）再存一次，下一轮就正常了。
+         */
+        console.warn('[IEML] 撤销墓碑失败（账本照常写）：', e);
+      }
+    },
+    [backend],
+  );
+
+  /**
+   * **建一条实例记录**（安装 / 整合包 / 自动认领共用这一个入口）。
+   * 复制实例走的是另一条路（它不设 active），那边也会先调
+   * `unburyBeforeLedgerWrite` —— 判据只有一份。
+   */
   const createInstance = useCallback(
     async (inst: Instance) => {
+      await unburyBeforeLedgerWrite([inst.config.slug]);
       dispatch({ type: 'instances/add', instance: inst });
       dispatch({ type: 'instances/last', id: inst.id });
       const next = [...instancesRef.current, inst];
       await backend.saveInstances(next, inst.id);
     },
-    [backend],
+    [backend, unburyBeforeLedgerWrite],
   );
 
   const updateConfig = useCallback((id: string, patch: Partial<InstanceConfig>) => {
@@ -1763,11 +1859,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       // 先复制目录再登记：目录建不起来就不该出现一个空壳副本
       const bytes = await backend.copyInstanceFiles(src.config.slug, slug, true);
+      // ★ 副本的 slug 也可能撞上一个老墓碑（`<原名>-copy` 删过又再复制一次）
+      await unburyBeforeLedgerWrite([slug]);
       dispatch({ type: 'instances/add', instance: copy });
       await backend.saveInstances([...instancesRef.current, copy], copy.id);
       return bytes ?? 0;
     },
-    [backend],
+    [backend, unburyBeforeLedgerWrite],
   );
 
   const rescanJava = useCallback(async () => {

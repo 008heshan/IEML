@@ -299,36 +299,33 @@
   border: 1px solid var(--accent-border);
 }
 
-/* ---------- 二级页：返回按钮 + 当前版本卡 + 底部主操作 ---------- */
-.back-btn {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  width: 100%;
-  padding: var(--space-2) var(--space-3);
-  margin-bottom: var(--space-2);
-  border: none;
-  border-radius: var(--radius-md);
-  background: none;
-  color: var(--text-secondary);
-  font: inherit;
-  font-size: var(--text-sm);
-  cursor: pointer;
-  text-align: left;
-}
-.back-btn:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-.back-btn svg {
-  width: 15px;
-  height: 15px;
+/**
+ * 「← 返回」—— **全站唯一的那一个**（顶栏里、品牌右边）。
+ * ------------------------------------------------------------------
+ * ★★★★ 2026-10-09（用户）：「进行 UI 优化，**所有页面的返回按钮做一个固定位置**，
+ *   不然很麻烦」。
+ *
+ *   在这之前它是**四处各画各的**（侧栏 / 页头左上 / 内容区 / 页头里再一个），
+ *   于是"要回上一页"每次都得先找一眼。现在页面只能**登记**
+ *   （`state/back-nav.ts`），按钮只有 `AppShell` 画在顶栏这一个位置 ——
+ *   屏幕坐标固定、不随页面变、滚动也不跑。
+ *
+ * ★ 用 `.titlebar .back-btn` 而不是裸 `.back-btn`：`Button` 组件给了它
+ *   `.btn-sm` 的尺寸，而那条规则在文件里**排在后面** —— 同权重时后者赢，
+ *   所以这里必须把选择器写具体一点（这也是它真实的位置：它只该出现在顶栏里）。
+ * ★ 尺寸对齐顶栏那一行：高度跟 `Button size="sm"`（28px）走，
+ *   图标比正文大一点点（16px）—— 与 `.icon-btn`（30×30、图标 17px）看着是一套。
+ * ★ **不加固定宽度**：文案固定成「返回」两个字，宽度天然恒定，右边的面包屑
+ *   不会左右跳；硬写一个宽度反而会在不同字号/缩放下把文字挤变形。
+ */
+.titlebar .back-btn {
   flex: 0 0 auto;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2.2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+}
+.titlebar .back-btn svg {
+  width: 16px;
+  height: 16px;
 }
 
 .side-inst {
@@ -603,6 +600,46 @@
   display: flex;
   flex-direction: column;
   height: 100%;
+}
+
+/*
+ * ★★★★ 2026-10-08 晚（用户两张截图：「上下页太靠底边」+
+ *   「下载文本会被拉上去，只剩下大模糊底」）：**列表页**把上面那个高度解开。
+ *
+ * ## 为什么必须解（两条现象一个根因，真机 1180×760 量的）
+ *
+ *   `height: 100%` 让 `.page-fill` 的盒子恒等于内容区可视高度（652px = 712 − 20 − 40）：
+ *
+ *   · **页头被拉上去**：吸顶的 `.page-head` 只能在这个盒子里待着。
+ *     往下滚超过一屏，页头被盒子推出去 —— 实测滚到底时标题上沿 **−523px**
+ *     （整包）/ **−918px**（Mod），而它的"家"其实应该是滚动的 `.content`。
+ *   · **分页条贴底**：列表页签里 `.res-center` 是 flex 子项、`min-height: 0`，
+ *     于是被挤扁（实测高度 493px，而内容是 2000+px）；分页条的下边距
+ *     **整个掉到可滚动区之外** —— 实测到窗口下沿 **0px**。
+ *     ★ 这解释了 0.19.12～0.19.15 连着四轮改 `.pager` 数值都没用的原因：
+ *       **在 Mod / 资源包 / 光影 / 数据包 这四个页签上，那个 margin 根本不参与计算。**
+ *       整包页签的容器不是 flex 子项、挤不扁 ⇒ 它的 8px 一直在
+ *       —— 用户说"整包的留白不错"，对照组就是这 8px。
+ *
+ * ## 为什么只给列表页（`[data-fill='auto']`）
+ *
+ *   「安装游戏」那一屏靠 `.page-fill(100%) → .cw-shell-page(flex:1) → .cw-body`
+ *   这条弹性链把版本清单约束在视口内自己滚。**真机量过全局解开的样子**：
+ *   清单容器 385px → 697px（长成内容那么高），整页从"不滚"变成 `scrollHeight` 1023px。
+ *   ⇒ 所以属性只挂在列表页签上（见 `DownloadPage.tsx` 的 `listFill`）。
+ *
+ * ## 那个负下边距是干什么的
+ *
+ *   解开之后，`.content` 自己的 40px 底内边距**才开始算数**，
+ *   于是"分页条离窗口下沿多远" = 40 + `.pager` 的下边距（两个地方都能改 = 迟早漂移）。
+ *   把它抵消掉，这个距离就**只由 `.pager` 自己**决定（现在 24px，一处改就够）。
+ *   ★ 试过反过来（父级不动、让 `.pager` 用 −16px 去抵）：真机实测 **0px**，
+ *     负 margin 会和那 40px 的记账方式打架 —— 所以抵消必须记在父级这一侧。
+ */
+.page-fill[data-fill='auto'] {
+  height: auto;
+  min-height: 100%;
+  margin-bottom: calc(-1 * var(--space-10));
 }
 
 /* ---------- 行内小链接按钮（"改 / 管 / 查看"这类） ---------- */
@@ -2242,10 +2279,9 @@ tbody tr.clickable:focus-visible {
   .nav-item .nav-badge {
     display: none;
   }
-  .back-btn {
-    justify-content: center;
-    font-size: 0;
-  }
+  /* ★ 2026-10-09：`.back-btn` 那条窄窗口规则随侧栏那个按钮一起删掉了 ——
+     返回按钮现在在顶栏（`Button size="sm"`，文案固定两个字），
+     而且这一档下面包屑本来就藏起来了，它有地方待。 */
   .side-inst {
     display: none;
   }

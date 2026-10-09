@@ -9,6 +9,12 @@
  *   二级（进入某个版本后，侧边栏整体替换）
  *     ← 返回 │ 概览 │ 设置 │ Mod 管理 │ 日志
  *
+ * ★★ 2026-10-09（用户：「**所有页面的返回按钮做一个固定位置**，不然很麻烦」）：
+ *   那个「← 返回」现在**不在侧栏里**了 —— 全站只有**一个**返回按钮，
+ *   住在**顶栏左侧**（`BackButton`），四个页面的返回都走它：
+ *   版本二级页、资源安装页、整合包安装页、模组加载器页。
+ *   页面只登记"我能回哪儿"（`state/back-nav.ts`），位置这件事从此只有一份实现。
+ *
  * 为什么二级**替换**一级而不是并排：
  *   并排会变成"左侧两栏导航"，220px 的侧边栏塞不下，而且用户分不清哪一栏
  *   是全局、哪一栏属于当前版本。替换后"我现在在哪一层"一目了然。
@@ -16,10 +22,12 @@
 import brandIcon from '../assets/brand-icon.png'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../state/AppContext';
+import { useHoverRows } from '../hooks/useHoverRows';
 import { setPendingPack } from '../state/pending-pack';
 import { isTauri } from '../bridge';
 import type { PageId, SubPageId } from '../state/store';
-import { Button, Chip, Modal, ToastRegion } from '../ui';
+import { Button, Chip, Modal, ToastRegion, BackButton } from '../ui';
+import { useBackTargetValue } from '../state/back-nav';
 import { IconChevronRight, IconDownload, IconGear, IconGrid, IconHome, IconLayers, IconPlay, IconPuzzle, IconStop, IconTerminal, IconInfo } from '../ui/Icons';
 /* ★ C-7：`VersionIcon` 的 import 随「最近玩过」一起删（那个块是它唯一的用处） */
 import { UpdateChip } from '../components/UpdateChip';
@@ -93,6 +101,31 @@ export function App() {
   const [stopping, setStopping] = useState(false);
   /** 顶栏的账号弹窗（正版登录入口） */
   const [accountOpen, setAccountOpen] = useState(false);
+
+  /*
+   * ★★★★ 2026-10-09（用户）：「鼠标指针悬浮发光提示，滑动列表时，不会刷新，
+   *   得等停了之后才会刷新」。
+   *
+   *   行的悬浮发光不再交给 `:hover`（滚动时浏览器不重算它），
+   *   而是由这个 hook 在**指针移动与滚动**两种时候用 `elementFromPoint` 现算，
+   *   把 `data-hover` 打在指针底下那一行上 ⇒ 滑着也跟得住。
+   *   挂在**外壳**上（全应用一份）：滚动事件不冒泡，捕获监听一个就够。
+   *   详细理由见 `hooks/useHoverRows.ts`。
+   */
+  useHoverRows();
+
+  /*
+   * ★★★★ 2026-10-09（用户）：「所有页面的返回按钮做一个固定位置，不然很麻烦」。
+   *
+   *   顶栏那**一个**返回按钮的目标有两个来源：
+   *     ① 页面内部登记的（资源安装页 / 整合包安装页 / 模组加载器页）；
+   *     ② 外壳自己知道的：版本二级页（`inInstance`）⇒ 返回版本列表。
+   *   ★ ① 优先 —— 页面既然登记了，说明它比"外壳以为的上一层"更近
+   *     （例如下载页里点进整合包安装页：外壳那一层还是"下载页"，用户要回的是整合包列表）。
+   *   ★ 只有 `useBackTargetValue` 一个读点、页面只有 `useBackTarget` 一个写点：
+   *     按钮画在哪、什么时候画，判据只有这一条。
+   */
+  const pageBack = useBackTargetValue();
 
   /*
    * ★★ 2026-09-24（用户：「点击左侧栏切换页面时，不会回到最顶端，而是从上一页面
@@ -560,6 +593,14 @@ export function App() {
 
   const inInstance = state.page === 'versions' && open !== null;
 
+  /*
+   * 顶栏那个返回按钮**这一刻去哪儿**（2026-10-09）：
+   *   · 页面登记了 ⇒ 听页面的（它比外壳更清楚"上一层"是哪儿）；
+   *   · 否则在版本二级页 ⇒ 回版本列表；
+   *   · 都没有 ⇒ **不渲染那个按钮**（没地方可回就别摆一个）。
+   */
+  const back = pageBack ?? (inInstance ? { to: '版本列表', onClick: closeVersion } : null);
+
   return (
     <div className="app">
       {/*
@@ -599,6 +640,20 @@ export function App() {
           </span>
           <span data-tauri-drag-region>IEML</span>
         </div>
+
+        {/*
+          ★★★★ 2026-10-09（用户）：「所有页面的返回按钮做一个固定位置，不然很麻烦」。
+
+            全站**唯一**的返回按钮就住在这里 —— 品牌右边、面包屑左边。
+            它出现在**同一个屏幕位置**（顶栏不会滚动、不会随页面重排），
+            所以"要回上一页"这件事从此不必先找一眼再说。
+
+            ★ 位置写死在**品牌之后**（而不是面包屑之前）：面包屑只在版本二级页
+              才有，若让按钮跟着它走，别的页面上按钮就会左右跳。
+            ★ 只在这里渲染 `BackButton` —— 页面里一个都不许再画（`back-nav.ts`
+              的登记通道就是为此：页面只能"登记"，画不出来）。
+        */}
+        {back ? <BackButton onClick={back.onClick} to={back.to} /> : null}
 
         {inInstance && open ? (
           <nav className="crumbs" aria-label="位置">
@@ -654,12 +709,17 @@ export function App() {
         <aside className="sidebar">
           {inInstance && open ? (
             <>
-              <button type="button" className="back-btn" onClick={() => closeVersion()}>
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="m15 18-6-6 6-6" />
-                </svg>
-                返回版本列表
-              </button>
+              {/*
+                ★★★★ 2026-10-09（用户）：「所有页面的返回按钮做一个固定位置，不然很麻烦」。
+
+                  这里原来有一个带文字的「← 返回版本列表」。它现在**已删除** ——
+                  返回按钮全站只有顶栏那一个（品牌右边），位置固定、不随页面变。
+                  留着它就会变成"两个返回按钮"，而这个仓库为那件事吃过一次亏
+                  （用户当年指着界面问：「两个返回按键？」）。
+
+                  ★ 侧栏这一列剩下的东西（版本卡 + 二级导航）不变：它们是"我在哪个
+                    版本里"的上下文，不是"往回走"的动作。
+              */}
 
               <div className="side-inst">
                 <div className="side-inst-name truncate">

@@ -12,10 +12,10 @@
  */
 import { useEffect, useState } from 'react';
 import { Button, Chip, EmptyState, Note, Spinner } from '../ui';
-import { IconChevronRight } from '../ui/Icons';
 import { VersionPicker } from '../components/ResourceBrowser';
 import { useRealApi } from '../hooks/useRealApi';
 import { useApp } from '../state/AppContext';
+import { useBackTarget } from '../state/back-nav';
 import { installResourceVersion } from '../flows/resource-install';
 import type { ModrinthHit, ModrinthVersion, ResourceKindInfo, ResourceKindName, ResourceSourceName } from '../bridge/tauri';
 
@@ -25,6 +25,13 @@ export function ResourceInstallPage() {
   /** store 里存的是 unknown（那一层不解析 Modrinth 字段），到这里收窄 */
   const hit = (state.resourceTarget?.hit ?? null) as ModrinthHit | null;
   const kind = (state.resourceTarget?.kind ?? '') as ResourceKindName;
+
+  /*
+   * ★ 2026-10-09：返回按钮全站只有顶栏那一个（用户：「所有页面的返回按钮做一个固定位置」）
+   *   ⇒ 这一页只是**登记**"我能回下载页"，按钮由外壳画在固定位置。
+   *   原来这里自己在页头画了一个（右箭头转 180°），已删除。
+   */
+  useBackTarget({ to: '下载页', onClick: closeResource });
 
   const [versions, setVersions] = useState<ModrinthVersion[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -158,10 +165,9 @@ export function ResourceInstallPage() {
   return (
     <>
       <div className="page-head">
-        <div className="row" style={{ gap: 'var(--space-2)', alignItems: 'center' }}>
-          <Button size="sm" variant="ghost" onClick={closeResource}>
-            <IconChevronRight style={{ transform: 'rotate(180deg)' }} /> 返回
-          </Button>
+        {/* ★ 返回按钮不在这里画（全站只有顶栏那一个，见上面 `useBackTarget`）——
+            页头只留标题，这样它的位置在所有页面上都一样。 */}
+        <div>
           <h1 className="page-title">安装资源</h1>
         </div>
       </div>

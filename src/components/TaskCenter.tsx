@@ -59,12 +59,37 @@ export function TaskCenter() {
     if (was > 0 && active.length === 0 && failed.length === 0) setOpen(false);
   }, [active.length, failed.length, open]);
 
+  /*
+   * ★★★★ 2026-10-09（用户）：「**下载引擎开始下载时，不会自己弹出，不明显**」。
+   *
+   *   ⇒ **一有新任务出现就自动展开**。任务是在"开工之前"就建好的
+   *     （见 `flows/install.ts`：先建任务、再读清单），所以点下下载/安装的
+   *     那一刻面板就弹出来 —— 用户立刻能看到它在连接哪个文件、下了多少。
+   *     配合上面那条"下完自动收起"，开与收配成一对：开始 → 弹出来；下完 → 收回去。
+   *
+   *   ## 判据是"**新任务**"，不是"有任务"
+   *
+   *     按 id 认新出现的任务。写成"只要有活跃任务就打开"的话，
+   *     用户**永远关不掉这个面板** —— 进度每几百毫秒刷新一次，effect 每次都把它弹回来。
+   *     按 id 认还有一个好处：用户手动收起第一个任务之后又点了一个新的下载，
+   *     面板会再次弹出（那确实是一件新发生的事）。
+   *
+   *   ★ 为什么顺手记下**全部** id（而不只是活跃的）：任务的状态会变
+   *     （running → done），只记活跃的会让同一个任务在状态变化时被当成"新任务"。
+   */
+  const seenTaskIds = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const fresh = state.tasks.filter((t) => !seenTaskIds.current.has(t.id));
+    for (const t of state.tasks) seenTaskIds.current.add(t.id);
+    if (fresh.some((t) => t.status === 'running' || t.status === 'pending')) setOpen(true);
+  }, [state.tasks]);
+
   if (state.tasks.length === 0) return null;
 
   const count = active.length + failed.length;
 
   return (
-    <div className="task-center" ref={wrapRef}>
+    <div className={`task-center${active.length > 0 ? ' task-center-live' : ''}`} ref={wrapRef}>
       <Button
         variant="ghost"
         iconOnly

@@ -3044,6 +3044,13 @@ pub async fn install_version(
             total_bytes: installed.total_bytes,
             version_json: installed.json_path.to_string_lossy().to_string(),
             natives_dir: installed.natives_dir.to_string_lossy().to_string(),
+            version_dir: installed_version_dir(
+                &state,
+                &mc_version,
+                loader_kind.as_deref(),
+                loader_version.as_deref(),
+                &installed,
+            ),
             paused: true,
             remaining_files: installed.remaining_files,
             paused_stage: installed.paused_stage.clone(),
@@ -3074,6 +3081,13 @@ pub async fn install_version(
                     total_bytes: installed.total_bytes,
                     version_json: installed.json_path.to_string_lossy().to_string(),
                     natives_dir: installed.natives_dir.to_string_lossy().to_string(),
+                    version_dir: installed_version_dir(
+                        &state,
+                        &mc_version,
+                        loader_kind.as_deref(),
+                        loader_version.as_deref(),
+                        &installed,
+                    ),
                     paused: true,
                     remaining_files: 0,
                     paused_stage: Some(format!("运行 {kind} 安装器")),
@@ -3118,6 +3132,13 @@ pub async fn install_version(
         total_bytes: installed.total_bytes,
         version_json: installed.json_path.to_string_lossy().to_string(),
         natives_dir: installed.natives_dir.to_string_lossy().to_string(),
+        version_dir: installed_version_dir(
+            &state,
+            &mc_version,
+            loader_kind.as_deref(),
+            loader_version.as_deref(),
+            &installed,
+        ),
         paused: false,
         remaining_files: 0,
         paused_stage: None,
@@ -3132,6 +3153,23 @@ pub struct InstalledSummary {
     pub total_bytes: u64,
     pub version_json: String,
     pub natives_dir: String,
+    /*
+     * ★★★★ 2026-10-08（用户）：「**那个正确版本无法被收藏**」。
+     *
+     *   收藏状态存在**账本记录**上（`InstanceConfig.favorite`），而版本列表的行
+     *   与记录是靠 **目录名 == `config.slug`** 对上的（`VersionsPage` 的
+     *   `instancesInFolder.find(i => i.config.slug === fv.dir)`）。
+     *   前端原来**自己拼**这个目录名（`versionDirName`），后端却按加载器 profile
+     *   自带的 id 写盘 —— 两个名字差一个字，那条记录就指向一个不存在的目录：
+     *     · 行上没有记录 ⇒ 星星是禁用的（用户看到的就是"无法被收藏"）；
+     *     · 下次启动的目录归置还会把这条"指向空目录"的记录清掉。
+     *
+     *   ⇒ 名字**由写盘的人说了算**：这里回报这次真正写进 `versions/` 的那个目录名，
+     *     前端拿它当 `config.slug`。账本 slug 与磁盘目录从此**不可能**分叉
+     *     （这正是 `domain/naming.rs` 开头那张表里的老毛病）。
+     */
+    #[serde(default)]
+    pub version_dir: String,
     /// ★★ 这次是**被暂停**停下的（不是"装好了"）—— 见 `InstalledVersion::paused`。
     ///
     /// 前端据此把任务标成「已暂停」并保留「继续」入口。
@@ -3141,6 +3179,128 @@ pub struct InstalledSummary {
     pub remaining_files: usize,
     /// 暂停发生在哪一步（`paused = true` 时才有值）
     pub paused_stage: Option<String>,
+}
+
+/// **这次安装真正写进 `versions/` 的目录名**（账本 slug 必须用它）—— 见
+/// [`InstalledSummary::version_dir`]。
+///
+///   · Fabric / Quilt / 原版：`installer::install` 写的目录就是
+///     `installed.id`（前端要的规范名已经在 `build_plan_input` 里定好了）；
+///   · **Forge / NeoForge**：那个目录是**官方安装器**建的（`{mc}-forge-{ver}` 之类），
+///     而 `installer::install` 这次写的是**原版**（`installed.id` = 原版版本号）——
+///     所以必须按磁盘事实去找一次，不能拿 id 充数。
+fn installed_version_dir(
+    state: &AppState,
+    mc_version: &str,
+    loader_kind: Option<&str>,
+    loader_version: Option<&str>,
+    installed: &installer::InstalledVersion,
+) -> String {
+    if let Some(k) = loader_kind.filter(|k| *k == "forge" || *k == "neoforge") {
+        if let Some(dir) = resolve_loader_version_id(
+            &state.paths().shared,
+            mc_version,
+            Some(k),
+            loader_version,
+            &[],
+        ) {
+            return dir;
+        }
+    }
+    installed.id.clone()
+}
+
+/// 一个"带加载器的版本"在 `versions/` 下**该叫什么名字** —— ADR-055 规范名。
+///
+/// ★★★★ 2026-10-08（用户）：「下载一个带模组加载器的版本时，会提示出现了一个
+///   **不可用的原版**和一个**模组加载器（单独建立的文件夹）**……而且刷新版本列表后
+///   全部变成可用版本，**甚至模组加载器被识别为了可启动游戏版本**」。
+///
+/// ## 那个"单独建立的文件夹"是哪来的
+///
+///   写盘时用哪个目录名，是 `installer::install` 决定的，而它取
+///   `input.version.id`；Fabric / Quilt 的 profile JSON **自带 `id`**，
+///   那是 **PCL 的写法**：`fabric-loader-0.19.5-26.3`。
+///   而 IEML 自己的规范（ADR-055，`domain/naming.rs`）是
+///   `26.3-fabric-0.19.5` —— 前端建实例时用的正是后面这个（`versionLabel`）。
+///
+///   ⇒ 同一个版本在盘上长出**两个目录**：
+///     · `fabric-loader-0.19.5-26.3`（安装器写的，名字看着像"加载器"）
+///     · `26.3-fabric-0.19.5`（账本 slug 指向的那个，那时可能还不存在）
+///   而版本列表是**按盘上的目录**出行的（学 PCL 之后就是如此），于是那个
+///   "加载器目录"被当成一个**独立的、可启动的版本**列出来、还能被自动认领
+///   （`pickAutoAdopt`）—— 用户看到的就是"模组加载器被识别为了可启动游戏版本"。
+///
+///   以前只靠**下次开机**的目录规范化（`platform::canonical_dir_name_for`）
+///   去改名补锅，而那时规范名往往已经被账本 slug 对应的目录占了 ⇒
+///   去重之后变成 `26.3-fabric-0.19.5-2`（真机上就是这个形状）。
+///   ⇒ 现在**装的时候就写进规范目录**：一个版本一个目录，从第一秒起就是对的。
+///
+/// ★ 返回 `None`：加载器名认不出（或 MC 版本号是坏的）—— 调用方**保持原名**，
+///   不许猜一个名字出来（猜错等于把版本写到别人的目录里）。
+pub fn canonical_loader_dir_name(
+    mc_version: &str,
+    loader_kind: &str,
+    loader_version: &str,
+) -> Option<String> {
+    let kind = crate::domain::types::BaseLoaderKind::parse(loader_kind)?;
+    let parts = crate::domain::naming::VersionParts {
+        mc_version: mc_version.to_string(),
+        loader: Some((kind, loader_version.to_string())),
+        addons: Vec::new(),
+    };
+    crate::domain::naming::version_dir_name(&parts)
+}
+
+/// 把**父版本（原版）的版本描述**写进它自己的目录（`versions/<mc>/<mc>.json`）。
+///
+/// ★★★★ 2026-10-08（用户）：「出现了一个**不可用的原版**和一个模组加载器」。
+///
+///   盘上那两个"不可用"是同一件事的两半：客户端 jar 落在
+///   `versions/26.3/26.3.jar`（见 `plan_download_tasks` ①），而**版本描述**
+///   只写进了合并后的加载器目录。于是：
+///     · `versions/26.3/` 里只有 jar、没有 `26.3.json` ⇒ 列表说
+///       「缺少版本描述文件」（那个原版永远起不来）；
+///     · 加载器目录里的 JSON 写着 `inheritsFrom: 26.3`，而父版本的描述不在
+///       ⇒ 列表说「缺少前置版本 26.3」（连我们自己的版本也起不来）。
+///   两句都是判据**如实**说出来的，错的是"我们没把该写的写上"。
+///
+///   ★ 这一步 `scan_folder_versions` 的判据 ③（PCL 的 `McInstance.Check()`）
+///     与启动时的 `merge_with_parents` **都要用** —— 它们读的是同一份事实。
+///   ★ Forge / NeoForge 那条路**已经**保证了这个前置：它装的就是原版 JSON
+///     （`merged` = 原版），跑完安装器还会校验父版本在不在，缺了直接报错
+///     「请先安装原版」。Fabric / Quilt 走 profile 合并这条路从来没有这一步 ——
+///     这就是"两条路行为不一致"的那个通用性问题。
+///
+/// ★ 幂等：**已经有了就不动**（用户可能自己修过它，覆盖 = 把用户的盘当成我们的）。
+/// ★ 返回是否真的写了（调用方据此写一行日志）。
+fn ensure_parent_version_json(
+    paths: &crate::platform::AppPaths,
+    mc_version: &str,
+    vanilla: &VersionJson,
+) -> bool {
+    let dir = paths.instances.join(mc_version);
+    let path = dir.join(format!("{mc_version}.json"));
+    if path.is_file() {
+        return false;
+    }
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        say!("[IEML/install] 建原版目录失败（{mc_version}）：{e}");
+        return false;
+    }
+    match serde_json::to_string_pretty(vanilla) {
+        Ok(text) => match std::fs::write(&path, text) {
+            Ok(_) => true,
+            Err(e) => {
+                say!("[IEML/install] 写原版版本描述失败（{}）：{e}", path.display());
+                false
+            }
+        },
+        Err(e) => {
+            say!("[IEML/install] 序列化原版版本描述失败：{e}");
+            false
+        }
+    }
 }
 
 /// 组装安装输入：原版 JSON + 加载器 JSON 的合并
@@ -3163,9 +3323,72 @@ async fn build_plan_input(
         .await
         .map_err(err)?;
 
-    // 加载器：Fabric / Quilt 用 profile JSON 直接合并；Forge / NeoForge 只能跑安装器
-    let merged = match loader_kind {
-        None | Some("") => vanilla,
+    /*
+     * ★★ 装加载器 ⇒ 盘上会多出一个**继承原版**的版本。
+     *   那它的父版本（原版）的版本描述就必须在 —— 见
+     *   `ensure_parent_version_json` 的长注释（用户看到的两句"不可用"都是这里缺东西）。
+     *
+     *   ★ 放在**合并之前**：`vanilla` 一会儿会被 move 进合并结果里（合并是要读它的）。
+     *   ★ Forge 系那条路本来也会写这一份（它装的就是原版 JSON），这里先写等于
+     *     把一个"两条路不一致"的地方抹平了：谁装加载器，父版本描述都先落盘。
+     *     顺带还堵住一个坑：`installer::install` 的"半成品自检"要是先跑，
+     *     会看到这个只有 jar 的原版目录 —— 判据有了它就不会动那个目录
+     *     （真机上 `versions/26.3/` 里就有 41 MB 的客户端 jar）。
+     */
+    let has_loader = loader_kind.is_some_and(|k| !k.is_empty());
+    /*
+     * ★★★★ 2026-10-08（用户）：「按理来说，**原版是作为基座的**，而不是单独的一个版本；
+     *   只有**真的只下载原版**时，才是独立的版本」。
+     *
+     *   ⇒ 装加载器时，顺手装上的那个原版目录要**标成基座**
+     *     （`AppPaths::mark_version_as_base` → `versions/<mc>/.ieml/base.json`）：
+     *     它从此不列行、不计数、不自动认领、不长账本记录 —— 但它仍然是那个
+     *     加载器版本的继承基座（客户端 jar 就在里面，启动照用）。
+     *
+     *   ★ 判据只有一条：**这次装之前，它有没有自己的版本描述**。
+     *     · 没有 ⇒ 是这次顺手装上的 ⇒ 标基座；
+     *     · 有   ⇒ 用户先前**单独装过**原版（或者它本来就自己说得清自己是谁）
+     *             ⇒ **一个字节都不动**，那是他的独立版本。
+     *   这一条把用户那两句话逐字落成了代码。
+     *
+     *   ★ 反过来：**不带加载器**的安装（用户在下载页点了「原版」）撤掉这个记号 ——
+     *     他明确要了原版，它从此是独立版本。
+     */
+    let vanilla_dir = state.paths().instances.join(mc_version);
+    let vanilla_json = vanilla_dir.join(format!("{mc_version}.json"));
+    if has_loader {
+        let had_own_json = vanilla_json.is_file();
+        if ensure_parent_version_json(&state.paths(), mc_version, &vanilla) {
+            say!(
+                "[IEML/install] 原版 {mc_version} 的版本描述已补进 versions/{mc_version}/\
+                 （加载器版本的前置；PCL 与启动时的 merge_with_parents 都要读它）"
+            );
+        }
+        if !had_own_json
+            && state
+                .paths()
+                .mark_version_as_base(mc_version, "（本次安装的加载器版本）")
+        {
+            say!(
+                "[IEML/install] versions/{mc_version}/ 是这次顺手装上的**基座**（不是独立版本）\
+                 —— 已记一份 `.ieml/base.json`：列表里不单独列行，但加载器版本照用它"
+            );
+        }
+    } else if state.paths().clear_base_marker(mc_version) {
+        say!(
+            "[IEML/install] 用户明确要原版 {mc_version} ⇒ 撤掉它的基座记号，它从现在起是独立版本"
+        );
+    }
+
+    /*
+     * 加载器：Fabric / Quilt 用 profile JSON 直接合并；Forge / NeoForge 只能跑安装器。
+     *
+     * ★ 第二个返回值是**这个合并结果该写进哪个目录**（`None` = 保持 profile 自带的 id）。
+     *   只有"合并了别的 profile"这条路才有第二个名字 —— Forge 系拿到的就是原版 JSON，
+     *   它的目录名**必须**是 MC 版本号（原版就住在那儿，不能改成加载器目录）。
+     */
+    let (mut merged, canonical_dir) = match loader_kind {
+        None | Some("") => (vanilla, None),
         Some("fabric") => {
             let lv = match loader_version {
                 Some(v) if !v.is_empty() => v.to_string(),
@@ -3179,7 +3402,8 @@ async fn build_plan_input(
             let profile = metadata::fabric_profile(mc_version, &lv, source)
                 .await
                 .map_err(err)?;
-            installer::merge_versions(&profile, &vanilla)
+            let name = canonical_loader_dir_name(mc_version, "fabric", &lv);
+            (installer::merge_versions(&profile, &vanilla), name)
         }
         Some("quilt") => {
             let lv = match loader_version {
@@ -3194,16 +3418,32 @@ async fn build_plan_input(
             let profile = metadata::quilt_profile(mc_version, &lv, source)
                 .await
                 .map_err(err)?;
-            installer::merge_versions(&profile, &vanilla)
+            let name = canonical_loader_dir_name(mc_version, "quilt", &lv);
+            (installer::merge_versions(&profile, &vanilla), name)
         }
         Some("forge") | Some("neoforge") => {
             // Forge 系不能靠 profile JSON，必须跑官方 installer。
             // 这里先返回原版 JSON（装原版），installer 在 install_version 里
             // 装完原版后执行（run_loader_installer）。
-            vanilla
+            (vanilla, None)
         }
         Some(other) => return Err(format!("不认识的加载器：{other}")),
     };
+
+    /*
+     * ★★ 合并结果**写进 ADR-055 规范目录**（见 `canonical_loader_dir_name` 的长注释）。
+     *   认不出名字时（`None`，比如加载器名是坏的）保持 profile 自带的 id ——
+     *   宁可名字难看，也不要把它写进一个我们猜出来的目录。
+     */
+    if let Some(name) = canonical_dir {
+        if merged.id != name {
+            say!(
+                "[IEML/install] 合并版本写进规范目录：{} → {name}（ADR-055，一个版本一个目录）",
+                merged.id
+            );
+            merged.id = name;
+        }
+    }
 
     Ok(PlanInput {
         version: merged,
@@ -3678,6 +3918,16 @@ fn resolve_loader_version_id(
     //   兜底逻辑（③ 扫描）本来就能找到它，所以这里只是把"名字里带这个加载器版本"
     //   的目录也纳入精确命中，让命中率更高、更少走扫描。
     if let Some(v) = loader_version.filter(|v| !v.is_empty()) {
+        /*
+         * ★★★★ 2026-10-08：**规范目录名排在前面**。
+         *
+         *   安装侧现在把合并结果写进 ADR-055 规范目录
+         *   （`canonical_loader_dir_name`：`{mc}-fabric-{ver}`），而这里原来只认
+         *   profile 自带的那个 PCL 写法（`fabric-loader-{ver}-{mc}`）。
+         *   只留旧写法的话，每次启动都要走一遍 ① 的目录扫描 —— 能work，
+         *   但"安装说 A、启动先找 B"这种两套名字正是这个仓库反复栽跟头的地方。
+         *   ⇒ 两个都留着（旧目录是**历史遗留**，用户盘上还有），规范名优先。
+         */
         let exact: Vec<String> = match kind {
             "forge" => vec![format!("{mc_version}-forge-{v}")],
             "neoforge" => vec![
@@ -3685,8 +3935,14 @@ fn resolve_loader_version_id(
                 format!("neoforge-{mc_version}-{v}"),
                 format!("neoforge-{v}"),
             ],
-            "fabric" => vec![format!("fabric-loader-{v}-{mc_version}")],
-            "quilt" => vec![format!("quilt-loader-{v}-{mc_version}")],
+            "fabric" => vec![
+                format!("{mc_version}-fabric-{v}"),
+                format!("fabric-loader-{v}-{mc_version}"),
+            ],
+            "quilt" => vec![
+                format!("{mc_version}-quilt-{v}"),
+                format!("quilt-loader-{v}-{mc_version}"),
+            ],
             _ => vec![],
         };
         for id in exact {
@@ -6738,6 +6994,25 @@ pub fn scan_folder_versions(paths: &crate::platform::AppPaths) -> Vec<FolderVers
             continue;
         }
         let dir = e.file_name().to_string_lossy().to_string();
+        /*
+         * ★★★★ 2026-10-08（用户）：「按理来说，**原版是作为基座的**，而不是单独的一个
+         *   版本；只有真的只下载原版时，才是独立的版本」。
+         *
+         *   装「26.3 + Fabric」时顺手装上的那个原版目录会被标成**基座**
+         *   （`versions/26.3/.ieml/base.json`，见 `platform::BASE_MARKER_NAME`），
+         *   这里把它**当作不存在**：不列行、不计数、不自动认领、不补账本记录。
+         *   它仍然是那个加载器版本的继承基座（客户端 jar 就在里面），启动照用。
+         *
+         *   ★ 这是"盘上每个文件夹都列出来"那条 PCL 规矩的**唯一例外**，
+         *     而且例外只认**我们自己写下的意图**（记号文件），不靠猜 ——
+         *     基座与独立版本在磁盘上长得一模一样（同样的 `26.3.json` + `26.3.jar`），
+         *     能分开它们的只有"那次是谁要的"。
+         *   ★ 用户明确装过原版（不带加载器）时，`build_plan_input` 会把记号清掉，
+         *     它下一轮就会重新出现在列表里。
+         */
+        if paths.is_base_version(&dir) {
+            continue;
+        }
         /*
          * ★★★★ 2026-09-30（用户）：「**这个检测版本，太抽象了，不然咱们学学 PCL 怎么整的**」
          *   —— 两条都按 PCL 来：**盘上每个文件夹都列出来**，判据用"有可用 JSON 就行"。
@@ -10495,6 +10770,80 @@ mod wire_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /* ---------- ★★ 2026-10-08：一个版本一个目录（安装侧与启动侧同一套名字） ---------- */
+
+    /// ★★★★ 合并后的加载器版本**写进 ADR-055 规范目录**。
+    ///
+    ///   用户 2026-10-08 报的「**模组加载器被识别为了可启动游戏版本**」的根因是：
+    ///   安装器拿 Fabric profile **自带的 `id`**（PCL 写法
+    ///   `fabric-loader-0.19.5-26.3`）当目录名，于是同一个版本在盘上长出两个目录 ——
+    ///   版本列表按目录出行，那个"加载器目录"就成了一个独立可启动的版本。
+    ///
+    ///   ★ 这条同时守着**跨语言一致**：前端的 `versionDirName` 算出来的必须是同名
+    ///     （`tests/naming.test.mjs` 喂同一张用例表给两边）。
+    #[test]
+    fn merged_loader_version_lands_in_the_adr_055_directory() {
+        assert_eq!(
+            canonical_loader_dir_name("26.3", "fabric", "0.19.5").as_deref(),
+            Some("26.3-fabric-0.19.5"),
+            "★ 规范名以 MC 版本开头（PCL 那种 fabric-loader-… 排在一起是不对的）"
+        );
+        assert_eq!(
+            canonical_loader_dir_name("1.20.1", "forge", "47.2.0").as_deref(),
+            Some("1.20.1-forge-47.2.0")
+        );
+        assert_eq!(
+            canonical_loader_dir_name("1.21.1", "quilt", "0.27.0").as_deref(),
+            Some("1.21.1-quilt-0.27.0")
+        );
+        assert_eq!(
+            canonical_loader_dir_name("26.3", "fabric", "").as_deref(),
+            Some("26.3-fabric"),
+            "没给加载器版本号时不硬凑一个空尾巴"
+        );
+        // ★ 认不出的加载器名 → `None`（调用方**保持原名**，绝不猜一个目录出来）
+        assert_eq!(canonical_loader_dir_name("26.3", "optifine", "X"), None);
+        assert_eq!(canonical_loader_dir_name("", "fabric", "0.19.5"), None);
+    }
+
+    /// 启动侧的精确命中要**认规范目录**，而且排在旧的 PCL 写法前面。
+    ///
+    ///   ★ 为什么必须有这条：安装侧改了目录名，启动侧却只认旧名字的话，
+    ///     每次启动都要退到"扫一遍 versions/ 猜一个"那条路 —— 能work，
+    ///     但"安装说 A、启动先找 B"正是这个仓库反复栽跟头的地方。
+    #[test]
+    fn launch_finds_the_canonical_loader_dir_before_the_pcl_style_one() {
+        let root = std::env::temp_dir().join(format!("ieml-canon-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let versions = root.join("versions");
+
+        let fabric = r#"{"id":"{id}","mainClass":"net.fabricmc.loader.impl.launch.knot.KnotClient","inheritsFrom":"26.3","libraries":[{"name":"net.fabricmc:fabric-loader:0.19.5"}]}"#;
+        for id in ["26.3", "26.3-fabric-0.19.5", "fabric-loader-0.19.5-26.3"] {
+            let dir = versions.join(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            let text = if id == "26.3" {
+                r#"{"id":"26.3","mainClass":"net.minecraft.client.main.Main","libraries":[]}"#.to_string()
+            } else {
+                fabric.replace("{id}", id)
+            };
+            std::fs::write(dir.join(format!("{id}.json")), text).unwrap();
+        }
+
+        assert_eq!(
+            resolve_loader_version_id(&root, "26.3", Some("fabric"), Some("0.19.5"), &[]).as_deref(),
+            Some("26.3-fabric-0.19.5"),
+            "★ 规范目录优先（旧目录是历史遗留，仍然要能找到 —— 见下一条）"
+        );
+        // ★ 老用户盘上只有 PCL 写法时，照样找得到（不许因为改了名字就找不到版本）
+        std::fs::remove_dir_all(versions.join("26.3-fabric-0.19.5")).unwrap();
+        assert_eq!(
+            resolve_loader_version_id(&root, "26.3", Some("fabric"), Some("0.19.5"), &[]).as_deref(),
+            Some("fabric-loader-0.19.5-26.3"),
+            "历史遗留的 PCL 写法必须继续可用"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn finds_version_json_under_either_naming_convention() {
         let dir = std::env::temp_dir().join("ieml-test-findjson");
@@ -10962,6 +11311,67 @@ mod wire_tests {
         assert_eq!(loader_from_dir_name("neoforge-21.1.0").as_deref(), Some("neoforge"));
         assert_eq!(loader_from_dir_name("1.20.1-forge-47.2.0").as_deref(), Some("forge"));
         assert_eq!(loader_from_dir_name("1.20.1").as_deref(), None);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// ★★★★ 2026-10-08（用户）：「按理来说，**原版是作为基座的**，而不是单独的一个
+    ///   版本；**只有真的只下载原版时，才是独立的版本**」。
+    ///
+    ///   装「26.3 + Fabric」顺手装上的原版目录带着 `.ieml/base.json` ⇒
+    ///   列表要**当作它不存在**（不列行、不计数、不参与"能启动的版本"那组）。
+    ///   撤掉记号（用户明确装了一次原版）⇒ 它立刻重新出现。
+    ///
+    ///   ★ 这条是"盘上每个文件夹都列出来"那条 PCL 规矩的唯一例外，
+    ///     所以必须有判据守着：例外失效 = 用户又看到那个多余的原版行。
+    #[test]
+    fn folder_versions_hide_a_base_version_and_show_it_once_the_user_asks_for_it() {
+        let base = std::env::temp_dir().join(format!("ieml-base-scan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let mut paths = crate::platform::AppPaths::from_root(base.clone());
+        paths.own_root = base.join("own");
+        paths.ensure().unwrap();
+        let versions = paths.instances.clone();
+
+        // 加载器版本（有 json、inheritsFrom 指回原版）
+        let loader = versions.join("26.3-fabric-0.19.5");
+        std::fs::create_dir_all(&loader).unwrap();
+        std::fs::write(
+            loader.join("26.3-fabric-0.19.5.json"),
+            r#"{"id":"26.3-fabric-0.19.5","inheritsFrom":"26.3","mainClass":"KnotClient"}"#,
+        )
+        .unwrap();
+        // 原版基座
+        let vanilla = versions.join("26.3");
+        std::fs::create_dir_all(&vanilla).unwrap();
+        std::fs::write(
+            vanilla.join("26.3.json"),
+            r#"{"id":"26.3","mainClass":"net.minecraft.client.main.Main"}"#,
+        )
+        .unwrap();
+
+        let dirs = |p: &crate::platform::AppPaths| -> Vec<String> {
+            scan_folder_versions(p).into_iter().map(|v| v.dir).collect()
+        };
+
+        // ① 还没标基座：两条都在（这就是用户现在看到的样子）
+        assert_eq!(dirs(&paths).len(), 2, "没记号时两条都列");
+
+        // ② 标成基座 ⇒ 原版不再是一个版本
+        assert!(paths.mark_version_as_base("26.3", "26.3-fabric-0.19.5"));
+        assert_eq!(
+            dirs(&paths),
+            vec!["26.3-fabric-0.19.5".to_string()],
+            "★ 基座不列行（它是加载器版本的底座，不是独立版本）"
+        );
+        // ★ 但它仍然是**能启动的**：加载器版本那条的 inherits 还指着它
+        let got = scan_folder_versions(&paths);
+        assert_eq!(got[0].inherits, "26.3");
+        assert!(got[0].ok, "基座在盘上 ⇒ 加载器版本照样可用");
+
+        // ③ 用户明确装了一次原版 ⇒ 撤记号 ⇒ 它重新是一个独立版本
+        assert!(paths.clear_base_marker("26.3"));
+        assert_eq!(dirs(&paths).len(), 2, "撤掉记号后它回来了");
 
         let _ = std::fs::remove_dir_all(&base);
     }

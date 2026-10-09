@@ -125,6 +125,75 @@ export function instanceFromFolderVersion(
 }
 
 /**
+ * 把某个版本目录名**记进墓碑**（`prefs.deletedVersions`）。
+ *
+ *   返回一份**新的**数组（`slice(-200)` = 最多留最近 200 条，
+ *   免得一个用了两年的列表无限长；超出的是最老的记录，
+ *   而"删了又回来"只会发生在刚删完之后）。
+ *
+ * ★ 比较用大小写无关：Windows 上 `Fabric-1` 与 `fabric-1` 是同一个目录，
+ *   只按字节比会让墓碑挡不住大小写不同的那一条。
+ *
+ * ★★ 2026-10-08：从 `AppContext.tsx` **搬到这里**（那边是 `.tsx`，跑不进
+ *   `node --test`，于是 `burySlug` / `unburySlug` 这一对判据谁都测不到）。
+ *   两条删除路径都调它 —— 谁删版本目录谁就调它，判据只有一份。
+ */
+export function burySlug(slug: string, current: readonly string[]): string[] {
+  const lower = slug.toLowerCase();
+  const rest = current.filter((s) => s.toLowerCase() !== lower);
+  return [...rest, slug].slice(-200);
+}
+
+/**
+ * 把某个版本目录名**从墓碑里撤掉**（`unbury`）—— 与 [`burySlug`] 是一对。
+ *
+ * ★★★★ 2026-10-08（用户第二次报同一个症状）：
+ *
+ *   「下载带模组加载器的版本，会出现一个原版和一个模组加载器版本，
+ *     并且模组加载器版本的 mc 还没办法收藏」
+ *
+ * ## 为什么"重新装一次"会得到一条**没有记录**的版本
+ *
+ *   用户在更早的轮次里删过 `26.3-fabric-0.19.5`（**墓碑里留着这个名字**；
+ *   真机实测：22 条墓碑里 21 条指向的目录确实不在了，只有这一条"目录还在"）。
+ *   这一轮他重新装了同一个版本：
+ *     · 安装器老老实实把文件写回 `versions/26.3-fabric-0.19.5/` ✓
+ *     · 前端也建了记录、写进账本 ✓
+ *     · 而 `list_instances` **按墓碑过滤账本**（那是 2026-09-30 为"诈尸"加的），
+ *       于是**每一次读**都把这条记录滤掉，还把过滤后的结果**写回文件** ⇒
+ *       刚装好的版本在账本里彻底消失。
+ *   ⇒ 行上没有记录 ⇒ **收藏星是禁用的**（收藏状态就存在记录上，"没有地方存"），
+ *     版本名退回目录名，连身份小抄都拿不到（`ensure_instance_marker`
+ *     只在账本里真有这条时合成）。
+ *
+ * ## 规则
+ *
+ *   **账本里出现了某个 slug 的记录 ⇒ 那个名字的墓碑作废。**
+ *   "用户删过它"这个前提，已经被"用户又把它装回来了"推翻；
+ *   两边不清干净的话，账本与墓碑会**永远互相否定**（读一次丢一次）。
+ *
+ * ★ 为什么不做成"目录存在就撤墓碑"（那样更省事）：那正是 ADR-060 记着的
+ *   "诈尸"（删了又回来）。**只有"账本里真有这条记录"才撤** ——
+ *   记录是"用户明确要它"的产物（安装 / 建实例 / 复制实例都会写账本）。
+ * ★ 返回新数组；不在墓碑里就返回原数组（调用方据此决定要不要落盘）。
+ */
+export function unburySlug(slug: string, current: readonly string[]): string[] {
+  return unburySlugs([slug], current);
+}
+
+/**
+ * 同 [`unburySlug`]，一次撤掉一组名字 —— 写账本前用它（一份账本里可能有好几条）。
+ *
+ * ★ 返回原数组（`===`）表示"一条都没撤"，调用方据此跳过写盘。
+ * ★ 大小写无关（与 `burySlug` 同一条规矩）。
+ */
+export function unburySlugs(slugs: readonly string[], current: readonly string[]): string[] {
+  const lower = new Set(slugs.map((s) => s.toLowerCase()));
+  const kept = current.filter((s) => !lower.has(s.toLowerCase()));
+  return kept.length === current.length ? (current as string[]) : kept;
+}
+
+/**
  * **该不该自动认领一个版本？** 返回要认领的那一个；不该认领时 `null`。
  *
  * ★★ 2026-09-29（用户：「当没有版本时，下载第一个版本**不会自动选择那个仅有的版本**」）：
@@ -141,9 +210,31 @@ export function instanceFromFolderVersion(
  *   所以它要被记下来（写进 `prefs.json` 的 `deletedVersions`），
  *   而不能只靠"账本里现在没有"来推断。
  *
+ * ★★★★ 2026-10-08（用户）：「下载一个带模组加载器的版本时……出现了一个不可用的
+ *   原版和一个模组加载器（单独建立的文件夹）……**甚至模组加载器被识别为了
+ *   可启动游戏版本**」。
+ *
+ *   旧判据是 `hasJson` —— 只要目录里有一份版本描述就算数。而**安装进行到一半**
+ *   的目录正好长这样：`versions/<加载器目录>/<它的>.json` 已经落下（安装器是
+ *   "先写描述、再下文件"），可它的**前置版本还不齐**、jar 也还没下完 ——
+ *   列表那边明明是"不能用的版本"（`ok = false`，收在折叠里），
+ *   自动认领却把它当成唯一可启动的版本**认领下来**：
+ *     · 认领 = 往账本里写一条记录（`config.slug` = 那个加载器目录名），
+ *       而收藏状态就存在这条记录上 ⇒ **用户真正要用的那个版本反而没记录、
+ *       星星是禁用的**（他报的"那个正确版本无法被收藏"）；
+ *     · 而且 `pickAutoAdopt` 只在"账本里一个实例都没有"时跑，
+ *       这一条占住之后，正确的那个版本**再也不会被自动认领**。
+ *   ⇒ 判据与**版本列表**对齐：只认领 `ok === true`（能启动）的版本 ——
+ *     "能不能用"这件事只有一份判据（`scan_folder_versions` 算好的那个 `ok`），
+ *     界面显示它、自动认领也判它，两边不许各有一套。
+ *
+ *   ★ 另有一条同源的闸门在调用方（`AppContext`）：**安装进行中不认领** ——
+ *     盘上那些目录此刻是半成品，那是"还没装完"，不是"用户有一个版本"。
+ *
  * 四条边界（都是"不许替用户做决定"）：
  *   · **账本里只要有实例就不认领** —— 有实例说明账本是好的，绝不改写用户的选择；
- *   · 只认领**能在启动器里启动的**（`hasJson`）版本 —— 只有目录、没有 json 的不算；
+ *   · 只认领**能在启动器里启动的**（`ok`）版本 —— 只有目录、没有 json、
+ *     或者缺前置版本的都不算（`ok` 就是那件事的结论）；
  *   · **被用户删过的不认领**（墓碑，大小写无关 —— Windows 上 `Fabric` 与 `fabric`
  *     是同一个目录）；
  *   · 多个时取**文件夹顺序的第一个**（与版本列表的显示顺序一致，用户看得见是哪一条）。
@@ -156,7 +247,7 @@ export function pickAutoAdopt(
   if (instances.length > 0) return null;
   const buried = new Set(deletedVersions.map((s) => s.toLowerCase()));
   const candidates = (folderVersions ?? []).filter(
-    (v) => v.hasJson && !buried.has(v.dir.toLowerCase()),
+    (v) => v.ok && !buried.has(v.dir.toLowerCase()),
   );
   return candidates[0] ?? null;
 }

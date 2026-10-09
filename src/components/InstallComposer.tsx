@@ -22,9 +22,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Chip, CustomSelect, Note, SearchBox, Segmented, Skeleton, Spinner } from '../ui';
 import { defaultInstanceName } from '../state/instance-name';
-import { versionDirName } from '../domain/naming.ts';
+import { uniqueDirName, versionDirName } from '../domain/naming.ts';
 import { useApp } from '../state/AppContext';
-import { IconAlert, IconCheck, IconChevronDown, IconChevronRight, IconInfo, IconPlus, IconRefresh } from '../ui/Icons';
+import { useBackTarget } from '../state/back-nav';
+import { IconAlert, IconCheck, IconChevronDown, IconInfo, IconPlus, IconRefresh } from '../ui/Icons';
 import {
   BASE_LOADER_NAME,
   ADDON_DESC,
@@ -830,8 +831,8 @@ export function InstallComposer({
        *   现在 `installGame` 返回三态，暂停时**什么都不说**（流程内部已经
        *   发过一条"已暂停，可继续"的提示），也不建实例。
        */
-      if (outcome === 'paused') return;
-      if (outcome !== 'done') {
+      if (outcome.outcome === 'paused') return;
+      if (outcome.outcome !== 'done') {
         toast('err', '安装没完成', '看顶栏任务中心的失败原因，可以重试。');
         return;
       }
@@ -840,7 +841,7 @@ export function InstallComposer({
          反过来的话，安装失败会在版本列表里留下一个永远起不来的空壳。 */
 
       /*
-       * ★ slug 必须**全局唯一** —— 它是磁盘目录名。
+       * ★★ slug 必须**全局唯一** —— 它是磁盘目录名。
        *
        * 实测踩过：连装两次同一个版本，得到两个实例
        *   name: "Minecraft 26.2" / "Minecraft 26.2 (2)"   ← 显示名区分了
@@ -854,13 +855,32 @@ export function InstallComposer({
        *   同一个 MC 版本换一个 Forge 构建，目录名还是一样（照样会撞），
        *   而且看不出加载器版本。现在名字与目录一一对应，
        *   去重只可能发生在"真的同名"上。
+       *
+       * ★★★★ 2026-10-08（用户：「**那个正确版本无法被收藏**」）：
+       *   slug **优先取后端写盘时用的那个目录名**（`versionDir`），
+       *   `versionLabel` 只当兜底。
+       *
+       *   为什么这条很要紧：收藏状态存在账本记录上，而版本列表的行与记录是靠
+       *   **目录名 == slug** 对上的（`VersionsPage` 里那句 `find`）。
+       *   前端自己拼的名字与安装器实际写盘的名字只要差一个字
+       *   （真机上就有 `fabric-loader-0.19.5-26.3` 与 `26.3-fabric-0.19.5`
+       *   两个名字），这条记录就指向一个**不存在的目录** ——
+       *   行上没有记录 ⇒ 星星是禁用的（"无法被收藏"），
+       *   而下次启动的目录归置还会把这条记录当"空记录"清掉。
+       *   ⇒ **名字由写盘的人说了算**，前端不再自己算（`versionLabel` 仍然
+       *     是"装之前给用户看的建议名"，它和规范名同源，但不该当账本键）。
        */
-      const baseSlug = versionLabel;
-      const takenSlugs = new Set(state.instances.map((i) => i.config.slug));
-      let slug = baseSlug;
-      for (let n = 2; takenSlugs.has(slug); n++) {
-        slug = `${baseSlug}-${n}`;
-      }
+      const baseSlug = outcome.versionDir?.trim() || versionLabel;
+      /*
+       * ★ 去重走 `uniqueDirName`（`domain/naming.ts`，Rust 同名函数的镜像、有跨语言
+       *   用例表），**不在这里再写一遍 `for (n=2; ...)`** —— 那种手写循环
+       *   真机上咬过人：它按**大小写敏感**比较，于是 `Fabric` 与 `fabric`
+       *   两个实例落进同一个目录（Windows 上它们是同一个目录）。
+       */
+      const slug = uniqueDirName(
+        baseSlug,
+        state.instances.map((i) => i.config.slug),
+      );
 
       const inst: Instance = {
         id: `inst-${Date.now().toString(36)}`,
@@ -1087,6 +1107,18 @@ export function InstallComposer({
   }, [step, onStepChange]);
   /* 组件卸载（换页签/离开下载页）时也要把外层那个标记复位，否则回来只剩一屏 */
   useEffect(() => () => onStepChange?.(false), [onStepChange]);
+
+  /*
+   * ★★★★ 2026-10-09（用户）：「所有页面的返回按钮做一个固定位置，不然很麻烦」。
+   *
+   *   第 2 屏（模组加载器）原来在**自己的页头里**画了一个「← 返回」——
+   *   而它上面还压着下载页的页头（用户明确要求那个页头常驻），
+   *   于是这个返回按钮比别的页面**低整整一个页头**（真机量过差 60px）。
+   *   ⇒ 现在不在页头里画了：这一屏只**登记**"我能回版本清单"，
+   *     按钮由外壳画在顶栏那一个固定位置。第 1 屏（版本清单）没有上一层，
+   *     所以传 `null` ⇒ 顶栏那个按钮收起来。
+   */
+  useBackTarget(step === 'loader' ? { to: '版本清单', onClick: () => setStep('version') } : null);
 
   /* ====================== 渲染 ======================
    *
@@ -2004,12 +2036,7 @@ export function InstallComposer({
       <div className="gw-full">
         <div className="page-head">
           <div>
-            <div className="row" style={{ gap: 'var(--space-2)', alignItems: 'center' }}>
-              <Button size="sm" variant="ghost" onClick={() => setStep('version')}>
-                <IconChevronRight className="gw-back" /> 返回
-              </Button>
-              <h1 className="page-title">模组加载器</h1>
-            </div>
+            <h1 className="page-title">模组加载器</h1>
             <p className="page-desc">
               装到 <b className="mono">{mcVersion}</b> · {pickedChannel}
               {pickedRow?.released_at ? ` · ${pickedRow.released_at.slice(0, 10)}` : ''}

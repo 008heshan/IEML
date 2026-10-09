@@ -38,6 +38,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Chip, CustomSelect, Modal, Note, Segmented, Spinner } from '../ui';
 import { IconChevronRight, IconDownload, IconGrid, IconRefresh, IconRows, IconSearch } from '../ui/Icons';
 import { groupKeyOf, useVersionGroups } from './resource-groups';
+import { Pager } from './Pager';
 import { filterVersionsForInstance } from './version-filter';
 import { useRealApi } from '../hooks/useRealApi';
 import { useApp } from '../state/AppContext';
@@ -500,7 +501,6 @@ export function ResourceCenterBody({
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /*
    * ★★ 中文别名（ADR-016）：命中词表时后端会给一句话（"按 jei 搜的"），
@@ -698,32 +698,31 @@ export function ResourceCenterBody({
   }, [api]);
 
   /**
-   * 取一页。
+   * 取**某一页**。
    *
-   * ★ `append = false` 是"换条件重搜"（要清空），`append = true` 是「加载更多」。
+   * ★★★★ 2026-10-08 晚：这里原来分两条路（`append=false` 换条件重搜 /
+   *   `append=true` 接着堆）—— 现在只剩一条：**每次都是"换一页"**。
+   *   理由见 `gotTo` 那段：分页条上写着"第 N 页"、玩家还能自己输入页码，
+   *   接着堆就会让那个数字变成假话（输入 5 得到的是"第 1 页 + 第 5 页"）。
+   *   ★ 顺带与**整合包那一页**统一：它一直就是整屏换掉。
    */
   const load = useCallback(
-    async (opts: { k: ResourceKindName; q: string; src: ResourceSourceName; offset: number; append: boolean }) => {
+    async (opts: { k: ResourceKindName; q: string; src: ResourceSourceName; offset: number }) => {
       if (!api) return;
       const mine = ++seq.current;
-      if (opts.append) {
-        setLoadingMore(true);
-      } else {
-        setLoading(true);
-        /*
-         * ★★ 2026-09-23 用户（截图）：「在比如 mod 页里，mod 加载出图片后，**切到资源包，
-         *   会继承到资源包**，其余那几个也是」——
-         *
-         *   原来的写法是"先把 loading 打开、等新结果回来再替换"，
-         *   于是**旧结果整段时间还挂在屏幕上**（连着上一页的封面图），
-         *   看起来就是"资源包页里显示的是 Mod"。
-         *
-         *   改成：**换条件重搜时立刻清空**（`append=false` 就是"换条件"），
-         *   让骨架屏接上 —— 用户看到的永远是"正在加载"，不是"上一页的内容"。
-         *   ★ 只有 `append=true`（加载更多）才保留已有结果，那是它的语义。
-         */
-        setHits([]);
-      }
+      setLoading(true);
+      /*
+       * ★★ 2026-09-23 用户（截图）：「在比如 mod 页里，mod 加载出图片后，**切到资源包，
+       *   会继承到资源包**，其余那几个也是」——
+       *
+       *   原来的写法是"先把 loading 打开、等新结果回来再替换"，
+       *   于是**旧结果整段时间还挂在屏幕上**（连着上一页的封面图），
+       *   看起来就是"资源包页里显示的是 Mod"。
+       *
+       *   改成：**立刻清空**，让骨架屏接上 —— 用户看到的永远是"正在加载"，
+       *   不是"上一页的内容"。翻页同理：翻到第 5 页时屏幕上不该还留着第 1 页那 20 张。
+       */
+      setHits([]);
       setError(null);
       try {
         const r = await api.modrinth.resourceSearch({
@@ -740,7 +739,7 @@ export function ResourceCenterBody({
           source: opts.src,
         });
         if (mine !== seq.current) return; // 迟到的结果丢掉
-        setHits((prev) => (opts.append ? [...prev, ...r.hits] : r.hits));
+        setHits(r.hits);
         setTotal(r.total_hits ?? r.hits.length);
         /*
          * ★★ 中文别名（ADR-016）：把"我拿什么去搜的"如实记下来，下面渲染成一句提示。
@@ -751,15 +750,10 @@ export function ResourceCenterBody({
       } catch (e) {
         if (mine !== seq.current) return;
         setError(e instanceof Error ? e.message : String(e));
-        if (!opts.append) {
-          setHits([]);
-          setTotal(0);
-        }
+        setHits([]);
+        setTotal(0);
       } finally {
-        if (mine === seq.current) {
-          setLoading(false);
-          setLoadingMore(false);
-        }
+        if (mine === seq.current) setLoading(false);
       }
     },
     [api, searchVersion, loaderForQuery],
@@ -777,39 +771,42 @@ export function ResourceCenterBody({
     setPage(1);
     setOpenProject(null);
     setVersions(null);
-    void load({ k: kind, q: query, src: source, offset: 0, append: false });
+    void load({ k: kind, q: query, src: source, offset: 0 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind, source, instance?.id, current?.key, searchVersion, loaderForQuery]);
 
-  const hasMore = hits.length < total;
+  /** 一共几页（分页条与 `gotTo` 都用它，所以只算一处） */
+  const pageCount = Math.max(1, Math.ceil((total > 0 ? total : hits.length) / PAGE));
 
 
   /**
-   * 跳到第 n 页（分页条的"上一页/下一页"都走这里）。
+   * 跳到第 n 页（分页条的「上一页 / 下一页 / 自己输入页码」都走这里）。
    *
-   * ★ 两个方向**语义不同**，所以这里必须分开写（见下面分页条的注释）：
-   *   · 往后（n > page）→ `append: true`，接着堆；
-   *   · 往回（n < page）→ `append: false`，清空重取第一屏。
-   * 用同一个 append 值会让"上一页"变成"把第 1 页接到最后面"。
+   * ★★★★ 2026-10-08 晚（用户：「加一个可以让玩家自己输入的地方来看玩家想要看的页」）：
+   *   **两个方向现在都是"换一页"**，不再是"往后接着堆"。
+   *
+   *   原来是 beta.30 写的"往后 `append:true`、往回 `append:false`"——
+   *   那时它还是个「加载更多」按钮，堆着看是它的语义。但现在分页条上写着
+   *   **"第 N 页"**、玩家还能**自己输入页码**，那个数字就成了一个承诺：
+   *   真机实测（这一轮的探针）：输入 5 之后列表从 20 张变成 **40 张**、
+   *   首行还是第 1 页那条 —— 也就是"第 5 页"下面挂着第 1 页的内容。
+   *   ⇒ 一次只显示一页：与**整合包那一页**（一直是整屏换掉）统一，
+   *     也让"输入 5 就是第 5 页"这句话真的成立。
+   *
+   *   ★ `canNext` 同样改成按**页码**算（原来是 `hits.length < total`，
+   *     接着堆时它几乎永远为真：最后一页也点得动，点下去是一片空白）。
    */
   async function gotTo(n: number) {
-    if (n < 1 || loadingMore) return;
-    const forward = n > page;
+    if (n < 1 || n > pageCount || loading) return;
     setPage(n);
-    await load({
-      k: kind,
-      q: query,
-      src: source,
-      offset: (n - 1) * PAGE,
-      append: forward,
-    });
+    await load({ k: kind, q: query, src: source, offset: (n - 1) * PAGE });
   }
 
   async function runSearch() {
     setPage(1);
     setOpenProject(null);
     setVersions(null);
-    await load({ k: kind, q: query, src: source, offset: 0, append: false });
+    await load({ k: kind, q: query, src: source, offset: 0 });
   }
 
   /* ---------- 展开某个项目的版本列表 ---------- */
@@ -1183,44 +1180,22 @@ export function ResourceCenterBody({
 
       {hits.length > 0 ? (
         /*
-         * ★★ 换成**整合包同款的分页条**（用户 2026-09-16："整合包的翻页不错，
-         *   给 mod / 资源包 / 光影 / 数据包 做同款"）。
+         * ★★ 与「整合包」那处**共用同一个 `Pager`**（用户 2026-09-16："整合包的翻页不错，
+         *   给 mod / 资源包 / 光影 / 数据包 做同款"；2026-10-08 晚又要求"优化排版 +
+         *   能自己输入页码" —— 那就是同一件事要改两处，于是这一轮把它抽成了组件）。
          *
-         *   原来是「加载更多（第 N 页）」一个按钮：只能往后走、**回不去**，
-         *   而且"已显示 40 / 18337"要玩家自己做除法。
-         *
-         *   ★ 接口语义没变（offset + append），但**两个方向必须分开**：
-         *     往后跳用 `append: true`（接着堆），
-         *     往回跳用 `append: false`（清空重取）——
-         *     否则"上一页"会把第 1 页接在最后面。
+         *   ★ 两个方向现在都由 `gotTo` 处理，语义是"换一页"（见那边的说明）。
          */
-        <div className="pager">
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={page <= 1 || loadingMore}
-            onClick={() => void gotTo(page - 1)}
-          >
-            上一页
-          </Button>
-          <span className="pager-info">
-            第 {page} / {Math.max(1, Math.ceil((total > 0 ? total : hits.length) / PAGE))} 页 · 共{' '}
-            {total > 0 ? total : hits.length} 个
-            {/* ★ 2026-09-26 用户：「资源下载，数据来源可以不写了」—— 这里原来还缀着来源名，一并去掉 */}
-          </span>
-          {loadingMore ? (
-            <Spinner label="正在加载…" />
-          ) : (
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={!hasMore}
-              onClick={() => void gotTo(page + 1)}
-            >
-              下一页
-            </Button>
-          )}
-        </div>
+        <Pager
+          page={page}
+          pageCount={pageCount}
+          total={total > 0 ? total : hits.length}
+          canPrev={page > 1 && !loading}
+          canNext={page < pageCount && !loading}
+          onPrev={() => void gotTo(page - 1)}
+          onNext={() => void gotTo(page + 1)}
+          onGo={(n) => void gotTo(n)}
+        />
       ) : null}
 
       {/*

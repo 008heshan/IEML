@@ -1112,6 +1112,35 @@ fn paused_result(
 ///
 /// ★ **不在安装阶段解压 natives**（见函数末尾的说明）：
 ///   解压跟着实例目录走，放在启动时做。
+/// 这个版本目录里是不是**用户的游戏数据**（存档 / Mod / 配置 / 启动器身份小抄）。
+///
+/// ★ 用途只有一个：安装前的"半成品目录"自检**不许把用户的数据当成残留删掉**
+///   （见 `install` 里那段"★ 2026-10-08（**破坏性**那条）"）。
+///
+/// ★ 判据是"**存在**"，不要求非空：空着的 `saves/` 也是"用户在这个版本里玩过"
+///   留下的形状（游戏会自己建），而漏判一次的代价是**删掉存档** ——
+///   这两种错的代价不对称，所以往"宁可少删"那一侧偏。
+///
+/// ★ `natives/`、`<版本>.jar`、`.part*` **不在**名单里：它们是下载/解压的产物，
+///   正是"半成品目录"的本来面目（真机上量到过 37 MB 的 `.part` 分片堆在版本目录里）。
+fn dir_holds_user_data(dir: &std::path::Path) -> bool {
+    const KEEP: &[&str] = &[
+        "saves",
+        "mods",
+        "config",
+        "resourcepacks",
+        "shaderpacks",
+        "datapacks",
+        "options.txt",
+        "servers.dat",
+        "logs",
+        "screenshots",
+        // ★ 启动器自己的那一层（`.ieml/`：natives、打包记录）—— 有它就说明这目录用过
+        crate::platform::LAUNCHER_SUBDIR,
+    ];
+    KEEP.iter().any(|name| dir.join(name).exists())
+}
+
 pub async fn install(input: &PlanInput, opts: InstallOptions) -> Result<InstalledVersion> {
     let shared = input.shared_root.clone();
     let instance = input.instance_dir.clone();
@@ -1157,6 +1186,23 @@ pub async fn install(input: &PlanInput, opts: InstallOptions) -> Result<Installe
      *   **没有同名 json 就把它整个删掉重来**。代价是可能重下几十 MB，
      *   换来的是"这份目录一定能被修好"。删之前只在 json 缺失时才动手，
      *   绝不动一份完好的版本。
+     *
+     * ★★★★ 2026-10-08（**破坏性**那条：不许把用户的存档当成"半成品"删掉）。
+     *
+     *   上面那条"整个删掉重来"是**为孤儿目录写的**（只有 jar / 只有几个 .part），
+     *   而 `input.version.id` 从 2026-10-08 起**就是规范目录名**
+     *   （`{mc}-{loader}-{ver}`，见 `canonical_loader_dir_name`）——
+     *   也就是**用户那个实例自己的目录**。那个目录里可能有
+     *   `saves/`（存档）、`mods/`、`options.txt`，而它的版本描述可能只是
+     *   丢了/还没写。这种情况下"删掉重下"= **把用户的存档删了**，
+     *   而且是在一次看起来只是"重新装一下"的操作里。
+     *
+     *   ⇒ 判据改成**先问"这里面是不是用户的游戏数据"**：
+     *     · 有游戏数据（或启动器写的身份小抄 `.ieml/`）⇒ **不删**。
+     *       版本描述下面第八行就会写上去，这份目录反而被修好了
+     *       （与 `platform::share_version_json_with_siblings` 同一个道理）；
+     *     · 真的是下载残留（只有 jar / `.part`）⇒ 照旧删掉重下。
+     *   一句话：**"没有版本描述"不等于"这份目录可以扔"**。
      */
     {
         let vid = &input.version.id;
@@ -1166,7 +1212,13 @@ pub async fn install(input: &PlanInput, opts: InstallOptions) -> Result<Installe
             let has_any = std::fs::read_dir(&vdir)
                 .map(|mut rd| rd.next().is_some())
                 .unwrap_or(false);
-            if has_any {
+            if has_any && dir_holds_user_data(&vdir) {
+                say!(
+                    "[IEML/installer] {vid} 里没有版本描述，但有游戏数据（存档/Mod/配置）\
+                     —— **不删**，这次只把版本描述补上：{}",
+                    vdir.display()
+                );
+            } else if has_any {
                 say!(
                     "[IEML/installer] {vid} 的目录里没有版本描述（半成品，起不来也修不好）\
                      —— 删掉重下：{}",
@@ -2367,6 +2419,101 @@ mod tests {
         assert!(names.contains(&"org.lwjgl:lwjgl-glfw:3.4.1"), "{names:?}");
         assert!(names.contains(&"net.fabricmc:fabric-loader:0.19.5"), "{names:?}");
         assert_eq!(m.main_class, "net.fabricmc.loader.impl.launch.knot.KnotClient");
+    }
+
+    /* ---------- ★★ 2026-10-08：安装前自检不许删用户的存档 ---------- */
+
+    /// `dir_holds_user_data` 的判据本身（纯函数，毫秒级）。
+    ///
+    /// ★ 两组都要有：**残留**（该删的）与**游戏数据**（绝不能删的）。
+    ///   只测一边的话，"判据写反了"照样全绿。
+    #[test]
+    fn user_data_judgment_separates_saves_from_download_leftovers() {
+        let base = std::env::temp_dir().join(format!("ieml-userdata-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+
+        // ① 下载残留：只有 jar 与分片 —— 可以删掉重下
+        let leftovers = base.join("leftovers");
+        std::fs::create_dir_all(&leftovers).unwrap();
+        std::fs::write(leftovers.join("1.20.1.jar"), b"JAR").unwrap();
+        std::fs::write(leftovers.join("1.20.1.jar.part.0"), b"PART").unwrap();
+        assert!(
+            !dir_holds_user_data(&leftovers),
+            "★ 只有 jar / .part 的目录是残留，应当允许删掉重下"
+        );
+
+        // ② 有存档 —— 一个字节都不许动
+        let with_saves = base.join("with-saves");
+        std::fs::create_dir_all(with_saves.join("saves")).unwrap();
+        assert!(dir_holds_user_data(&with_saves), "★ 有 saves/ 就是用户的存档，不许删");
+
+        // ③ 有 Mod（非空不非空都算）
+        let with_mods = base.join("with-mods");
+        std::fs::create_dir_all(with_mods.join("mods")).unwrap();
+        assert!(dir_holds_user_data(&with_mods), "★ mods/ 是用户的 Mod 目录，不许删");
+
+        // ④ 启动器写的身份小抄（`.ieml/`）—— 说明这个目录被用过
+        let with_marker = base.join("with-marker");
+        std::fs::create_dir_all(with_marker.join(crate::platform::LAUNCHER_SUBDIR)).unwrap();
+        assert!(dir_holds_user_data(&with_marker), "★ 有 .ieml/ 说明这版本用过，不许删");
+
+        // ⑤ 空目录：什么都不算（不值得为它动盘）
+        let empty = base.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert!(!dir_holds_user_data(&empty), "空目录没有数据可言");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// ★★★★ 回归（用户 2026-10-08 定性为**破坏性**的那条）：
+    ///   **安装前的"半成品"自检不许把用户的存档删掉。**
+    ///
+    ///   形状就是真机上那个：版本目录里**有 `saves/`、没有版本描述**。
+    ///   老代码会 `remove_dir_all` 整个目录 —— 存档跟着一起没。
+    ///   正确行为是：留下数据，把版本描述补上（这一次安装就把它修好了）。
+    ///
+    ///   ★ 这个夹具里一个要下的文件都没有（无库、无客户端、不下资源），
+    ///     所以它**不会联网** —— 判的是纯磁盘行为。
+    #[tokio::test]
+    async fn install_never_wipes_a_version_dir_that_holds_saves() {
+        let base = std::env::temp_dir().join(format!("ieml-keepsaves-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let shared = base.join("shared");
+        let dir = shared.join("versions").join("26.3-fabric-0.19.5");
+        let save = dir.join("saves").join("world");
+        std::fs::create_dir_all(&save).unwrap();
+        std::fs::write(save.join("level.dat"), b"SAVE").unwrap();
+        // 只有 jar、没有版本描述 —— 正是老代码判成"半成品"的形状
+        std::fs::write(dir.join("26.3-fabric-0.19.5.jar"), b"JAR").unwrap();
+
+        let version = vj(
+            "26.3-fabric-0.19.5",
+            vec![],
+            "net.fabricmc.loader.impl.launch.knot.KnotClient",
+        );
+        let input = PlanInput {
+            version,
+            shared_root: shared.clone(),
+            instance_dir: base.join("inst"),
+            source: Source::Bmclapi,
+            download_assets: false,
+        };
+        let mut opts = InstallOptions::new(2, super::super::download::CancelToken::new());
+        opts.download_assets = false;
+
+        install(&input, opts)
+            .await
+            .expect("没有要下的文件 —— 这次安装应当走完");
+
+        assert!(
+            save.join("level.dat").is_file(),
+            "★ 存档被删了 —— 这就是用户说的破坏性缺陷"
+        );
+        assert!(
+            dir.join("26.3-fabric-0.19.5.json").is_file(),
+            "★ 版本描述应当被补上（这一步才是「修好它」）"
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /* ---------- ★★ P0-3：暂停必须真的停下来、并且如实上报 ---------- */

@@ -19,7 +19,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-const { reducer, initialState, isInstanceRunning, runningInfo, runningCount, runningInstances } =
+const { reducer, initialState, isInstanceRunning, runningInfo, runningCount, runningInstances, hasRunningTask } =
   await import('../src/state/store.ts');
 
 /** 造一个最小可用的实例记录（测试只关心 id / 名字 / 运行态） */
@@ -128,4 +128,32 @@ test('未知实例 = 没在跑（null / undefined 都不许当真）', () => {
   assert.equal(isInstanceRunning(s, undefined), false);
   assert.equal(isInstanceRunning(s, 'nope'), false);
   assert.equal(runningInfo(s, null), null);
+});
+
+/* ====================== 「盘上还在变」—— 安装进行中的那道闸门 ======================
+ *
+ * ★★★★ 2026-10-08（用户）：「下载一个带模组加载器的版本时，会提示出现了一个不可用的
+ *   原版和一个模组加载器（单独建立的文件夹）……**甚至模组加载器被识别为了可启动游戏版本**」。
+ *
+ *   安装是**一边下一边往盘上写**的，那一刻版本列表看到的目录本来就是半成品。
+ *   `hasRunningTask` 是"现在别对盘下结论"那道闸门（`AppContext` 的自动认领用它）——
+ *   判据写错的后果是**永远不认领**（用户装完一个版本却启动不了），或者
+ *   **认领一个半成品**（用户报的那条），两种都不报错，所以必须由判据守着。
+ */
+test('★ 有安装任务在跑 = 盘上还在变（pending / running 都算）', () => {
+  assert.equal(hasRunningTask([]), false, '一条任务都没有 ⇒ 不在跑');
+  assert.equal(hasRunningTask([{ status: 'pending' }]), true, '排着队还没开跑也算在跑');
+  assert.equal(hasRunningTask([{ status: 'running' }]), true);
+});
+
+test('★ 停在一个确定形状上的任务不算"在跑"（暂停 / 失败 / 取消 / 完成）', () => {
+  for (const status of ['paused', 'failed', 'cancelled', 'done']) {
+    assert.equal(
+      hasRunningTask([{ status }]),
+      false,
+      `「${status}」已经停下来了 ⇒ 这时认领是安全的`,
+    );
+  }
+  // 混着的时候只要有一个在跑就算
+  assert.equal(hasRunningTask([{ status: 'done' }, { status: 'running' }]), true);
 });

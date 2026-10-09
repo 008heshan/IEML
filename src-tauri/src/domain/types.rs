@@ -51,6 +51,16 @@ impl BaseLoaderKind {
             Self::Quilt => "quilt",
         }
     }
+
+    /// 从界面/接口那串小写名字认回枚举（`"fabric"` → `Fabric`）。
+    ///
+    /// ★ 为什么要有它：这层映射原来在 `platform.rs` 与安装侧**各写一份**
+    ///   （`loader_kind_from_str` 与各自的 `match`），而"认不出的加载器当什么"
+    ///   这件事只要有一处不一致，就会出现"列表说是 Fabric、安装说是空"。
+    ///   ⇒ 判据只留这一份，谁要认谁调它。
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::all().into_iter().find(|k| k.as_str() == s)
+    }
 }
 
 /// 附加组件：可叠加，但受基础加载器约束

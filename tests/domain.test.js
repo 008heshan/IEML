@@ -20,9 +20,12 @@ import { compareVersion, forgeVersionSatisfies, parseRange, inRange } from '../s
 import { modUpdateLock } from '../src/domain/pack-lock.ts';
 /* ★★ 2026-09-29：文件夹里的版本 ↔ 实例（"装完第一个版本自动选中它"那条规则） */
 import {
+  burySlug,
   instanceFromFolderVersion,
   knownLoaderKind,
   pickAutoAdopt,
+  unburySlug,
+  unburySlugs,
 } from '../src/domain/folder-versions.ts';
 
 /* ====================== 加载器能力表 ====================== */
@@ -1009,6 +1012,10 @@ const fv = (over = {}) => ({
   mcVersion: '1.20.1',
   loaderName: null,
   hasJson: true,
+  /* ★ 2026-10-08：`ok` 才是"这个目录能不能启动"的结论（`scan_folder_versions` 算的）。
+     下面每一条都会显式给 `ok`（默认与 `hasJson` 一致 = 一个说得清自己的版本）。 */
+  ok: true,
+  error: '',
   ...over,
 });
 
@@ -1023,9 +1030,44 @@ test('★ 账本里已经有实例 → 绝不认领（不许改写用户的选�
 });
 
 test('没有 json 的目录不算版本（只有文件夹不算能启动）', () => {
-  assert.equal(pickAutoAdopt([fv({ hasJson: false })], []), null);
-  // 多个里挑第一个**有 json 的**
-  assert.equal(pickAutoAdopt([fv({ dir: 'x', hasJson: false }), fv({ dir: 'y' })].map((v) => v), [])?.dir, 'y');
+  assert.equal(pickAutoAdopt([fv({ hasJson: false, ok: false })], []), null);
+  // 多个里挑第一个**能启动的**
+  assert.equal(
+    pickAutoAdopt([fv({ dir: 'x', hasJson: false, ok: false }), fv({ dir: 'y' })].map((v) => v), [])
+      ?.dir,
+    'y',
+  );
+});
+
+/*
+ * ★★★★ 2026-10-08（用户）：「下载一个带模组加载器的版本时，会提示出现了一个
+ *   **不可用的原版**和一个模组加载器（单独建立的文件夹）……甚至**模组加载器被
+ *   识别为了可启动游戏版本**」「那个正确版本**无法被收藏**」。
+ *
+ *   旧判据是 `hasJson`，而**装到一半**的目录正好"有 json、不能启动"：
+ *   安装器先写版本描述、再下 jar 与库，那一刻它的前置版本还没齐
+ *   （列表把它显示成"不能用的版本"，收在折叠里）。
+ *   自动认领却把它认领下来 ⇒ 账本记录落在那个半成品目录上，
+ *   而用户真正要用的版本没有记录（收藏就存在记录上）⇒ 星星是禁用的。
+ *
+ *   ⇒ 判据与版本列表**对齐**：只认 `ok`（能启动）。
+ */
+test('★ 不能启动的版本（ok=false）→ 一律不认领（与列表同一判据）', () => {
+  // 有 json，但缺前置版本 / 描述坏了 —— 都是 ok=false
+  assert.equal(
+    pickAutoAdopt([fv({ hasJson: true, ok: false, error: '缺少前置版本 26.3' })], []),
+    null,
+    '★ 装到一半的加载器目录不许被认领（真机 bug 的起点）',
+  );
+  // 一堆半成品里只要有一个能用的，就认那一个
+  const picked = pickAutoAdopt(
+    [
+      fv({ dir: 'fabric-loader-0.19.5-26.3', hasJson: true, ok: false }),
+      fv({ dir: '26.3-fabric-0.19.5', hasJson: true, ok: true }),
+    ],
+    [],
+  );
+  assert.equal(picked?.dir, '26.3-fabric-0.19.5', '有能用的就认能用的那个');
 });
 
 test('读不到文件夹（null）→ 不认领（读不到 ≠ 没有）', () => {
@@ -1056,6 +1098,55 @@ test('墓碑比较大小写无关（Windows 上 Fabric 与 fabric 是同一个�
 test('墓碑为空 / 不传 → 行为与以前一致（不改变老用户的体验）', () => {
   assert.equal(pickAutoAdopt([fv()], [], [])?.dir, '1.20.1');
   assert.equal(pickAutoAdopt([fv()], [])?.dir, '1.20.1');
+});
+
+/*
+ * ★★★★ 2026-10-08（用户第二次报）：「下载带模组加载器的版本，会出现一个原版和一个
+ *   模组加载器版本，并且**模组加载器版本的 mc 还没办法收藏**」。
+ *
+ *   真机证据：22 条墓碑里 21 条指向的目录确实已经不在了，**只有
+ *   `26.3-fabric-0.19.5` 那一条"目录还在"** —— 用户重新装回了这个版本，
+ *   而墓碑里还留着它的名字。`list_instances` 每次读账本都按墓碑把这条记录滤掉
+ *   （并把过滤后的结果写回文件），于是刚装好的版本在账本里消失：
+ *   行上没有记录 ⇒ 收藏星禁用（收藏存在记录上）。
+ *
+ *   ⇒ 规则：**账本里出现某个 slug 的记录 ⇒ 那个名字的墓碑作废**。
+ *     这一对函数（`burySlug` / `unburySlug`）就是那条分界线。
+ */
+test('★ 重新装回一个删过的版本 → 撤掉它的墓碑（否则记录会被读的时候滤掉）', () => {
+  const buried = ['26.3-fabric-0.19.5-2', 'pack-abc123'];
+  const after = unburySlug('26.3-fabric-0.19.5', [...buried, '26.3-fabric-0.19.5']);
+  assert.deepEqual(after, buried, '★ 只撤被重新装回来的那一个，别的一律不动');
+});
+
+test('★ 撤墓碑：大小写无关（Windows 上 Fabric-1 与 fabric-1 是同一个目录）', () => {
+  assert.deepEqual(unburySlug('FABRIC-1', ['fabric-1', 'other']), ['other']);
+  assert.deepEqual(unburySlug('fabric-1', ['Fabric-1']), []);
+});
+
+test('★ 没被删过 → 返回**原数组**（调用方据此跳过写盘，不许白写一次 prefs）', () => {
+  const list = ['a', 'b'];
+  assert.equal(unburySlug('c', list), list, '同一个引用 = 没变');
+  assert.equal(unburySlugs(['x', 'y'], list), list);
+  // 撤掉一组
+  assert.deepEqual(unburySlugs(['a', 'y'], list), ['b']);
+});
+
+test('★ 删了又装回来：墓碑与账本不该永远互相否定', () => {
+  let buried = [];
+  buried = burySlug('26.3-fabric-0.19.5', buried);
+  assert.deepEqual(buried, ['26.3-fabric-0.19.5'], '删除 → 记墓碑');
+  buried = unburySlug('26.3-fabric-0.19.5', buried);
+  assert.deepEqual(buried, [], '重新装回来 → 墓碑作废');
+});
+
+test('墓碑最多留最近 200 条，且同名只留一条（重复删同一个版本）', () => {
+  let list = [];
+  for (let i = 0; i < 205; i++) list = burySlug(`v${i}`, list);
+  assert.equal(list.length, 200, '无限长的列表不能一直涨');
+  assert.equal(list[list.length - 1], 'v204', '保留的是最近的');
+  const twice = burySlug('same', burySlug('same', []));
+  assert.deepEqual(twice, ['same'], '同一个名字不该在墓碑里出现两次');
 });
 
 test('从文件夹版本建实例：slug 撞了加 -2、加载器按目录名认、内存自动算', () => {

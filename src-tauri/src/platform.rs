@@ -102,6 +102,34 @@ pub const LAUNCHER_SUBDIR: &str = ".ieml";
 ///   目录在就认得出来，目录删了就彻底没有，不存在"诈尸"。
 pub const INSTANCE_MARKER_NAME: &str = "instance.json";
 
+/// **"这个目录只是基座，不是独立版本"** 的记号
+/// （`<原版目录>/.ieml/base.json`）。
+///
+/// ★★★★ 2026-10-08（用户）：「按理来说，**原版是作为基座的**，而不是单独的一个版本；
+///   只有**真的只下载原版**时，才是独立的版本」。
+///
+/// ## 为什么需要它在盘上留一份
+///
+///   "这个原版目录算不算一个版本"取决于**用户干了什么**，而不是盘上有什么：
+///     · 装「26.3 + Fabric」时，原版目录是**安装器顺手装上的基座**
+///       （加载器版本 `inheritsFrom: 26.3`，客户端 jar 就住在那儿）；
+///     · 用户自己点了「下载 26.3（原版）」时，它才是一个**独立版本**。
+///   两者在磁盘上长得**一模一样**（`26.3.json` + `26.3.jar`），
+///   所以必须把"那次是谁要的"记下来 —— 与 `.ieml/instance.json`
+///   （"我是谁的实例"）同一个思路：**把意图写在目录自己身上**。
+///
+/// ## 谁写、谁清、谁认
+///
+///   · **写**：`commands_real::build_plan_input` —— 装加载器时，
+///     如果原版目录**原先没有自己的版本描述**（= 它是这次顺手装上的），就写一份记号；
+///     如果它**本来就有**（用户先前单独装过原版），一个字节都不动（那是他的版本）。
+///   · **清**：同一个函数在**不带加载器**的安装里清掉它 ——
+///     用户明确要了原版，它从此是独立版本。
+///   · **认**：`scan_folder_versions` 把它**当作不存在**（不列行、不计数、
+///     不自动认领）；`instance_catalog_repair` 的补认也跳过它
+///     （底座不是"用户要的版本"，不该占一条账本记录）。
+pub const BASE_MARKER_NAME: &str = "base.json";
+
 impl AppPaths {
     pub fn resolve() -> Self {
         Self::from_root(resolve_data_root())
@@ -371,6 +399,59 @@ impl AppPaths {
             let _ = std::fs::create_dir_all(p);
         }
         std::fs::write(&path, text).is_ok()
+    }
+
+    /* ============ 「原版是基座，不是独立版本」（见 `BASE_MARKER_NAME`） ============ */
+
+    /// 基座记号的路径（`<版本目录>/.ieml/base.json`）。
+    pub fn base_marker_file(&self, slug: &str) -> PathBuf {
+        self.instance_meta_dir(slug).join(BASE_MARKER_NAME)
+    }
+
+    /// 这个版本目录**是不是只当基座用的**（不是独立版本）。
+    ///
+    /// ★ 判据只有一条：记号文件在不在。**不看目录里有什么** ——
+    ///   基座与独立版本在磁盘上长得一模一样，能分开它们的只有这份意图。
+    pub fn is_base_version(&self, slug: &str) -> bool {
+        self.base_marker_file(slug).is_file()
+    }
+
+    /// 把一个版本目录标成**基座**（幂等）。返回是否真的写了。
+    ///
+    /// `for_version` 是"它是谁的基座"（写进记号里，纯粹为了以后能读懂）。
+    pub fn mark_version_as_base(&self, slug: &str, for_version: &str) -> bool {
+        let dir = self.instances.join(slug);
+        if !dir.is_dir() || self.is_base_version(slug) {
+            return false;
+        }
+        let path = self.base_marker_file(slug);
+        if let Some(p) = path.parent() {
+            if std::fs::create_dir_all(p).is_err() {
+                return false;
+            }
+        }
+        let body = serde_json::json!({
+            "base": true,
+            "for": for_version,
+            "note": "这个目录只是上面那个版本的原版基座（装加载器时顺手装上的），\
+                     不是独立的版本。用户自己单独装一次原版，这个记号就会被清掉。",
+        });
+        match serde_json::to_string_pretty(&body) {
+            Ok(text) => std::fs::write(&path, text).is_ok(),
+            Err(_) => false,
+        }
+    }
+
+    /// 撤掉基座记号（用户**明确要了原版**时调）。返回是否真的删了。
+    ///
+    /// ★ 只删**文件**，不碰目录里的任何别的东西：那些文件（jar / 描述 / 存档）
+    ///   本来就是这个版本的，撤记号只是让它**重新可以被当成一个版本**。
+    pub fn clear_base_marker(&self, slug: &str) -> bool {
+        let path = self.base_marker_file(slug);
+        if !path.is_file() {
+            return false;
+        }
+        std::fs::remove_file(&path).is_ok()
     }
 
     /* ============ 隔离判定（ADR-005）：游戏目录到底在哪 ============ */
@@ -1828,6 +1909,8 @@ pub struct CatalogRepair {
     pub reslugged: Vec<(String, String)>,
     /// 磁盘上有目录、账本里却没有 → 补进来的（`config.name`）
     pub adopted: Vec<String>,
+    /// 被标成**基座**的版本目录（"原版作为基座，不是独立版本"，2026-10-08）
+    pub marked_base: Vec<String>,
     /// 老 `<root>/instances/` 整个并进 `versions/` 时复制了多少字节
     pub merged_bytes: u64,
 }
@@ -1839,6 +1922,7 @@ impl CatalogRepair {
             && self.dropped.is_empty()
             && self.reslugged.is_empty()
             && self.adopted.is_empty()
+            && self.marked_base.is_empty()
             && self.merged_bytes == 0
     }
 
@@ -1862,6 +1946,9 @@ impl CatalogRepair {
         }
         if !self.adopted.is_empty() {
             parts.push(format!("补认了 {} 个版本", self.adopted.len()));
+        }
+        if !self.marked_base.is_empty() {
+            parts.push(format!("认出 {} 个原版基座", self.marked_base.len()));
         }
         if !self.dropped.is_empty() {
             parts.push(format!("清掉 {} 条指向空目录的记录", self.dropped.len()));
@@ -2414,6 +2501,112 @@ pub fn instance_catalog_repair(paths: &AppPaths) -> CatalogRepair {
                         .map(|s| s.to_lowercase())
                 })
                 .collect();
+            /*
+             * ★★★★ 2026-10-08（用户）：「按理来说，**原版是作为基座的**，而不是单独的
+             *   一个版本；只有真的只下载原版时，才是独立的版本」。
+             *
+             *   ## 补一次"基座"记号（给已经装好的老数据）
+             *
+             *   新的安装会在装的时候就写下 `.ieml/base.json`
+             *   （见 `commands_real::build_plan_input`）。可用户盘上**已经**有
+             *   这样的目录了（真机：`versions/26.3/` 就是"26.3 + Fabric"顺手装上的），
+             *   它们没有记号，于是仍然会被列出来 —— 用户看到的还是两行。
+             *
+             *   ## 判据（四条都要成立，一条不成立就不标）
+             *
+             *     ① **有别的版本继承它**（同一层里某个目录的 `inheritsFrom` 指向它）
+             *        —— 这才叫"基座"；
+             *     ② 它的账本记录要么**没有**，要么是**启动器自己捡回来的**
+             *        （`is_launcher_picked`：补认写的 `inst-disk-*`、或前端自动认领
+             *        写的那种"名字 == 目录名"）—— 那两种都**不是"用户明确要过它"**；
+             *        用户装的/建的记录（`inst-<base36>` + "Minecraft 26.3" 这种名字）
+             *        ⇒ 它是**独立版本**，一个字节都不动；
+             *     ③ **不在墓碑里** —— 用户删过的名字，别去给它写任何东西；
+             *     ④ 它**自己有一份版本描述**（`<目录>.json`）—— 只有 jar 的目录
+             *        本来就不是版本，不必给它记号。
+             *
+             *   ★ 只写记号、不碰别的文件：万一判据错了，用户看到的只是"少了一行"，
+             *     jar / 描述 / 存档一个都不少，而且下一次"单独装原版"就会撤掉记号。
+             */
+            let mut flagged_base: Vec<String> = Vec::new();
+            {
+                let parents: std::collections::HashSet<String> = disk_names
+                    .iter()
+                    .filter_map(|d| {
+                        let text =
+                            std::fs::read_to_string(paths.instances.join(d).join(format!("{d}.json")))
+                                .ok()?;
+                        let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+                        v.get("inheritsFrom")
+                            .and_then(|x| x.as_str())
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_lowercase())
+                    })
+                    .collect();
+                for dir_name in &disk_names {
+                    let lower = dir_name.to_lowercase();
+                    if !parents.contains(&lower)
+                        || buried.contains(&lower)
+                        || paths.is_base_version(dir_name)
+                    {
+                        continue;
+                    }
+                    /*
+                     * ② 账本里那条记录是"用户要的"吗？
+                     *   没有记录 ⇒ 不是（这次顺手装上的）；
+                     *   有记录 ⇒ 只有"启动器自己捡回来的"那种才继续往下判。
+                     */
+                    let user_asked = kept.iter().any(|i| {
+                        slug_of(i).as_deref() == Some(dir_name.as_str()) && !is_launcher_picked(i)
+                    });
+                    if user_asked {
+                        continue;
+                    }
+                    if !paths
+                        .instances
+                        .join(dir_name)
+                        .join(format!("{dir_name}.json"))
+                        .is_file()
+                    {
+                        continue;
+                    }
+                    if paths.mark_version_as_base(dir_name, "（另一个版本继承它）") {
+                        report.marked_base.push(dir_name.clone());
+                        say!(
+                            "[IEML/catalog] 「{dir_name}」是被别的版本继承的**基座**\
+                             （账本里没有「用户要它」的记录）—— 已记一份 `.ieml/base.json`：\
+                             不再当独立版本，也不再补记录"
+                        );
+                    }
+                    flagged_base.push(dir_name.clone());
+                }
+            }
+            /*
+             * ★ 顺手把**基座身上那条"启动器捡回来的"记录**清掉。
+             *
+             *   为什么必须清：记录 = "这是一个版本"（收藏星、显示名、启动目标都挂在它上面），
+             *   而基座不是版本；留着它还会**占住那个 slug** —— 用户以后真的单独装一次原版，
+             *   前端只能给它排到 `26.3-2`（一个指向不存在目录的幽灵实例）。
+             *   ★ 只清**启动器自己捡回来的**那两种（见 `is_launcher_picked`）：
+             *     用户装的 / 建的一条都不许动（那是他的东西）。
+             */
+            if !flagged_base.is_empty() {
+                let before = kept.len();
+                kept.retain(|i| {
+                    let Some(slug) = slug_of(i) else { return true };
+                    let is_base = paths.is_base_version(&slug)
+                        || flagged_base.iter().any(|d| d.eq_ignore_ascii_case(&slug));
+                    !(is_base && is_launcher_picked(i))
+                });
+                if kept.len() != before {
+                    changed = true;
+                    say!(
+                        "[IEML/catalog] 清掉 {} 条「基座」身上的账本记录（那是启动器捡回来的，\
+                         不是用户要的版本）",
+                        before - kept.len()
+                    );
+                }
+            }
             for dir_name in &disk_names {
                 if known.contains(&dir_name.to_lowercase()) {
                     continue;
@@ -2424,6 +2617,13 @@ pub fn instance_catalog_repair(paths: &AppPaths) -> CatalogRepair {
                  *   先问"用户想不想要它"，再问"它是不是一个能启动的版本"。
                  */
                 if buried.contains(&dir_name.to_lowercase()) {
+                    continue;
+                }
+                /*
+                 * ★★ 基座也不补（2026-10-08）：它不是一个"用户要的版本"，
+                 *   占一条账本记录只会让收藏星、名字、启动目标都指向一个底座。
+                 */
+                if paths.is_base_version(dir_name) {
                     continue;
                 }
                 let dir = paths.instances.join(dir_name);
@@ -2665,6 +2865,43 @@ fn share_version_json_with_siblings(dir: &Path, dir_name: &str) {
     }
 }
 
+/// 账本里一条记录的 `config.slug`（没有就给 `None`）。
+fn slug_of(inst: &serde_json::Value) -> Option<String> {
+    inst.get("config")?
+        .get("slug")?
+        .as_str()
+        .map(|s| s.to_string())
+}
+
+/// 这条账本记录是**启动器自己捡回来的**吗（不是"用户明确要过它"）？
+///
+/// ★ 两个指纹，都来自**写它的那段代码**（不是猜）：
+///   · `id` 以 `inst-disk-` 开头 ⇒ `synthesize_instance`（启动时的补认）写的；
+///   · `config.name == config.slug` ⇒ 前端**自动认领**写的
+///     （`instanceFromFolderVersion` 把名字直接取成目录名）。
+///
+///   用户明确装/建出来的记录两样都不占：`id` 是 `inst-<base36>`，
+///   名字是「Minecraft 26.3」这种**显示名**。
+///
+/// ★ 用途只有一个：启动时的归置要判断"这条原版记录算不算一个版本"
+///   （见 `instance_catalog_repair` 那一段"原版是基座"）。
+///   **它绝不参与删除用户的东西** —— 只有"补认/自动认领"这两种记录会被它认出来。
+fn is_launcher_picked(inst: &serde_json::Value) -> bool {
+    let id_repair_made = inst
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.starts_with("inst-disk-"))
+        .unwrap_or(false);
+    let name_is_dir = match (
+        inst.get("config").and_then(|c| c.get("name")).and_then(|v| v.as_str()),
+        inst.get("config").and_then(|c| c.get("slug")).and_then(|v| v.as_str()),
+    ) {
+        (Some(name), Some(slug)) => name == slug,
+        _ => false,
+    };
+    id_repair_made || name_is_dir
+}
+
 /// 账本里**没有**这个版本时，从磁盘现造一条最小记录。
 ///
 /// 只用目录名与它的 JSON —— 认不出来的字段一律给"安全默认"
@@ -2732,15 +2969,12 @@ fn synthesize_instance(versions_root: &Path, dir_name: &str) -> serde_json::Valu
     })
 }
 
+/// 认加载器种类 —— **只留这一份实现**（`BaseLoaderKind::parse`）。
+///
+/// ★ 这里原来是手写的一张 `match` 表，而安装侧另一处也写了一张 ——
+///   两张表只要有一处漏了/多了一条，就会出现"目录这边认得出、安装那边认不出"。
 fn loader_kind_from_str(s: &str) -> Option<crate::domain::types::BaseLoaderKind> {
-    use crate::domain::types::BaseLoaderKind as K;
-    match s {
-        "forge" => Some(K::Forge),
-        "neoforge" => Some(K::NeoForge),
-        "fabric" => Some(K::Fabric),
-        "quilt" => Some(K::Quilt),
-        _ => None,
-    }
+    crate::domain::types::BaseLoaderKind::parse(s)
 }
 
 /// 写账本（与 `commands::save_instances` 同一套原子写 + `.bak` 纪律）。
@@ -4975,10 +5209,144 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /* ============ 「原版是基座，不是独立版本」（2026-10-08） ============ */
+
+    /// 基座记号的读/写/清（纯文件行为，毫秒级）。
+    ///
+    /// ★ 三条都要有：**标上之后读得出来**、**幂等**（重复标不重写）、
+    ///   **撤掉之后读不出来**。少一条，"原版是基座"这件事就会在某一轮悄悄失效。
+    #[test]
+    fn base_marker_is_written_read_and_cleared() {
+        let (p, root, _own) = tmp_paths("base-marker");
+        p.ensure().unwrap();
+        seed_version(&p, "26.3", serde_json::json!({}));
+
+        assert!(!p.is_base_version("26.3"), "一开始它不是基座");
+        assert!(p.mark_version_as_base("26.3", "26.3-fabric-0.19.5"));
+        assert!(p.is_base_version("26.3"), "标上之后要读得出来");
+        assert!(!p.mark_version_as_base("26.3", "again"), "已经标过就别再写一遍");
+        assert!(
+            std::fs::read_to_string(p.base_marker_file("26.3"))
+                .unwrap()
+                .contains("26.3-fabric-0.19.5"),
+            "记号里要写清「它是谁的基座」（以后能读懂）"
+        );
+
+        assert!(p.clear_base_marker("26.3"), "用户明确要原版时要能撤掉");
+        assert!(!p.is_base_version("26.3"));
+        assert!(!p.clear_base_marker("26.3"), "已经没了就别再报撤过");
+
+        // 目录不在 ⇒ 不标（别对着空气写文件）
+        assert!(!p.mark_version_as_base("不存在", "x"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ★★★★ 用户 2026-10-08：「原版是作为基座的，而不是单独的一个版本；
+    ///   只有真的只下载原版时，才是独立的版本」。
+    ///
+    ///   已经装好的老数据（真机 `versions/26.3/` 就是）没有记号，所以启动时的
+    ///   归置要**补一次**：有别的版本继承它、账本里没有它的记录 ⇒ 它是基座。
+    #[test]
+    fn catalog_repair_recognizes_a_base_version_and_does_not_adopt_it() {
+        let (p, root, _own) = tmp_paths("catalog-base");
+        // 加载器版本 + 它继承的原版（原版是这次顺手装上的，账本里没有它）
+        seed_version(&p, "26.3", serde_json::json!({}));
+        seed_version(
+            &p,
+            "26.3-fabric-0.19.5",
+            serde_json::json!({ "inheritsFrom": "26.3" }),
+        );
+        seed_ledger(&p, &[]);
+
+        let report = instance_catalog_repair(&p);
+
+        assert_eq!(report.marked_base, vec!["26.3"], "被继承的原版要认成基座");
+        assert!(p.is_base_version("26.3"));
+        assert_eq!(
+            ledger_slugs(&p),
+            vec!["26.3-fabric-0.19.5"],
+            "★ 基座不补记录：它不是一个「用户要的版本」"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ★★★★ 真机那一份（用户 2026-10-08 报的第二个症状）：账本里那条原版记录是
+    ///   **启动器自己补认出来的**（`inst-disk-26.3`），不是用户要的版本。
+    ///
+    ///   ⇒ 它要被认成基座，而且那条"捡回来的"记录要**清掉**
+    ///     （否则它占着 slug `26.3`，用户以后真的装一次原版只能排到 `26.3-2`，
+    ///      一个指向不存在目录的幽灵实例）。
+    #[test]
+    fn catalog_repair_treats_a_launcher_picked_vanilla_record_as_a_base() {
+        let (p, root, _own) = tmp_paths("catalog-base-picked");
+        seed_version(&p, "26.3", serde_json::json!({}));
+        seed_version(
+            &p,
+            "26.3-fabric-0.19.5",
+            serde_json::json!({ "inheritsFrom": "26.3" }),
+        );
+        // 两条都是补认形状（`inst-disk-*` + 名字 == 目录名）
+        let ledger = serde_json::json!({
+            "instances": [
+                { "id": "inst-disk-26.3", "mcVersion": "26.3", "loader": null, "addons": [],
+                  "config": { "name": "26.3", "slug": "26.3" } },
+                { "id": "inst-disk-26.3-fabric-0.19.5", "mcVersion": "26.3",
+                  "loader": { "kind": "fabric", "version": "0.19.5", "mcVersion": "26.3" },
+                  "addons": [],
+                  "config": { "name": "Minecraft 26.3 + Fabric 0.19.5",
+                              "slug": "26.3-fabric-0.19.5" } },
+            ],
+            "active_id": "inst-disk-26.3",
+        });
+        std::fs::create_dir_all(&p.own_root).unwrap();
+        std::fs::write(
+            p.instances_file(),
+            serde_json::to_string_pretty(&ledger).unwrap(),
+        )
+        .unwrap();
+
+        let report = instance_catalog_repair(&p);
+
+        assert_eq!(report.marked_base, vec!["26.3"], "补认出来的原版要认成基座");
+        assert!(p.is_base_version("26.3"));
+        assert_eq!(
+            ledger_slugs(&p),
+            vec!["26.3-fabric-0.19.5"],
+            "★ 基座身上那条「捡回来的」记录要清掉（别占着 slug）"
+        );
+        assert_eq!(
+            p.own_json("instances.json")
+                .and_then(|v| v.get("active_id").cloned())
+                .and_then(|v| v.as_str().map(String::from)),
+            None,
+            "active_id 指向被清掉的那条 ⇒ 要清空（否则又是一个悬空指针）"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 反向：**用户单独装过的原版**（账本里有它的记录）不许被标成基座 ——
+    /// 哪怕它同时也被别的版本继承。
+    #[test]
+    fn catalog_repair_never_marks_a_version_the_user_asked_for() {        let (p, root, _own) = tmp_paths("catalog-base-keep");
+        seed_version(&p, "26.3", serde_json::json!({}));
+        seed_version(
+            &p,
+            "26.3-fabric-0.19.5",
+            serde_json::json!({ "inheritsFrom": "26.3" }),
+        );
+        seed_ledger(&p, &["26.3", "26.3-fabric-0.19.5"]);
+
+        let report = instance_catalog_repair(&p);
+
+        assert!(report.marked_base.is_empty(), "有记录 = 用户要过它，别动");
+        assert!(!p.is_base_version("26.3"));
+        assert_eq!(ledger_slugs(&p).len(), 2, "两条记录都留着");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// 账本里的 slug 与磁盘目录名只差大小写 → 以**磁盘**为准改正。
     #[test]
-    fn catalog_repair_fixes_a_slug_that_differs_only_by_case() {
-        let (p, root, _own) = tmp_paths("catalog-case");
+    fn catalog_repair_fixes_a_slug_that_differs_only_by_case() {        let (p, root, _own) = tmp_paths("catalog-case");
         seed_version(&p, "Fabric-1", serde_json::json!({}));
         seed_ledger(&p, &["fabric-1"]);
 

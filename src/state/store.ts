@@ -893,6 +893,29 @@ export function isForgeLike(instance: Instance | null): boolean {
   return instance?.loader?.kind === 'forge' || instance?.loader?.kind === 'neoforge';
 }
 
+/**
+ * **有没有任务还在跑**（安装/下载）。
+ *
+ * ★★★★ 2026-10-08（用户）：「下载一个带模组加载器的版本时，会提示出现了一个
+ *   不可用的原版和一个模组加载器（单独建立的文件夹）……**甚至模组加载器被识别为了
+ *   可启动游戏版本**」。
+ *
+ *   安装是**一步一步往盘上写**的（先写版本描述、再下 jar 与库），所以在装的过程中
+ *   版本列表看到的那些目录**本来就是半成品**。而自动认领（`pickAutoAdopt`）看的是
+ *   同一份盘上事实，那一刻它就会把半成品认领成"用户唯一的版本"。
+ *
+ *   ⇒ 这条判据给调用方一个"现在别下结论"的闸门：**有任务在跑 = 盘上还在变**。
+ *     只有 `pending` / `running` 算"在跑"：暂停/失败/取消/完成的任务都已经停在
+ *     一个确定的形状上，那时认领是安全的。
+ *
+ * ★ 放这里而不是各自写 `state.tasks.some(...)`：这张任务表有**四个**写入方
+ *   （`flows/install`、整合包两条路、实例概览的"一键补齐"），
+ *   判据写两遍就一定会有一处忘了带上 `pending`。
+ */
+export function hasRunningTask(tasks: readonly TaskItem[]): boolean {
+  return tasks.some((t) => t.status === 'pending' || t.status === 'running');
+}
+
 export function hasAddon(instance: Instance | null, kind: AddonKind): boolean {
   return instance?.addons.some((a) => a.kind === kind) ?? false;
 }

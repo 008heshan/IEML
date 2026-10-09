@@ -402,7 +402,27 @@ async function installVersionFromManifest(
  *   ② 后端 `install_version` 本来就把 Forge/NeoForge 安装器接在同一次调用里
  *      （装完原版直接跑 installer），分成两次反而绕开了这条路径；
  *   ③ 原版与加载器共享大量 libraries，分开装会让"去重复用"跨不了任务边界。
+ *
+ * ★★★★ 2026-10-08：返回值从"三态字符串"改成**带目录名的对象**。
+ *
+ *   账本的 `config.slug` 现在取**后端真正写进 `versions/` 的那个目录名**
+ *   （`InstalledSummary.version_dir`）。理由见那个字段的说明：
+ *   前端自己拼名字、后端按加载器 profile 的 id 写盘 ——
+ *   两个名字差一个字，账本记录就指向一个不存在的目录，
+ *   用户看到的就是"**那个正确版本无法被收藏**"。
  */
+export interface InstallGameResult {
+  /** 与原来一样的三态（暂停不是失败，ADR-051） */
+  outcome: InstallOutcome;
+  /**
+   * **这次装出来的版本目录名**（`done` 时有值；暂停/失败时为 `null`）。
+   *
+   * ★ 调用方用它当**新建实例的 slug** —— 名字由写盘的人说了算。
+   * ★ 给已有实例"补齐文件"时**不要**用它改 slug（那会把实例指向别人的目录）。
+   */
+  versionDir: string | null;
+}
+
 export async function installGame(opts: {
   mcVersion: string;
   loaderKind: string | null;
@@ -427,7 +447,7 @@ export async function installGame(opts: {
    *   ⇒ 默认 `false`（先装能启动的），启动后再由 `completeAssetsInBackground` 补。
    */
   downloadAssets?: boolean;
-}): Promise<InstallOutcome> {
+}): Promise<InstallGameResult> {
   const {
     mcVersion,
     loaderKind,
@@ -440,7 +460,7 @@ export async function installGame(opts: {
   } = opts;
 
   const api = await getRealApi();
-  if (!api) return 'failed';
+  if (!api) return { outcome: 'failed', versionDir: null };
 
   const taskId = reuseTaskId ?? `game-${mcVersion}-${loaderKind ?? 'vanilla'}-${Date.now()}`;
   const title = loaderKind
@@ -507,7 +527,7 @@ export async function installGame(opts: {
     if (result.paused) {
       markPausedConfirmed(taskId, result.remaining_files, result.paused_stage);
       toast('info', '已暂停', `${title} 还剩 ${result.remaining_files} 个文件，点「继续」接着下`);
-      return 'paused';
+      return { outcome: 'paused', versionDir: null };
     }
 
     patchTask(taskId, {
@@ -519,22 +539,26 @@ export async function installGame(opts: {
     });
     pendingJobs.delete(taskId);
     folderChanged();
-    return 'done';
+    /*
+     * ★ 目录名从后端带回（`version_dir`）—— 见 `InstallGameResult` 的说明。
+     *   ★ 老后端没有这个字段时退回空串 ⇒ 调用方自己算名字（兼容，不报错）。
+     */
+    return { outcome: 'done', versionDir: result.version_dir?.trim() || null };
   } catch (e) {
     if (cancelledTasks.has(taskId)) {
       patchTask(taskId, { status: 'cancelled', phase: '已取消' });
       pendingJobs.delete(taskId);
-      return 'failed';
+      return { outcome: 'failed', versionDir: null };
     }
     if (pausedTasks.has(taskId)) {
       patchTask(taskId, { status: 'paused', phase: '已暂停' });
-      return 'paused';
+      return { outcome: 'paused', versionDir: null };
     }
     patchTask(taskId, {
       status: 'failed',
       error: e instanceof Error ? e.message : String(e),
     });
-    return 'failed';
+    return { outcome: 'failed', versionDir: null };
   }
 }
 

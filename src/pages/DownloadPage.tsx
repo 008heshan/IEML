@@ -16,12 +16,14 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../state/AppContext';
+import { useBackTarget } from '../state/back-nav';
 import { Button, Chip, CustomSelect, EmptyState, Note, Segmented, Spinner } from '../ui';
-import { IconAlert, IconChevronRight, IconDownload, IconFolder, IconLayers, IconPuzzle, IconRefresh, IconImage, IconGrid, IconRows, IconPackage, IconSearch } from '../ui/Icons';
+import { IconAlert, IconChevronUp, IconDownload, IconFolder, IconLayers, IconPuzzle, IconRefresh, IconImage, IconGrid, IconRows, IconPackage, IconSearch } from '../ui/Icons';
 import { useRealApi } from '../hooks/useRealApi';
 import type { DownloadTab } from '../state/store';
 import { takePendingPack } from '../state/pending-pack';
 import { InstallComposer } from '../components/InstallComposer';
+import { Pager } from '../components/Pager';
 import { ResourceCenterBody, VersionPicker } from '../components/ResourceBrowser';
 import { autoMemory, compareVersion, isSnapshotVersion, knownVersions } from '../domain';
 // ★ C-26：取消不是故障 —— 判据只有一处（见 `domain/cancel.ts` 的说明）
@@ -96,6 +98,59 @@ const RESOURCE_DIR: Record<ResourceKindName, string> = {
    */
   modpack: '',
 };
+
+/**
+ * 回到顶部（右下角那个圆钮）。
+ * ------------------------------------------------------------------
+ * ★★ 2026-10-08 晚（用户：「给下载页除了版本下载之外的页面，在启动器右下角加一个
+ *   一键回到顶部的按键，就像 dsh 的这个一样」）。
+ *
+ * ## 三个决定，都是量出来的
+ *
+ *   ① **滚的是 `.content`，不是 `window`**：这个启动器全仓只有一个滚动容器
+ *      （`<main className="content">`，见 AppShell）。窗口本身不滚 ——
+ *      所以 `window.scrollTo` 在这里什么都不会发生。
+ *   ② **只在滚下去之后才出现**：停在顶部时它按下去没有任何效果，
+ *      那种"永远挂在那里、点了不动"的按钮不如不挂。
+ *      阈值取 320px（比页头那 74px 大一截，第一屏之内不会冒出来）。
+ *   ③ **低动效档不做平滑滚动**：`lite` 承诺"不动"（见 ui/motion.ts），
+ *      给它一段 scroll 动画等于当场违背那一档的承诺。
+ *
+ * ★ 为什么 `position: fixed` 在这里是安全的：它是 `.page-fill` 的**直接子元素**，
+ *   而 `.page-fill` 自己不带 `transform` / `filter` / `will-change`
+ *   （2026-09-24 起它被**有意**排除在入场动画之外，见 app.css 那段注释），
+ *   所以 fixed 的包含块仍然是视口 —— 不会被内容区裁掉、也不会跟着滚动跑。
+ */
+function BackToTop() {
+  const [show, setShow] = useState(false);
+
+  useEffect(() => {
+    const el = document.querySelector('.content');
+    if (!el) return;
+    const sync = () => setShow(el.scrollTop > 320);
+    sync();
+    el.addEventListener('scroll', sync, { passive: true });
+    return () => el.removeEventListener('scroll', sync);
+  }, []);
+
+  if (!show) return null;
+
+  return (
+    <button
+      type="button"
+      className="to-top"
+      aria-label="回到顶部"
+      onClick={() => {
+        const el = document.querySelector('.content');
+        if (!el) return;
+        const lite = document.documentElement.dataset.motion === 'lite';
+        el.scrollTo({ top: 0, behavior: lite ? 'auto' : 'smooth' });
+      }}
+    >
+      <IconChevronUp />
+    </button>
+  );
+}
 
 export function DownloadPage() {
   /* ★ 2026-09-23：「装到」选择器已删 → setDownloadTarget 没有调用方了（不留未用变量） */
@@ -248,8 +303,35 @@ export function DownloadPage() {
     if (tab !== 'game') setInLoaderPage(false);
   }, [tab]);
 
+  /*
+   * ★★★★ 2026-10-08 晚（用户两张截图：「**上下页太靠底边**」+
+   *   「**下载文本会被拉上去，只剩下大模糊底**」）。
+   *
+   *   ## 这两个现象是**同一个根因**：`.page-fill` 的高度被卡死在 100%
+   *
+   *   它的盒子恒等于内容区可视高度（真机 1180×760 上实测 **652px** = 712 − 20 − 40），
+   *   于是：
+   *     · 吸顶的 `.page-head` 只能在这个盒子里待着 ⇒ 往下滚超过一屏，
+   *       页头（连着「下载」两个字）被盒子推出去，顶上只剩那条毛玻璃 —— 第二条；
+   *     · 列表页签里 `.res-center` 是 flex 子项且 `min-height: 0` ⇒ 被挤扁，
+   *       分页条的下边距**整个掉到可滚动区之外** ⇒ 分页条到窗口下沿 **0px** —— 第一条。
+   *   整包页签的容器不是 flex 子项、挤不扁 ⇒ 它的 8px 还在
+   *   —— 用户说"整包的留白不错"，他看到的对照组就是这 8px。
+   *
+   *   ★ 所以**除了「安装游戏」那两屏**，下载页其余每一屏都解开（`data-fill="auto"`，
+   *     见 app.css 那段）：列表页（整合包 / Mod / 资源包 / 光影 / 数据包）与
+   *     整合包的安装页都是**正常滚动的页**，它们都该看得见「下载」这两个字。
+   *   ★★ 但「安装游戏」那一屏（选版本 / 选加载器）**不能解**：它的版本清单靠
+   *      `.page-fill(100%) → .cw-shell-page(flex:1) → .cw-body` 这条弹性链
+   *      被约束在视口内、自己滚。真机量过解开之后的样子：
+   *      清单容器 385px → **697px**（长成内容那么高）、整页从"不滚"变成滚 1023px。
+   *      （它里面的版本清单另有 `max-height: 46vh` 自己滚的，如整合包安装页那张表 ——
+   *       那种不依赖这条链，所以不受影响。）
+   */
+  const listFill = tab !== 'game';
+
   return (
-    <div className="page-fill">
+    <div className="page-fill" data-fill={listFill ? 'auto' : undefined}>
       {/*
         ★★★★ 2026-10-08（用户：「**既然做了底部模糊，文字就不改收上去**」）。
 
@@ -275,6 +357,13 @@ export function DownloadPage() {
           ★ 页签（Mod / 资源包 / …）**仍然收起**：整合包安装页有它自己的
             「返回整合包列表」导航，再挂一排一级页签会变成两条互相竞争的导航。
             收页签、留页头 —— 这两件事从此分开判断，不再捆在一个条件里。
+
+        ★★★★ 2026-10-08 晚：③ 那次（以及用户说的"文字会被拉上去"）**根本不是
+          这一格在不在 DOM 里** —— 真凶是 `.page-fill` 的高度卡死把吸顶的页头
+          推出了视野（见上面 `listFill` 那段：实测滚到底时标题上沿 −523 / −918px）。
+          也就是说：**只要不改那个高度，把它留在 DOM 里多少次都没用**；
+          而改对之后，这一格留在这里正好（用户要的那个锚点真的能看见了）。
+          上面"反复过三次"的结论仍然成立，只是它当时**解释错了原因**。
       */}
       <div className="page-head">
         <div>
@@ -410,6 +499,15 @@ export function DownloadPage() {
           )}
         </>
       ) : null}
+
+      {/*
+        ★★ 回到顶部（用户 2026-10-08 晚：「给下载页除了版本下载之外的页面，
+          在启动器右下角加一个一键回到顶部的按键」）。
+        ★ 判据与上面的 `listFill` **同一条**（`tab !== 'game'`）：
+          「安装游戏」那两屏是"页面不滚、清单自己滚"的形态，给它们挂这个键
+          等于给一个按下去没有反应的按钮 —— 用户说的"除了版本下载之外"正是这个。
+      */}
+      {listFill ? <BackToTop /> : null}
     </div>
   );
 }
@@ -674,6 +772,17 @@ function ModpackTab({
   useEffect(() => {
     onInstallViewChange?.(installTarget !== null);
   }, [installTarget, onInstallViewChange]);
+  /*
+   * ★★★★ 2026-10-09（用户）：「所有页面的返回按钮做一个固定位置，不然很麻烦」。
+   *
+   *   整合包安装页原来在自己的内容区里画了一个「← 返回整合包列表」——
+   *   而它头顶上还压着下载页的页头（那个页头用户明确要求常驻），
+   *   于是这个返回按钮比别的页面**低一个页头**（真机量过差 60px）。
+   *   ⇒ 现在只**登记**"我能回整合包列表"，按钮由外壳画在顶栏的固定位置。
+   */
+  useBackTarget(
+    installTarget ? { to: '整合包列表', onClick: () => setInstallTarget(null) } : null,
+  );
   const [targetVersions, setTargetVersions] = useState<ModrinthVersion[] | null>(null);
   /** 页面里点了「安装这个版本」时选中的那一个（null = 用最新那个） */
   const [pickedVersion, setPickedVersion] = useState<ModrinthVersion | null>(null);
@@ -1282,10 +1391,8 @@ function ModpackTab({
   if (installTarget) {
     return (
       <div style={{ marginTop: 'var(--space-4)' }}>
+        {/* ★ 2026-10-09：返回按钮不在这里画了（全站只有顶栏那一个，见上面 `useBackTarget`）。 */}
         <div className="row" style={{ gap: 'var(--space-2)', alignItems: 'center', marginBottom: 'var(--space-3)' }}>
-          <Button size="sm" variant="ghost" onClick={() => setInstallTarget(null)}>
-            <IconChevronRight style={{ transform: 'rotate(180deg)' }} /> 返回整合包列表
-          </Button>
           <h2 className="section-title">安装整合包</h2>
         </div>
 
@@ -1708,29 +1815,18 @@ function ModpackTab({
       </div>
       )}
 
-      {/* ★ 翻页（原来写死前 20 个，翻不动） */}
+      {/* ★ 翻页（原来写死前 20 个，翻不动）—— 抽到 `Pager` 之后与资源列表同一份实现 */}
       {!loading && total > PAGE_SIZE ? (
-        <div className="pager">
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={page === 0}
-            onClick={() => setPage((p) => Math.max(0, p - 1))}
-          >
-            上一页
-          </Button>
-          <span className="pager-info">
-            第 {page + 1} / {Math.max(1, Math.ceil(total / PAGE_SIZE))} 页 · 共 {total} 个
-          </span>
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={(page + 1) * PAGE_SIZE >= total}
-            onClick={() => setPage((p) => p + 1)}
-          >
-            下一页
-          </Button>
-        </div>
+        <Pager
+          page={page + 1}
+          pageCount={Math.max(1, Math.ceil(total / PAGE_SIZE))}
+          total={total}
+          canPrev={page > 0}
+          canNext={(page + 1) * PAGE_SIZE < total}
+          onPrev={() => setPage((p) => Math.max(0, p - 1))}
+          onNext={() => setPage((p) => p + 1)}
+          onGo={(n) => setPage(n - 1)}
+        />
       ) : null}
 
       {/*

@@ -21,6 +21,16 @@
  *     （浏览器 demo 模式没有 Rust 可用）。`tests/naming.test.mjs` 拿
  *     `tests/naming-cases.json` 同时喂两边，算出来不一致就红。
  *
+ *   ★★★★ 2026-10-08：**第二行那个名字不再被生产出来了** ——
+ *     安装侧现在也把合并后的版本写进规范目录
+ *     （Rust `commands_real::canonical_loader_dir_name`），
+ *     并且把真正写盘的目录名回报给前端当账本 slug
+ *     （`InstalledSummary::version_dir`）。
+ *     理由就是上面第 12~13 行那件"两个目录"的事：用户报的
+ *     「模组加载器被识别为了可启动游戏版本」「那个正确版本无法被收藏」
+ *     都是它长出来的。`parseDirName` 仍然认 PCL 写法 —— 老用户的盘上有，
+ *     只是我们不再**造**这种名字。
+ *
  * ★ 为什么前端还需要自己算：`install-plan.ts` 是**纯函数**（ADR 里"下载计划不碰盘"），
  *   而版本目录名在计划里就要用到（`versions/<名字>/<名字>.json`）。
  *   为它加一次异步 IPC 会让纯函数变成 async，那是把简单的事弄复杂。
