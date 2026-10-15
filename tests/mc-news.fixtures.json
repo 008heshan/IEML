@@ -1,0 +1,368 @@
+{
+ "manifest": {
+  "baked": "2026-10-15",
+  "bakedAt": "2026-10-15T11:48:59.448Z",
+  "mojangOk": true,
+  "source": "https://launchercontent.mojang.com/v2/javaPatchNotes.json",
+  "wikiSource": "https://zh.minecraft.wiki/api.php",
+  "latest": {
+   "version": "26.3",
+   "type": "release",
+   "date": "2026-09-15T11:23:02.000Z",
+   "title": "Minecraft: Java Edition 26.3",
+   "shortText": "Wilderness Bound is out now in Minecraft Java Edition! Pack your supplies and set off on an expedition into the dappled forest where the trails end and adventure begins. Seek out abandoned camps, build outposts among the poplar trees, sleep under the stars",
+   "contentPath": "javaPatchNotes/26-3.json",
+   "image": {
+    "file": "img/26.3.jpg",
+    "url": "https://launchercontent.mojang.com/v2/images/dappledcamp540x540.jpg",
+    "title": "dappled camp 540x540.jpg",
+    "bytes": 86086
+   },
+   "wiki": {
+    "has": true,
+    "file": "wiki/26.3.json",
+    "revid": 1509437,
+    "fetchedAt": "2026-10-15",
+    "introLead": "26.3 是 奔赴荒野 的正式版，也是 Java版 的一次 小更新 ，发布于2026年9月15日。此次更新新增了 斑驳森林 生物群系，加入了 杨树 及其系列方块，以及相关自然方块，另加入了 台阶 和 楼梯 的 羊毛 和 混凝土 材质变种、 坐垫 和 麦秆床 ，以及 废弃营地 ，并修复了一些漏洞。"
+   },
+   "links": {
+    "en": "https://minecraft.wiki/w/Java_Edition_26.3",
+    "zh": "https://zh.minecraft.wiki/w/Java%E7%89%8826.3"
+   }
+  },
+  "snapshot": {
+   "version": "26.4-snapshot-4",
+   "type": "snapshot",
+   "date": "2026-10-13T12:05:46.000Z",
+   "title": "Minecraft 26.4 Snapshot 4",
+   "shortText": "With 26.4 Snapshot 4, we're breaking out a cool new block, introducing Brittle Ice! And Jukeboxes can now keep the music going with playlists by putting your music discs in a chest above them, making dance parties much easier. Just be careful not to dance ",
+   "contentPath": "javaPatchNotes/26-4-snapshot-4.json",
+   "image": {
+    "file": "img/26.4-snapshot-4.jpg",
+    "url": "https://launchercontent.mojang.com/v2/images/2026101313.44.02540x540.jpg",
+    "title": "2026-10-13_13.44.02 540x540.jpg",
+    "bytes": 52920
+   },
+   "wiki": {
+    "has": true,
+    "file": "wiki/26.4-snapshot-4.json",
+    "revid": 1513682,
+    "fetchedAt": "2026-10-15",
+    "introLead": "26.4-snapshot-4 是 Java版26.4 的第4个快照，发布于2026年10月13日，加入了 脆冰 和冰裂隙，改进了 唱片机 ，并修复了一些漏洞。"
+   },
+   "links": {
+    "en": "https://minecraft.wiki/w/Java_Edition_26.4-snapshot-4",
+    "zh": "https://zh.minecraft.wiki/w/Java%E7%89%8826.4-snapshot-4"
+   }
+  }
+ },
+ "doc": {
+  "version": "26.3",
+  "title": "Java版26.3",
+  "revid": 1509437,
+  "fetchedAt": "2026-10-15",
+  "license": "CC BY-NC-SA 4.0 · 中文 Minecraft Wiki",
+  "licenseUrl": "https://zh.minecraft.wiki/w/Minecraft_Wiki:著作权",
+  "page": "https://zh.minecraft.wiki/w/Java%E7%89%8826.3",
+  "intro": "26.3 是 奔赴荒野 的正式版，也是 Java版 的一次 小更新 ，发布于2026年9月15日。此次更新新增了 斑驳森林 生物群系，加入了 杨树 及其系列方块，以及相关自然方块，另加入了 台阶 和 楼梯 的 羊毛 和 混凝土 材质变种、 坐垫 和 麦秆床 ，以及 废弃营地 ，并修复了一些漏洞。",
+  "sections": [
+   {
+    "title": "新内容",
+    "items": [
+     {
+      "text": "方块",
+      "lead": true,
+      "group": true,
+      "sub": [],
+      "children": [
+       {
+        "text": "杨树树叶",
+        "lead": true,
+        "sub": [],
+        "children": [
+         {
+          "text": "随 杨树 生成的自然方块。",
+          "lead": false,
+          "sub": [],
+          "children": []
+         },
+         {
+          "text": "有红色、橙色、黄色三种颜色。",
+          "lead": false,
+          "sub": [],
+          "children": []
+         }
+        ]
+       },
+       {
+        "text": "杨树树苗",
+        "lead": true,
+        "sub": [],
+        "children": [
+         {
+          "text": "一种新的树苗，由杨树树叶掉落。",
+          "lead": false,
+          "sub": [],
+          "children": []
+         },
+         {
+          "text": "可以与 流浪商人 交易获得。",
+          "lead": false,
+          "sub": [],
+          "children": []
+         }
+        ]
+       },
+       {
+        "text": "杨木原木",
+        "lead": true,
+        "sub": [],
+        "children": [
+         {
+          "text": "随杨树生成的自然方块。",
+          "lead": false,
+          "sub": [],
+          "children": []
+         },
+         {
+          "text": "有对应的去皮变种。",
+          "lead": false,
+          "sub": [],
+          "children": [
+           {
+            "text": "可以合成对应种类的 悬挂式告示牌 。",
+            "lead": false,
+            "sub": [],
+            "children": []
+           }
+          ]
+         }
+        ]
+       },
+       {
+        "text": "杨木",
+        "lead": true,
+        "sub": [],
+        "children": [
+         {
+          "text": "由4个杨木原木合成。",
+          "lead": false,
+          "sub": [],
+          "children": []
+         },
+         {
+          "text": "有对应的去皮变种。",
+          "lead": false,
+          "sub": [],
+          "children": []
+         }
+        ]
+       },
+       {
+        "text": "杨木木板",
+        "lead": true,
+        "sub": [],
+        "children": [
+         {
+          "text": "一种新的木板。",
+          "lead": false,
+          "sub": [],
+          "children": []
+         },
+         {
+          "text": "可用于合成对应的 按钮 、 门 、 栅栏 、 栅栏门 、 压力板 、 告示牌 、 台阶 、 楼梯 、 活板门 、 船 和 运输船 。",
+          "lead": false,
+          "sub": [],
+          "children": []
+         }
+        ]
+       },
+       {
+        "text": "层孔菇",
+        "lead": true,
+        "sub": [],
+        "children": [
+         {
+          "text": "会生成在 杨树 和 倒下的杨树 的树干上。",
+          "lead": false,
+          "sub": [],
+          "children": []
+         },
+         {
+          "text": "可以与 流浪商人 交易获得。",
+          "lead": false,
+          "sub": [],
+          "children": []
+         },
+         {
+          "text": "有小型和大型两种尺寸。",
+          "lead": false,
+          "sub": [],
+          "children": [
+           {
+            "text": "对小型层孔菇 使用 骨粉 可使其生长为大型层孔菇。",
+            "lead": false,
+            "sub": [],
+            "children": []
+           },
+           {
+            "text": "大型层孔菇被破坏后会掉落两个层孔菇。",
+            "lead": false,
+            "sub": [],
+            "children": []
+           }
+          ]
+         },
+         {
+          "text": "可用于合成 蘑菇煲 。",
+          "lead": false,
+          "sub": [],
+          "children": []
+         },
+         {
+          "text": "类似于 床 ，具有一定的弹性，摔落其上可减免50%摔落高度的摔落伤害。",
+          "lead": false,
+          "sub": [],
+          "children": []
+         }
+        ]
+       },
+       {
+        "text": "麦秆床",
+        "lead": true,
+        "sub": [],
+        "children": [
+         {
+          "text": "使用后可使玩家通过睡觉来跳过夜晚，但不会设置 重生点 。",
+          "lead": false,
+          "sub": [],
+          "children": []
+         },
+         {
+          "text": "只能使用一次，使用后会被摧毁。",
+          "lead": false,
+          "sub": [],
+          "children": []
+         },
+         {
+          "text": "无法在 下界 和 末地 中使用，如果试图在那里睡觉，则麦秆床会被破坏而不掉落自身，不会爆炸或生成火。",
+          "lead": false,
+          "sub": [],
+          "children": []
+         },
+         {
+          "text": "使用3个 干草捆 合成4个麦秆床。",
+          "lead": false,
+          "sub": [],
+          "children": []
+         },
+         {
+          "text": "合适的挖掘工具是 锄 。",
+          "lead": false,
+          "sub": [],
+          "children": []
+         },
+         {
+          "text": "可用于 堆肥 ，有85%的概率使堆肥层数增加一层。",
+          "lead": false,
+          "sub": [],
+          "children": []
+         }
+        ]
+       },
+       {
+        "text": "红灌木",
+        "lead": true,
+        "sub": [],
+        "children": [
+         {
+          "text": "会在斑驳森林中以斑块形式自然生成。",
+          "lead": false,
+          "sub": [],
+          "children": []
+         },
+         {
+          "text": "可用于 堆肥 ，有30%的概率使堆肥层数增加一层。",
+          "lead": false,
+          "sub": [],
+          "children": []
+         },
+         {
+          "text": "对其 使用 骨粉 会在附近可生成位置生成新的红灌木。",
+          "lead": false,
+          "sub": [],
+          "children": []
+         }
+        ]
+       },
+       {
+        "text": "羊毛楼梯 和 羊毛台阶",
+        "lead": true,
+        "sub": [],
+        "children": [
+         {
+          "text": "共有16种颜色。",
+          "lead": false,
+          "sub": [],
+          "children": []
+         },
+         {
+          "text": "可以在 工作台 中用 羊毛 制成。",
+          "lead": false,
+          "sub": [],
+          "children": []
+         }
+        ]
+       },
+       {
+        "text": "混凝土楼梯 和 混凝土台阶",
+        "lead": true,
+        "sub": [],
+        "children": [
+         {
+          "text": "共有16种颜色。",
+          "lead": false,
+          "sub": [],
+          "children": []
+         },
+         {
+          "text": "可以在工作台和 切石机 中用 混凝土 制成。",
+          "lead": false,
+          "sub": [],
+          "children": []
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "title": "更改",
+    "items": [
+     {
+      "text": "唱片机",
+      "lead": true,
+      "sub": [],
+      "children": [
+       {
+        "text": "可以放音乐唱片串成播放列表。",
+        "lead": false,
+        "sub": [
+         "顺序按你摆的顺序来。"
+        ],
+        "children": []
+       }
+      ]
+     },
+     {
+      "text": "一条没有子节点的条目。",
+      "lead": true,
+      "sub": [],
+      "children": []
+     }
+    ]
+   }
+  ]
+ }
+}

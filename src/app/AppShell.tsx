@@ -28,7 +28,7 @@ import { isTauri } from '../bridge';
 import type { PageId, SubPageId } from '../state/store';
 import { Button, Chip, Modal, ToastRegion, BackButton } from '../ui';
 import { useBackTargetValue } from '../state/back-nav';
-import { IconChevronRight, IconDownload, IconGear, IconGrid, IconHome, IconLayers, IconPlay, IconPuzzle, IconStop, IconTerminal, IconInfo } from '../ui/Icons';
+import { IconChevronRight, IconDownload, IconGear, IconGrid, IconHome, IconLayers, IconNews, IconPlay, IconPuzzle, IconStop, IconTerminal, IconInfo, IconUsers } from '../ui/Icons';
 /* ★ C-7：`VersionIcon` 的 import 随「最近玩过」一起删（那个块是它唯一的用处） */
 import { UpdateChip } from '../components/UpdateChip';
 import { LaunchPage } from '../pages/LaunchPage';
@@ -36,8 +36,10 @@ import { VersionsPage } from '../pages/VersionsPage';
 import { DownloadPage } from '../pages/DownloadPage';
 import { SettingsPage } from '../pages/SettingsPage';
 import { ChangelogPage } from '../pages/ChangelogPage';
+import { NewsPage } from '../pages/NewsPage';
 import { AboutPage } from '../pages/AboutPage';
 import { ResourceInstallPage } from '../pages/ResourceInstallPage';
+import { FriendsPage } from '../pages/FriendsPage';
 import { InstanceOverview } from '../pages/InstanceOverview';
 import { InstanceSetup } from '../pages/InstanceSetup';
 import { ModsPanel } from '../pages/ModsPanel';
@@ -70,6 +72,15 @@ const PRIMARY_NAV: NavEntry[] = [
    */
   { id: 'download', label: '下载', icon: IconDownload },
   { id: 'settings', label: '设置', icon: IconGear },
+  /*
+   * ★★ 2026-10-09（用户：「做一个好友系统的胚子…在合适的位置加一个进入按钮，
+   *   **不要有重复的进入按钮**」）。
+   *
+   *   放在**左侧主导航**（用户选的位置），紧跟在「设置」后面 ——
+   *   于是全应用**只有这一个**好友入口：它没有第二个入口（不是顶栏也有一个、
+   *   侧栏下面再来一个那种）。这一条是有意为之，改之前先读这句。
+   */
+  { id: 'friends', label: '好友', icon: IconUsers },
 ];
 
 const SUB_NAV: Array<{ id: SubPageId; label: string; icon: typeof IconHome }> = [
@@ -149,6 +160,17 @@ export function App() {
     const el = contentRef.current;
     if (el) el.scrollTop = 0;
   }, [state.page, state.openInstanceId, state.subPage, state.downloadTab, state.resourceTarget]);
+
+  /*
+   * 首屏时间线上最后一道记号（见 `main.tsx` 里 `window.__boot` 那段）：
+   * 走到这里说明**侧栏与首屏都真的画出来了** —— 用户说的"进入启动器"到这一刻结束。
+   * 只写一次，之后不再动。
+   */
+  useLayoutEffect(() => {
+    if (window.__boot && window.__boot.shell === null) {
+      window.__boot.shell = Math.round(performance.now());
+    }
+  }, []);
 
   /*
    * ★★ 2026-09-24（用户）：「**每次进启动器，先进行一次静默检查更新，如果有就弹窗，
@@ -562,8 +584,11 @@ export function App() {
 
             这里原来画的是一个**内联的通用方块 SVG**（lucide 的 box 图标）——
             那是设计初期的占位符，后来换了正式品牌图标却漏了这一处。
-            现在改成与 `index.html` 的 splash、以及下面标题栏（22×22）**同一个**
-            `brandIcon`，三处视觉统一。
+            现在改成与 `index.html` 的 splash**同一个** `brandIcon`。
+
+            ★ 2026-10-12（用户：「去掉左上角的产品logo」）：标题栏那个图标去掉了，
+              于是 `brandIcon` 只剩**两处门面**用它 —— 这里的启动页、以及
+              `index.html` 的 splash（再改图标时只有这两处要看）。
 
             ★ 用 `<img>` 而不是把 PNG 转成 SVG：图标本身是位图资产，
               这里只需要"显示它"，不需要矢量能力。
@@ -635,9 +660,16 @@ export function App() {
       */}
       <header className="titlebar" data-tauri-drag-region>
         <div className="brand" data-tauri-drag-region>
-          <span className="brand-mark">
-            <img src={brandIcon} alt="" style={{ width: 22, height: 22 }} />
-          </span>
+          {/*
+            ★★ 2026-10-12（用户）：「**去掉左上角的产品logo**」。
+              这里原来是 `[品牌图标 22×22] IEML` 两件套；现在只留产品名。
+              ★ 图标那个 `<span className="brand-mark">` 一并删掉（留着会占位，
+                把"IEML"推到右边一点，看着像缺了东西）。
+              ★ 启动页（`boot-mark`）与 `index.html` 的 splash 仍然用同一个
+                `brandIcon` —— 那两处是"程序正在起来"的门面，不在标题栏里。
+              ★ 想连产品名一起去掉的话：把下面那个 `<span>IEML</span>` 删掉即可，
+                拖拽区域不受影响（`.brand` 自己带 `data-tauri-drag-region`）。
+          */}
           <span data-tauri-drag-region>IEML</span>
         </div>
 
@@ -801,7 +833,18 @@ export function App() {
                       ? state.tasks.filter(
                           (t) => t.status === 'running' || t.status === 'pending',
                         ).length
-                      : undefined;
+                      : item.id === 'friends'
+                        ? /*
+                           * ★★ 2026-10-12（用户：「好友添加请求在哪里看」）：
+                           *   把**收到的请求数**挂到侧栏「好友」上 —— 与「关于」右边那个
+                           *   「有更新」同一个套路（`side-badge`/`nav-badge`）。
+                           *
+                           *   为什么必须挂：请求区在页面里是"有才显示"的，
+                           *   而用户平时根本不进这一页 ⇒ 有人加他他永远不会知道。
+                           *   0 的时候**不渲染**（角标写 0 只是噪音）。
+                           */
+                          (state.friends.snapshot?.incomingRequests.length ?? 0)
+                        : undefined;
                 return (
                   <button
                     key={item.id}
@@ -844,6 +887,25 @@ export function App() {
                     （左边那一列主导航一直有高亮，这两项却没有，对比之下更像"没生效"）。
                   ★ 用 aria-current 而不是只加一个 class：读屏也要能听出"这是当前页"。
                 */}
+                {/*
+                  ★★ MC 新闻（用户：「我在我的网站添加了一个 mc 新闻页，我想往 IEML 里塞一个
+                     新闻页，从我的网站里调取版本更新内容」）。
+
+                  放在**「更新日志」上面**（用户选的位置），而且和它是两个入口、两件事：
+                    · 更新日志 = **启动器**改了什么（`data/release-notes.ts`）；
+                    · MC 新闻 = **游戏本体**出了什么版本（`data/mc-news/`）。
+                  ★ 紧挨着放是因为用户找它们的时候是同一个念头
+                    （"最近有什么变化"），但**不合并成一页**：两者的读者、更新节奏
+                    与来源都不同，合成一页就得先解释"这两段为什么不一样"。
+                */}
+                <button
+                  type="button"
+                  className={'side-link' + (state.page === 'news' ? ' on' : '')}
+                  aria-current={state.page === 'news' ? 'page' : undefined}
+                  onClick={() => go('news')}
+                >
+                  <IconNews /> MC 新闻
+                </button>
                 <button
                   type="button"
                   className={'side-link' + (state.page === 'changelog' ? ' on' : '')}
@@ -948,7 +1010,11 @@ export function App() {
               这里不再有 `state.page === 'install'` 那一行。
           */}
           {state.page === 'settings' && <SettingsPage />}
+          {/* ★ 好友页（2026-10-09 的胚子）：入口只有左侧主导航那一项 */}
+          {state.page === 'friends' && <FriendsPage />}
           {state.page === 'changelog' && <ChangelogPage />}
+          {/* ★ MC 新闻（游戏版本动态）：入口只有侧栏下半部分那一项 */}
+          {state.page === 'news' && <NewsPage />}
           {state.page === 'about' && <AboutPage />}
           {/* C5：资源的独立安装页 */}
           {state.page === 'resource' && <ResourceInstallPage />}

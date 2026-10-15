@@ -6,6 +6,8 @@
 use crate::AppState;
 use crate::auth::{self, McAccount};
 use crate::domain;
+/* ★ 2026-10-12：好友服务（正版专用）—— 端点与协议见 src/friends.rs 头部 */
+use crate::friends;
 use crate::domain::loader_trace::{
     detect_flavors, detect_installed_modloaders, loader_version_from_id, loader_versions_in_json,
     LoaderFlavor,
@@ -5060,7 +5062,7 @@ async fn prepare_spec(
     let account = match &req.account_uuid {
         Some(uuid) if !uuid.is_empty() => match auth::load_account(uuid) {
             Ok(mut acc) => {
-                if acc.kind == "msa" && acc.is_expired() {
+                if acc.kind == "msa" && acc.needs_refresh() {
                     // ② 过期 → 先续期（PCL 第 580 行）
                     match acc.refresh_token.clone() {
                         Some(rt) if !rt.trim().is_empty() => {
@@ -5722,8 +5724,19 @@ fn isolation_info(paths: &crate::platform::AppPaths, slug: &str) -> IsolationInf
 }
 
 /// 所有实例的隔离判定（列表页那一栏、概览页那一格都用它）
+///
+/// ★ 2026-10-09：启动耗时打点（见 `commands.rs` 里 `machine_info` 上方那段说明）。
+///   这条的成本随**实例数**线性增长 —— 每个 slug 都要重读一次账本与偏好
+///   （`isolation_verdict` → `instance_json` + `own_json("prefs.json")`）。
 #[tauri::command]
 pub fn isolation_verdicts(state: State<'_, AppState>) -> Vec<IsolationInfo> {
+    let t = std::time::Instant::now();
+    let out = isolation_verdicts_inner(&state);
+    say!("[IEML/boot] isolation_verdicts = {}ms（{} 条）", t.elapsed().as_millis(), out.len());
+    out
+}
+
+fn isolation_verdicts_inner(state: &AppState) -> Vec<IsolationInfo> {
     let paths = state.paths();
     let ledger = paths.own_json("instances.json");
     let slugs: Vec<String> = ledger
@@ -7859,7 +7872,128 @@ pub async fn account_save_skin(skin_url: String, dest: String) -> Result<u64, St
 
 #[tauri::command]
 pub async fn account_refresh(refresh_token: String) -> Result<McAccount, String> {
+    // ★ 手动刷新同样受登录链节流约束：短时间内反复点「刷新」会让微软接口吃重复请求，
+    //   触发 429 限流（login_with_xbox 频繁 429 的根因之一）。
+    auth::login_gate_check().map_err(err_auth)?;
     auth::refresh_msa(&refresh_token).await.map_err(err_auth)
+}
+
+/* ====================== 好友（正版专用，2026-10-12） ======================
+ *
+ * 端点、协议、以及"哪些是真机验证过的"都写在 `friends` 模块头部。
+ * 这里只做三件事：收参数、转成 `friends::*` 的调用、把错误翻成人话。
+ *
+ * ★ 令牌**不进前端**：命令只收 `uuid`，后端自己从密钥环读令牌。
+ * ★ 离线账号一进来就会收到一句明确的"用不了"（见 `friends::token_of`）。
+ */
+
+/// 好友名单。**返回 `null` 表示服务端说"没变"（304）** —— 界面沿用本地那份，
+/// 千万别把它当成"名单空了"（见 `friends.rs` 里 ETag 那段说明）。
+#[tauri::command]
+pub async fn friends_snapshot(uuid: String) -> Result<Option<friends::FriendsSnapshot>, String> {
+    friends::snapshot(&uuid).await.map_err(|e| e.to_string())
+}
+
+/// 按玩家名查这个人（加好友之前先查 uuid）。返回 `{profileId, name}`。
+#[tauri::command]
+pub async fn friends_lookup(name: String) -> Result<friends::FriendEntry, String> {
+    let (id, name) = friends::lookup_by_name(&name).await.map_err(|e| e.to_string())?;
+    Ok(friends::FriendEntry {
+        profile_id: id,
+        name,
+    })
+}
+
+/// 加好友：先按名字查 uuid，再 `ADD`。名字查不到会如实报错。
+#[tauri::command]
+pub async fn friends_add(uuid: String, name: String) -> Result<friends::FriendEntry, String> {
+    let (id, resolved) = friends::lookup_by_name(&name).await.map_err(|e| e.to_string())?;
+    friends::friend_action(&uuid, &id, true)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(friends::FriendEntry {
+        profile_id: id,
+        name: resolved,
+    })
+}
+
+/// 删好友
+#[tauri::command]
+pub async fn friends_remove(uuid: String, profile_id: String) -> Result<(), String> {
+    friends::friend_action(&uuid, &profile_id, false)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 同意别人的好友请求（客户端的做法是"对请求方 ADD"）
+#[tauri::command]
+pub async fn friends_accept(uuid: String, profile_id: String) -> Result<(), String> {
+    friends::friend_action(&uuid, &profile_id, true)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 拒绝别人的请求 / 撤销自己发出的请求（两者都是 REMOVE）
+#[tauri::command]
+pub async fn friends_decline(uuid: String, profile_id: String) -> Result<(), String> {
+    friends::friend_action(&uuid, &profile_id, false)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 上报在线状态并拿回好友们的状态（界面的心跳就是它）
+#[tauri::command]
+pub async fn friends_presence(
+    uuid: String,
+    status: friends::PresenceStatus,
+) -> Result<Option<Vec<friends::PresenceRow>>, String> {
+    friends::presence(&uuid, status).await.map_err(|e| e.to_string())
+}
+
+/// 好友隐私设置（谁能加我 / 谁能邀请我）
+#[tauri::command]
+pub async fn friends_settings(uuid: String) -> Result<friends::FriendsSettings, String> {
+    friends::settings(&uuid).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn friends_set_settings(
+    uuid: String,
+    friends_toggle: friends::Toggle,
+    accept_invites: friends::Toggle,
+) -> Result<(), String> {
+    friends::set_settings(
+        &uuid,
+        &friends::FriendsSettings {
+            friends: friends_toggle,
+            accept_invites,
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// 黑名单（界面用它解释"为什么看不到某个人"）
+#[tauri::command]
+pub async fn friends_blocklist(uuid: String) -> Result<Vec<String>, String> {
+    friends::blocklist(&uuid).await.map_err(|e| e.to_string())
+}
+
+/// 名单 + 状态的合并视图（一次调用把界面要的东西给全）
+///
+/// ★ ETag 之后这里要当心：`snapshot` 回 `None` 是"没变"，而这个命令**没有本地缓存
+///   可沿用** ⇒ 只能如实回一条空名单。界面走的不是这个命令
+///   （它用 `friends_snapshot` 把结果存进 state，才好沿用 304 时的旧数据）。
+#[tauri::command]
+pub async fn friends_view(uuid: String) -> Result<Vec<friends::FriendView>, String> {
+    let snap = friends::snapshot(&uuid).await.map_err(|e| e.to_string())?;
+    let entries = snap.map(|s| s.friends).unwrap_or_default();
+    let presence = friends::presence(&uuid, friends::PresenceStatus::for_launcher())
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    Ok(friends::merge_presence(&entries, &presence))
 }
 
 /* ====================== 整合包 ====================== */

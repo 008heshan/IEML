@@ -30,9 +30,21 @@ pub fn app_info(state: State<'_, AppState>) -> AppInfo {
     }
 }
 
+/*
+ * ★★ 2026-10-09（用户：「**进入启动器的速度有点慢**」）：启动那批命令**各自的耗时**
+ *   要看得见。
+ *
+ *   前端只能量到"哪条**最后**落定"（`window.__boot.invokes`），而同步命令是
+ *   在主线程上排队的 —— 落定时刻全挤在一起，看不出是谁占的时间（实测六条
+ *   都落在 199~201ms，连几乎不干活的 `app_info` 也一样）。
+ *   ⇒ 在 Rust 这一侧**各量各的**：一条 `say!` 一行，成本一次 `Instant::now()`。
+ */
 #[tauri::command]
 pub fn machine_info(state: State<'_, AppState>) -> platform::MachineInfo {
-    platform::machine_info(&state.paths())
+    let t = std::time::Instant::now();
+    let info = platform::machine_info(&state.paths());
+    say!("[IEML/boot] machine_info = {}ms", t.elapsed().as_millis());
+    info
 }
 
 /* ====================== Java ====================== */
@@ -50,9 +62,13 @@ pub async fn scan_java(
 ) -> Result<Vec<java::JavaRuntime>, String> {
     let paths = state.paths().clone();
     let manual = manual.unwrap_or_default();
-    tauri::async_runtime::spawn_blocking(move || platform::scan_java_with_extra(&paths, &manual))
+    /* ★ 启动耗时打点（见 `machine_info` 上面那段说明）：这条是启动批次里最长的一条 */
+    let t = std::time::Instant::now();
+    let out = tauri::async_runtime::spawn_blocking(move || platform::scan_java_with_extra(&paths, &manual))
         .await
-        .map_err(|e| format!("Java 扫描失败：{e}"))
+        .map_err(|e| format!("Java 扫描失败：{e}"));
+    say!("[IEML/boot] scan_java = {}ms", t.elapsed().as_millis());
+    out
 }
 
 /// ★ 删除 IEML 自己下载的 Java。
@@ -509,6 +525,14 @@ fn instances_file(state: &AppState) -> std::path::PathBuf {
 
 #[tauri::command]
 pub fn list_instances(state: State<'_, AppState>) -> Result<InstanceStore, String> {
+    /* ★ 启动耗时打点（见 `machine_info` 上面那段说明） */
+    let t = std::time::Instant::now();
+    let out = list_instances_inner(&state);
+    say!("[IEML/boot] list_instances = {}ms", t.elapsed().as_millis());
+    out
+}
+
+fn list_instances_inner(state: &AppState) -> Result<InstanceStore, String> {
     // 读：优先 own_root，那儿没有才回退到游戏根目录的老位置（老用户升级上来的那一份）
     let Some(path) = state.paths().own_file_for_read("instances.json") else {
         return Ok(InstanceStore::default());

@@ -1,4 +1,4 @@
-//! 账号：微软正版登录 + 离线登录（ADR-016：令牌只存系统密钥环）
+﻿//! 账号：微软正版登录 + 离线登录（ADR-016：令牌只存系统密钥环）
 //!
 //! 为什么用**设备代码流（Device Code Flow）**而不是内嵌浏览器或本地回环：
 //!   * 微软已限制内嵌 WebView 登录，硬做会导致账号风控（`ARCHITECTURE.md` 第 7 章）
@@ -330,6 +330,15 @@ pub struct McAccount {
     pub kind: String,
     #[serde(default)]
     pub expires_at: Option<u64>,
+    /**
+     * ★★★★ **Xbox 用户 ID**（2026-10-11 补）。
+     *
+     *   现代版本做在线动作时要 `--xuid`，而启动参数里原来传的是空字符串。
+     *   值来自 XBL 那一步的 `DisplayClaims.xui[0].xid`，登录与续期都会拿到。
+     *   老账号里没有这个字段（`serde(default)` ⇒ 空串），续期一次就会补上。
+     */
+    #[serde(default)]
+    pub xuid: String,
 }
 
 impl McAccount {
@@ -340,6 +349,7 @@ impl McAccount {
             access_token: self.access_token.clone(),
             user_type: if self.kind == "msa" { "msa" } else { "legacy" }.to_string(),
             user_properties: "{}".to_string(),
+            xuid: self.xuid.clone(),
         }
     }
 
@@ -355,6 +365,38 @@ impl McAccount {
             }
             None => false,
         }
+    }
+}
+
+impl McAccount {
+    /**
+     * ★★★★ **要不要续期**（2026-10-11 补）。
+     *
+     *   为什么不能直接用 `is_expired()`：`expires_at` 是后来才加进结构体的
+     *   （`#[serde(default)]`），**老账号里没有这个字段** ⇒ 反序列化出 `None`
+     *   ⇒ `is_expired()` 永远返回 false ⇒ **永远不续期** ⇒
+     *   令牌静默过期，游戏里全是 401（用户看到的就是「提供的令牌无效」）。
+     *
+     *   "不知道什么时候过期"唯一安全的解释是**当作已经过期**：
+     *   续期一次是廉价的（一次网络往返 + 一个新令牌），
+     *   而拿一份不知道死活的令牌去启动游戏，代价是玩家连不上任何在线服务。
+     */
+    pub fn needs_refresh(&self) -> bool {
+        /*
+         * ★★ 还有一件同样性质的事：**记录不完整也要续一次**。
+         *
+         *   `xuid` 是 2026-10-11 才加进 `McAccount` 的，而它是现代版本 `--xuid`
+         *   的唯一来源（联机 / Realms / 好友列表都靠它）。老账号里没有它，
+         *   而令牌可能还剩十几个小时 —— 只看过期时间的话，**要等到明天才会续期**，
+         *   这一天里玩家的联机与好友功能全是坏的。
+         *
+         *   ⇒ "缺 xuid 的正版账号"也和"不知道什么时候过期"一样，当作要续期：
+         *     续一次就有 xuid 了（顺带还刷新了令牌），代价是一次网络往返。
+         */
+        if self.kind == "msa" && self.xuid.is_empty() {
+            return true;
+        }
+        self.expires_at.is_none() || self.is_expired()
     }
 }
 
@@ -465,6 +507,62 @@ pub fn explain_xsts_error(raw: &str) -> Option<&'static str> {
 
 pub type Result<T> = std::result::Result<T, AuthError>;
 
+/* ====================== 登录链全局节流（防 429） ====================== */
+
+/// 两次「微软登录链」之间的最小间隔。
+///
+/// ★ 为什么要有它（2026-10-13，用户截图：`login_with_xbox` 频繁 HTTP 429）：
+///   一次完整登录要连续打 devicecode / token / XBL / XSTS / login_with_xbox /
+///   entitlements / profile 七个接口；用户在短时间内反复点「正版登录」，
+///   等于让同一批微软接口吃 N 倍请求 —— 429 限流就是这么来的。
+///   与其在被限流之后靠退避硬撑，不如在入口就按住节奏：
+///   间隔内的重复登录直接告诉用户「稍等」，连接口都不打。
+const LOGIN_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// 上一次登录链开始时刻（`None` = 从未开始，第一次必然放行）。
+static LAST_LOGIN_CHAIN_AT: std::sync::OnceLock<std::sync::Mutex<Option<std::time::Instant>>> =
+    std::sync::OnceLock::new();
+
+fn login_gate_mu() -> &'static std::sync::Mutex<Option<std::time::Instant>> {
+    LAST_LOGIN_CHAIN_AT.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// 纯函数：在 `now` 时刻，距上次登录链开始 `last` 是否已满 `min` 间隔。
+/// 抽出便于离线单测（`tests/rate_limit_guard.rs`）。
+pub fn login_gate_allows(
+    last: Option<std::time::Instant>,
+    now: std::time::Instant,
+    min: std::time::Duration,
+) -> bool {
+    match last {
+        Some(t) => now.duration_since(t) >= min,
+        None => true,
+    }
+}
+
+/// 检查是否允许开始一条新的登录链；放行时记录本次链的开始时间。
+///
+/// 间隔内再次调用**不打任何接口**，直接返回一句「请稍等 N 秒」。
+/// 用于：新登录（`request_device_code`）与手动刷新（命令层 `account_refresh`）。
+/// 自动续期路径（`refresh_msa` 由启动时 `needs_refresh` 驱动）**不走这里** ——
+/// 它天然低频（令牌提前 5 分钟才续 + 失败有 300s 冷却），不该被卡。
+pub fn login_gate_check() -> Result<()> {
+    let mut guard = login_gate_mu().lock().unwrap_or_else(|p| p.into_inner());
+    let now = std::time::Instant::now();
+    if login_gate_allows(*guard, now, LOGIN_MIN_INTERVAL) {
+        *guard = Some(now);
+        Ok(())
+    } else {
+        let wait = LOGIN_MIN_INTERVAL
+            .checked_sub(now.duration_since(guard.unwrap_or(now)))
+            .unwrap_or_else(|| std::time::Duration::from_secs(1));
+        Err(AuthError::Other(format!(
+            "登录操作太频繁（为避免触发微软限流）。请 {} 秒后再试。",
+            wait.as_secs().max(1)
+        )))
+    }
+}
+
 /* ====================== 设备代码流 ====================== */
 
 #[derive(Debug, Clone, Serialize)]
@@ -479,6 +577,10 @@ pub struct DeviceCodeInfo {
 
 /// 第一步：申请设备代码（用户要在浏览器里输入 user_code）
 pub async fn request_device_code() -> Result<DeviceCodeInfo> {
+    // ★ 登录链入口节流：短时间内反复点「正版登录」会让整套微软接口吃重复请求，
+    //   429 限流就是这么来的 —— 在入口就按住节奏，不打接口。
+    login_gate_check()?;
+
     // ★ 没有 client_id 就直接说清楚，**不要**去请求然后返回一句英文报错。
     //   实测：拿一个不存在的 id 去请求，微软回的是
     //   `AADSTS700016: Application with identifier ... was not found` ——
@@ -597,14 +699,244 @@ pub async fn poll_for_token(device_code: &str, interval_secs: u64, expires_in: u
             tokio::time::sleep(Duration::from_secs(5)).await;
             continue;
         }
+        // ★ 429：轮询也被限流 —— 明确说清，不丢给 explain_ms_error 猜。
+        if status.as_u16() == 429 {
+            return Err(AuthError::Ms(
+                "轮询太频繁，已被微软限流。请等待几分钟后再试。".into(),
+            ));
+        }
         // 其余错误全部翻成人话（含 client_id 不对、账号被封、安全拦截等）
         return Err(AuthError::Ms(explain_ms_error(&text)));
     }
 }
 
+/**
+ * POST 一个 JSON 请求体：**先看状态码，再解析**，并只在"可能瞬时"时重试。
+ *
+ * 为什么需要它（2026-10-11，用户：「游戏说提供的令牌无效」）：
+ *   这条链上原来每处都是 `.post(...).json(&body).send().await?.json().await?`
+ *   —— 两个毛病：
+ *     ① 状态码没看，于是**服务端说得清清楚楚的错误体**被当成"解析失败"吞掉，
+ *        用户只看到一句 `error decoding response body`（XErr 才是答案）；
+ *     ② 没有任何重试，而 HTTP 长连接被服务端先关掉是**常事** ——
+ *        这时复用它读到的响应体会读到一半，reqwest 报的就是那句 decoding 错误。
+ *        一次抖动 ⇒ 整次续期失败 ⇒ 密钥环里那份令牌永远停在过期状态
+ *        ⇒ 游戏进任何在线服务都是 401。
+ *
+ * 重试策略：网络错 / 2xx 但解析不了 / 5xx / 408 ⇒ 重试（最多 3 次，短退避 1s、3s）；
+ * **429（限流）单独对待**：长退避（2s、8s）且尊重服务端 `Retry-After` ——
+ *   429 的语义是"你太快了"，按老策略 1s/3s 立刻重试只会再吃一次（见 `backoff_after`）。
+ * 账号侧的 4xx（XErr 那种）**不重试** —— 重试也没用，只会让用户白等。
+ */
+async fn post_json_with_retry(
+    client: &reqwest::Client,
+    url: &str,
+    body: &serde_json::Value,
+    what: &str,
+) -> Result<serde_json::Value> {
+    let (status, text) = post_with_retry(client, url, body, what).await?;
+    serde_json::from_str::<serde_json::Value>(&text).map_err(|e| {
+        AuthError::Ms(format!(
+            "{what} 返回的内容无法解析：{e}（HTTP {status}；原始返回：{}）",
+            truncate_for_message(&text)
+        ))
+    })
+}
+
+/**
+ * 与 `post_json_with_retry` 同一套重试，但**把状态码与原文交给调用方**。
+ *
+ * 给"错误码要按各自的含义分别说话"的那一步用（Minecraft 登录：429 / 403 / 503 /
+ * ACCOUNT_SUSPENDED 各有各的自救动作，不能用一句通用的话糊过去）。
+ *
+ * 2026-10-13 补充（用户截图：login_with_xbox 频繁 HTTP 429）：
+ *   ① **429 单独走长退避**：等 2s、8s（尊重服务端 `Retry-After`，封顶 30s），
+ *      而不是和网络抖动共用 1s/3s —— 429 是"你太快了"，短退避等于白打；
+ *   ② 三次都 429 时，报错里直接写明"被限流 + 建议等待"，不再含糊。
+ */
+async fn post_with_retry(
+    client: &reqwest::Client,
+    url: &str,
+    body: &serde_json::Value,
+    what: &str,
+) -> Result<(reqwest::StatusCode, String)> {
+    let mut last: Option<String> = None;
+    for attempt in 1..=3u32 {
+        let resp = match client.post(url).json(body).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                last = Some(format!("{what} 请求失败：{e}"));
+                if attempt < 3 {
+                    tokio::time::sleep(backoff_after(attempt, 0, None)).await;
+                }
+                continue;
+            }
+        };
+        let status = resp.status();
+        let code = status.as_u16();
+        let retry_after = resp
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.trim().parse::<u64>().ok());
+        let text = resp.text().await.unwrap_or_default();
+        if status.is_success() {
+            return Ok((status, text));
+        }
+        let hint = explain_xsts_error(&text)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{what} 认证失败"));
+        last = Some(format!(
+            "{hint}（HTTP {status}；原始返回：{}）",
+            truncate_for_message(&text)
+        ));
+        if !(code >= 500 || code == 408 || code == 429) {
+            break;
+        }
+        if attempt < 3 {
+            tokio::time::sleep(backoff_after(attempt, code, retry_after)).await;
+        }
+    }
+    let mut msg = last.unwrap_or_else(|| format!("{what} 失败，且没有拿到任何响应"));
+    // ★ 三次都被限流 → 明确告诉用户"这是限流、要等"，而不是一句干巴巴的 HTTP 429。
+    if msg.contains("HTTP 429") {
+        msg = format!(
+            "{what} 被限流（HTTP 429）：登录/请求太过频繁。已自动退避重试仍未成功，请等待几分钟后再试。（{msg}）"
+        );
+    }
+    Err(AuthError::Ms(msg))
+}
+
+/**
+ * 一次失败后的下次重试等待时间。
+ *
+ * - `failed_attempt`：**刚失败的是第几次尝试**（1 = 首次失败，2 = 重试又失败）。
+ * - `code == 429`：长退避（2s → 8s），并取 `Retry-After` 与基础退避的较大者，封顶 30s。
+ * - 其余瞬时错误（网络错 / 5xx / 408）：短退避（1s → 3s），维持原行为。
+ * - `code == 0` 表示网络层直接失败（没有响应），按短退避处理。
+ *
+ * 纯函数，便于离线单测（`tests/rate_limit_guard.rs`）。
+ */
+pub fn backoff_after(failed_attempt: u32, code: u16, retry_after: Option<u64>) -> std::time::Duration {
+    const RATE_LIMIT_CAP_SECS: u64 = 30;
+    const RATE_LIMIT_SHORT_SLEEP_SECS: u64 = 2;
+    const RATE_LIMIT_LONG_SLEEP_SECS: u64 = 8;
+    const TRANSIENT_SHORT_SLEEP_SECS: u64 = 1;
+    const TRANSIENT_LONG_SLEEP_SECS: u64 = 3;
+
+    let is_rate_limit = code == 429;
+    let base = if is_rate_limit {
+        if failed_attempt <= 1 {
+            RATE_LIMIT_SHORT_SLEEP_SECS
+        } else {
+            RATE_LIMIT_LONG_SLEEP_SECS
+        }
+    } else if failed_attempt <= 1 {
+        TRANSIENT_SHORT_SLEEP_SECS
+    } else {
+        TRANSIENT_LONG_SLEEP_SECS
+    };
+    let wait = retry_after
+        .filter(|_| is_rate_limit)
+        .map(|r| r.min(RATE_LIMIT_CAP_SECS).max(base))
+        .unwrap_or(base);
+    std::time::Duration::from_secs(wait)
+}
+
+/// 把一段响应体截短了放进报错里（日志与界面都不该被一坨 JSON 撑爆）
+fn truncate_for_message(text: &str) -> String {
+    let one_line = text.replace(['\r', '\n'], " ");
+    let mut s: String = one_line.chars().take(300).collect();
+    if one_line.chars().count() > 300 {
+        s.push('…');
+    }
+    s
+}
+
+/**
+ * 从 Minecraft 的 access token（一个 JWT）里读出 **XUID**。
+ *
+ * ## 为什么绕这一下（2026-10-11，真机试出来的）
+ *
+ *   `--xuid` 是现代版本联机/好友/Realms 的前提，所以要拿到玩家的 XUID。
+ *   试过两个来源，只有这个靠谱：
+ *
+ *     · **XBL 的 DisplayClaims**：只有 `uhs`，**没有** XUID（实测打印过键名）；
+ *     · **XSTS 的 DisplayClaims**：文档说带 `xid`，可真机上取回来是空的；
+ *     · **MC access token 的载荷**：`xuid` / `xid` 都在里面 ✔
+ *       （真机抓到的载荷里有 `"xuid":"2535470293336241"`）。
+ *
+ * ★ 只解 base64 读载荷，**不验签** —— 这是我们自己刚拿到的令牌，
+ *   要的是里面的字段，不是可信性判断（JWT 的签名该由发证方校验，
+ *   我们没有任何理由替 Minecraft 服务端做这件事）。
+ * ★ 解不出来就返回空串：`--xuid` 那一步会因此不传（见 `build_command`），
+ *   而不是把"没有"说成某个值。
+ */
+pub fn xuid_from_mc_token(token: &str) -> String {
+    let payload = match token.split('.').nth(1) {
+        Some(p) => p,
+        None => return String::new(),
+    };
+    // base64url（无填充）→ 标准 base64 → 字节
+    let std_b64: String = payload
+        .chars()
+        .map(|c| match c {
+            '-' => '+',
+            '_' => '/',
+            other => other,
+        })
+        .collect();
+    let padded = match std_b64.len() % 4 {
+        2 => format!("{std_b64}=="),
+        3 => format!("{std_b64}="),
+        _ => std_b64,
+    };
+    let bytes = match base64_decode(&padded) {
+        Some(b) => b,
+        None => return String::new(),
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let v: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(_) => return String::new(),
+    };
+    for key in ["xuid", "xid"] {
+        if let Some(s) = v[key].as_str() {
+            if !s.is_empty() {
+                return s.to_string();
+            }
+        }
+        // 也接受数字形态（不同版本给的类型不一样）
+        if let Some(n) = v[key].as_u64() {
+            return n.to_string();
+        }
+    }
+    String::new()
+}
+
+/// 极小的 base64 解码（只给 JWT 载荷用，不引入新依赖）
+fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let mut buf: u32 = 0;
+    let mut bits = 0u32;
+    for c in s.bytes() {
+        if c == b'=' {
+            break;
+        }
+        let idx = TABLE.iter().position(|&t| t == c)? as u32;
+        buf = (buf << 6) | idx;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buf >> bits) & 0xFF) as u8);
+        }
+    }
+    Some(out)
+}
+
 /// 第三步：微软 access token → Xbox Live → XSTS → Minecraft → 玩家档案
-async fn complete_login(
-    ms_access_token: &str,
+async fn complete_login(    ms_access_token: &str,
     refresh_token: Option<String>,
     expires_in: u64,
 ) -> Result<McAccount> {
@@ -620,14 +952,33 @@ async fn complete_login(
         "RelyingParty": "http://auth.xboxlive.com",
         "TokenType": "JWT"
     });
-    let xbl: serde_json::Value = client
-        .post(XBL_URL)
-        .json(&xbl_body)
-        .send()
-        .await?
-        .json()
-        .await
-        .map_err(|e| AuthError::Ms(format!("Xbox Live 认证失败：{e}")))?;
+    /*
+     * ★★★★ 2026-10-11 修（用户截图：「游戏里弹『提供的令牌无效』」）—— 这一处是总病根。
+     *
+     * ## 原来错在哪（两件事叠在一起）
+     *
+     *   ① **先 `.json()` 后看状态码**：XBL 失败时返回的其实是一份**说得很清楚**的 JSON
+     *      （`{"Identity":"0","XErr":2148916233,"Message":"…"}`），
+     *      可代码直接当成功体解析，失败就报一句
+     *      「Xbox Live 认证失败：error decoding response body」——
+     *      用户和我们都看不出到底发生了什么（XErr 才是答案）。
+     *   ② **没有任何重试**：HTTP 长连接被服务端先关掉时，复用它拿到的响应体会**读到一半**，
+     *      reqwest 报的正是 `error decoding response body`。一次这样的抖动
+     *      就让整次续期失败 —— 于是密钥环里那份令牌一直停在过期状态，
+     *      游戏拿它去连任何在线服务都是 **401**（用户看到的就是这个）。
+     *
+     *      真机现场：同一份 refresh token、同一台机器，
+     *      用启动器自己的 reqwest 直接打这两个接口**每次都成功**；
+     *      而走这条命令路径**每次都失败** ⇒ 就是这种瞬时断流 + 无重试。
+     *
+     * ## 现在
+     *
+     *   · 先看状态码，**保留响应体**；
+     *   · 失败按 XErr 翻成人话（与 XSTS 共用一张表），并把原始返回带上；
+     *   · 网络错 / 5xx / 429 / 408 / 解析失败 ⇒ **重试 3 次**（0.6s、1.5s 退避）；
+     *   · 客户端自己的 4xx 不重试（重试也没用，只会让用户多等）。
+     */
+    let xbl: serde_json::Value = post_json_with_retry(client, XBL_URL, &xbl_body, "Xbox Live").await?;
 
     let xbl_token = xbl["Token"]
         .as_str()
@@ -637,6 +988,16 @@ async fn complete_login(
         .as_str()
         .ok_or_else(|| AuthError::Ms("Xbox Live 没有返回用户哈希".into()))?
         .to_string();
+    /*
+     * ★ XUID：现代版本的 `--xuid` 要用它，而原来**整条链都没取过这个值**
+     *   （`launch_args` 里传的是空字符串 ⇒ 在线功能全废）。
+     *
+     *   ★★ 取值位置是踩过的坑：**XBL 这一步的 DisplayClaims 里只有 `uhs`**，
+     *      XUID（`xid`）在 **XSTS** 的 DisplayClaims 里。写在取 `uhs` 的旁边
+     *      只会拿到空串（真机验证过：XBL 返回的键是
+     *      IssueInstant / NotAfter / Token / DisplayClaims，里面没有 xid）。
+     *      ⇒ 所以它挪到下面 XSTS 之后取。
+     */
 
     /* ---------- XSTS ---------- */
     let xsts_body = serde_json::json!({
@@ -644,39 +1005,57 @@ async fn complete_login(
         "RelyingParty": "rp://api.minecraftservices.com/",
         "TokenType": "JWT"
     });
-    let xsts_resp = client.post(XSTS_URL).json(&xsts_body).send().await?;
-    let xsts_status = xsts_resp.status();
-    let xsts_text = xsts_resp.text().await.unwrap_or_default();
-
-    if !xsts_status.is_success() {
-        /*
-         * XSTS 的错误码有明确含义，翻译成人话（这是最容易卡住的一步）。
-         *
-         * ★ 这张表是照 PCL 的 `ModLaunch.vb` 991-1016 抄的
-         *   （它参考 prismarine-auth 的常量表）。老代码只映射了 3 条，
-         *   而且把 2148916227（**账号被封**）漏了 —— 那种情况下用户会
-         *   一直重试、一直失败，因为提示里什么也没说。
-         */
-        let hint = explain_xsts_error(&xsts_text).unwrap_or(
-            "XSTS 授权失败 —— 请把下面的原始返回反馈给我们，或者换个网络环境再试",
-        );
-        return Err(AuthError::XboxRestricted(format!("{hint}（原始返回：{xsts_text}）")));
-    }
-
-    let xsts: serde_json::Value = serde_json::from_str(&xsts_text)
-        .map_err(|e| AuthError::Ms(format!("解析 XSTS 响应失败：{e}")))?;
+    /*
+     * ★★ 2026-10-11：这一步也走"先看状态码 + 重试"（与 XBL 同一个道理）。
+     *
+     *   真机现场（修好 XBL 的重试之后紧接着暴露出来的就是它）：
+     *     ③ 失败：XSTS 授权失败（**原始返回是空的**）
+     *   也就是说这一步同样碰上了"响应体是空的"——一次抖动就让续期全程失败。
+     *   而 XErr 的翻译表（账号被封 / 未成年人 / 地区不支持…）照旧生效：
+     *   非 2xx 时 `post_json_with_retry` 会用同一张表把原因说出来。
+     */
+    let xsts: serde_json::Value = post_json_with_retry(client, XSTS_URL, &xsts_body, "XSTS")
+        .await
+        .map_err(|e| match e {
+            // ★ 这一步的错误要保留原来的类型：界面靠它区分"账号被限制"与"网络问题"
+            AuthError::Ms(m) if m.contains("该账号") || m.contains("Xbox") => AuthError::XboxRestricted(m),
+            other => other,
+        })?;
     let xsts_token = xsts["Token"]
         .as_str()
         .ok_or_else(|| AuthError::Ms("XSTS 没有返回 Token".into()))?
+        .to_string();
+    /*
+     * ★★ XUID 的取法（2026-10-11，真机上逐一试过）：
+     *
+     *   · XBL 的 DisplayClaims 里**只有 `uhs`**，没有 XUID（打印过键名）；
+     *   · XSTS 的 DisplayClaims 文档说带 `xid`，可真机取回来是**空的**；
+     *   · **MC access token 的载荷里有 `xuid`** ✔（真机抓到的令牌里有
+     *     `"xuid":"2535470293336241"`）—— 所以以它为准，XSTS 那边留作兜底。
+     *
+     *   拿不到不算致命（离线身份本来就没有）：留空即可，
+     *   `build_command` 会因此**不传** `--xuid`，而不是传一个空值
+     *   （空值会把后面的 `--userType` 吃掉）。
+     */
+    let xsts_xuid = xsts["DisplayClaims"]["xui"][0]["xid"]
+        .as_str()
+        .unwrap_or("")
         .to_string();
 
     /* ---------- Minecraft 登录 ---------- */
     let mc_body = serde_json::json!({
         "identityToken": format!("XBL3.0 x={uhs};{xsts_token}")
     });
-    let mc_resp = client.post(MC_LOGIN_URL).json(&mc_body).send().await?;
-    let mc_status = mc_resp.status();
-    let mc_text = mc_resp.text().await.unwrap_or_default();
+    /*
+     * ★★ 2026-10-11：这一步同样要"网络层重试 + 保留原文"。
+     *   真机现场（把 XBL、XSTS 的重试都补上之后，失败点又往后挪到了这里）：
+     *     网络请求失败：error sending request for url
+     *       (https://api.minecraftservices.com/authentication/login_with_xbox)
+     *   —— 一次连接失败就让整次续期前功尽弃，而这一步离成功只差一步。
+     *   下面那几个状态码的专门说法**照旧**（它们对应完全不同的自救动作）。
+     */
+    let (mc_status, mc_text) =
+        post_with_retry(client, MC_LOGIN_URL, &mc_body, "Minecraft 登录").await?;
     if !mc_status.is_success() {
         /*
          * ★ 这几个状态码必须分开说 —— 它们对应**完全不同的自救动作**，
@@ -684,7 +1063,10 @@ async fn complete_login(
          *   来源：PCL `ModLaunch.vb` 1034-1049。
          */
         let hint = match mc_status.as_u16() {
-            429 => "登录尝试太过频繁，请等几分钟再试。",
+            429 => {
+                "登录尝试太过频繁，已被微软限流。\n\
+                 请等待 5-10 分钟后再试；等待期间请不要反复点击登录。"
+            }
             403 => {
                 "当前 IP 的登录尝试异常。\n\
                  如果你开着 VPN 或加速器，请关掉或换个节点再试。"
@@ -757,7 +1139,11 @@ async fn complete_login(
             ));
         }
         if profile_status.as_u16() == 429 {
-            return Err(AuthError::Ms("登录尝试太过频繁，请等几分钟再试。".into()));
+            return Err(AuthError::Ms(
+                "登录尝试太过频繁，已被微软限流。\n\
+                 请等待几分钟后再试；等待期间请不要反复点击登录。"
+                    .into(),
+            ));
         }
         return Err(AuthError::NoEntitlement);
     }
@@ -776,6 +1162,19 @@ async fn complete_login(
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
+    /*
+     * ★★ XUID 以 **MC 令牌载荷**里那个为准（XSTS 那边留作兜底）——
+     *   见上面 `xsts_xuid` 前那段说明：真机上只有令牌里那个是有的。
+     */
+    let xuid = {
+        let from_token = xuid_from_mc_token(&mc_token);
+        if from_token.is_empty() {
+            xsts_xuid
+        } else {
+            from_token
+        }
+    };
+
     let account = McAccount {
         username,
         uuid,
@@ -783,11 +1182,131 @@ async fn complete_login(
         refresh_token,
         kind: "msa".into(),
         expires_at: Some(now + mc_expires_in.min(expires_in.max(mc_expires_in))),
+        // ★ Xbox 用户 ID（现代版本的 --xuid 要用它；取法见上面那段）
+        xuid,
     };
 
     // 立刻存进系统密钥环
     store_account(&account)?;
     Ok(account)
+}
+
+/// 续期失败之后的**冷却时间**：这期间不再重试续期。
+///
+/// 为什么要冷却（2026-10-12 用户：「令牌过期，感觉这是个bug」）：
+///   续期失败最常见的原因是 refresh token 真的废了（换了密码、注销了设备）。
+///   那种情况下**每次调用都去试一次续期**会：① 让用户白等 ② 把微软的
+///   令牌端点打成限流（好友页的心跳 30 秒一次，一分钟就两次）。
+///   冷却期内直接用旧的（反正也不可用），过了冷却才再试一次 ——
+///   用户在这期间去设置里重新登录，一切照旧。
+const REFRESH_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// 上次续期**失败**的时刻（按 uuid）。见 `REFRESH_RETRY_AFTER` 的说明。
+static REFRESH_FAILED_AT: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> =
+    std::sync::OnceLock::new();
+
+fn refresh_failed_map() -> &'static std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>> {
+    REFRESH_FAILED_AT.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// 现在该不该去试续期（纯函数 —— 有判据）
+fn should_try_refresh(
+    last_failure: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> bool {
+    match last_failure {
+        None => true,
+        Some(t) => now.duration_since(t) >= REFRESH_RETRY_AFTER,
+    }
+}
+
+fn note_refresh_failed(uuid: &str) {
+    if let Ok(mut m) = refresh_failed_map().lock() {
+        m.insert(uuid.to_string(), std::time::Instant::now());
+    }
+}
+
+fn clear_refresh_failure(uuid: &str) {
+    if let Ok(mut m) = refresh_failed_map().lock() {
+        m.remove(uuid);
+    }
+}
+
+/// 走一次续期，并把**新账号写回密钥环**（`refresh_msa` 内部已经会存）。
+async fn try_refresh(uuid: &str, refresh_token: &str) -> Result<McAccount> {
+    match refresh_msa(refresh_token).await {
+        Ok(acc) => {
+            clear_refresh_failure(uuid);
+            say!("[IEML/auth] 令牌已静默续期（{}）", acc.username);
+            Ok(acc)
+        }
+        Err(e) => {
+            note_refresh_failed(uuid);
+            Err(e)
+        }
+    }
+}
+
+/// ★★★★ 取一把**现在能用**的正版令牌：快过期就自己续期。
+///
+/// ## 为什么必须有这个函数（2026-10-12，用户报的 bug）
+///
+///   好友服务原来直接 `load_account(uuid)` 拿 `access_token` 就用 ——
+///   **完全不看它有没有过期**。令牌一过期，好友服务就 401，然后界面弹
+///   「好友服务不认这把令牌 —— 到设置里重新登录一次正版账号」。
+///
+///   可我们**手里就有 refresh token**，续一次就好的事。
+///   而启动游戏那条路（`commands_real` 的启动命令）早就是 "`needs_refresh()`
+///   → `refresh_msa`" —— **同一条链上两套做法**，这就是这个 bug 的根：
+///   凡是"拿令牌去调接口"的地方，都应该走这一个入口。
+///
+/// ★ 判定用 `needs_refresh()`：**没有到期时间也当作要续期**（老账号没有那个字段，
+///   见它的说明）。续一次很便宜，拿一把不知道死活的令牌去调接口很贵。
+pub async fn valid_access_token(uuid: &str) -> Result<String> {
+    let acc = load_account(uuid)?;
+    if acc.access_token.is_empty() || acc.access_token == "0" {
+        return Err(AuthError::Other(
+            "离线账号用不了这个功能 —— 它要正版令牌。\n\
+             到「设置 → 账号」登录一次正版账号即可。"
+                .into(),
+        ));
+    }
+    if acc.kind != "msa" || !acc.needs_refresh() {
+        return Ok(acc.access_token);
+    }
+    let Some(rt) = acc.refresh_token.clone().filter(|s| !s.trim().is_empty()) else {
+        // 没有 refresh token ⇒ 只能拿旧的去试（多半会 401，由调用方如实报出来）
+        return Ok(acc.access_token);
+    };
+    let last = refresh_failed_map().lock().ok().and_then(|m| m.get(uuid).copied());
+    if !should_try_refresh(last, std::time::Instant::now()) {
+        return Ok(acc.access_token);
+    }
+    Ok(try_refresh(uuid, &rt).await?.access_token)
+}
+
+/// **强制**续期一次（服务端已经明确回 401 时用 —— 那比"看时钟判断"更权威）。
+///
+/// 返回新的 access token；续期本身失败就把那个错误抛出去（**带上微软的原因**，
+/// 那才是用户该看的话）。冷却期内直接返回原错误，不去打令牌端点。
+pub async fn force_refresh_access_token(uuid: &str) -> Result<String> {
+    let acc = load_account(uuid)?;
+    let Some(rt) = acc.refresh_token.clone().filter(|s| !s.trim().is_empty()) else {
+        return Err(AuthError::Other(
+            "这把令牌服务端不认，而且账号里**没有** refresh token —— 只能重新登录一次。\n\
+             到「设置 → 账号」点正版登录即可。"
+                .into(),
+        ));
+    };
+    let last = refresh_failed_map().lock().ok().and_then(|m| m.get(uuid).copied());
+    if !should_try_refresh(last, std::time::Instant::now()) {
+        return Err(AuthError::Other(
+            "刚才续期失败了，这五分钟内不再重试（免得把微软的接口打成限流）。\n\
+             到「设置 → 账号」重新登录一次是最快的办法。"
+                .into(),
+        ));
+    }
+    Ok(try_refresh(uuid, &rt).await?.access_token)
 }
 
 /// 用 refresh_token 静默续期（避免每次启动都要重新授权）
@@ -817,7 +1336,15 @@ pub async fn refresh_msa(refresh_token: &str) -> Result<McAccount> {
         .await?;
 
     if !resp.status().is_success() {
+        let code = resp.status().as_u16();
         let t = resp.text().await.unwrap_or_default();
+        // ★ 429：刷新令牌也被限流 —— 明确说清，不丢给 explain_ms_error 猜
+        //   （它面对 429 的响应体翻不出「限流」这个意思）。
+        if code == 429 {
+            return Err(AuthError::Ms(
+                "刷新令牌太频繁，已被微软限流。请等待几分钟后再试。".into(),
+            ));
+        }
         return Err(AuthError::Ms(explain_ms_error(&t)));
     }
     #[derive(Deserialize)]
@@ -1015,6 +1542,8 @@ pub fn offline_account(username: &str) -> McAccount {
         refresh_token: None,
         kind: "legacy".into(),
         expires_at: None,
+        // 离线身份没有 Xbox 用户 ID（这是"离线"的一部分，不是漏填）
+        xuid: String::new(),
     }
 }
 
@@ -1166,6 +1695,115 @@ mod tests {
         assert!(a.is_expired());
     }
 
+    /// ★★★★ 2026-10-11（用户：「游戏里弹『提供的令牌无效』」那条 bug 的判据）。
+    ///
+    ///   `expires_at` 是后来才加进 `McAccount` 的（`#[serde(default)]`）——
+    ///   **老账号里根本没有这个字段**，反序列化出来是 `None`，
+    ///   而 `is_expired()` 对 `None` 返回 false ⇒ **永远不续期** ⇒
+    ///   令牌静默过期、游戏里所有在线服务 401。
+    ///
+    ///   ⇒ "不知道什么时候过期"必须当成**要续期**（续一次很便宜，
+    ///     拿着不知道死活的令牌去启动游戏的代价是玩家连不上任何在线服务）。
+    #[test]
+    fn unknown_expiry_means_refresh() {
+        let mut a = offline_account("T");
+
+        a.expires_at = None;
+        assert!(a.needs_refresh(), "没有过期时间 ⇒ 必须续期（老账号就是这个形状）");
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        a.expires_at = Some(now - 10);
+        assert!(a.needs_refresh(), "已过期 ⇒ 续期");
+        a.expires_at = Some(now + 60);
+        assert!(a.needs_refresh(), "5 分钟内到期 ⇒ 也提前续（与 is_expired 口径一致）");
+        a.expires_at = Some(now + 3600);
+        assert!(!a.needs_refresh(), "还早 ⇒ 不折腾");
+    }
+
+    /// ★★★★ 2026-10-12（用户：「令牌过期，感觉这是个bug」）：
+    ///   续期**失败**之后要有一段冷却期，否则好友页那 30 秒一次的心跳
+    ///   会把微软的令牌端点打成限流（refresh token 真废了的时候每次都白试）。
+    #[test]
+    fn refresh_failure_has_a_cooldown() {
+        let now = std::time::Instant::now();
+        assert!(should_try_refresh(None, now), "没失败过 ⇒ 该试");
+        assert!(!should_try_refresh(Some(now), now), "刚失败过 ⇒ 先别试");
+        assert!(
+            !should_try_refresh(Some(now - REFRESH_RETRY_AFTER / 2), now),
+            "冷却期内 ⇒ 别试"
+        );
+        assert!(
+            should_try_refresh(Some(now - REFRESH_RETRY_AFTER), now),
+            "过了冷却 ⇒ 再试一次"
+        );
+    }
+
+    /// ★★ 2026-10-11：**记录不完整也要续一次**（缺 xuid 的正版账号）。
+    ///
+    ///   现场：`xuid` 是 10-11 才加进 `McAccount` 的，而它是现代版本 `--xuid`
+    ///   的唯一来源。老账号的令牌可能还剩十几个小时 —— 只看过期时间的话，
+    ///   要等到明天才会续期，而这一天里联机与好友功能全是坏的。
+    #[test]
+    fn missing_xuid_also_needs_refresh() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let mut a = offline_account("T");
+        a.kind = "msa".into();
+        a.xuid = String::new();
+        a.expires_at = Some(now + 24 * 3600); // 令牌还很新
+        assert!(a.needs_refresh(), "正版账号缺 xuid ⇒ 续一次把它补上（顺带刷令牌）");
+
+        a.xuid = "2535470293336241".into();
+        assert!(!a.needs_refresh(), "xuid 有了、令牌还新 ⇒ 不折腾");
+
+        // ★ 离线账号不该因为"没有 xuid"被反复续期（它本来就没有在线身份）
+        let mut off = offline_account("T");
+        off.expires_at = Some(now + 3600);
+        assert_eq!(off.kind, "legacy");
+        assert!(!off.needs_refresh(), "离线身份的 xuid 空是正常的");
+    }
+
+    /// ★★ 2026-10-11：**XUID 从 MC 令牌的载荷里读**（真机上唯一可靠的来源）。
+    ///
+    ///   试过的三个来源：XBL 的 DisplayClaims（只有 `uhs`）、XSTS 的 DisplayClaims
+    ///   （文档说带 `xid`，真机取回来是空的）、MC access token 的载荷（**有** ✔）。
+    ///   这几个 fixture 就是真机令牌载荷的形状（base64url 编码过）。
+    #[test]
+    fn xuid_comes_from_the_mc_token_payload() {
+        // {"xuid":"2535470293336241","foo":1}
+        let t1 = "h.eyJ4dWlkIjoiMjUzNTQ3MDI5MzMzNjI0MSIsImZvbyI6MX0.s";
+        assert_eq!(xuid_from_mc_token(t1), "2535470293336241");
+
+        // {"xuid":2535470293336241} —— 数字形态也要认
+        let t2 = "h.eyJ4dWlkIjoyNTM1NDcwMjkzMzM2MjQxfQ.s";
+        assert_eq!(xuid_from_mc_token(t2), "2535470293336241");
+
+        // {"sub":"x"} —— 没有就不许编一个出来
+        let t3 = "h.eyJzdWIiOiJ4In0.s";
+        assert_eq!(xuid_from_mc_token(t3), "");
+        assert_eq!(xuid_from_mc_token(""), "");
+        assert_eq!(xuid_from_mc_token("not-a-jwt"), "");
+        assert_eq!(xuid_from_mc_token("h.????.s"), "", "解不出来的载荷 ⇒ 空串，不许崩");
+    }
+
+    /// 报错里带的响应体必须被截短、压成一行 —— 否则界面与日志会被一坨 JSON 撑爆。
+    #[test]
+    fn error_snippets_are_shortened() {        assert_eq!(truncate_for_message("短"), "短");
+        let multi = "{\n  \"XErr\": 2148916233,\n  \"Message\": \"x\"\n}";
+        let one = truncate_for_message(multi);
+        assert!(!one.contains('\n'), "必须压成一行：{one}");
+        let long = "a".repeat(1000);
+        let cut = truncate_for_message(&long);
+        assert!(cut.chars().count() <= 301, "太长没截：{}", cut.chars().count());
+        assert!(cut.ends_with('…'));
+    }
+
     /* ---------- client_id 的占位符判据（0.1.0-beta.3） ---------- */
 
     /// 本机实测踩到的那个值必须被认出来 —— 它会把可用的内置 id 挤掉。
@@ -1225,6 +1863,7 @@ mod tests {
             uuid: "0123456789abcdef0123456789abcdef".into(),
             // 1600 字符的假 JWT
             access_token: "a".repeat(1600),
+            xuid: String::new(),
             refresh_token: Some("r".repeat(1000)),
             kind: "msa".into(),
             expires_at: Some(1758000000000),
@@ -1292,6 +1931,7 @@ mod tests {
             username: "Steve".into(),
             uuid: "0123456789abcdef0123456789abcdef".into(),
             access_token: "0".into(),
+            xuid: String::new(),
             refresh_token: None,
             kind: "legacy".into(),
             expires_at: None,

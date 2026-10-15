@@ -22,6 +22,8 @@ import {
   IconShield,
 } from '../ui/Icons';
 import { SkinHead } from './SkinHead';
+/* ★ 切回正版的判断与老数据自愈都在 domain（那边有用例）*/
+import { adoptablePremiumUuid, planSwitchBack } from '../domain/account.ts';
 import { useApp } from '../state/AppContext';
 import { getRealApi } from '../bridge';
 
@@ -215,10 +217,25 @@ export function AccountMenu({ onOpenAccount }: AccountMenuProps) {
   };
 
   /**
-   * 切到离线模式。
-   * ★ 用户要求「可以切换离线模式，然后还能直接切回来」——
-   *   所以**不删正版凭据**（keyring 里那份留着），只是把"当前用哪个"换成离线；
-   *   切回来只要把 accountUuid 恢复即可，不用重新登录。
+   * 切到 / 切回账号模式。
+   *
+   * ★★★★ 2026-10-09 修（用户：「**切换到离线登录，再切回正版登录要重新登录**」）。
+   *
+   * ## 原来错在哪
+   *
+   *   "上一个正版号是谁"只存在下面那个 `useRef` 里 —— 而 `AccountMenu`
+   *   **一进版本二级页就被卸载**（侧栏整体换掉），重启更不用说；
+   *   切离线时又把 `accountUuid` 写成 `null` 并落盘。
+   *   ⇒ 于是"切回正版"几乎总是走到"没有可切回的正版账号"→ 弹登录面板。
+   *
+   * ## 现在
+   *
+   *   判断交给 `domain/account.ts` 的 `planSwitchBack`（那边有 6 条用例）：
+   *     ① 现在就是正版 → 什么都不做（**别**把登录面板弹出来）；
+   *     ② 记着上一个正版 uuid → **先确认凭据还在**（`account.load`）再切，
+   *        不用重新走一遍微软授权；
+   *     ③ 凭据真的不在了（被清理过 / 换了机器）→ 如实说清，再打登录面板 ——
+   *        这种情况重新登录是**对的**，但不该让用户自己去猜为什么。
    */
   const switchMode = async (toOffline: boolean) => {
     const api = await getRealApi();
@@ -227,21 +244,49 @@ export function AccountMenu({ onOpenAccount }: AccountMenuProps) {
       if (toOffline) {
         if (!api) throw new Error('演示模式');
         await api.account.offline(offlineName);
+        /*
+         * ★ 只改"现在用哪个"；`lastPremiumUuid` **一个字节都不动** ——
+         *   切回正版全靠它（这就是这次修的 bug）。
+         */
         window.dispatchEvent(
           new CustomEvent('ieml:prefs', { detail: { accountUuid: null } }),
         );
         toast('ok', '已切到离线', `玩家名：${offlineName}`);
-      } else {
-        if (!savedUuidRef.current) {
-          // 没有可切回的正版账号 —— 打开登录面板
+        return;
+      }
+
+      const plan = planSwitchBack(state.prefs);
+      if (plan.kind === 'already-online') {
+        toast('info', '现在就是正版', `正在用 ${state.prefs.offlineUsername || '正版账号'}`);
+        return;
+      }
+      if (plan.kind === 'need-login') {
+        toast('info', '需要登录一次', '这台机器上还没有记着任何一个正版账号。');
+        onOpenAccount();
+        return;
+      }
+
+      /*
+       * ★ 切之前**确认那份凭据还在**。不在就别假装切成功 ——
+       *   否则界面显示"正版"，而启动游戏时才发现登录态是坏的。
+       */
+      if (api) {
+        try {
+          await api.account.load(plan.uuid);
+        } catch {
+          toast(
+            'err',
+            '正版凭据不在了',
+            '系统凭据管理器里那份已经读不到（可能被清理过），需要重新登录一次。',
+          );
           onOpenAccount();
           return;
         }
-        window.dispatchEvent(
-          new CustomEvent('ieml:prefs', { detail: { accountUuid: savedUuidRef.current } }),
-        );
-        toast('ok', '已切回正版');
       }
+      window.dispatchEvent(
+        new CustomEvent('ieml:prefs', { detail: { accountUuid: plan.uuid } }),
+      );
+      toast('ok', '已切回正版', state.prefs.offlineUsername || '正版账号');
     } catch (e) {
       toast('err', '切换失败', e instanceof Error ? e.message : String(e));
     } finally {
@@ -249,11 +294,40 @@ export function AccountMenu({ onOpenAccount }: AccountMenuProps) {
     }
   };
 
-  /** 记住最近一次的正版 uuid —— "还能直接切回来"靠它（凭据一直在 keyring 里，没删） */
-  const savedUuidRef = useRef<string | null>(uuid);
+  /*
+   * ★★ 老数据自愈（2026-10-09，与上面那条 bug 配套）。
+   *
+   *   在这条 bug 修好之前切到离线的用户：`accountUuid` 已经是 null，
+   *   而 `lastPremiumUuid` 那时还不存在 ⇒ 一启动就落在"必须重新登录"上。
+   *
+   *   可其实**后端那边还有一个指针**：密钥环里的 `__current__`（只存 uuid），
+   *   切离线时并没有被清掉（`account_offline` 只构造一个内存对象）。
+   *   所以这里问一次后端，把记忆补回来 —— **只记，不自动切到正版**
+   *   （用户此刻要的是离线，替他切回去是另一种自作主张）。
+   */
   useEffect(() => {
-    if (uuid) savedUuidRef.current = uuid;
-  }, [uuid]);
+    if (state.prefs.lastPremiumUuid) return;
+    let alive = true;
+    void (async () => {
+      const api = await getRealApi();
+      if (!api || !alive) return;
+      let current: string | null = null;
+      try {
+        current = await api.account.current();
+      } catch {
+        /* 读不到就是没有（没登录过 / 密钥环不可用），什么都不做 */
+      }
+      if (!alive) return;
+      const adopt = adoptablePremiumUuid(state.prefs, current);
+      if (adopt) {
+        window.dispatchEvent(new CustomEvent('ieml:prefs', { detail: { lastPremiumUuid: adopt } }));
+        console.info('[IEML] 补记上一个正版账号（切回正版不用重新登录）');
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [state.prefs]);
 
   const head = skin?.skinUrl ?? null;
   const label = isOnline ? (state.prefs.offlineUsername || '正版账号') : offlineName;

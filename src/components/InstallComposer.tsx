@@ -1250,16 +1250,14 @@ export function InstallComposer({
             这里不再给选择：源由后端自动决定（官方优先、慢或失败换镜像，见 Rust parse_source）。
         */}
         {/*
-          ★★ 2026-09-23 晚：**把"点一行会发生什么"说出来**。
-            这一步的交互是"点一行就进下一页"，而页面上没有任何按钮提示这件事
-            （下一步那个按钮连同右栏一起删了）。一句话比一条步骤条省地方，
-            也正是它替代了原来那条步骤条的位置。
+          ★★ 2026-09-23 晚：曾经在这里写过一句「点一行就进下一页（选模组加载器）
+            —— 不选加载器就是纯原版」，为的是把"点一行会发生什么"说出来。
+
+          ★★★★ 2026-10-12（用户：「图二，三的文案删掉」）：**整句删掉**。
+            那句"不选加载器就是纯原版"还在下面第二屏重复了一遍，两处一起没了。
+            ⇒ 交互提示这件事不再靠文字，靠**行本身的可点感**（悬浮高亮）——
+              这也是当初删掉右栏按钮时留下的同一个取舍。
         */}
-        {variant === 'page' ? (
-          <p className="gw-tip">
-            点一行就进下一页（选模组加载器）—— 不选加载器就是纯原版
-          </p>
-        ) : null}
       </div>
 
       {/*
@@ -1945,17 +1943,14 @@ export function InstallComposer({
 
   /** 选中的那个版本在清单里的记录（用它说清"盘上有没有"） */
   const pickedRow = rows.find((r) => r.id === mcVersion) ?? null;
-  /**
-   * 版本的渠道名 —— 三种写法对应三种**真实**的东西。
-   * ★ 判据与上面 `filtered` 里那一套**同源**（`release_type` + `FINAL_RELEASE_RE`
-   *   + `isAprilFoolsVersion`）：正式版要两个条件都满足，愚人节要在快照之前判。
+  /*
+   * ★★ 2026-10-12（用户：「图二，三的文案删掉」）：
+   *   这里原来有一个 `pickedChannel`（正式版 / 愚人节版本 / 快照·预发布），
+   *   唯一的用处就是第二屏那行「装到 26.3 · 正式版 · …」——整行删掉之后
+   *   它就成了没人读的变量（`tsc` 会直接报 TS6133），一并删掉。
+   *   ★ 渠道这个**事实**没丢：列表里的分组标题与筛选器仍然按同一套判据
+   *     （`release_type` + `FINAL_RELEASE_RE` + `isAprilFoolsVersion`）分类。
    */
-  const pickedChannel =
-    pickedRow && pickedRow.release_type === 'release' && FINAL_RELEASE_RE.test(pickedRow.id)
-      ? '正式版'
-      : isAprilFoolsVersion(mcVersion)
-        ? '愚人节版本'
-        : '快照 / 预发布';
   /** 加载器那一步的一行摘要（步骤条上写"这一步选了什么"） */
   const loaderSummary =
     base === null
@@ -2037,11 +2032,13 @@ export function InstallComposer({
         <div className="page-head">
           <div>
             <h1 className="page-title">模组加载器</h1>
-            <p className="page-desc">
-              装到 <b className="mono">{mcVersion}</b> · {pickedChannel}
-              {pickedRow?.released_at ? ` · ${pickedRow.released_at.slice(0, 10)}` : ''}
-              {' —— '}不选加载器就是纯原版
-            </p>
+            {/*
+              ★★★★ 2026-10-12（用户：「图二，三的文案删掉」）。
+                这里原来是一行 `装到 <版本> · <渠道> · <日期> —— 不选加载器就是纯原版`。
+                整行删掉：那句"不选加载器就是纯原版"与上一屏重复，
+                而版本信息页头右侧本来就有（见下面那段关于"名字放右栏"的说明）。
+                ★ 想只删后半句、保留「装到 …」的话，说一声即可加回来。
+            */}
           </div>
           {/*
             ★ 「盘上有没有」这一条留着：它决定这次要不要真下载游戏文件

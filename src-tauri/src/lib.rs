@@ -17,6 +17,12 @@
 #[macro_use]
 pub mod logx;
 pub mod auth;
+/*
+ * ★ 启动耗时的**基准**（`#[ignore]`，手动跑）—— 见该文件头部：
+ *   为什么"跨时段对比两次启动"不可靠、以及怎么用两个新进程做同一条件的 A/B。
+ */
+#[cfg(test)]
+mod bench_startup;
 /// ★ 实例的备份与回滚（ADR-014）—— 独立一层：它只碰盘、不碰 Tauri，
 ///   于是"jar 一个字节都不许进备份""回滚前必须先备份当前状态"这些规矩
 ///   能用普通单测钉死（见该文件尾部的测试）。
@@ -33,6 +39,11 @@ pub mod modloader;
 pub mod modrinth;
 pub mod net;
 pub mod platform;
+/* ★★ 2026-10-12：Minecraft 好友服务（正版专用）—— 端点与协议见该模块头部 */
+pub mod friends;
+/// ★★ 2026-10-15：MC 新闻（游戏版本动态）—— 从用户网站同步进**数据目录**，
+///   见该模块头部（为什么是下载到数据目录、而不是打进安装包）。
+pub mod news;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -134,6 +145,31 @@ pub fn run() {    /*
     let paths = platform::AppPaths::resolve();
 
     request_high_performance_gpu();
+
+    /*
+     * ★★★★ 2026-10-09（用户：「**进入启动器的速度有点慢**」）：
+     *   **机器信息提前在后台算好**，别让首屏等它。
+     *
+     *   真机打点量出来的形状（`[IEML/boot] machine_info = …ms`）：
+     *     第一次调用 191ms，紧接着的几次 0~1ms —— 而它是启动批次里的**第一条**
+     *     同步命令，同一条主线程上的其余几条都排在它后面 ⇒ 首屏白等这一下。
+     *
+     *   那 191ms 是 **sysinfo 的一次性初始化 + 内存/CPU 刷新**，与用户数据无关，
+     *   所以完全可以**与"创建窗口 + WebView 载入页面"（真机上 400~700ms）并行**：
+     *   在这里起一个后台线程先算，`machine_info` 命令到了直接取现成的。
+     *   （顺手把 `refresh_cpu_all` 收窄成 `CpuRefreshKind::nothing()` ——
+     *     界面只要核数，不需要逐个 CPU 的时间与频率，A/B 实测省 ~25%。）
+     *
+     *   ★ 为什么放在 `AppPaths::resolve()` 之后、窗口创建之前：这里离"用户双击"
+     *     最近，而后面那一大段（迁移、归置、建窗口、WebView 起来）都是我们的
+     *     重叠时间。放在 setup 里就晚了 —— 那时窗口已经建好、页面已经开始加载。
+     */
+    {
+        std::thread::spawn(move || {
+            let snap = platform::machine_snapshot();
+            platform::machine_info_cache().fill(snap);
+        });
+    }
 
     /*
      * ★★ **本根目录自己的布局迁移必须排在最前**（0.1.0-beta.3 实测踩到的一个真 bug）。
@@ -520,6 +556,12 @@ pub fn run() {    /*
             /* ★★ 更新说明（实时读更新通道的清单）—— 用户「版本更新列表可以改成
                实时获取吗，点进去就刷新」。见 `fetch_update_notes` 的说明。 */
             commands_real::fetch_update_notes,
+            /* ★★ MC 新闻（游戏版本动态）—— 用户「网站更新了版本大图功能，启动器同步一下」
+               +「其实这些东西应该保存在启动器的数据文件夹里的」：
+               数据不再打进安装包，而是像游戏文件一样下载到**数据目录**里的 `news/`。
+               见 `news.rs` 头部（布局、为什么不改数据形状、半份数据不算数据）。 */
+            news::news_load,
+            news::news_sync,
             /* -------- 账号 -------- */
             /* ★★ 正版登录的可用性（client_id 配没配）+ 配置入口 */
             commands_real::ms_login_status,
@@ -537,6 +579,24 @@ pub fn run() {    /*
         commands_real::account_save_skin,
             commands_real::account_remove,
             commands_real::account_refresh,
+            /*
+             * ★★★★ 好友（正版专用，2026-10-12）。
+             *
+             *   端点表来自公开 discovery 文档 + 客户端 authlib 的字符串常量，
+             *   全部写在 src/friends.rs 头部（含"真机验证过哪几条"）。
+             *   ★ 令牌不进前端：这些命令只收 uuid。
+             */
+            commands_real::friends_snapshot,
+            commands_real::friends_view,
+            commands_real::friends_lookup,
+            commands_real::friends_add,
+            commands_real::friends_remove,
+            commands_real::friends_accept,
+            commands_real::friends_decline,
+            commands_real::friends_presence,
+            commands_real::friends_settings,
+            commands_real::friends_set_settings,
+            commands_real::friends_blocklist,
             /* -------- 整合包 -------- */
             commands_real::mrpack_inspect,
             /* ★ 真正安装整合包（清单 → 本体+加载器 → Mod → overrides） */

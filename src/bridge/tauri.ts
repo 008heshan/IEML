@@ -14,7 +14,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { Instance, JavaRuntime } from '../domain';
-import type { Backend, BackendInfo, LaunchResult } from './types.ts';
+import type { Backend, BackendInfo, LaunchResult, NewsCachePayload } from './types.ts';
 
 /* ====================== 类型 ====================== */
 
@@ -1391,6 +1391,101 @@ export const account = {
   skin: (uuid: string) => call<AccountSkin>('account_skin', { uuid }),
 };
 
+/* ====================== 好友（正版专用，2026-10-12） ======================
+ *
+ * ★ 这一组只收 `uuid`（当前账号的），**令牌不进前端** —— 后端自己从密钥环读。
+ * ★ 端点、协议、以及"哪几条是真机验证过的"写在 `src-tauri/src/friends.rs` 头部：
+ *   · 名单 `GET  https://api.minecraftservices.com/friends`
+ *   · 状态 `POST https://api.minecraftservices.com/presence`
+ *   · 设置 `GET/POST https://api.minecraftservices.com/player/attributes`
+ *   · 查人 `GET  https://api.mojang.com/users/profiles/minecraft/{name}`
+ */
+export const friendsApi = {
+  /** 名单（好友 + 收到的请求 + 发出的请求） */
+  snapshot: (uuid: string) => call<FriendsSnapshot>('friends_snapshot', { uuid }),
+
+  /** 名单 + 每个人当前的在线状态（会顺带上报一次"我在线"） */
+  view: (uuid: string) => call<FriendView[]>('friends_view', { uuid }),
+
+  /** 按玩家名查这个人（加好友之前先查 uuid；查不到会明确报错） */
+  lookup: (name: string) => call<FriendEntry>('friends_lookup', { name }),
+
+  /** 加好友（内部先按名字查 uuid，再 ADD） */
+  add: (uuid: string, name: string) => call<FriendEntry>('friends_add', { uuid, name }),
+
+  /** 删好友 */
+  remove: (uuid: string, profileId: string) => call<void>('friends_remove', { uuid, profileId }),
+
+  /** 同意别人的请求 */
+  accept: (uuid: string, profileId: string) => call<void>('friends_accept', { uuid, profileId }),
+
+  /** 拒绝别人的请求 / 撤销自己发出的请求 */
+  decline: (uuid: string, profileId: string) => call<void>('friends_decline', { uuid, profileId }),
+
+  /**
+   * 上报在线状态并拿回好友们的状态 —— 界面的心跳就是它。
+   * ★ 关启动器时要记得发一次 `OFFLINE`（见 AppContext 里的卸载处理）。
+   */
+  presence: (uuid: string, status: PresenceStatus) =>
+    call<PresenceRow[]>('friends_presence', { uuid, status }),
+
+  settings: (uuid: string) => call<FriendsSettings>('friends_settings', { uuid }),
+
+  setSettings: (uuid: string, friendsToggle: Toggle, acceptInvites: Toggle) =>
+    call<void>('friends_set_settings', { uuid, friendsToggle, acceptInvites }),
+
+  blocklist: (uuid: string) => call<string[]>('friends_blocklist', { uuid }),
+};
+
+/** 一条好友 / 一个请求（后端 `friends::FriendEntry`） */
+export interface FriendEntry {
+  /** 32 位 hex */
+  profileId: string;
+  name: string;
+}
+
+export interface FriendsSnapshot {
+  friends: FriendEntry[];
+  incomingRequests: FriendEntry[];
+  outgoingRequests: FriendEntry[];
+}
+
+/**
+ * 在线状态。**取值表与客户端 authlib 的 `PresenceStatus` 一字不差** ——
+ * 后端的 `friends::PresenceStatus` 也是这套，改一处就要改三处（那边有判据）。
+ */
+export type PresenceStatus =
+  | 'ONLINE'
+  | 'PLAYING_OFFLINE'
+  | 'PLAYING_REALMS'
+  | 'PLAYING_SERVER'
+  | 'PLAYING_HOSTED_SERVER'
+  | 'OFFLINE';
+
+/** 一条在场记录（`POST /presence` 的返回） */
+export interface PresenceRow {
+  profileId: string;
+  status?: PresenceStatus | null;
+  lastUpdated?: number | null;
+  pmid?: string | null;
+}
+
+/** 名单 + 状态的合并视图（后端算好的：没状态的写"未知"，不编） */
+export interface FriendView {
+  profileId: string;
+  name: string;
+  presence?: PresenceStatus | null;
+  presenceLabel: string;
+  note?: string | null;
+}
+
+export type Toggle = 'ENABLED' | 'DISABLED';
+
+export interface FriendsSettings {
+  friends: Toggle;
+  acceptInvites: Toggle;
+}
+
 /** 见后端 `auth::SkinInfo` */
 export interface AccountSkin {
   /** Mojang 侧的玩家名（比本地记的那个权威） */
@@ -2534,6 +2629,25 @@ export function createTauriBackend(): Backend {
      */
     async deleteVersionDir(slug: string, permanent?: boolean) {
       return call<number>('delete_version_dir', { slug, permanent: permanent ?? false });
+    },
+
+    /**
+     * ★★ **MC 新闻**（游戏版本动态）：数据在**数据目录**的 `news/` 里。
+     *
+     * 用户 2026-10-15：「网站更新了版本大图功能，启动器同步一下」
+     *            +「其实这些东西应该保存在启动器的数据文件夹里的」。
+     *
+     * ★ 两条命令的分工：`load` **只读盘**（打开页面时不联网），
+     *   `sync` 才去网站取（用户点「同步」或页面发现本地是空的时）。
+     * ★ 原样搬运：Rust 不算数据的形状，解析交给 `domain/mc-news.ts` 那一份实现。
+     */
+    news: {
+      async load() {
+        return call<NewsCachePayload | null>('news_load', {});
+      },
+      async sync() {
+        return call<NewsCachePayload>('news_sync', {});
+      },
     },
   };
 }

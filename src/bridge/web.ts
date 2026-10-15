@@ -466,6 +466,23 @@ export function createWebBackend(): Backend {
       void slug;
       return 0;
     },
+
+    /**
+     * ★★ **MC 新闻**：演示模式**没有数据目录**，所以两边都如实说，不假装成功。
+     *
+     * ★ 这里刻意不返回一份"演示数据"：新闻页的数据来源是用户自己的网站，
+     *   在浏览器里编一份假清单，会让"这个页面到底连没连上"变成看不出的事
+     *   （与 `listIsolation` 空表、`modIcons` 空表同一条理由：
+     *    演示版没有的东西就说没有，界面据此显示"演示模式里同步不了"）。
+     */
+    news: {
+      async load() {
+        return null;
+      },
+      async sync(): Promise<never> {
+        throw new Error('浏览器演示模式没有数据目录，同步不了 —— 桌面版才有');
+      },
+    },
   };
 }
 

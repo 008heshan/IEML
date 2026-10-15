@@ -119,7 +119,20 @@ export function AccountPanel({ compact = false, toast, onLoggedIn }: AccountPane
         toast('ok', '登录成功', `${acc.username}（${acc.kind === 'msa' ? '正版' : '离线'}）`);
         window.dispatchEvent(
           new CustomEvent('ieml:prefs', {
-            detail: { accountUuid: acc.uuid, offlineUsername: acc.username },
+            /*
+             * ★★ 2026-10-09：登录成功时**两件一起记**。
+             *
+             *   `accountUuid`     = 现在用哪个；
+             *   `lastPremiumUuid` = 上一次那个正版号是**谁** ——
+             *     切离线时不许清它，否则"切回正版"就变成"重新登录一次"
+             *     （用户 2026-10-09 报的正是这条）。
+             *   判断在 `domain/account.ts`，那边有用例。
+             */
+            detail: {
+              accountUuid: acc.uuid,
+              lastPremiumUuid: acc.uuid,
+              offlineUsername: acc.username,
+            },
           }),
         );
         setDevice(null);
@@ -348,6 +361,10 @@ export function AccountPanel({ compact = false, toast, onLoggedIn }: AccountPane
               }
               window.dispatchEvent(
                 new CustomEvent('ieml:prefs', {
+                  /*
+                   * ★ 切离线**只改"现在用哪个"** —— `lastPremiumUuid` 一个字节都不动，
+                   *   否则"切回正版"就又变成重新登录（2026-10-09 修的 bug）。
+                   */
                   detail: { offlineUsername: name, accountUuid: null },
                 }),
               );

@@ -80,23 +80,14 @@
   font-size: var(--text-md);
   letter-spacing: -0.01em;
 }
-.brand-mark {
-  width: 24px;
-  height: 24px;
-  display: grid;
-  place-items: center;
-  border-radius: var(--radius-md);
-  background: var(--btn-primary-bg);
-  color: #fff;
-  box-shadow: var(--btn-primary-inner), var(--btn-primary-shadow);
-}
-.brand-mark svg {
-  width: 15px;
-  height: 15px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 2.2;
-}
+/*
+ * ★ 2026-10-12（用户）：「**去掉左上角的产品logo**」。
+ *
+ *   标题栏原来是 `[品牌图标 24×24] IEML`；现在只有产品名。
+ *   下面这两段（`.brand-mark` 与 `.brand-mark svg`）**整段删掉** ——
+ *   留着会让人以为"图标还在、只是没渲染"，以后还会有人去调它的颜色。
+ *   ★ 启动页那个门面图标用的是 `.boot-mark`（另一处，没有共用）。
+ */
 
 .titlebar-spacer {
   flex: 1;
@@ -3029,6 +3020,136 @@ tbody tr.clickable:focus-visible {
 }
 
 /* ============================================================================
+   MC 新闻页（游戏版本动态，2026-10-15）
+   ----------------------------------------------------------------------------
+   用户：「我在我的网站添加了一个 mc 新闻页，我想往 IEML 里塞一个新闻页，
+   从我的网站里调取版本更新内容」。
+
+   结构上是一张卡一件事（最新正式版 / 最新快照），卡里的正文**可展开**：
+   收起时只有首段（一句话看懂"这一版是什么"），展开才是整篇「新内容 / 更改」。
+   ★ 颜色一律走令牌（`--text-*` / `--accent` / `--border-subtle`）——
+     这一页的正文很长，九套主题下它都得读得清，不能硬编码任何颜色。
+   ============================================================================ */
+
+/* 首段：卡片上最先看到的字，比正文重一档 */
+.news-lead {
+  margin: var(--space-2) 0 0;
+  color: var(--text-primary);
+  font-size: var(--text-md);
+  line-height: 1.75;
+}
+/* 英文摘要的小字说明（中文条目还没建好时才有） */
+.news-note {
+  margin: var(--space-2) 0 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+}
+/*
+ * 版本大图（用户 2026-10-15：「网站更新了版本大图功能，启动器同步一下」）。
+ *
+ * ★ 固定高度 + `object-fit: cover`：站点给的是 540×540 的方图，
+ *   按原比例铺满卡片会占掉大半屏、把正文挤到看不见；裁成一条横幅
+ *   才像"这一版的封面"。裁掉的部分不影响识别（图本身就是宣传画）。
+ */
+.news-hero {
+  display: block;
+  width: 100%;
+  height: 190px;
+  object-fit: cover;
+  object-position: center;
+  margin-top: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-hover);
+}
+/* 出处那一行：抓取日期与 rev 都在这里，弱化但不能看不见 */
+.news-meta {
+  margin-top: var(--space-3);
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+}
+.news-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+/* ---------- 展开的正文 ---------- */
+.news-body {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+}
+.news-intro {
+  margin: 0 0 var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--text-base);
+  line-height: 1.75;
+}
+.news-sec + .news-sec {
+  margin-top: var(--space-5);
+}
+.news-sec-h {
+  margin: 0 0 var(--space-2);
+  color: var(--text-primary);
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+/* 行是拍平的（见 `domain/mc-news.ts` 里 `sectionRows` 的说明），所以这里没有 ul 缩进，
+   层级靠每行自己的 `padding-inline-start`（内联样式给的，深度来自数据） */
+.news-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.news-row {
+  font-size: var(--text-base);
+  line-height: 1.7;
+}
+/* 分组标题（"方块" / "物品"…）：比条目重，前面一根主色小竖条 */
+.news-row-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+  color: var(--text-primary);
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+.news-row-group::before {
+  content: '';
+  flex: 0 0 auto;
+  width: 3px;
+  height: 1em;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+}
+/* 顶层条目（"杨树树叶"这种名字） */
+.news-row-lead {
+  color: var(--text-primary);
+}
+/* 它下面的说明行：退一档颜色，长文才读得下去 */
+.news-row-detail {
+  color: var(--text-secondary);
+}
+.news-more {
+  margin-top: var(--space-3);
+}
+/* 正文末尾的署名（许可与修订号） */
+.news-credit {
+  margin: var(--space-4) 0 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+  line-height: 1.7;
+}
+
+/* ============================================================================
    ★★ 主题九宫格（2026-09-22，9 套主题）
    每套一个色板：斜切两半 —— 左上是它的底色、右下是它的主色。
    ★ 色值由 JS 从 `ui/theme.ts` 的注册表给（那里有测试盯着它和 tokens.css 一致）。
@@ -3323,11 +3444,42 @@ tbody tr.clickable:focus-visible {
 /* ============================================================================
    ★★ 启动按钮：自发光液态玻璃（2026-09-23，用户：「启动器按钮做个自发光液态玻璃效果…
    启动游戏时用转圈把三角替换掉…启动按钮也要随着主题颜色变」）
-
-   F2：loading 时把**最前面的图标**藏掉 —— 转圈"替换"它，而不是并排显示。
-       写在 Button 层：所有按钮一起受益（原来是"加"一个转圈）。
    ============================================================================ */
-.btn-loading > svg:first-child {
+
+/*
+ * ★★★★ loading 时：把按钮里**原本那些图标**藏掉 —— 转圈是"替换"它们，
+ *   不是并排出现（用户 2026-10-09：「点击后会有旋转动画表示正在处理，但问题是
+ *   在**原有的图标的左侧再来一个旋转图标**，这是个重复，万万不可。这是个通用问题」）。
+ *
+ * ## 老规则为什么一点用都没有（这是一条活了半个多月的死代码）
+ *
+ *   原来写的是 `.btn-loading > svg:first-child { display: none }` —— 意图是
+ *   "把最前面那个图标藏掉"。可 `Button` 渲染的是：
+ *
+ *     {loading ? <span className="spinner" /> : null}{children}
+ *
+ *   ⇒ **转圈自己就是 first-child** —— 那个 svg 从"第一个"变成了"第二个"，
+ *     于是这条选择器**永远匹配不上**（只有不在 loading 时才匹配得上，
+ *     而那时它本来就不该生效）。结果就是每个带图标的按钮在 loading 时都
+ *     多出一个转圈：图标还在，转圈插在它左边。
+ *
+ * ## 现在按"位置关系"而不是"第几个"来藏
+ *
+ *   · `> svg` / `> img` —— 直接放在按钮里的图标，**不管它排第几**都藏
+ *     （loading 时按钮里只该有：转圈 + 文字）；
+ *   · `.spinner + .ico` / `.spinner + span:has(> svg)` —— 包了一层壳的图标
+ *     （`IconWrap` 渲染成 `<span class="ico">`）。只认**紧跟在转圈后面**的那一个壳：
+ *     壳里含图标的文字标签（`<span>需要 Java <IconInfo/></span>`）不该被误伤。
+ *
+ * ★ 防复发：`tools/gates/check-loading-icons.mjs`（进 `verify`）会盯着这条规则，
+ *   不许它再退回 `:first-child` 那种写法。
+ */
+.btn-loading > svg,
+.btn-loading > img {
+  display: none;
+}
+.btn-loading > .spinner + .ico,
+.btn-loading > .spinner + span:has(> svg) {
   display: none;
 }
 
@@ -3555,4 +3707,14 @@ svg {
    统一给"搜索行"加上到上一行的间距（资源页与整合包页共用这个类）。 */
 .res-search {
   margin-top: var(--space-3);
+}
+
+/*
+ * 好友请求的角标：用强调色（同「关于」右边那个「有更新」的语气）。
+ * 版本列表 / 下载那两个角标是"数量"，这个是"有人在等你回应"。
+ */
+.nav-item .nav-badge.attn {
+  background: var(--accent-subtle);
+  color: var(--accent);
+  border: 1px solid var(--accent-border);
 }

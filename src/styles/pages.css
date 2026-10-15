@@ -489,9 +489,13 @@
  *   而且它会**跟着圆角裁**（`.wz-item` 是圆角行），伪元素要自己再处理一次圆角。
  * ★ 行样式里**绝不能**再留 `:hover` 高亮：滚动时 `:hover` 不重算，
  *   留着就会出现两行同时亮（判据见 `tools/live/live-hover-scroll-check.mjs`）。
- * ★ 两个列表**共用这一条规则**（选择器写在一起）：它是"一处写、两处一样"的唯一保证。 */
+ * ★ 两个列表**共用这一条规则**（选择器写在一起）：它是"一处写、两处一样"的唯一保证。
+ * ★ 2026-10-09：好友页的行（`.friend-item`）也加进这一条 —— 用户要求
+ *   「好友系统的 UI 风格要和启动器统一」，共用同一条规则是最省事也最不会跑偏的做法。
+ *   （对端：`hooks/useHoverRows.ts` 的 `ROW_SELECTOR` 也要带上它，否则打不上 `data-hover`。） */
 .ver-item[data-hover],
-.wz-item[data-hover] {
+.wz-item[data-hover],
+.friend-item[data-hover] {
   background: var(--bg-hover);
   box-shadow: inset 2px 0 0 var(--accent);
 }
@@ -1786,13 +1790,12 @@
 .gw-col .cw-list {
   padding: 0 var(--space-4) var(--space-4);
 }
-/* 「点一行就进下一页」那句提示 —— 它替代了原来那条步骤条的位置 */
-.gw-tip {
-  margin: var(--space-2) 0 0;
-  font-size: var(--text-xs);
-  line-height: 1.5;
-  color: var(--text-tertiary);
-}
+/*
+ * ★★★★ 2026-10-12（用户：「图二，三的文案删掉」）：
+ *   `.gw-tip`（「点一行就进下一页…」那句提示）**已经没有任何 TSX 用它了**，
+ *   所以这一段整段删掉 —— 留着会让下一个人以为那个提示还在、只是没渲染。
+ *   （下面媒体查询里那条 `.gw-col .gw-tip` 的字号覆盖也一并删了。）
+ */
 
 /* —— 第 2 屏：模组加载器（整屏的一页）—— */
 .gw-full {
@@ -2572,10 +2575,6 @@
 .gw-col .wz-item-sub,
 .gw-col .wz-item-java {
   /* 版本号下面那行小字（日期 · 盘上有什么）与右侧的 Java 提示：11px → 12px */
-  font-size: var(--text-sm);
-}
-.gw-col .gw-tip {
-  /* 「点一行就进下一页（选模组加载器）…」：11px → 12px */
   font-size: var(--text-sm);
 }
 
@@ -3909,3 +3908,183 @@
   color: var(--accent);
   background: var(--accent-subtle);
 }
+
+/* ============================================================================
+   好友页（2026-10-09 的胚子）
+   --------------------------------------------------------------------------
+   用户的要求是「好友系统的 UI 风格要和启动器统一」。所以这里**不引入任何新做法**：
+     · 行的悬浮反馈走 `[data-hover]`（和版本列表同一条规则，见上面那一处）；
+     · 颜色/间距全部走 token（不许硬编码色值，仓库有门禁盯着 var() 的名字）；
+     · 头像是一枚**首字母方块**，用主题的强调色系——不做"彩色生成"那套
+       （那会引入一批不随主题变的颜色）。
+   ============================================================================ */
+
+.friend-list {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden; /* 行首那条竖条要跟着圆角裁 */
+}
+
+/* 分组小标题（只在真有"在线"的时候才画，见 FriendsPage） */
+/*
+ * 分组小标题（「收到的请求 0」这种）。
+ *
+ * ★★ 2026-10-12（用户：「增加一些上下间隔；加个圆角」）：
+ *   · 上下各留一格（原来只有 var(--space-2)，两行挤在一起像一张表）；
+ *   · 加圆角 ⇒ **那条下边框必须去掉** —— 圆角配一条通栏横线看着像没对齐；
+ *   · 再给行与行之间留一点间距（`+ .friend-group`），两段之间才有呼吸。
+ */
+.friend-group {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  margin: var(--space-1) 0;
+  border-radius: var(--radius-md);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  background: var(--bg-surface);
+}
+
+.friend-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--row-min-h);
+  padding: var(--row-pad-y) var(--row-pad-x);
+  transition: background var(--dur-fast);
+}
+.friend-item + .friend-item {
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* 首字母头像 */
+.friend-avatar {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+  background: var(--accent-subtle);
+  color: var(--accent);
+  font-size: var(--text-base);
+  font-weight: 600;
+  user-select: none;
+}
+.friend-avatar-lg {
+  width: 44px;
+  height: 44px;
+  font-size: var(--text-lg);
+}
+/* 自己是正版号时，头像描一圈强调色边 —— 与侧栏那张卡的语气一致 */
+.friend-avatar.on {
+  border: 1px solid var(--accent-border);
+}
+
+.friend-main {
+  flex: 1;
+  min-width: 0;
+}
+.friend-name {
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.friend-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: 2px;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+/* 「我自己」那张卡 */
+.friend-me {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+/* 每行的动作：与版本列表同一套（默认隐形，鼠标移上去 / 键盘聚焦才显形） */
+.friend-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 0 0 auto;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+.friend-item[data-hover] .friend-actions,
+.friend-item:focus-within .friend-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* ★ 触摸屏没有"悬停"这回事 ⇒ 一直显形，否则那几个按钮永远点不到 */
+@media (hover: none) {
+  .friend-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+/* 添加那一行：名字 + 备注 + 按钮 */
+.friend-add {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.friend-add .input {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.friend-add .friend-add-note {
+  flex: 0 1 180px;
+}
+.friend-hint {
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+/* ---------- 好友页：设置行 与 卡片内的名单（2026-10-12 接上真服务时补） ---------- */
+
+/* 「谁能加我」那两行：左边一句话、右边一个开关 */
+.friend-settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.friend-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-size: var(--text-base);
+  color: var(--text-primary);
+}
+
+/*
+ * 名单放**卡片里面**时用这个变体：
+ * 卡片自己已经有内边距，所以这里只留一点与标题之间的空隙，
+ * 不再自己加一圈 padding（否则行会缩进去两圈，看着像嵌了个表）。
+ */
+.friend-list-flat {
+  margin-top: var(--space-2);
+}
+
+/* ---------- 好友头像（2026-10-12：按 uuid 查皮肤，与游戏里一样） ---------- */
+/*
+ * `SkinHead` 自己有一套尺寸（它按 size 算头部/帽子两层），这里只负责
+ * "在行里怎么摆"：与首字母方块同样占位，别让有头像/没头像的行高不一样。
+ */
+.friend-skin {
+  flex: 0 0 auto;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+

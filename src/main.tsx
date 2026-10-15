@@ -11,6 +11,37 @@ import './styles/app.css';
 import './styles/pages.css';
 
 /*
+ * ★★ 2026-10-09（用户：「**进入启动器的速度有点慢**」）：首屏之前那几件同步的活
+ *   要**看得见**，否则"慢"只能靠感觉猜。
+ *
+ *   这里只做一件事：给三个时刻打上记号，挂在 `window.__boot` 上。
+ *   · `ambient`  —— 环境光几何注入完
+ *   · `vfx`      —— 视效档位与玻璃背景起来（这一件最可疑：它要探 WebGL2、编译着色器）
+ *   · `commit`   —— React 第一次真正提交（下一帧量）
+ *   · `shell`    —— 侧栏渲染出来（由 `AppShell` 在首屏 effect 里回填）
+ *
+ *   ★ 为什么不用 `console.log`：WebView2 里的 console **不进 stderr** ——
+ *     启动器的 stderr 只有 Rust 那边的 `say!`。挂在 window 上，
+ *     真机探针（`live-startup-timing.mjs`，在本地开发记录里）能直接读。
+ *   ★ 成本是三次 `performance.now()`，一直开着也没关系。
+ */
+declare global {
+  interface Window {
+    __boot?: {
+      ambient: number;
+      vfx: number;
+      commit: number | null;
+      shell: number | null;
+      dcl: number;
+      /** 启动那批 invoke 各自**落定**的时刻（相对批次开始，毫秒） */
+      invokes: Record<string, number>;
+    };
+  }
+}
+const bootAt = performance.now();
+const bootMs = () => Math.round(performance.now() - bootAt);
+
+/*
  * ★★ 低性能损耗模式：**在首屏渲染之前**就把类挂上（用户 2026-09-16）。
  *   放到 React 里再挂会有"先磨砂闪一下再变平"的一帧 —— 这个开关就是给弱机用的，
  *   多闪一帧反而更糟。存 localStorage（不是 prefs.json）是有意的：
@@ -46,7 +77,17 @@ applyMotion(readMotion());
  *   那一份，见 `ui/ambient.ts` 的头注释。
  */
 installAmbientCss();
+const tAmbient = bootMs();
 applyVfx(readVfx().level);
+const tVfx = bootMs();
+window.__boot = {
+  ambient: tAmbient,
+  vfx: tVfx,
+  commit: null,
+  shell: null,
+  dcl: Math.round(performance.now()),
+  invokes: {},
+};
 
 const root = document.getElementById('root');
 if (!root) throw new Error('找不到 #root 挂载点');
@@ -92,6 +133,11 @@ createRoot(root).render(
     </AppProvider>
   </StrictMode>,
 );
+
+/* 首屏"提交"这一笔要在**下一帧**量：`render()` 只是排上队，这一帧还没画出来 */
+requestAnimationFrame(() => {
+  if (window.__boot) window.__boot.commit = bootMs();
+});
 
 /*
  * 移除启动画面。

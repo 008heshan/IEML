@@ -206,4 +206,45 @@ export interface Backend {
    *   给"盘上有、账本里没有记录"的那些行用。
    */
   deleteVersionDir(slug: string, permanent?: boolean): Promise<number>;
+
+  /**
+   * ★★ **MC 新闻（游戏版本动态）**：把用户网站烘好的那份同步进数据目录，再读回来。
+   *
+   * 用户 2026-10-15：「网站更新了版本大图功能，启动器同步一下」
+   *            + 「其实这些东西应该保存在启动器的数据文件夹里的」。
+   *
+   * 数据落在 `<数据目录>/news/`（`index.json` / `versions/*.json` / `img/*`），
+   * 与游戏文件同级、用户自己看得见也删得掉。
+   *
+   * ★ **这一层不改数据的形状**：返回的是站点那几份 JSON 的**原文**，
+   *   解析与校验只有一份实现（`src/domain/mc-news.ts`，有单测钉着）。
+   *   图则转成 `data:` URI（与 Mod 图标同一套做法）——数据目录里当然也有那份图。
+   */
+  news: {
+    /** 读数据目录里那份（**不联网**）；没同步过时 `null` */
+    load(): Promise<NewsCachePayload | null>;
+    /** 从网站同步一次（失败时一个字节都不写），返回刚同步好的那份 */
+    sync(): Promise<NewsCachePayload>;
+  };
+}
+
+/**
+ * 同步下来的 MC 新闻缓存（Rust `news::NewsCache`，线格式 camelCase）。
+ *
+ * ★ `manifest` / `docs` 里装的是**站点 JSON 的原文**，不是解析好的对象 ——
+ *   解析在 `domain/mc-news.ts` 里做（那里能在 `node --test` 下被喂坏样本）。
+ */
+export interface NewsCachePayload {
+  /** 数据目录里那个 news 文件夹（界面显示它 + 一个「打开」按钮） */
+  dir: string;
+  /** 上一次同步的时刻（毫秒；0 = 没有记录） */
+  syncedAtMs: number;
+  /** 站点那份清单里的烘焙日期（`2026-10-15`）—— 界面据此说"数据旧了" */
+  baked: string;
+  /** `index.json` 原文 */
+  manifest: string;
+  /** 版本号 → 正文原文（键是**清单里的版本号**） */
+  docs: Record<string, string>;
+  /** 版本号 → 大图的 `data:` URI（只含真的同步到的那几个） */
+  images: Record<string, string>;
 }

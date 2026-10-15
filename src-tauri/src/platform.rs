@@ -454,6 +454,35 @@ impl AppPaths {
         std::fs::remove_file(&path).is_ok()
     }
 
+    /// ★★★★ 这个目录**被当成一个版本玩过**吗？（2026-10-12）
+    ///
+    /// ## 为什么必须有这一条
+    ///
+    ///   用户报：「**启动器不认纯原版游戏了**」。
+    ///
+    ///   现场：`versions/26.3/` 从 **10-08** 起就是他的原版实例 ——
+    ///   里面有他自己攒的存档、游戏写下的 `options.txt`、还有游戏日志；
+    ///   目录里也**一直有** `.ieml/instance.json`（`id=inst-disk-26.3`）。
+    ///   可 10-12 装/修一次加载器之后，修账本那段（`instance_catalog_repair`）
+    ///   把这个目录判成了"基座"：它看的是**账本记录是谁写的** ——
+    ///   `inst-disk-*` 属于"启动器自己捡回来的"，于是**不算"用户要的"** ⇒
+    ///   盖上 `base.json`，紧接着又按"基座不是版本"把那条记录**清掉** ⇒
+    ///   列表里再也看不到它（连"有目录没记录"那一档也不列，因为基座被跳过）。
+    ///
+    ///   ⇒ "记录是谁写的"只是**间接证据**（它只能说明我们当初是怎么发现它的，
+    ///     说明不了用户有没有在用它）；"这个目录里有没有游戏留下的痕迹"才是
+    ///     **直接证据**，而且就在盘上：
+    ///
+    ///       · 装加载器时**顺手装上的基座**：从来没有被启动过 ⇒ **没有** `options.txt`；
+    ///       · 用户自己下过、并且开过一次的原版：游戏会在**当前游戏目录**里
+    ///         写下 `options.txt`（`--gameDir` 指向它，见 `launch_args`）⇒ **有**。
+    ///
+    ///   ★ 判据只用这一个文件：它由**游戏**写、不由我们写（我们从不生成它），
+    ///     所以它证明的是"这里真的被玩过"，而不是"我们曾经以为它是版本"。
+    pub fn version_dir_was_played(&self, slug: &str) -> bool {
+        self.instances.join(slug).join("options.txt").is_file()
+    }
+
     /* ============ 隔离判定（ADR-005）：游戏目录到底在哪 ============ */
 
     /// 启动器自己的一个 JSON 记录（`instances.json` / `prefs.json`）。
@@ -1911,6 +1940,15 @@ pub struct CatalogRepair {
     pub adopted: Vec<String>,
     /// 被标成**基座**的版本目录（"原版作为基座，不是独立版本"，2026-10-08）
     pub marked_base: Vec<String>,
+    /**
+     * ★★★★ 被**撤掉**基座记号的版本目录（2026-10-12）。
+     *
+     *   为什么会有撤：过去只凭"账本记录是启动器捡回来的"就判基座，
+     *   把用户自己玩了几天的原版实例也标了（真机现场：`versions/26.3/`）。
+     *   现在的判据里多了一条直接证据 —— 目录里有游戏写下的 `options.txt`
+     *   （见 `version_dir_was_played`）⇒ 那是用户在用的版本，不是基座。
+     */
+    pub cleared_base: Vec<String>,
     /// 老 `<root>/instances/` 整个并进 `versions/` 时复制了多少字节
     pub merged_bytes: u64,
 }
@@ -1923,6 +1961,7 @@ impl CatalogRepair {
             && self.reslugged.is_empty()
             && self.adopted.is_empty()
             && self.marked_base.is_empty()
+            && self.cleared_base.is_empty()
             && self.merged_bytes == 0
     }
 
@@ -2545,6 +2584,30 @@ pub fn instance_catalog_repair(paths: &AppPaths) -> CatalogRepair {
                     .collect();
                 for dir_name in &disk_names {
                     let lower = dir_name.to_lowercase();
+                    /*
+                     * ★★★★ 2026-10-12（用户：「**启动器不认纯原版游戏了**」）：
+                     *   **被玩过的目录不是基座。**
+                     *
+                     *   这一条必须放在最前面，而且**不管后面几条怎么判**都要走：
+                     *   它既拦下"这次差点被标成基座"，也**撤掉过去误标的那一份**
+                     *   （用户的 `versions/26.3/` 就是 10-12 被误标 + 记录被清掉的，
+                     *    需要自动长回来，而不是等他再装一次原版）。
+                     *
+                     *   判据与理由见 `version_dir_was_played`：装加载器顺手装上的
+                     *   基座**从来没被启动过**（没有 `options.txt`），
+                     *   而用户真玩过的原版一定有它。
+                     */
+                    if paths.version_dir_was_played(dir_name) {
+                        if paths.clear_base_marker(dir_name) {
+                            say!(
+                                "[IEML/catalog] 「{dir_name}」里有游戏留下的 options.txt \
+                                 —— 它是用户自己在用的版本，不是基座：已撤掉误标的 base.json"
+                            );
+                            report.cleared_base.push(dir_name.clone());
+                            changed = true;
+                        }
+                        continue;
+                    }
                     if !parents.contains(&lower)
                         || buried.contains(&lower)
                         || paths.is_base_version(dir_name)
@@ -3205,20 +3268,119 @@ pub struct MachineInfo {
     pub version_count: usize,
 }
 
-pub fn machine_info(paths: &AppPaths) -> MachineInfo {
-    use sysinfo::System;
+/**
+ * 机器信息的一次性缓存（2026-10-09，同下面 `machine_info` 那段说明）。
+ *
+ * `lib.rs::run` 在**窗口创建之前**起一个后台线程把结果算好填进来；
+ * `machine_info` 命令直接取 —— 取不到（还没算完）就现算，并把结果补进缓存。
+ *
+ * ★ 用进程级 `static`：一个进程只有一台机器。但缓存里**只放与数据根无关**的那几个数
+ *   （`MachineSnapshot`）—— `data_dir` / `version_count` 依赖当前的 `AppPaths`，
+ *   而设置页可以**当场**换数据根（rc.6 起即时生效），那两个字段必须每次现算。
+ */
+pub struct MachineInfoCache {
+    slot: std::sync::Mutex<Option<MachineSnapshot>>,
+    cv: std::sync::Condvar,
+}
+
+/// 缓存里真正会被复用的那几个数（**不含路径**，路径随 `AppPaths` 变）
+#[derive(Clone)]
+pub struct MachineSnapshot {
+    pub total_memory_gb: f64,
+    pub available_memory_gb: f64,
+    pub cpu_count: usize,
+    pub os: String,
+}
+
+impl MachineInfoCache {
+    const fn new() -> Self {
+        Self {
+            slot: std::sync::Mutex::new(None),
+            cv: std::sync::Condvar::new(),
+        }
+    }
+
+    pub fn fill(&self, snap: MachineSnapshot) {
+        if let Ok(mut g) = self.slot.lock() {
+            *g = Some(snap);
+            self.cv.notify_all();
+        }
+    }
+
+    /// 取；最多等 `timeout`。没等到就返回 `None`，调用方自己现算。
+    pub fn get(&self, timeout: std::time::Duration) -> Option<MachineSnapshot> {
+        let g = self.slot.lock().ok()?;
+        if g.is_some() {
+            return g.clone();
+        }
+        let (g, _) = self.cv.wait_timeout(g, timeout).ok()?;
+        g.clone()
+    }
+}
+
+static MACHINE_CACHE: MachineInfoCache = MachineInfoCache::new();
+
+/// 全局那一份机器信息缓存（见 `MachineInfoCache` 的说明）
+pub fn machine_info_cache() -> &'static MachineInfoCache {
+    &MACHINE_CACHE
+}
+
+/**
+ * 那几件**贵**的探测：sysinfo 的初始化 + 内存 + CPU 列表（不含路径相关的东西）。
+ *
+ * ★★ 2026-10-09（用户：「**进入启动器的速度有点慢**」）：真机打点量出来
+ *   **这一条第一次调用要 191ms**（`[IEML/boot] machine_info = 191ms`，
+ *   紧接着的几次都是 0~1ms）—— 而它是启动批次里的**第一条**同步命令，
+ *   同一条主线程上的其余几条都排在它后面 ⇒ 首屏白等 190ms。
+ *
+ *   钱花在 sysinfo 身上：`System::new()` 的一次性初始化与 `refresh_cpu_all()`
+ *   （它会**逐个 CPU** 去读时间与频率）。而界面要的只有**核数** ——
+ *   `CpuRefreshKind::nothing()` 只把 CPU 列表列出来、不读那些计数，
+ *   A/B 实测（两个全新进程、同一分钟）**471ms → 352ms**。
+ *
+ *   ★ 剩下的那 350ms 不是"算法不好"，是**第一次碰这些系统接口**的固有成本，
+ *     所以真正的解法是**别让首屏等它** —— 见 `MachineInfoCache`：
+ *     `lib.rs::run` 在窗口创建之前就起线程把它算好。
+ *   ★ 判据：`[IEML/boot] machine_info = …ms` 这一行应当落到个位数
+ *     （探针：本机开发记录里的 `live-startup-timing.mjs`）；
+ *     两个变体的对照见 `src/bench_startup.rs`（`#[ignore]`，手动跑）。
+ */
+pub fn machine_snapshot() -> MachineSnapshot {
+    use sysinfo::{CpuRefreshKind, System};
     let mut sys = System::new();
     sys.refresh_memory();
-    sys.refresh_cpu_all();
+    sys.refresh_cpu_list(CpuRefreshKind::nothing());
 
     let total = sys.total_memory() as f64 / 1024.0 / 1024.0 / 1024.0;
     let avail = sys.available_memory() as f64 / 1024.0 / 1024.0 / 1024.0;
-
-    MachineInfo {
+    MachineSnapshot {
         total_memory_gb: (total * 10.0).round() / 10.0,
         available_memory_gb: (avail * 10.0).round() / 10.0,
         cpu_count: sys.cpus().len(),
         os: System::long_os_version().unwrap_or_else(|| std::env::consts::OS.to_string()),
+    }
+}
+
+/**
+ * 这台机器的情况（内存 / 核数 / 系统 / 数据目录 / 版本目录数）。
+ *
+ * 贵的部分（sysinfo）走缓存 —— 见 `machine_snapshot`；
+ * 路径相关的两个字段（`data_dir` / `version_count`）每次现算，
+ * 因为设置页可以当场换数据根。
+ */
+pub fn machine_info(paths: &AppPaths) -> MachineInfo {
+    let snap = machine_info_cache()
+        .get(std::time::Duration::from_millis(2000))
+        .unwrap_or_else(|| {
+            let s = machine_snapshot();
+            machine_info_cache().fill(s.clone());
+            s
+        });
+    MachineInfo {
+        total_memory_gb: snap.total_memory_gb,
+        available_memory_gb: snap.available_memory_gb,
+        cpu_count: snap.cpu_count,
+        os: snap.os.clone(),
         arch: std::env::consts::ARCH.to_string(),
         data_dir: paths.root.to_string_lossy().to_string(),
         version_count: count_versions_in(&paths.shared),
@@ -5267,6 +5429,73 @@ mod tests {
             vec!["26.3-fabric-0.19.5"],
             "★ 基座不补记录：它不是一个「用户要的版本」"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ★★★★ 2026-10-12（用户：「**启动器不认纯原版游戏了**」）。
+    ///
+    ///   同一个形状，唯一的区别是：**这个原版目录被用户玩过**
+    ///   （游戏在里面留下了 `options.txt`）。真机现场就是这样 ——
+    ///   `versions/26.3/` 有存档、有 options.txt、有游戏日志，从 10-08 用到 10-12，
+    ///   可账本里那条记录是自动认领写的（`inst-disk-26.3`）⇒ 被判成基座 ⇒
+    ///   盖了 `base.json` 又把记录清掉 ⇒ 列表里再也看不到它。
+    ///
+    ///   判据：**玩过的目录不是基座**（装加载器顺手装上的基座从来没被启动过），
+    ///   而且过去误标的记号要**自动撤掉**、记录要**补回来**。
+    #[test]
+    fn a_played_vanilla_dir_is_not_a_base() {
+        let (p, root, _own) = tmp_paths("catalog-played-base");
+        seed_version(&p, "26.3", serde_json::json!({}));
+        seed_version(
+            &p,
+            "26.3-fabric-0.19.5",
+            serde_json::json!({ "inheritsFrom": "26.3" }),
+        );
+        // ★ 直接证据：游戏在那个目录里写过 options.txt ⇒ 用户拿它玩过
+        std::fs::write(p.instances.join("26.3").join("options.txt"), "fov:0.5\n").unwrap();
+        // 而且过去那份误标的记号还在（真机就是这个状态）
+        assert!(p.mark_version_as_base("26.3", "（另一个版本继承它）"));
+        seed_ledger(&p, &[]);
+
+        let report = instance_catalog_repair(&p);
+
+        assert!(
+            !p.is_base_version("26.3"),
+            "★ 玩过的原版目录不是基座：误标的记号必须被撤掉"
+        );
+        assert_eq!(report.cleared_base, vec!["26.3"], "撤掉这件事要说出来（日志/测试看得见）");
+        assert!(
+            report.marked_base.is_empty(),
+            "不许标成基座：它本来就是用户自己的版本"
+        );
+        assert_eq!(
+            ledger_slugs(&p),
+            vec!["26.3", "26.3-fabric-0.19.5"],
+            "★ 两个都要在账本里：原版是独立版本，加载器版本继承它"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ★★★★ 同一天的另一半：**没玩过的**原版（装加载器时顺手装上的基座）
+    ///   仍然要被认成基座 —— 新判据不许把这条老规矩推翻。
+    #[test]
+    fn an_unplayed_vanilla_dir_is_still_a_base() {
+        let (p, root, _own) = tmp_paths("catalog-unplayed-base");
+        seed_version(&p, "26.3", serde_json::json!({}));
+        seed_version(
+            &p,
+            "26.3-fabric-0.19.5",
+            serde_json::json!({ "inheritsFrom": "26.3" }),
+        );
+        seed_ledger(&p, &[]);
+
+        let report = instance_catalog_repair(&p);
+
+        // 没有 options.txt ⇒ 没被启动过 ⇒ 它只是基座（2026-10-08 的老规矩）
+        assert!(p.is_base_version("26.3"));
+        assert_eq!(report.marked_base, vec!["26.3"]);
+        assert!(report.cleared_base.is_empty());
+        assert_eq!(ledger_slugs(&p), vec!["26.3-fabric-0.19.5"]);
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -1,4 +1,4 @@
-//! 启动参数拼装（真实的 Minecraft 命令行）
+﻿//! 启动参数拼装（真实的 Minecraft 命令行）
 //!
 //! 这是"能启动"最关键的一步。规则（都是实测踩出来的）：
 //!
@@ -31,6 +31,19 @@ pub struct Account {
     pub user_type: String,
     /// "msa" / "mojang" / "legacy"
     pub user_properties: String,
+    /**
+     * ★★★★ **Xbox 用户 ID**（2026-10-11 修「游戏说提供的令牌无效」时补上的）。
+     *
+     *   现代版本（1.20+，尤其是 1.21.9 之后那个「好友列表」）在做**任何在线动作**
+     *   （联机、Realms、好友、皮肤）时都要 `--xuid`。而这里原来传的是**空字符串** ——
+     *   游戏于是拿不到玩家的 Xbox 身份，在线功能全部报「提供的令牌无效」。
+     *
+     *   值从 Xbox Live 认证那一步的 `DisplayClaims.xui[0].xid` 来
+     *   （见 `auth::complete_login`），登录/续期时都会拿到，存进账号里。
+     *   离线账号没有它（离线本来就没有在线身份），是空串。
+     */
+    #[serde(default)]
+    pub xuid: String,
 }
 
 impl Account {
@@ -42,6 +55,8 @@ impl Account {
             access_token: "0".to_string(),
             user_type: "legacy".to_string(),
             user_properties: "{}".to_string(),
+            // 离线身份没有 Xbox 用户 ID —— 这是"离线"的一部分，不是漏填
+            xuid: String::new(),
         }
     }
 
@@ -433,7 +448,7 @@ pub fn build_command(spec: &LaunchSpec) -> BuiltCommand {
         ("resolution_width".into(), spec.width.to_string()),
         ("resolution_height".into(), spec.height.to_string()),
         ("clientid".into(), String::new()),
-        ("auth_xuid".into(), String::new()),
+        ("auth_xuid".into(), spec.account.xuid.clone()),
     ]);
 
     let features: HashMap<String, bool> = HashMap::from([
@@ -644,6 +659,30 @@ pub fn build_command(spec: &LaunchSpec) -> BuiltCommand {
         }
     }
 
+    /*
+     * ★★★★ 2026-10-11（修「游戏说提供的令牌无效」时顺带抓到的第二个问题）：
+     *   **落单的 `--xuid` 会把下一个参数吃掉。**
+     *
+     *   模板里写的是 `--xuid ${auth_xuid}`，而空占位符在替换时会被**丢掉** ——
+     *   于是离线账号（没有 Xbox 用户 ID）拼出来是：
+     *
+     *       --xuid --userType legacy
+     *
+     *   游戏读到的是 `xuid = "--userType"`，而 `--userType` 自己**也没了值**。
+     *   （这就是那条测试抓到的：`--xuid` 后面紧跟的竟然是下一个旗标。）
+     *
+     *   判据：xuid 永远是数字；"`--xuid` 后面紧跟一个以 `--` 开头的参数"
+     *   只可能是上面那种落单 ⇒ 把这个 `--xuid` 去掉，
+     *   让 `--userType legacy` 恢复成一对正常的参数。
+     */
+    if let Some(i) = args.iter().position(|a| a == "--xuid") {
+        let next_is_flag = args.get(i + 1).map(|a| a.starts_with("--")).unwrap_or(true);
+        if next_is_flag {
+            args.remove(i);
+            say!("[IEML/launch] 这个账号没有 Xbox 用户 ID（离线身份）—— 不传 --xuid");
+        }
+    }
+
     /* ---------- 摘要（不含令牌） ---------- */
     // ★ 内存要按 GB 展示（2048 MB 直接显示成 "2 MB" 是错的，之前踩过）
     let mem_text = if spec.memory_mb >= 1024 {
@@ -792,6 +831,66 @@ mod tests {
             cmd.args.iter().any(|a| a == "-DlibraryDirectory=C:/shared/libraries"),
             "空 classpath 时也要用 spec 的库根目录：{:?}",
             cmd.args
+        );
+    }
+
+    /// ★★★★ 2026-10-11（用户：「游戏里弹『提供的令牌无效』」那条）。
+    ///
+    ///   现代版本做任何在线动作（联机 / Realms / 好友列表 / 皮肤）都要 `--xuid`，
+    ///   而这里原来传的是 **空字符串** —— 游戏拿不到玩家的 Xbox 身份，
+    ///   在线功能全部报"提供的令牌无效"。
+    ///
+    ///   判据直接钉**最终拼出来的命令行**（不是中间那个 vars 表）：
+    ///   正版账号的 xuid 要原样出现；离线账号是空的（离线没有在线身份，不是漏填）。
+    #[test]
+    fn xuid_reaches_the_final_command_line() {
+        let mut spec = basic_spec();
+        /*
+         * ★ 判据要照**真实版本 JSON** 的形状来：`--xuid ${auth_xuid}` 是写在这个
+         *   模板里的（原版 1.20+ 的 `arguments.game` 就有它），我们的 `${auth_xuid}`
+         *   只有被模板提到时才会出现在命令行上。所以这里把那一项补进模板，
+         *   再断言**替换出来的值**是账号里那个真值 —— 这才是真正会坑到玩家的一环。
+         */
+        spec.game_args_template = vec![
+            serde_json::json!("--username"),
+            serde_json::json!("${auth_player_name}"),
+            serde_json::json!("--xuid"),
+            serde_json::json!("${auth_xuid}"),
+            serde_json::json!("--userType"),
+            serde_json::json!("${user_type}"),
+        ];
+        spec.account.xuid = "2535470293336241".to_string();
+
+        let cmd = build_command(&spec);
+        let i = cmd
+            .args
+            .iter()
+            .position(|a| a == "--xuid")
+            .expect("命令行里必须有 --xuid");
+        assert_eq!(
+            cmd.args.get(i + 1).map(String::as_str),
+            Some("2535470293336241"),
+            "★ --xuid 后面必须是账号里那个真值，不能是空串：{:?}",
+            &cmd.args[i..(i + 2).min(cmd.args.len())]
+        );
+
+        // 离线账号：值为空（这是"离线"的一部分，不是漏填）
+        let mut off = basic_spec();
+        off.game_args_template = spec.game_args_template.clone();
+        off.account = Account::offline("Steve");
+        assert_eq!(off.account.xuid, "");
+        let cmd2 = build_command(&off);
+        assert!(
+            !cmd2.args.iter().any(|a| a == "--xuid"),
+            "离线身份没有 Xbox 用户 ID ⇒ 干脆**不传** --xuid（否则它会把 --userType 吃掉）：{:?}",
+            cmd2.args
+        );
+        // 顺带钉住"没被吃掉"：--userType 后面还得有值
+        let k = cmd2.args.iter().position(|a| a == "--userType").expect("--userType 必须还在");
+        assert_eq!(
+            cmd2.args.get(k + 1).map(String::as_str),
+            Some("legacy"),
+            "--userType 的值不许被落单的 --xuid 吞掉"
         );
     }
 

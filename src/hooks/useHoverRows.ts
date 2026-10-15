@@ -46,8 +46,11 @@ import { useEffect } from 'react';
  * 哪算"一行"。
  * ★ **必须与 `pages.css` 里那组 `[data-hover]` 选择器一致** ——
  *   那边决定"亮成什么样"，这边决定"谁能亮"。
+ * ★ 2026-10-09：好友页的行也登记进来（`.friend-item`）—— 于是它**天生**与版本列表
+ *   同一套悬浮反馈（底色抬亮 + 行首 2px 竖条），不必自己写 `:hover`
+ *   （理由见文件头：`:hover` 在滚动时不重算，会停在旧行上）。
  */
-const ROW_SELECTOR = '.ver-item, .wz-item';
+const ROW_SELECTOR = '.ver-item, .wz-item, .friend-item';
 
 /** 打在行上的标记属性（CSS 用它画发光；不用 class 是为了不和状态类混在一起） */
 export const HOVER_ATTR = 'data-hover';

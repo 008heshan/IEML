@@ -26,6 +26,8 @@ import type {
   ReleaseType,
 } from '../domain';
 import type { RunningGameInfo, IsolationInfo } from '../bridge/tauri';
+import type { FriendNotes } from '../domain/friends.ts';
+import type { FriendsSettings, FriendsSnapshot, PresenceStatus } from '../bridge/tauri';
 /*
  * ★ 2026-09-30：这里原来写的是 `'../ui/theme'`（**没有扩展名**）。
  *   Vite 能解析它，所以界面一直正常 —— 但 Node 的 ESM 解析器不能，
@@ -129,7 +131,18 @@ export type PageId =
   | 'versions'
   | 'download'
   | 'settings'
+  /** ★★ 2026-10-09：好友页（左侧主导航第五项，只有一个入口） */
+  | 'friends'
   | 'changelog'
+  /**
+   * ★★ MC 新闻页（游戏本体的版本动态）。
+   *
+   *   入口在**侧栏下半部分**（`side-links` 里、「更新日志」上面），不是左侧主导航 ——
+   *   用户选的位置。理由：主导航那五项是"启动器的主流程"（启动 / 版本 / 下载 / 设置 / 好友），
+   *   而"看游戏出了什么新版本"与「更新日志」「关于」一样是**看内容**的入口，
+   *   挂在下面不抢主流程，也和「更新日志」挨在一起（一个是启动器的日志、一个是游戏的）。
+   */
+  | 'news'
   | 'about'
   /** ★★ 2026-09-23（C5）：资源的**独立安装页** —— 点「安装」从这里进，不再内联展开 */
   | 'resource';
@@ -246,6 +259,44 @@ export interface AppState {
    */
   running: Record<string, { startedAt: number; pid: number | null }>;
 
+  /* --- 好友（正版专用，2026-10-12）----------------------------------------
+   *
+   * 名单来自服务端（`GET /friends`），在线状态来自心跳（`POST /presence`）。
+   * 两者都可能"还没拿到" ⇒ 每个字段都能是 null，界面据此写"未知"而**不编**
+   * （"离线"与"不知道"是两件事，这个仓库在这上面栽过好几次）。
+   */
+  friends: {
+    /** 服务端给的名单（好友 + 收到/发出的请求）；null = 还没取到 */
+    snapshot: FriendsSnapshot | null;
+    /** profileId（小写）→ 在线状态。取值只有服务端报过的那几个 */
+    presence: Record<string, PresenceStatus | null>;
+    /**
+     * ★★ 上一次**成功**拿到在场列表的时刻（null = 从没成功过）。
+     *
+     *   它决定"不在列表里的人"怎么解释 —— 见 `domain/friends.ts` 的
+     *   `resolvePresence`：成功拿到过 ⇒ 缺席就是**离线**（与游戏客户端一致，
+     *   用户 2026-10-12 的截图是判据）；从没拿到过 ⇒ 才是「未知」。
+     */
+    presenceAt: number | null;
+    /** 谁能加我 / 谁能邀请我 */
+    settings: FriendsSettings | null;
+    /** 正在取（界面显示骨架/转圈） */
+    loading: boolean;
+    /** 上一次失败的原因（**留在界面上**，不跟着 toast 消失） */
+    error: string | null;
+    /** 上一次成功拿到名单的时刻 */
+    updatedAt: number | null;
+    /**
+     * ★★ **好友页现在开着吗**（2026-10-12，用户给的设计图要它）。
+     *
+     *   名单的检查频率按它切换：开着**每分钟**、关着**每 5 分钟**
+     *   （规则与常量在 `domain/friends.ts` 的 `friendsPollIntervalMs`，有用例）。
+     *   页面在挂载/卸载时置它。
+     */
+    pageOpen: boolean;
+  };
+
+
   /* --- 弹窗 --- */  /*
    * ★★ 2026-09-28：这里原来有一个 `createOpen` 字段与 `create/open` / `create/close`
    *   两个 action —— **全仓库没有任何地方读它**（`CreateInstanceModal` 用的是它自己的
@@ -270,6 +321,21 @@ export interface AppState {
     autoBackup: boolean;
     offlineUsername: string;
     accountUuid: string | null;
+    /**
+     * ★★★★ **上一次那个正版账号是谁**（2026-10-09 修 bug 时加的）。
+     *
+     *   用户报：「切换到离线登录，再切回正版登录**要重新登录**」。
+     *   根因就是这件事原来只记在 `AccountMenu` 的一个 `useRef` 里 ——
+     *   而那个组件一进版本二级页就被卸载（侧栏整体换掉），重启更不用说；
+     *   切离线时又把 `accountUuid` 写成了 `null` 并落盘，
+     *   于是"切回正版"只找到"没有可切回的正版账号"→ 弹登录面板。
+     *
+     *   ★ 两件事必须**分开记**（判断在 `domain/account.ts`，那边有用例）：
+     *     `accountUuid`     = 现在用哪个（切离线会改它）
+     *     `lastPremiumUuid` = 上一个正版号是谁（**切离线时不许清**）
+     *   正版凭据一直在系统凭据管理器里，所以有这个 uuid 就能直接切回去、不用重登。
+     */
+    lastPremiumUuid: string | null;
     windowWidth: number;
     windowHeight: number;
     globalJvmArgs: string;
@@ -293,6 +359,19 @@ export interface AppState {
      *   那种情况下只有这份墓碑能挡住自动认领。
      */
     deletedVersions: string[];
+    /**
+     * ★★★★ **好友备注**（2026-10-12 接上真服务之后改的）。
+     *
+     *   原来这里存的是一份**本机自己攒的好友名单**（胚子阶段的产物）。
+     *   现在名单以**服务端为准**（`GET /friends`，正版令牌），
+     *   本机只留"这个人是我的谁"这种只有用户知道的信息：
+     *   `profileId → 备注`。
+     *
+     *   ★ 它**绝不参与"谁是好友"的判断** —— 判断只有服务端那一份。
+     *     所以换台机器、重装启动器，好友自动都在；备注没了也只是少了括号里那句。
+     *   ★ 解析/写入的规则在 `domain/friends.ts`（那边有 10 条用例）。
+     */
+    friendNotes: FriendNotes;
   };
 }
 
@@ -351,6 +430,17 @@ export const initialState: AppState = {
   tasks: [],
   toasts: [],
   running: {},
+  /* ★ 好友：初始全是"没拿到"。它由 AppContext 在拿到 uuid 之后去取。 */
+  friends: {
+    snapshot: null,
+    presence: {},
+    presenceAt: null,
+    settings: null,
+    loading: false,
+    error: null,
+    updatedAt: null,
+    pageOpen: false,
+  },
 
   crashReport: null,
 
@@ -372,12 +462,15 @@ export const initialState: AppState = {
     autoBackup: true,
     offlineUsername: 'Player',
     accountUuid: null,
+    /* ★ 上一个正版号是谁（切离线时不清它 —— 见类型那一段说明） */
+    lastPremiumUuid: null,
     windowWidth: 1280,
     windowHeight: 720,
     globalJvmArgs: '',
     globalGameArgs: '',
     // ★ 墓碑列表（见字段说明）：默认空，"删了又回来"这条缺陷靠它挡住
     deletedVersions: [],
+    friendNotes: {},
   },
 };
 
@@ -487,6 +580,8 @@ export type Action =
   | { type: 'crash/hide' }
   /* 偏好 */
   | { type: 'prefs/patch'; patch: Partial<AppState['prefs']> }
+  /* ★ 好友切片：每一样都可以单独更新（心跳只更新 presence，列表只更新 snapshot） */
+  | { type: 'friends/patch'; patch: Partial<AppState['friends']> }
   /* ★★ 隔离判定（ADR-005）：整批换掉 —— 它是后端算的结论，前端不许自己拼 */
   | { type: 'isolation/set'; list: IsolationInfo[] };
 
@@ -812,6 +907,10 @@ export function reducer(state: AppState, action: Action): AppState {
     /* ---------- 偏好 ---------- */
     case 'prefs/patch':
       return { ...state, prefs: { ...state.prefs, ...action.patch } };
+
+    /* ★ 好友切片：每一样都能单独更新（心跳只动 presence，列表只动 snapshot） */
+    case 'friends/patch':
+      return { ...state, friends: { ...state.friends, ...action.patch } };
 
     /* ★★ 隔离判定整批换（后端算的结论；空列表也是有效结论，不是"没读到"） */
     case 'isolation/set':

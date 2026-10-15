@@ -254,6 +254,29 @@ export const IconChevronLeft = (p: P) => (
   </svg>
 );
 
+/**
+ * 好友（两个人）—— 左侧主导航「好友」那一项用。
+ * ★ 2026-10-09：好友系统胚子。这一项是**唯一**的入口（用户：「不要有重复的进入按钮」）。
+ */
+export const IconUsers = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+    <circle cx="9" cy="7" r="4" />
+    <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+    <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+  </svg>
+);
+
+/** 加好友（带加号的人）—— 好友页那个「添加好友」按钮用 */
+export const IconUserPlus = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M15 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+    <circle cx="8.5" cy="7" r="4" />
+    <path d="M19 8v6" />
+    <path d="M22 11h-6" />
+  </svg>
+);
+
 export const IconChevronDown = (p: P) => (
   <svg {...base(p)}>
     <path d="m6 9 6 6 6-6" />
@@ -322,3 +345,21 @@ export const IconDrive = (p: P) => (
     <path d="M7 7.5h.01M7 16.5h.01" />
   </svg>
 );
+
+/* ---------- MC 新闻页（游戏版本动态） ---------- */
+
+/**
+ * 报纸/新闻（用户：「我想往 IEML 里塞一个新闻页」）。
+ *
+ * ★ 左侧栏「更新日志」用的是 `IconLayers`（层叠＝一版压一版）、「关于」用 `IconInfo`
+ *   —— 这一页是**游戏本体**的动态，和它们两件事，所以另画一个：
+ *   一张带折角的报头和两条正文线，小尺寸下也能和 `IconLayers` 分开。
+ */
+export const IconNews = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h10A1.5 1.5 0 0 1 17 5.5V19a1 1 0 0 1-1 1H5.5A1.5 1.5 0 0 1 4 18.5z" />
+    <path d="M17 8h2.5A1.5 1.5 0 0 1 21 9.5V18a2 2 0 0 1-2 2" />
+    <path d="M7 8h6M7 11.5h6M7 15h3.5" />
+  </svg>
+);
+

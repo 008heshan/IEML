@@ -504,6 +504,27 @@ pub async fn get_json<T: serde::de::DeserializeOwned>(url: &str) -> Result<T> {
         .map_err(|e| NetError::Other(format!("解析 {url} 的 JSON 失败：{e}")))
 }
 
+/// 取一段**二进制**（MC 新闻的版本大图这类图片）。
+///
+/// ★ 与 [`get_text`] 分开是必须的，不能"先取文本再转字节"：
+///   `get_text` 会把响应体按 UTF-8 解成 `String` —— 图片过一遍那个**必然坏掉**，
+///   而且坏得**不报错**：落盘的是一个长度变了、内容是替换符的"图片"，
+///   界面上只会显示一张加载失败的图，看不出是哪一步坏的。
+///
+/// ★ 不加 `get_text` 那套 429 退避重试：这里取的是几十 KB 的静态图，
+///   一次失败就让上层如实报错（用户点一下同步重来更直接）。
+pub async fn get_bytes(url: &str) -> Result<Vec<u8>> {
+    let resp = api_client().get(url).send().await?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(NetError::Status {
+            status: status.as_u16(),
+            url: url.to_string(),
+        });
+    }
+    Ok(resp.bytes().await?.to_vec())
+}
+
 /* ====================== 第三方 API 的 POST（镜像兜底） ====================== */
 
 /// 发一次 POST（body 原样），**不换源** —— [`post_json_third_party`] 的两条路都用它。

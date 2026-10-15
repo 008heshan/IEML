@@ -35,6 +35,8 @@ fn real_sized_account(uuid: &str, access_len: usize, refresh_len: usize) -> McAc
         username: "TestPlayer".into(),
         uuid: uuid.into(),
         access_token: "a".repeat(access_len),
+        // ★ 2026-10-11：McAccount 多了 xuid（现代版本的 --xuid 要用它）
+        xuid: String::new(),
         refresh_token: Some("r".repeat(refresh_len)),
         kind: "msa".into(),
         expires_at: Some(1_758_000_000_000),
@@ -116,6 +118,7 @@ fn small_offline_account_uses_a_single_credential() {
         username: "Steve".into(),
         uuid: uuid.clone(),
         access_token: "0".into(),
+        xuid: String::new(),
         refresh_token: None,
         kind: "legacy".into(),
         expires_at: None,

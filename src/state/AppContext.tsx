@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 应用上下文
  * ------------------------------------------------------------------
  * 把 store、backend、以及一批跨页共用的动作集中在这里。
@@ -21,6 +21,21 @@ import {
 } from 'react';
 import type { Instance, InstanceConfig, JavaRuntime } from '../domain';
 import { burySlug, unburySlugs, instanceFromFolderVersion, matchFolderVersions, pickAutoAdopt } from '../domain/folder-versions.ts';
+/*
+ * ★ 好友的**纯逻辑**在 domain 里（那边能被 `node --test` 直接跑，有 10 条用例）。
+ *   这里重命名导入，免得与上下文方法（`addFriend` / `removeFriend`）同名。
+ */
+import {
+  friendsPollIntervalMs,
+  parseFriendNotes,
+  presenceBeatIntervalMs,
+  setFriendNote as setFriendNoteIn,
+} from '../domain/friends.ts';
+/* ★ 账号切换的判断（`planSwitchBack` / `looksLikeUuid`）在 domain 里 —— 那边有用例 */
+import { looksLikeUuid } from '../domain/account.ts';
+/* ★ 2026-10-12：好友服务（正版专用）—— 端点与协议见 src-tauri/src/friends.rs 头部 */
+import { friendsApi } from '../bridge/tauri';
+import type { PresenceStatus, Toggle } from '../bridge/tauri';
 // ★ 目录名规范只有一份（Rust `domain::naming` 的镜像）—— 见那个模块的说明
 import { sanitizeDirName, uniqueDirName } from '../domain/naming.ts';
 import type { FolderVersion } from '../bridge/tauri';
@@ -176,8 +191,16 @@ function sanitizePrefs(raw: unknown): Partial<AppState['prefs']> {
     out.offlineUsername = r.offlineUsername.trim().slice(0, 32);
   }
   // 账号 uuid：只有形态合法才认（挡住手改出来的垃圾值）
-  if (typeof r.accountUuid === 'string' && /^[0-9a-fA-F-]{32,36}$/.test(r.accountUuid)) {
+  /*
+   * ★★ 2026-10-09：`lastPremiumUuid` 是**切回正版**唯一的依据（见 `store.ts` 里那段说明）。
+   *   形态检查与 `planSwitchBack` 共用一处（`domain/account.ts` 的 `looksLikeUuid`），
+   *   别在这里再抄一条正则 —— 两条迟早会不一致。
+   */
+  if (looksLikeUuid(r.accountUuid)) {
     out.accountUuid = r.accountUuid;
+  }
+  if (looksLikeUuid(r.lastPremiumUuid)) {
+    out.lastPremiumUuid = r.lastPremiumUuid;
   }
   if (typeof r.globalJvmArgs === 'string') out.globalJvmArgs = r.globalJvmArgs;
   if (typeof r.globalGameArgs === 'string') out.globalGameArgs = r.globalGameArgs;
@@ -196,6 +219,12 @@ function sanitizePrefs(raw: unknown): Partial<AppState['prefs']> {
       .slice(-200);
     out.deletedVersions = list;
   }
+  /*
+   * ★★ **好友备注**（2026-10-12：名单已经以服务端为准，本机只留备注）。
+   *   清洗规则全在 `domain/friends.ts`（uuid 键、短字符串、空值丢掉）——
+   *   那边有 10 条用例，这里只负责"捞出来"。
+   */
+  out.friendNotes = parseFriendNotes(r.friendNotes);
   return out;
 }
 
@@ -278,6 +307,33 @@ interface AppContextValue {  state: AppState;
    * ★ 会**当场落盘**，不只是改内存 —— 见实现里那段说明。
    */
   setFavorite: (id: string, favorite: boolean) => Promise<void>;
+
+  /* --- 好友（2026-10-09 的胚子；边界见 domain/friends.ts 文件头） --- */
+
+  /* --- 好友（正版专用，2026-10-12；端点与协议见 src-tauri/src/friends.rs 头部）--- */
+
+  /** 重新取名单（并顺带上报一次"我在线"） */
+  refreshFriends: () => Promise<void>;
+  /** 加好友：按正版名查 uuid 再发请求（查不到会如实报错） */
+  addFriendByName: (name: string) => Promise<boolean>;
+  /** 删好友 */
+  removeFriend: (profileId: string, name: string) => Promise<boolean>;
+  /** 同意别人的请求 */
+  acceptFriend: (profileId: string, name: string) => Promise<boolean>;
+  /** 拒绝别人的请求 */
+  declineFriend: (profileId: string, name: string) => Promise<boolean>;
+  /** 撤销自己发出的请求 */
+  revokeFriendRequest: (profileId: string, name: string) => Promise<boolean>;
+  /** 读好友隐私设置（谁能加我 / 谁能邀请我） */
+  loadFriendSettings: () => Promise<void>;
+  saveFriendSettings: (friends: Toggle, acceptInvites: Toggle) => Promise<void>;
+  /** 本机备注（只进 prefs，不碰服务端） */
+  setFriendNote: (profileId: string, note: string) => void;
+  /**
+   * ★ 好友页挂载/卸载时报告"这一页开着"——名单轮询频率按它切
+   *   （打开每分钟、关着每 5 分钟，见 `domain/friends.ts`）。
+   */
+  setFriendsPageOpen: (open: boolean) => void;
   duplicateInstance: (id: string) => Promise<number>;
 
   /* --- Java --- */
@@ -617,17 +673,44 @@ export function AppProvider({ children }: { children: ReactNode }) {
        *   现在：每条给一个安全的兜底值，只有"机器信息"失败才算真的启动失败
        *   （没有它就渲染不出任何东西）。
        */
-      const [machineR, instR, javaR, prefsR, infoR, runningR, isolationR] = await Promise.allSettled([
-        backend.machineInfo(),
-        backend.loadInstances(),
-        backend.scanJava(),
-        backend.loadPrefs(),
+      /*
+       * ★★ 每一批的耗时**要看得见**（2026-10-09，用户：「进入启动器的速度有点慢」）。
+       *
+       *   `Promise.allSettled` 只告诉我们"都落定了"，不告诉我们**哪一条最慢** ——
+       *   而首屏可交互的时刻正是由最慢那条决定的（整批挡在 `boot/ok` 前面，
+       *   在那之前内容区是 `AppShell` 里那句「正在准备…」）。
+       *
+       *   ⇒ `timed()` 给每条记一笔落定时刻（**不改它的值、也不改它的错误**），
+       *     记在 `window.__boot.invokes` 上；真机探针
+       *     （`live-startup-timing.mjs`，在本地开发记录里）直接读。
+       *     成本是每条两次 `performance.now()`。
+       */
+      const tBoot = performance.now();
+      const marks: Record<string, number> = {};
+      const timed = <T,>(name: string, p: Promise<T>): Promise<T> =>
+        p.then(
+          (v) => {
+            marks[name] = Math.round(performance.now() - tBoot);
+            if (window.__boot) window.__boot.invokes = { ...marks };
+            return v;
+          },
+          (e: unknown) => {
+            marks[name] = Math.round(performance.now() - tBoot);
+            if (window.__boot) window.__boot.invokes = { ...marks };
+            throw e;
+          },
+        );
+
+      const [machineR, instR, prefsR, infoR, runningR, isolationR] = await Promise.allSettled([
+        timed('machine_info', backend.machineInfo()),
+        timed('list_instances', backend.loadInstances()),
+        timed('load_prefs', backend.loadPrefs()),
         /*
          * ★ 后端版本号（`app_info`）。拿不到不影响启动 —— 它只用于「关于」显示。
          *   单独一条 promise 是为了不让它拖垮整次 boot（与上面同一条纪律：
          *   每条给一个安全的兜底值）。
          */
-        backend.info(),
+        timed('app_info', backend.info()),
         /*
          * ★★ 多开实例：把"现在有哪些在跑"从**后端**捡回来。
          *
@@ -637,14 +720,42 @@ export function AppProvider({ children }: { children: ReactNode }) {
          *   "没有游戏在运行"，用户再点启动，游戏又开一份（同一个存档被两个进程写）。
          *   后端那张表是**唯一**知道真相的地方（它手里有子进程句柄）。
          */
-        backend.runningGames(),
+        timed('running_games', backend.runningGames()),
         /*
          * ★★ 隔离判定（ADR-005）：**由后端算**，界面只显示。
          *   拿不到时保持空表 —— 界面据此显示"读取中"，绝不自己猜一个结论出来
          *   （猜错的代价是用户以为存档丢了）。
          */
-        backend.listIsolation(),
+        timed('list_isolation', backend.listIsolation()),
       ]);
+
+      /*
+       * ★★★★ Java 扫描**不挡首屏**（2026-10-09，用户：「进入启动器的速度有点慢」）。
+       *
+       *   真机量出来的形状（`window.__boot.invokes`，探针读它）：
+       *
+       *     machine_info 199ms · list_instances 199 · load_prefs 200 · app_info 200
+       *     running_games 200 · list_isolation 201 · **scan_java 343**
+       *
+       *   六条几乎同时落定（连什么都不干的 `app_info` 也是 200ms）⇒ 那 200ms 是
+       *   "主线程上排队 + 一次性的 IPC 冷启动"，**不是某一条自己的活**；
+       *   而 `scan_java` 独自又往后拖了 **140ms** —— 它才是唯一真正更长的那条，
+       *   因为它要向 8 类来源收候选、并把每个 `java -version` 真的跑一遍。
+       *
+       *   Java 结果**首屏并不需要**：启动页的 Java 那一格在拿到之前显示
+       *   `java.scanning`（store 里本来就有这个语义，设置页自己也会重扫）。
+       *   所以把它从闸门里摘出去，`java/set` 到了再落 —— 首屏因此提前
+       *   100~300ms（机器上 Java 候选越多差得越多）。
+       *
+       *   ★ 顺序很要紧：`scan_java` 在 await 之前就**已经发出去了**，
+       *     所以"摘出去"不会让它晚开始，只是不再等它。
+       *   ★ `java/scanning` 必须在 `boot/ok` **之前**置上，否则中间那一小段
+       *     界面会显示"没有检测到 Java"—— 那是句假话。
+       */
+      dispatch({ type: 'java/scanning', scanning: true });
+      const javaPromise = backend.scanJava();
+      const timedJava = timed('scan_java', javaPromise);
+      if (window.__boot) window.__boot.invokes = marks;
 
       if (machineR.status === 'rejected') {
         dispatch({
@@ -660,7 +771,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const machine = machineR.value;
       const inst =
         instR.status === 'fulfilled' ? instR.value : { instances: [], activeId: null };
-      const java = javaR.status === 'fulfilled' ? javaR.value : [];
       const prefs = prefsR.status === 'fulfilled' ? prefsR.value : {};
 
       /*
@@ -694,9 +804,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
             },
           }),
         );
-      }
-      if (javaR.status === 'rejected') {
-        console.error('[IEML] Java 扫描失败：', javaR.reason);
       }
       if (prefsR.status === 'rejected') {
         console.error('[IEML] 读取偏好失败：', prefsR.reason);
@@ -739,11 +846,34 @@ export function AppProvider({ children }: { children: ReactNode }) {
         backendVersion: infoR.status === 'fulfilled' ? infoR.value.version : '',
         versions,
         instances: inst.instances,
-        java,
+        /* Java 还没扫完 —— 给空表，紧接着由 `java/set` 补上（`java/scanning` 已在上面置上） */
+        java: [],
         lastInstanceId: inst.activeId ?? null,
         prefs: restored,
         ...(isThemeId(savedTheme) ? { theme: savedTheme } : {}),
       });
+
+      /*
+       * ★★★★ Java 扫描结果到了就落（2026-10-09）。
+       *
+       *   首屏**不等它**（理由与量出来的数字写在上面那段说明里）。
+       *   这里用 `.then` 而不是 `await`：`await` 会把这个 async 块挂在这里，
+       *   `boot/ok` 之后那几条（运行表、隔离判定）就要一起等 Java —— 白等。
+       *
+       *   ★ 失败时：`java/scanning` 置回 false（界面据此说"没找到 Java"而不是
+       *     一直转圈），并留下一行痕迹 —— 原来这里只有一句 console.error，
+       *     而那正是"设置页说没有 Java、用户以为机器上没装"的观感来源。
+       */
+      void timedJava.then(
+        (runtimes) => {
+          dispatch({ type: 'java/set', runtimes });
+          dispatch({ type: 'java/scanning', scanning: false });
+        },
+        (e: unknown) => {
+          console.error('[IEML] Java 扫描失败：', e);
+          dispatch({ type: 'java/scanning', scanning: false });
+        },
+      );
 
       /*
        * ★★ 多开实例：boot 之后**用后端的事实覆盖**本地的运行表。
@@ -1819,6 +1949,286 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [backend, state.lastInstanceId, toast]);
 
+  /* ====================== 好友（正版专用，2026-10-12） ======================
+   *
+   * 名单以**服务端为准**（`GET /friends`，正版令牌）；本机只留备注
+   * （`prefs.friendNotes`，解析规则在 `domain/friends.ts`，那边有 10 条用例）。
+   *
+   * 在线状态靠**心跳**：周期性 `POST /presence` —— 既上报"我在线"、又拿回好友们
+   * 的状态（客户端自己就是这么做的：authlib 里那份 `presenceCache` 干的是这件事）。
+   *
+   * ★ 为什么用心跳而不是"点开好友页才查"：用户在启动器里待着的时候，
+   *   好友在游戏里应该能看到他**在线**（用户 2026-10-12 选定的行为）。
+   * ★ 关启动器时补一发 `OFFLINE`（尽力而为：窗口卸载不一定来得及发出去，
+   *   而服务端有 `lastUpdated`，会自己判过期）。
+   */
+  const friendsUuid = state.prefs.accountUuid ?? null;
+
+  const refreshFriends = useCallback(async (): Promise<void> => {
+    if (!friendsUuid) return;
+    dispatch({ type: 'friends/patch', patch: { loading: true, error: null } });
+    try {
+      const [snapshot, presence] = await Promise.all([
+        friendsApi.snapshot(friendsUuid),
+        // 状态拿不到不该让整次刷新失败（名单才是主体）
+        friendsApi.presence(friendsUuid, 'ONLINE').catch(() => []),
+      ]);
+      /*
+       * ★★ 304 的处理（用户 2026-10-12 给的设计图）：`null` 表示**服务端说没变**，
+       *   那就**沿用本地那份**，绝不能把它当成"名单空了"（那会让界面突然空掉，
+       *   而用户的好友一个没少）。名单与在场各自判各自的。
+       */
+      const patch: Partial<typeof state.friends> = {
+        loading: false,
+        error: null,
+        updatedAt: Date.now(),
+      };
+      if (snapshot) patch.snapshot = snapshot;
+      if (presence) {
+        const map: Record<string, PresenceStatus | null> = {};
+        for (const p of presence) map[p.profileId.toLowerCase()] = p.status ?? null;
+        patch.presence = map;
+      }
+      /* `presenceAt` 每次都记：304 也说明"我们手上的状态是最新的" */
+      patch.presenceAt = Date.now();
+      dispatch({ type: 'friends/patch', patch });
+    } catch (e) {
+      /*
+       * ★ 失败原因**留在 state 里**（页面显示它），不只弹个 toast 就没了 ——
+       *   用户要照着它决定"是不是得重新登录一次"。
+       */
+      dispatch({
+        type: 'friends/patch',
+        patch: { loading: false, error: e instanceof Error ? e.message : String(e) },
+      });
+    }
+  }, [friendsUuid]);
+
+  /** 关系动作（加/删/同意/拒绝/撤销）走同一条路：调用 → 成功就刷新名单 */
+  const friendAct = useCallback(
+    async (what: string, fn: () => Promise<void>, okText: string, okDetail?: string): Promise<boolean> => {
+      try {
+        await fn();
+        toast('ok', okText, okDetail);
+        await refreshFriends();
+        return true;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        toast('err', `${what}失败`, msg);
+        dispatch({ type: 'friends/patch', patch: { error: msg } });
+        return false;
+      }
+    },
+    [refreshFriends, toast],
+  );
+
+  const addFriendByName = useCallback(
+    async (name: string): Promise<boolean> => {
+      if (!friendsUuid) return false;
+      return friendAct(
+        '加好友',
+        async () => {
+          await friendsApi.add(friendsUuid, name.trim());
+        },
+        '好友请求已发出',
+        `${name.trim()} —— 等他同意之后就出现在名单里`,
+      );
+    },
+    [friendAct, friendsUuid],
+  );
+
+  const removeFriend = useCallback(
+    async (profileId: string, name: string): Promise<boolean> => {
+      if (!friendsUuid) return false;
+      return friendAct(
+        '删好友',
+        async () => {
+          await friendsApi.remove(friendsUuid, profileId);
+        },
+        '已从名单里删掉',
+        name,
+      );
+    },
+    [friendAct, friendsUuid],
+  );
+
+  const acceptFriend = useCallback(
+    async (profileId: string, name: string): Promise<boolean> => {
+      if (!friendsUuid) return false;
+      return friendAct(
+        '同意好友',
+        async () => {
+          await friendsApi.accept(friendsUuid, profileId);
+        },
+        '已同意',
+        `${name} 现在是你的好友了`,
+      );
+    },
+    [friendAct, friendsUuid],
+  );
+
+  const declineFriend = useCallback(
+    async (profileId: string, name: string): Promise<boolean> => {
+      if (!friendsUuid) return false;
+      return friendAct(
+        '拒绝请求',
+        async () => {
+          await friendsApi.decline(friendsUuid, profileId);
+        },
+        '已拒绝',
+        `${name} 的请求已处理`,
+      );
+    },
+    [friendAct, friendsUuid],
+  );
+
+  const revokeFriendRequest = useCallback(
+    async (profileId: string, name: string): Promise<boolean> => {
+      if (!friendsUuid) return false;
+      return friendAct(
+        '撤销请求',
+        async () => {
+          await friendsApi.decline(friendsUuid, profileId);
+        },
+        '已撤销',
+        `不再等 ${name} 同意`,
+      );
+    },
+    [friendAct, friendsUuid],
+  );
+
+  const loadFriendSettings = useCallback(async (): Promise<void> => {
+    if (!friendsUuid) return;
+    try {
+      const s = await friendsApi.settings(friendsUuid);
+      dispatch({ type: 'friends/patch', patch: { settings: s } });
+    } catch (e) {
+      dispatch({
+        type: 'friends/patch',
+        patch: { error: e instanceof Error ? e.message : String(e) },
+      });
+    }
+  }, [friendsUuid]);
+
+  const saveFriendSettings = useCallback(
+    async (friendsToggle: Toggle, acceptInvites: Toggle) => {
+      if (!friendsUuid) return;
+      try {
+        await friendsApi.setSettings(friendsUuid, friendsToggle, acceptInvites);
+        dispatch({
+          type: 'friends/patch',
+          patch: { settings: { friends: friendsToggle, acceptInvites } },
+        });
+        toast('ok', '好友设置已保存');
+      } catch (e) {
+        toast('err', '好友设置没存下来', e instanceof Error ? e.message : String(e));
+      }
+    },
+    [friendsUuid, toast],
+  );
+
+  /** 本机备注（只进 prefs，不碰服务端） */
+  const notesRef = useRef(state.prefs.friendNotes);
+  notesRef.current = state.prefs.friendNotes;
+  const setFriendNote = useCallback((profileId: string, note: string): void => {
+    dispatch({ type: 'prefs/patch', patch: { friendNotes: setFriendNoteIn(notesRef.current, profileId, note) } });
+  }, []);
+
+  /*
+   * ★★ **在线状态心跳**（2026-10-12）。
+   *
+   *   每 30 秒一次 `POST /presence`：上报"我在线"，同时把好友们的状态收回来。
+   *   为什么不是"点开好友页才查"：用户选定的行为是"**开着启动器时好友能看到我在线**"，
+   *   所以心跳跟着**账号**走，而不是跟着某个页面走。
+   *
+   *   ★ 关窗口时补一发 `OFFLINE`（尽力而为）—— 服务端有 `lastUpdated` 会自己判过期，
+   *     所以这只是"更干净"，不是唯一依赖。
+   *   ★ 心跳失败**不打扰用户**：名单那条路有自己的错误显示，心跳失败多半只是网络抖。
+   */
+  useEffect(() => {
+    if (!state.ready || !friendsUuid) return;
+    let alive = true;
+    const beat = async () => {
+      try {
+        const rows = await friendsApi.presence(friendsUuid, 'ONLINE');
+        if (!alive) return;
+        /*
+         * ★ 只有**成功**才更新 presence / presenceAt。失败时保持上一次的结论 ——
+         *   否则一次网络抖动就会把"离线"错说成"未知"（反过来也是编）。
+         *   ★ `rows === null` 是 304：服务端说没变 ⇒ 沿用本地那份。
+         */
+        const patch: Partial<typeof state.friends> = { presenceAt: Date.now() };
+        if (rows) {
+          const map: Record<string, PresenceStatus | null> = {};
+          for (const p of rows) map[p.profileId.toLowerCase()] = p.status ?? null;
+          patch.presence = map;
+        }
+        dispatch({ type: 'friends/patch', patch });
+      } catch {
+        /* 心跳失败不弹东西（见上），也不动上一次的结论 */
+      }
+    };
+    void beat();
+    /* ★ 间隔按"好友页开着没有"切：30 秒 / 90 秒（见 domain/friends.ts 那段说明） */
+    const timer = window.setInterval(() => void beat(), presenceBeatIntervalMs(state.friends.pageOpen));
+    const goodbye = () => {
+      void friendsApi.presence(friendsUuid, 'OFFLINE').catch(() => []);
+    };
+    window.addEventListener('beforeunload', goodbye);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+      window.removeEventListener('beforeunload', goodbye);
+      goodbye();
+    };
+  }, [state.ready, friendsUuid, state.friends.pageOpen]);
+
+  /** 拿到账号就把好友设置也读一次（页面显示"谁能加我"要用它） */
+  useEffect(() => {
+    if (!state.ready || !friendsUuid) return;
+    void loadFriendSettings();
+  }, [state.ready, friendsUuid, loadFriendSettings]);
+
+  /*
+   * ★★ 启动时**取一次名单**（2026-10-12 补）。
+   *
+   *   原来只在"点刷新"或"做完一个动作之后"才取 —— 于是刚进好友页是
+   *   「正在取名单…」，看着像坏了（真机验证时就是这么发现的）。
+   *   名单是这一页的主体，账号一就绪就该拿来。
+   *
+   *   ★ 之后靠心跳维持"状态"那一栏；名单本身不轮询（好友变化很少，
+   *     用户也能点刷新）。真要做实时推送就得接那个信令 WS ——
+   *     那是另一档功能（见 friends.rs 头部对 wss://signaling-afd… 的说明）。
+   */
+  useEffect(() => {
+    if (!state.ready || !friendsUuid) return;
+    void refreshFriends();
+  }, [state.ready, friendsUuid, refreshFriends]);
+
+  /*
+   * ★★★★ **名单的按需轮询**（2026-10-12，用户给的设计图）。
+   *
+   *   设计图：好友列表**打开时每分钟**、**没打开时每 5 分钟**检查一次更新 ——
+   *   平衡实时性与性能。间隔常量与规则在 `domain/friends.ts`
+   *   （`friendsPollIntervalMs`，那边有用例钉着 60s / 300s）。
+   *
+   *   ★ 真正省流量的是 ETag：每次检查都带 `If-None-Match`，没变就是一次 304
+   *     空响应（见 `friends.rs` 的说明）。轮询频率与 ETag 是**配套**的两件事：
+   *     只有 ETag 而没有频率控制 = 每分钟白下一次名单；
+   *     只有频率控制而没有 ETag = 每次检查都要下整份。
+   */
+  useEffect(() => {
+    if (!state.ready || !friendsUuid) return;
+    const ms = friendsPollIntervalMs(state.friends.pageOpen);
+    const timer = window.setInterval(() => void refreshFriends(), ms);
+    return () => window.clearInterval(timer);
+  }, [state.ready, friendsUuid, state.friends.pageOpen, refreshFriends]);
+
+  /** 好友页挂载/卸载时告诉上下文"这一页开着"（轮询频率按它切） */
+  const setFriendsPageOpen = useCallback((open: boolean): void => {
+    dispatch({ type: 'friends/patch', patch: { pageOpen: open } });
+  }, []);
+
   /**
    * 创建一个副本。
    *
@@ -1994,6 +2404,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     buryVersion,
     renameInstance,
     setFavorite,
+    refreshFriends,
+    addFriendByName,
+    removeFriend,
+    acceptFriend,
+    declineFriend,
+    revokeFriendRequest,
+    loadFriendSettings,
+    saveFriendSettings,
+    setFriendNote,
+    setFriendsPageOpen,
     duplicateInstance,
     rescanJava,
     refreshJava,
