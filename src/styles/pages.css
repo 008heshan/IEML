@@ -1513,6 +1513,48 @@
   height: 30px;
   font-size: var(--text-sm);
 }
+/*
+ * ★★ **加载器版本：单独一栏**（2026-10-16 用户截图 +
+ *    「**加载器版本放到下面单独成一个栏吧**」）。
+ *
+ *   原来它是塞在**选中那一行**右侧的（`.base-item` 里的 `.loader-detail`）：
+ *   整页那种宽行里，那一行被切成"名字 | 版本框 | 提示"三段 ——
+ *   名字只剩半宽，下拉与「在线清单 · N 个版本」挤在行尾一角。
+ *   现在它在加载器列表**下面**自己占一栏：左边说清是哪个加载器的版本，
+ *   右边是下拉与清单提示。
+ *
+ *   ★ 弹窗（创建实例：列宽两百多像素）与整页**共用这一条**，
+ *     窄的时候靠 `flex-wrap` 各自换行 —— 不再需要
+ *     「整页横排 / 弹窗竖排」那两套规则（配套的 `.gw-full .base-item` 已删）。
+ *   ★ 底色与上面的加载器行同为 `--bg-base`：它读起来是"这一组的下一栏"，
+ *     而不是另起一块（`--bg-raised` 会像浮起来的一块）。
+ */
+.loader-version-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-base);
+}
+/* 标签靠左，下拉与提示整体靠右 */
+.loader-version-bar .lv-label {
+  margin-right: auto;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+/*
+ * ★ `.cs` 在表单里默认 `width: 100%`（要撑满一整行）；
+ *   这里它只是这一栏里的一段，所以按内容宽（窄到极限时再换行）。
+ */
+.loader-version-bar .cs {
+  flex: 0 1 200px;
+  width: auto;
+  min-width: 140px;
+}
 
 /* 第二层：附加组件（多选，受约束） */
 .addon-grid {
@@ -1814,18 +1856,13 @@
   padding: var(--space-1) 0 var(--space-4);
 }
 /*
- * ★ 加载器那一列在整页里是**宽行**：名字在左，选中的那个把「版本」下拉放到行尾。
- *   （弹窗里是竖着堆在下面的 —— 那里只有 232px 宽，横排塞不下。）
+ * ★ 加载器那一列现在是**一行一个、整宽**（名字占满那一行）。
+ *
+ *   2026-10-16 之前这里有一组 `.gw-full .base-item { flex-direction: row }`：
+ *   整页把选中的那个加载器的「版本」下拉放到**行尾**，弹窗里才竖着堆在下面 ——
+ *   两套布局。用户要求「加载器版本放到下面单独成一个栏」之后，版本下拉在两种
+ *   形态下都不在行里了（见 `.loader-version-bar`），那组规则随之删掉。
  */
-.gw-full .base-item {
-  flex-direction: row;
-  align-items: center;
-  gap: var(--space-3);
-}
-.gw-full .base-opt {
-  flex: 1 1 auto;
-  min-width: 0;
-}
 .gw-full .loader-detail {
   flex: 0 0 auto;
   padding: 0;
@@ -1874,14 +1911,10 @@
 }
 
 /*
- * 窄窗口：加载器那一行横排放不下（版本下拉本身就要 200px+），
- * 退回弹窗那种"名字在上、版本在下"的竖排。
+ * 窄窗口：OptiFine 那一行（`.loader-detail`）横排放不下时退回竖排。
+ * ★ 加载器版本那条**不在这里** —— 它自己就是一栏，靠 `flex-wrap` 换行。
  */
 @media (max-width: 900px) {
-  .gw-full .base-item {
-    flex-direction: column;
-    align-items: stretch;
-  }
   .gw-full .loader-detail {
     padding: 0 var(--space-3) var(--space-3) var(--space-8);
   }

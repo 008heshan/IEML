@@ -1528,29 +1528,42 @@ export function InstallComposer({
                     ) : null}
                   </span>
                 </button>
-
-                {selected && opt && availableBaseVersions.length > 0 ? (
-                  <div className="loader-detail">
-                    <label htmlFor={`bv-${o.value}`}>{o.label} 版本</label>
-                    {/*
-                      ★★ 2026-09-22（用户：「模组加载器选择版本时，这个展开栏**没统一风格**」）：
-                        原生 `<select>` 的下拉列表由**操作系统**画（图五那张白底黑字的
-                        方框就是它）—— 在深色玻璃界面里出戏，也不跟主题走。
-                        换成应用自己的 `CustomSelect`（与「要启动的版本」同款）。
-                    */}
-                    <CustomSelect
-                      value={baseVersion}
-                      onChange={setBaseVersion}
-                      ariaLabel={`${o.label} 版本`}
-                      options={availableBaseVersions.map((ver) => ({ value: ver, label: ver }))}
-                    />
-                    <Chip tone="success">在线清单 · {availableBaseVersions.length} 个版本</Chip>
-                  </div>
-                ) : null}
               </div>
             );
           })}
         </div>
+
+        {/*
+          ★★ 2026-10-16（用户截图 +「**加载器版本放到下面单独成一个栏吧**」）：
+            版本下拉原来塞在**选中那一行的右侧**（`.base-item` 里的 `.loader-detail`）——
+            整页那种宽行里，那一行被切成"名字 | 版本框 | 提示"三段：
+            名字只剩半宽、下拉与「在线清单 · N 个版本」挤在行尾的一角。
+            现在整条移到列表**下面**、自己成一栏：左边写清是哪个加载器的版本，
+            右边是下拉与清单提示。
+
+          ★ 弹窗（创建实例，列宽只有两百多像素）与整页**共用这一条**：
+            窄的时候 label / 下拉 / 提示各自换行，靠 `flex-wrap` 自己解决 ——
+            不再需要"整页横排、弹窗竖排"两套规则（那套规则连同 `.gw-full .base-item`
+            一起删了）。
+          ★ 只有**选中了某个加载器**且它真的有版本时才渲染这一栏：
+            选「无 · 纯原版」时多一个空栏，等于问用户"你要不要给原版挑个加载器版本"。
+        */}
+        {base && baseOpts && availableBaseVersions.length > 0 ? (
+          <div className="loader-version-bar">
+            <span className="lv-label">{baseOpts.name} 版本</span>
+            {/*
+              ★ 与「要启动的版本」同款的自绘下拉（原生 `<select>` 的下拉是系统画的，
+                在深色玻璃里出戏 —— 见下面 OptiFine 那一处的同样处理）。
+            */}
+            <CustomSelect
+              value={baseVersion}
+              onChange={setBaseVersion}
+              ariaLabel={`${baseOpts.name} 版本`}
+              options={availableBaseVersions.map((ver) => ({ value: ver, label: ver }))}
+            />
+            <Chip tone="success">在线清单 · {availableBaseVersions.length} 个版本</Chip>
+          </div>
+        ) : null}
 
         {/*
           ★ 0.1.0-beta.1：删掉「不装加载器也能玩 —— 想加光影的话，OptiFine
