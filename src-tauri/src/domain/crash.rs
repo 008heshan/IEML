@@ -623,6 +623,48 @@ pub fn judge_crash(
     }
 
     /*
+     * ---------- ①.5 **连一行输出都没有**的进程，不是"游戏崩了" ----------
+     *
+     * ★★ 2026-10-16（用户：「这是在游戏启动前手动关闭后『错误检测』的结果」）。
+     *
+     *   现场：`latest.log` **0 字节**、退出码 1、玩了不到一分钟 ⇒ 原来的判据走
+     *   `instant_fail` 那一支，弹出一句「游戏异常退出（退出码 1）· 看日志页有崩溃分析」——
+     *   可这是用户**自己在启动还没走完的时候把它关掉的**（关控制台窗口 / 结束进程），
+     *   不是游戏出了什么事。报告一句假故障，比不报告更糟：它会让人去查一个不存在的崩溃。
+     *
+     *   为什么"0 字节"是好判据：真出事的 JVM 一定**会说话** ——
+     *   找不到主类、classpath 不对、native 库加载失败，全都会往 stderr 写一行，
+     *   而启动器把 stdout/stderr 都重定向进了这个日志文件。所以
+     *   **一个字节都没写**只有一种形状：进程还没跑到 JVM 输出任何东西就被结束了
+     *   （被手动关闭、被任务管理器结束、或被上层 taskkill）—— 那是"被中断"，不是"崩溃"。
+     *
+     *   ★ 边界写得很窄，避免误放真故障：
+     *     · 只在**退出码非 0 或缺**时生效（退出码 0 + 空日志仍然算秒退故障）；
+     *     · 只在**恰好 0 字节**时生效（写了一个字节就交给原判据）；
+     *     · 游戏自己声明过崩溃（`declared`）时**不适用**（那是最硬的证据）。
+     *   ★ 它**不改**任何已有结论：真崩溃（非零码 + 有日志、秒退 + 有输出、游戏自报）
+     *     全部照旧走下面的判据。
+     */
+    let nothing_written = log_bytes == 0;
+    let code_bad_now = matches!(exit_code, Some(c) if c != 0);
+    if nothing_written && code_bad_now && !declared {
+        return CrashVerdict {
+            crashed: false,
+            reason: None,
+            rule_id: None,
+            category: None,
+            evidence: vec![
+                format!(
+                    "进程在写下任何日志之前就结束了（退出码 {}，{played_seconds} 秒）—— \
+                     这不是游戏崩溃，多半是启动过程被中断或被手动关闭",
+                    exit_code.unwrap_or(-1)
+                ),
+            ],
+            benign: analysis.benign_matches,
+        };
+    }
+
+    /*
      * ---------- ② 崩没崩：只看退出码与游戏自己的声明 ----------
      *
      * ★ 退出码为 `None`（被信号杀死、或拿不到状态）时**不猜**：
@@ -887,6 +929,55 @@ mod tests {
         let reason = v.reason.unwrap();
         assert!(reason.contains("非零退出码 1"), "{reason}");
         assert!(v.rule_id.is_none(), "没命中规则就不许编一个 id");
+    }
+
+    /* ====================== ①.5「一行都没写」不算崩溃 ======================
+     *
+     * ★★ 2026-10-16（用户：「这是在游戏启动前手动关闭后『错误检测』的结果」）。
+     *   用户自己在启动还没走完时关掉了进程，界面却报「游戏异常退出（退出码 1）·
+     *   看日志页有崩溃分析」—— 那是一条**假故障**：它会让人去查一个不存在的崩溃。
+     *   现场特征：`latest.log` 恰好 0 字节。
+     */
+
+    /// ★ 被手动关闭（0 字节 + 非零退出码）→ **不是崩溃**，而且要把"被中断"说出来。
+    #[test]
+    fn nothing_written_is_an_interruption_not_a_crash() {
+        let v = judge_crash(Some(1), false, false, 5, 0, "");
+        assert!(
+            !v.crashed,
+            "一个字节都没写 = 进程没跑到 JVM 说话就被结束了，不该报崩溃：{:?}",
+            v.reason
+        );
+        assert!(v.reason.is_none(), "不是崩溃就不许给原因：{:?}", v.reason);
+        assert!(
+            v.evidence.iter().any(|e| e.contains("任何日志")),
+            "但要把「它是被中断的」这件事说出来：{:?}",
+            v.evidence
+        );
+    }
+
+    /// ★ 边界一：**退出码 0 + 空日志**仍然是"秒退故障"（用户要的是"游戏没起来"也要说）。
+    ///   这一条钉住新规则别把老的秒退判据一起吃掉。
+    #[test]
+    fn zero_exit_with_empty_log_is_still_reported() {
+        let v = judge_crash(Some(0), false, false, 2, 0, "");
+        assert!(v.crashed, "退出码 0 但秒退且日志为空 → 仍要报，不能静默");
+    }
+
+    /// ★ 边界二：**写了一个字节**就交回原判据（非零退出码 → 崩溃）。
+    ///   新规则的宽度只允许"恰好 0 字节"，否则它会把真故障一起放走。
+    #[test]
+    fn one_byte_of_output_keeps_the_original_verdict() {
+        let v = judge_crash(Some(1), false, false, 3, 1, "x");
+        assert!(v.crashed, "只要 JVM 说过一句话，就按原来的判据走");
+    }
+
+    /// ★ 边界三：日志为空但**游戏自己声明过崩溃** → 仍然算崩溃（那是最硬的证据）。
+    #[test]
+    fn self_declared_crash_wins_over_empty_log() {
+        let log = "The game crashed whilst initializing game\n";
+        let v = judge_crash(Some(1), false, false, 5, 0, log);
+        assert!(v.crashed, "游戏自己写了崩溃记录，就不许被 ①.5 放走");
     }
 
     /*

@@ -3823,6 +3823,7 @@ pub async fn launch_minecraft(
         log_path: log_path.clone(),
         offline,
         child,
+        stop_requested: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
     /*
      * ★ 登记之后必须**立刻挂上退出监测**（用户报"游戏关闭后启动器依然显示在运行"）。
@@ -3835,6 +3836,11 @@ pub async fn launch_minecraft(
         running.instance_id.clone(),
         running.started_at,
         offline,
+        /*
+         * ★ 2026-10-16：把"用户是否要停"这个共享开关交给退出线程 ——
+         *   否则用户按停止时，它会拿 taskkill 的退出码判成"异常退出"（见字段说明）。
+         */
+        Arc::clone(&running.stop_requested),
         Some(app.clone()),
     );
     /*

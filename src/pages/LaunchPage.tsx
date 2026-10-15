@@ -726,16 +726,32 @@ export function LaunchPage() {
               </span>
             </Button>
           ) : (
+            /*
+             * ★★ 2026-10-16（用户截图 +「**点击后，就消失了，我觉得这是个错误**」）：
+             *   这里**不再用 `Button` 的 `loading` 通道**。
+             *
+             *   那条通道把转圈渲染在**文字前面**（`{loading ? spinner : null}{children}`），
+             *   而这个按钮的"图标位"是右边那块托盘 —— 于是启动中会变成
+             *   "文字左边一个转圈 + 托盘整个消失"，也就是用户看到的那个跳变。
+             *   改成：**托盘留在原地，把里面的三角换成转圈**
+             *   （正是用户 2026-09-23 说的「用右边的转圈把左边的三角替换掉，不要同时显示」）。
+             *
+             *   ★ `loading` 通道顺手做的两件事在这里自己给：`disabled`（防连点）
+             *     与 `aria-busy`（读屏软件要知道它在忙）。
+             *   ★ 托盘是 `aria-hidden` 的，所以里面那颗转圈对读屏是隐形的 ——
+             *     "在忙"这件事由 `aria-busy` 表达，不靠那颗转圈。
+             */
             <Button
               id="ieml-launch-btn"
               variant="primary"
-              className="launch-btn"
-              loading={launching}
+              className={`launch-btn${launching ? ' is-launching' : ''}`}
+              disabled={launching}
+              aria-busy={launching || undefined}
               onClick={() => void launch()}
             >
               启动游戏
               <span className="launch-btn-plate" aria-hidden="true">
-                <IconPlay />
+                {launching ? <span className="spinner" /> : <IconPlay />}
               </span>
             </Button>
           )}

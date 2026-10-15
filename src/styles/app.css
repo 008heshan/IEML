@@ -3790,21 +3790,42 @@ tbody tr.clickable:focus-visible {
   transform: scale(0.95);
 }
 /*
- * 启动中：托盘让位给转圈。
- * ★ 托盘里装的就是那个三角 —— 转圈出现时它必须消失（用户 2026-10-09：
- *   「**在原有的图标的左侧再来一个旋转图标**，这是个重复，万万不可」）。
- *   同时把右侧留白收回去：托盘都没了，还留着 3.6em 的空档会让文字看着偏左。
+ * 启动中：**转圈把托盘里那个三角换掉**（不是把托盘藏掉）。
+ *
+ * ★★ 2026-10-16（用户截图 +「**点击后，就消失了，我觉得这是个错误**」）。
+ *
+ *   原来这里是 `display: none` —— 一点击，白色托盘**瞬间不见**，同时右侧留白
+ *   从 3.6em 缩到 1.2em（内容跟着往左缩），光带也一起消失：一次点击让三样东西
+ *   同时跳掉，看着就是"坏了"。
+ *
+ *   改法正是用户 2026-09-23 自己说过的那句：「启动游戏时，用**右边的转圈把
+ *   左边的三角替换掉**，不要同时显示」—— 托盘就在右边、三角就在托盘里，
+ *   所以**让托盘留在原地、把里面的图标换成转圈**：不消失、不位移、
+ *   也不会出现"转圈 + 三角"并排（这正是那条通用规矩要的效果）。
+ *
+ *   ★ 判据从 `.btn-loading` 换成 `.is-launching`：这个按钮不再用 `Button` 的
+ *     `loading` 通道（那条通道会把转圈渲染在**文字前面**，而这里要的是
+ *     "转圈待在托盘里"）。`disabled` / `aria-busy` 在调用点自己给。
  */
-.launch-btn.btn-loading {
-  padding-right: 1.2em;
+.launch-btn.is-launching {
   animation: launchPulse 1.4s var(--ease-in-out) infinite;
 }
-.launch-btn.btn-loading .launch-btn-plate {
+/* ★ 启动中不扫光带：那时转圈是主角，两处动效一起动会显得慌 */
+.launch-btn.is-launching::before {
   display: none;
 }
-/* ★ 启动中不扫光带：那时转圈是主角，两处动效一起动会显得慌 */
-.launch-btn.btn-loading::before {
-  display: none;
+/*
+ * 托盘里那颗转圈。
+ * ★ 颜色必须是 `--slab`（强调色）：它待在一块**白色托盘**上，
+ *   而 `.spinner` 默认用 `currentColor`（按钮文字是白的）—— 不指定就是白转白，看不见。
+ * ★ 尺寸比按钮里那颗通用的大一档（1.25em ≈ 20px，托盘 44px）：这是全屏唯一的主按钮，
+ *   这一下"在忙"必须一眼看见。
+ */
+.launch-btn .launch-btn-plate .spinner {
+  width: 1.25em;
+  height: 1.25em;
+  border-width: 2px;
+  color: var(--slab);
 }
 @keyframes launchPulse {
   0%,
@@ -3823,7 +3844,7 @@ tbody tr.clickable:focus-visible {
      这里再显式写一遍是因为**动画会停在最后一帧**（光带会停在按钮右侧的边界上），
      而"停下"应该是"看不见" */
   .launch-btn::before,
-  .launch-btn.btn-loading {
+  .launch-btn.is-launching {
     animation: none;
   }
 }

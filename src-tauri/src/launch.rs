@@ -9,6 +9,7 @@ use serde::Serialize;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -26,6 +27,20 @@ pub struct RunningGame {
     /// （用户点一下「停止游戏」，界面弹「游戏异常退出 · 登录状态已失效」）。
     pub offline: bool,
     pub child: Arc<Mutex<Child>>,
+    /// ★★ **用户是否要求过停止这一局**（2026-10-16，用户报「在游戏启动前手动关闭后
+    /// 「错误检测」把它报成了崩溃」）。
+    ///
+    /// 为什么要有这个开关：看进程退出的那条线程（`watch_game_exit`）与
+    /// `stop_minecraft` 是**两个观察者**。用户按停止时：
+    ///   · `stop_minecraft` 知道"是我 taskkill 的"，于是按"用户主动停止"判 —— 不是崩溃 ✓
+    ///   · 可那条线程只看到"进程以退出码 1 结束了"（taskkill 给的码），
+    ///     于是按"非零退出码 = 崩溃"判 —— **弹出一句假报告** ✗
+    ///   实测就是用户截到的那条「游戏异常退出（退出码 1）」。
+    ///
+    /// 所以把"用户要停"做成**共享事实**：`stop()`（所有停止路径的唯一出口）把它置上，
+    /// 退出线程读到它之后按"用户主动停止"判。判据仍然只有一处
+    /// （`domain::crash::judge_crash`），这里只是把**事实**喂对。
+    pub stop_requested: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -122,12 +137,14 @@ pub fn launch(
 
     // 退出监测：算游玩时长、写标记文件、并把 `game-exit` 事件推给前端。
     // 实现是唯一一份（见 `watch_game_exit`），两条启动路径共用。
+    let stop_requested = Arc::new(AtomicBool::new(false));
     watch_game_exit(
         Arc::clone(&child),
         log_path.clone(),
         spec.instance_id.clone(),
         started_at,
         spec.offline,
+        Arc::clone(&stop_requested),
         app,
     );
 
@@ -139,6 +156,7 @@ pub fn launch(
             log_path: log_path.clone(),
             offline: spec.offline,
             child,
+            stop_requested,
         },
         LaunchResult {
             pid,
@@ -270,6 +288,11 @@ pub fn watch_game_exit(
     instance_id: String,
     started_at: u64,
     offline: bool,
+    /*
+     * ★ 用户在等它退出的这段时间里**有没有按过停止**（见 `RunningGame::stop_requested`）。
+     *   置上了就是"用户主动停止"，崩溃判据按那一支走 —— 那条线程自己看不出来。
+     */
+    stop_requested: Arc<AtomicBool>,
     app: Option<tauri::AppHandle>,
 ) {
     std::thread::spawn(move || loop {
@@ -342,7 +365,16 @@ pub fn watch_game_exit(
         };
         let verdict = crate::domain::crash::judge_crash(
             code,
-            false, // 这条路径都是"游戏自己退出的"；用户点停止走 stop_minecraft
+            /*
+             * ★★ 2026-10-16：这里原来是写死的 `false`（注释写着"这条路径都是游戏自己
+             *   退出的；用户点停止走 stop_minecraft"）—— 那句话**不成立**：
+             *   用户点停止时我们 taskkill，进程照样会在这里被看到，
+             *   而拿到的是 taskkill 给的退出码（实测 1）⇒ 判成"异常退出"，
+             *   于是同一次停止会**弹出两句互相矛盾的结论**（stop_minecraft 说"你自己停的"，
+             *   这一条说"崩溃了"），用户看到的是后者。
+             *   现在读共享事实，两条路径的结论一致。
+             */
+            stop_requested.load(Ordering::SeqCst),
             offline,
             played,
             log_len,
@@ -432,6 +464,15 @@ pub fn exit_code_of(running: &RunningGame) -> Option<i32> {
 /// 停止游戏：先温和结束，超时再强杀。
 /// ★ 直接 kill 会让游戏来不及保存存档，所以先试正常关闭。
 pub fn stop(running: &RunningGame) -> Result<(), String> {
+    /*
+     * ★★ 先把"用户要停"这件事记下来（2026-10-16）。
+     *   必须在动手之前：那条盯退出的线程可能**下一秒**就看到进程没了，
+     *   而它读的就是这个开关 —— 晚一步写，它就会按"非零退出码 = 崩溃"判。
+     *   ★ 放在 `stop()` 里而不是各个调用点：这是所有停止路径的唯一出口
+     *     （界面上的「停止游戏」、退出启动器时的全停）。
+     */
+    running.stop_requested.store(true, Ordering::SeqCst);
+
     // Windows 分支需要 guard.id()，非 Windows 分支需要 guard.kill()，
     // 两边都需要 mut —— 所以这里不能用 cfg 条件化 mut 本身
     #[allow(unused_mut)]
@@ -649,6 +690,7 @@ mod tests {
             log_path: std::env::temp_dir().join(format!("ieml-test-multi-{instance_id}.log")),
             offline: true,
             child: Arc::new(Mutex::new(child)),
+            stop_requested: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -741,6 +783,7 @@ mod tests {
             log_path: std::env::temp_dir().join("ieml-test-multi-dead.log"),
             offline: true,
             child: Arc::new(Mutex::new(c.spawn().expect("spawn cmd"))),
+            stop_requested: Arc::new(AtomicBool::new(false)),
         };
         table.insert("inst-dead".into(), dead);
         table.insert("inst-alive".into(), fake_running("inst-alive"));
@@ -753,5 +796,110 @@ mod tests {
         assert!(table.contains_key("inst-alive"), "留下的必须是活着那个");
 
         let _ = stop(table.get("inst-alive").unwrap());
+    }
+
+    /* ============ 退出线程要认得「用户按了停止」（2026-10-16 真机事故） ============
+     *
+     * 用户现场：**在游戏启动前手动关闭**，界面却弹「游戏异常退出（退出码 1）」。
+     *
+     * 根因是两个观察者各判各的：
+     *   · `stop_minecraft` 知道"是我 taskkill 的" → 判"用户主动停止"（不是崩溃）✓
+     *   · `watch_game_exit` 只看到"进程以退出码 1 结束了" → 判"崩溃" ✗（弹了假报告）
+     *
+     * 下面这条测试**真的拉一个进程**、真的让它以退出码 1 结束，然后读退出线程写下的
+     * 标记文件（`<日志>.exit.json`）—— 那正是前端弹 toast 用的那份数据。
+     * 没有 `stop_requested` 这条线时它会红（那时标记里是 `crashed: true`）。
+     */
+    #[cfg(windows)]
+    #[test]
+    fn exit_watcher_respects_user_stop() {
+        let log = std::env::temp_dir().join("ieml-test-watcher-stopped.log");
+        let _ = std::fs::write(&log, b""); // 0 字节：与用户的现场一致
+        let marker = log.with_extension("exit.json");
+        let _ = std::fs::remove_file(&marker);
+
+        // 一个立刻以 1 退出的进程（taskkill 之后我们看到的就是这种形状）
+        let mut c = Command::new("cmd");
+        c.args(["/c", "exit", "1"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        crate::platform::hide_console(&mut c);
+        let child = Arc::new(Mutex::new(c.spawn().expect("spawn cmd")));
+
+        watch_game_exit(
+            child,
+            log.clone(),
+            "inst-stopped".into(),
+            now_secs_for_test(),
+            true,
+            Arc::new(AtomicBool::new(true)), // 用户按过停止
+            None,                            // 不往界面发事件，只看标记文件
+        );
+
+        let text = wait_for_marker(&marker);
+        let v: serde_json::Value = serde_json::from_str(&text).expect("标记文件是 JSON");
+        assert_eq!(
+            v["crashed"], false,
+            "用户自己按的停止不许报成异常退出：{text}"
+        );
+        assert_eq!(v["exit_code"], 1, "退出码要如实记下来：{text}");
+
+        let _ = std::fs::remove_file(&log);
+        let _ = std::fs::remove_file(&marker);
+    }
+
+    /// 同一形状、**没人按停止**：结论也应当是"不是崩溃"——但依据不同。
+    ///
+    /// ★ 这一条钉的是 ①.5 那条新判据（0 字节 = 进程没跑到 JVM 说话就被结束了）。
+    ///   真崩溃的形状（**有**日志输出 + 非零退出码）在 `domain::crash` 的单元测试里钉着 ——
+    ///   两边合起来才说明"新规则放走的是被中断，不是真故障"。
+    #[cfg(windows)]
+    #[test]
+    fn exit_watcher_does_not_call_an_interruption_a_crash() {
+        let log = std::env::temp_dir().join("ieml-test-watcher-killed.log");
+        let _ = std::fs::write(&log, b"");
+        let marker = log.with_extension("exit.json");
+        let _ = std::fs::remove_file(&marker);
+
+        let mut c = Command::new("cmd");
+        c.args(["/c", "exit", "1"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        crate::platform::hide_console(&mut c);
+        let child = Arc::new(Mutex::new(c.spawn().expect("spawn cmd")));
+
+        watch_game_exit(
+            child,
+            log.clone(),
+            "inst-killed".into(),
+            now_secs_for_test(),
+            true,
+            Arc::new(AtomicBool::new(false)), // 没人按停止
+            None,
+        );
+
+        let text = wait_for_marker(&marker);
+        let v: serde_json::Value = serde_json::from_str(&text).expect("标记文件是 JSON");
+        assert_eq!(
+            v["crashed"], false,
+            "空日志 + 非零退出码 ⇒ 按「被中断」处理：{text}"
+        );
+
+        let _ = std::fs::remove_file(&log);
+        let _ = std::fs::remove_file(&marker);
+    }
+
+    /// 等退出线程把标记文件写出来（它每 800ms 看一次，收尾还要等日志稳定，最多 2s）。
+    #[cfg(windows)]
+    fn wait_for_marker(marker: &Path) -> String {
+        for _ in 0..40 {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            if let Ok(t) = std::fs::read_to_string(marker) {
+                if !t.is_empty() {
+                    return t;
+                }
+            }
+        }
+        panic!("退出线程应当写下标记文件：{}", marker.display());
     }
 }
