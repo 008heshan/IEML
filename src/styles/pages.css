@@ -1088,6 +1088,10 @@
   gap: var(--space-1);
   margin-bottom: var(--space-3);
   border-bottom: 1px solid var(--border-subtle);
+  /*
+   * ★★ 页签下面那条指示条是**绝对定位**的（见 `.tab-ind`），所以这条栏要定位。
+   */
+  position: relative;
 }
 .tab {
   display: inline-flex;
@@ -1095,6 +1099,8 @@
   gap: var(--space-2);
   padding: var(--space-2) var(--space-4);
   border: none;
+  /* ★ 这条透明下边框是**占位**的：让每个页签无论如何都占着那 2px，
+     否则选中/未选中的页签高度会差 2px（文字会跳）。指示条压在同一个位置。 */
   border-bottom: 2px solid transparent;
   background: none;
   color: var(--text-secondary);
@@ -1108,8 +1114,36 @@
 }
 .tab.on {
   color: var(--accent);
-  border-bottom-color: var(--accent);
   font-weight: 600;
+  /*
+   * ★★ 2026-10-16（用户：「做一个滑动 tab 的效果，切换 tab 的时候下面的指示条
+   *   同步滑动，明确栏目的变化」）：**选中态不再自己画那条下划线**。
+   *
+   *   原来这里是 `border-bottom-color: var(--accent)` —— 每个页签各画各的，
+   *   切换时旧的那条瞬间消失、新的瞬间出现，看不出"从哪一栏换到了哪一栏"，
+   *   而且过渡到一半时会出现**两条**（旧的在淡出、新的在淡入）。
+   *   现在整条栏里只有**一个**指示条（`.tab-ind`），由 `useTabIndicator` 量出
+   *   目标位置与宽度，靠 transform/width 滑过去。
+   */
+}
+/*
+ * 那一条会滑的指示条（`useTabIndicator` 给它 transform 与 width）。
+ * ★ `bottom: -1px`：压在这条栏自己那道 1px 分隔线**上面**，与页签的透明
+ *   下边框同高 —— 滑动时页签高度不变，也不会与分隔线错开一格。
+ * ★ 只过渡 `transform` / `width`（不碰 `left`）：不触发重排。
+ * ★ 减少动效档与系统的 `prefers-reduced-motion` 由 tokens.css 的全局规则压平。
+ */
+.tab-ind {
+  position: absolute;
+  left: 0;
+  bottom: -1px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: var(--radius-full);
+  pointer-events: none;
+  transition:
+    transform var(--dur-slow) var(--ease-out),
+    width var(--dur-slow) var(--ease-out);
 }
 .tab .cnt {
   font-size: var(--text-xs);
@@ -2640,6 +2674,15 @@
 .res-tabs {
   margin: 0;
   border-bottom: none;
+}
+/*
+ * ★★ `.res-tabs` 自己把那道 1px 分隔线去掉了（`border-bottom: none`）——
+ *   而 `.tab-ind` 默认是 `bottom: -1px`（用来压住那道线）。这里没有线可压，
+ *   那一像素就会挂到栏外面去，与页签那条透明下边框**错开一格**。
+ *   ⇒ 这一条把它收回栏内。
+ */
+.res-tabs .tab-ind {
+  bottom: 0;
 }
 
 .res-search {

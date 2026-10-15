@@ -20,6 +20,7 @@ import { useBackTarget } from '../state/back-nav';
 import { Button, Chip, CustomSelect, EmptyState, Note, Segmented, Spinner } from '../ui';
 import { IconAlert, IconChevronUp, IconDownload, IconFolder, IconLayers, IconPuzzle, IconRefresh, IconImage, IconGrid, IconRows, IconPackage, IconSearch } from '../ui/Icons';
 import { useRealApi } from '../hooks/useRealApi';
+import { useTabIndicator } from '../hooks/useTabIndicator';
 import type { DownloadTab } from '../state/store';
 import { takePendingPack } from '../state/pending-pack';
 import { InstallComposer } from '../components/InstallComposer';
@@ -157,6 +158,8 @@ export function DownloadPage() {
   const { state, go, toast, setDownloadTab } = useApp();
   const { isDesktop } = useRealApi();
   const tab = state.downloadTab;
+  /* ★ 页签下面那条会滑的指示条（量的是 `aria-selected` 那一个，见 hook 的说明） */
+  const tabInd = useTabIndicator(tab);
 
   /* 其他页面可以通过事件切换页签 */
   useEffect(() => {
@@ -374,7 +377,14 @@ export function DownloadPage() {
       </div>
 
       {inModpackInstall || inLoaderPage ? null : (
-        <div className="tabs" role="tablist" aria-label="下载内容">
+        /*
+         * ★★ 2026-10-16（用户：「做一个滑动 tab 的效果，切换 tab 的时候下面的指示条
+         *   同步滑动，明确栏目的变化」）：
+         *   选中态不再由每个页签自己画一条下划线，而是这条栏里**唯一**的那个
+         *   `.tab-ind` —— 它的位置与宽度由 `useTabIndicator` 量出来（六个页签宽度
+         *   不一样，纯 CSS 做不到"移到谁那儿、变成谁那么宽"）。
+         */
+        <div className="tabs" role="tablist" aria-label="下载内容" ref={tabInd.ref}>
           {tabs.map((t) => (
             <button
               key={t.key}
@@ -388,6 +398,10 @@ export function DownloadPage() {
               <span>{t.label}</span>
             </button>
           ))}
+          {/* 还没量到（首帧）时不渲染：新挂上去的元素不会从最左边滑过来 */}
+          {tabInd.style ? (
+            <span className="tab-ind" aria-hidden="true" style={tabInd.style} />
+          ) : null}
         </div>
       )}
 

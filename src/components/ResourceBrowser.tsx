@@ -41,6 +41,7 @@ import { groupKeyOf, useVersionGroups } from './resource-groups';
 import { Pager } from './Pager';
 import { filterVersionsForInstance } from './version-filter';
 import { useRealApi } from '../hooks/useRealApi';
+import { useTabIndicator } from '../hooks/useTabIndicator';
 import { useApp } from '../state/AppContext';
 import { BASE_LOADER_NAME, compareVersion, isSnapshotVersion, knownVersions } from '../domain';
 import type { BaseLoaderKind, Instance } from '../domain';
@@ -491,6 +492,8 @@ export function ResourceCenterBody({
 }: ResourceCenterBodyProps) {
   const { api } = useRealApi();
   const { state, openResource } = useApp();
+  /* ★ 资源种类那排页签下面会滑的指示条（与下载页共用同一个 hook） */
+  const kindTabs = useTabIndicator(kind);
 
   /** 后端给的五种资源描述（**唯一一份**） */
   const [kinds, setKinds] = useState<ResourceKindInfo[]>([]);
@@ -908,7 +911,7 @@ export function ResourceCenterBody({
       */}
       <div className="res-bar">
         {hideKindTabs ? null : (
-          <div className="tabs res-tabs" role="tablist" aria-label="资源种类">
+          <div className="tabs res-tabs" role="tablist" aria-label="资源种类" ref={kindTabs.ref}>
             {kinds.map((k) => (
               <button
                 key={k.key}
@@ -921,6 +924,10 @@ export function ResourceCenterBody({
                 <span>{k.display}</span>
               </button>
             ))}
+            {/* 与下载页同一条规则：没量到之前不渲染，免得它从最左边滑过来 */}
+            {kindTabs.style ? (
+              <span className="tab-ind" aria-hidden="true" style={kindTabs.style} />
+            ) : null}
           </div>
         )}
         <div className="spacer" />
