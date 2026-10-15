@@ -3696,6 +3696,13 @@ tbody tr.clickable:focus-visible {
   box-shadow:
     inset 0 0 1.6em -0.6em var(--slab-deep),
     0 6px 18px var(--slab-glow);
+  /*
+   * ★ 2026-10-16：白板铺开那一档拉长到 ≈470ms 之后，辉光与变亮**不能还停在
+   *   120/180ms** —— 否则"光已经到了、板子还在走"，两段动画看着是散的。
+   *   这里让它们跟着一起慢下来（顺序对上基规则：background / box-shadow /
+   *   filter / transform）。
+   */
+  transition-duration: var(--dur-slow), var(--dur-slow), var(--dur-base), var(--dur-base);
 }
 .launch-btn:not(:disabled):active {
   filter: brightness(0.97);
@@ -3703,17 +3710,32 @@ tbody tr.clickable:focus-visible {
 /*
  * 右侧那块托盘：静止时**正方形**；悬停时铺满整颗按钮（四周留 0.3em）。
  * ★ 它是绝对定位的、且在文字**之后**渲染 ⇒ 铺开时压在文字上面（原文就是这么设计的）。
- * ★ 用 `aspect-ratio` 而不是 `width: 2.2em`：按钮高 56px 而字号只有 16px，
- *   2.2em 出来是 35px，比上下各留 0.3em 算出的高度（44px）矮 —— 托盘会变成长方形。
- *   改成"高度由 top/bottom 定、宽度跟着高度走"。
- *   悬停那条 `width: calc(100% - 0.6em)` 是显式宽度，会盖过 aspect-ratio（正是"铺满"）。
+ *
+ * ★★ 2026-10-16 真机诊断出的一处**哑掉的动画**（用户：「这个完全展开的速度太快了，
+ *   导致好像跟没有动画似的」—— 其实不是快，是**根本没有**）：
+ *
+ *     静止态的宽度原来是 `aspect-ratio: 1` 算出来的 ⇒ 计算值是 **`auto`**，
+ *     而 `auto` → `calc(100% - 0.6em)` **不可插值**（CSS 里 `auto` 不是长度），
+ *     于是 `transition: width` 一次都不启动，一悬停就是"啪"地铺满。
+ *     判据：悬停那一瞬间 `getAnimations()` 是空的、宽度已经是 256。
+ *     （这是我先前为了"正方形"把 `width: 2.2em` 换成 `aspect-ratio` 时引入的
+ *       回归 —— 边长从长度变成 auto，动画就悄悄没了，肉眼只会觉得"怎么不丝滑"。）
+ *
+ *   ⇒ 边长改回一个**长度**：按钮高 56px − 上下各 0.3em ⇒ 44px = **2.75em**。
+ *     高度也用它，正方形照旧；竖直居中交给 `translate`（**不是** `transform` ——
+ *     `transform` 留给按下时的缩放，两个属性各管各的、互不覆盖）。
+ *     `max-height` 是兜底：万一按钮变矮，托盘也不会溢出去。
+ *   ★ 按钮高 2.75em 这个数与 pages.css 里 `.launch-btn { height: 56px }` 是绑定的，
+ *     改那边要回来改这里。
  */
 .launch-btn-plate {
   position: absolute;
-  top: 0.3em;
+  top: 50%;
   right: 0.3em;
-  bottom: 0.3em;
-  aspect-ratio: 1;
+  width: 2.75em;
+  height: 2.75em;
+  max-height: calc(100% - 0.6em);
+  translate: 0 -50%;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3721,11 +3743,19 @@ tbody tr.clickable:focus-visible {
   background: var(--text-primary);
   box-shadow: 0.1em 0.1em 0.6em 0.2em var(--slab-glow);
   /*
-   * ★ 托盘铺开用 `--dur-slow`（260ms）：样式稿里写的是 `all 0.3s` ——
-   *   比按钮其它过渡（180ms）慢一档，"一块白板推过去"才看得清。
+   * ★★ 2026-10-16（用户：「**这个完全展开的速度太快了，导致好像跟没有动画似的**」）。
+   *
+   *   上面那条"宽度必须是长度"是把动画**救回来**；下面这两条才决定它**好看**：
+   *     · 缓动从 `--ease-out` 换成 `--ease-in-out` —— 前者是
+   *       `cubic-bezier(0.16, 1, 0.3, 1)`，前 20% 的时间就走完九成，
+   *       260ms 乘上去仍然是"啪一下"；
+   *     · 时长乘 1.8（≈470ms），而且**只给展开那一边**
+   *       （写在下面 `:hover` 规则里：过渡取的是**目标状态**那一条，
+   *        鼠标移开时仍走这里这条 260ms —— 进来的那一下值得多看一会儿，
+   *        出去的那一下要跟手）。
    */
   transition:
-    width var(--dur-slow) var(--ease-out),
+    width var(--dur-slow) var(--ease-in-out),
     transform var(--dur-fast) var(--ease);
 }
 /*
@@ -3738,22 +3768,23 @@ tbody tr.clickable:focus-visible {
   width: 1.4em;
   height: 1.4em;
   color: var(--slab);
-  /* 同托盘那档：箭头的位移跟着白板一起走（样式稿 `all 0.3s`） */
-  transition: transform var(--dur-slow) var(--ease-out);
+  /* 与托盘同一档：箭头的位移跟着白板一起走 */
+  transition: transform var(--dur-slow) var(--ease-in-out);
 }
 .launch-btn:not(:disabled):hover .launch-btn-plate {
   /*
-   * ★★ 这两行必须成对出现（真机踩过）：
-   *   `aspect-ratio: 1` + 显式宽度 ⇒ 浏览器会**反过来把高度也撑成那个宽度**
-   *   （256px），而按钮有 `overflow: hidden` —— 结果托盘变成一颗 256×256 的巨块，
-   *   居中在里面的箭头正好被裁在可视区之外：**悬停时箭头凭空消失**。
-   *   ⇒ 铺开这一瞬间把 aspect-ratio 关掉，高度仍由上下 0.3em 定住。
+   * ★ 展开这一边的时长（≈470ms，见上面 `.launch-btn-plate` 那段）。
+   *   列表顺序要对上 `transition-property`：先 `width`、再 `transform`。
+   *   ★ 宽度那边是"长度 → 长度"（2.75em → calc(100% - 0.6em)），可以插值 ——
+   *     这正是动画能跑起来的前提，别再改回 `auto`/`aspect-ratio`。
    */
-  aspect-ratio: auto;
   width: calc(100% - 0.6em);
+  transition-duration: calc(var(--dur-slow) * 1.8), var(--dur-fast);
 }
 .launch-btn:not(:disabled):hover .launch-btn-plate svg {
   transform: translateX(0.1em);
+  /* 箭头与白板同时到位（两边都乘 1.8，不然箭头会先跑完） */
+  transition-duration: calc(var(--dur-slow) * 1.8);
 }
 .launch-btn:not(:disabled):active .launch-btn-plate {
   transform: scale(0.95);
