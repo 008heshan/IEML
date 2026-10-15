@@ -180,19 +180,59 @@
      不要，简直浪费」。补的三块都是**本机真实状态**，不是装饰：
        身份卡（选中版本）· 其它版本（换目标）· 本机状态（内存/CPU/Java/目录）
    ============================================================== */
-.launch-panel {
+/* ============================================================================
+   ★★ 2026-10-16 主页重排：**出击简报板**
+   ----------------------------------------------------------------------------
+   由来：用户「感觉主页的设计还是不好看」。真机量出来的病根是**结构**，不是配色：
+
+     · 主卡 / 事实行宽 1036 且左对齐（x=220），而选择器 640、启动按钮 268
+       **居中** —— 一页里两套对齐系统，看着"没做完"；
+     · 间距不成体系（面板 → 提示条那一处是 **0**）；
+     · 最重的一块是 1036 宽的卡，真正的主行动只是中间一颗 268 的按钮 ⇒ **没有焦点**；
+     · x≈880–1240 与 y≈610 以下长期空着。
+
+   按 design-taste-frontend「Anti-Center Bias」与 frontend-design「两遍法」定的计划：
+
+     左栏 `.launch-hero`  = **卡带标签**：大图标（96）+ 名字（26px）+ 规格行 + 动作行
+     右栏 `.lb-rail`      = **启动轨**：换一个版本 → 大按钮收尾（一条自上而下的路径）
+
+   ★ 对齐：整块板左对齐到同一个栅格（不再有点居中）；两栏 `align-items: start`。
+   ★ 材质分权：左栏是一张玻璃卡（它是**主体**），右栏**不套卡** ——
+     卡片只用来表达"这块浮在别的上面"，处处套卡正是要避免的模板感。
+   ★ 响应式：<1040px 收成一栏（右栏落到左栏下面，顺序不变：先看是谁，再按开始）。
+   ============================================================================ */
+.launch-board {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(300px, 1fr);
+  gap: var(--space-5);
+  align-items: start;
+  /* 顶部留白：让这块板落在页头下面一个稳定的位置（不做满屏居中，那会随窗口高度跳） */
+  padding-top: var(--space-4);
+  /*
+   * ★ 2026-10-16：底下这条 16px 是补"节奏漏洞"的。
+   *   真机量到：板 → 提示条的缝是 **0**（`page-head → 板` 是 16）——
+   *   两块贴在一起，看着像画错了。这里给板一条底距，与上面那条对称。
+   */
+  margin-bottom: var(--space-4);
+}
+@media (max-width: 1040px) {
+  .launch-board {
+    grid-template-columns: 1fr;
+  }
+}
+/* 左栏这一层是**必须**的：不包的话 `.launch-facts` 会被栅格排进第二列
+   （真机踩过：右栏被挤到第二行，两栏都变成整宽）。 */
+.lb-main {
   display: flex;
   flex-direction: column;
-  align-items: center;
   gap: var(--space-4);
-  /* 顶部留白让按钮落在视觉重心上，但不做满屏居中（会随窗口高度跳） */
-  padding: var(--space-6) var(--space-4) var(--space-6);
+  min-width: 0;
 }
 
-/* ---------- 选中版本的身份卡 ---------- */
+/* ---------- 左栏：选中版本的身份卡（卡带标签） ---------- */
 .launch-hero {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--space-5);
   width: 100%;
   padding: 22px 24px;
@@ -211,8 +251,7 @@
    *     `pages.css` 在 `app.css` **之后**加载，`.launch-hero` 与 `.glass`
    *     都是一级选择器 ⇒ 前者赢；留着就把玻璃的调色层、内边、多层投影全盖掉了。
    *     这正是那段"改样式前先搜一遍类名"的老账。
-   *   ★ 不挂 `glass-refract`（折射镜片）：给 978px 宽的大块装 SVG 滤镜，
-   *     代价与收益不成比例 —— 霜面 + 内边已经把它立起来了。
+   *   ★ 不挂 `glass-refract`（折射镜片）：给大块装 SVG 滤镜，代价与收益不成比例。
    */
 }
 .lh-main {
@@ -220,43 +259,76 @@
   min-width: 0;
 }
 .lh-name {
-  font-size: var(--text-xl);
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  /* 整页唯一的"用力点"：名字给到 26px（原来 20px，与规格行拉不开层级） */
+  font-size: var(--text-2xl);
+  font-weight: 650;
+  letter-spacing: -0.015em;
+  line-height: 1.15;
 }
-.lh-meta {
+/*
+ * 规格行：**标签 / 值**两列（不是"一句话 + 圆点"）。
+ * 换掉中缀圆点串是这次重排的重点之一 —— frontend-design 把
+ * `A · B · C` 这种拼接列成"无论什么主题都会出现的模板痕迹"。
+ */
+.lb-specs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--space-2) var(--space-5);
+  margin: var(--space-4) 0 0;
+}
+.lb-spec {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: var(--space-2);
-  flex-wrap: wrap;
-  margin-top: var(--space-2);
+  min-width: 0;
 }
-.lh-sub {
-  display: flex;
-  gap: var(--space-4);
-  flex-wrap: wrap;
-  margin-top: var(--space-2);
+.lb-spec dt {
+  flex: 0 0 auto;
   font-size: var(--text-xs);
   color: var(--text-tertiary);
 }
-.lh-sub > span {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
+.lb-spec dd {
+  margin: 0;
+  font-size: var(--text-md);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.lh-sub svg {
-  width: 13px;
-  height: 13px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.9;
-  stroke-linecap: round;
-}
+/* 动作行：卡片内部左下（原来单独占右一列，于是卡片中段长期空着） */
 .lh-actions {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   gap: var(--space-2);
-  flex: 0 0 auto;
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* ---------- 右栏：启动轨 ---------- */
+.lb-rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.lb-rail-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.lb-rail-title {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+/* 运行时长：跟在启动/停止按钮下面，说明"这一个跑了多久" */
+.lb-running {
+  text-align: center;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
 }
 @media (max-width: 900px) {
   .launch-hero {
@@ -279,15 +351,22 @@
  */
 
 /* ---------- 本机状态一行 ---------- */
+/*
+ * 本机状态（左栏第二块）。
+ * ★★ 2026-10-16：它从"页脚一条横带 + 一张卡"改成**左栏里的一块**，而且
+ *   **不再是卡片**：只有一条上分割线 + 两列网格。
+ *   理由（frontend-design / design-taste-frontend 同一条）：卡片用来表达层级 ——
+ *   这一页只该有一张浮起的卡（身份卡）；其余信息靠留白与细线分组，
+ *   "处处同款圆角卡"正是要避免的模板感。
+ *   宽度也从 1036 收到左栏（618），四格折成两列两行 —— 页面下半屏因此不空了。
+ */
 .launch-facts {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: var(--space-2) var(--space-4);
-  margin-top: var(--space-5);
-  padding: var(--card-pad);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  background: var(--bg-surface);
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--space-2) var(--space-5);
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
 }
 .lf-item {
   display: flex;
@@ -320,31 +399,14 @@
    整改方式」→ 看过草案后选 **A+：卡片排 + 「全部版本」入口**）
    ----------------------------------------------------------------------------
    这里原来是一个 `CustomSelect`（下拉），下面还有一整块「其它版本」的卡片排 ——
-   两块在选同一件东西（`others` ＝ `launchable` 去掉当前项）。现在合成一处：
-   **一排可选择卡片**，当前目标固定第一张并带明确选中态。
+   两块在选同一件东西（`others` ＝ `launchable` 去掉当前项）。现在合成一处。
 
-   ★ 版式：`max-width: 640px` 居中、`flex-wrap` 自动换行。用 640 而不是旧下拉的
-     420：卡片里要放图标 + 名字 + "MC 版本 · 加载器"，420 会把名字压成两行。
+   ★ 2026-10-16 稍后（主页重排）：它从"页面中间那一排居中的卡"变成
+     **右栏启动轨里的竖排列表**（`.lb-rail`）。所以这里不再有 `max-width` 与居中 ——
+     宽度由栅格给，`flex-wrap` 也去掉（竖排不需要换行）。
    ★ 选中态只走令牌（`--accent` / `--accent-subtle`），九套主题自动跟着变。
-   ★ 运行中禁用（与旧下拉一致）：跑着的时候换目标没有意义。
+   ★ 运行中禁用：跑着的时候换目标没有意义。
    ============================================================================ */
-.launch-picker {
-  width: 100%;
-  max-width: 640px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-2);
-}
-.launch-picker-head {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-}
-.launch-version-label {
-  font-size: var(--text-sm);
-  color: var(--text-tertiary);
-}
 /* 一共几个 —— 版本多的人一眼知道"这里只列了一部分" */
 .lp-count {
   font-size: var(--text-xs);
@@ -353,9 +415,8 @@
 }
 .lp-row {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: var(--space-2);
+  flex-direction: column;
+  gap: var(--space-1);
   width: 100%;
 }
 .lp-card {
@@ -421,12 +482,24 @@
   color: var(--accent);
   font-weight: 600;
 }
-.lp-sub {
+/* 版本号那一行：等宽（数字对齐），不再与加载器拼成圆点串 */
+.lp-ver {
   font-size: var(--text-xs);
   color: var(--text-tertiary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/*
+ * 加载器标签：右对齐、安静的一小块。
+ * ★ 它顶替的是原来 ` · 原版` 那半句 —— 现在"名字/版本"在左、"是什么加载器"在右，
+ *   一行里两个字段各就各位，不需要标点当分隔符。
+ */
+.lp-tag {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
 }
 .lp-check {
   position: absolute;
@@ -445,6 +518,11 @@
   width: 11px;
   height: 11px;
   stroke-width: 3;
+}
+/* 竖排列表里的对勾不再挂在角上（行是整宽的，角标会压到相邻行） */
+.lb-rail .lp-check {
+  position: static;
+  margin-left: var(--space-2);
 }
 /* 「全部版本…」那张：虚线边 + 图标块，一眼看出它不是某个版本 */
 .lp-more {
@@ -582,32 +660,9 @@
   height: 20px;
 }
 
-.launch-status {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-  font-size: var(--text-sm);
-  color: var(--text-tertiary);
-  max-width: 640px;
-  text-align: center;
-}
-.launch-status > span {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-}
-.launch-status svg {
-  width: 14px;
-  height: 14px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  opacity: 0.8;
-}
+/* ★ 2026-10-16：`.launch-status`（那条 `6 GB · Java 自动 · 管理此版本` 的一行）
+   已随重排删除 —— 内存/Java 进了左栏的规格行，「管理此版本」与"版本设置"重复也被去掉。
+   留着这三条就是死样式。 */
 
 /* ============================ 版本列表（一级页） ============================
  * ★ dev.15 重构：**一个盒子 + 分隔线**，不再每行一张小卡。

@@ -22,7 +22,7 @@
 import { useEffect, useMemo, useState, useRef } from 'react';
 import { useApp } from '../state/AppContext';
 import { isInstanceRunning, runningInfo, runningCount } from '../state/store';
-import { Button, Chip, EmptyState, Modal, Note, SearchBox, Spinner } from '../ui';
+import { Button, EmptyState, Modal, Note, SearchBox, Spinner } from '../ui';
 import { instanceTitle } from '../state/instance-name';
 import { pickerPlan } from '../domain/launch-picker';
 import { PackIcon } from '../components/PackIcon';
@@ -635,8 +635,31 @@ export function LaunchPage() {
         </Note>
       ) : null}
 
-      {/* ==================== 核心：一个大按钮 + 一颗下拉 ==================== */}
-      <div className="launch-panel">
+      {/* ==================== 核心：出击简报板（2026-10-16 重排） ====================
+          ★★ 起因：用户「**感觉主页的设计还是不好看**」。量出来的病根不是配色或圆角，
+            是**结构**（真机实测）：
+              · 主卡 / 面板 / 事实行宽 1036 且左对齐（x=220），
+                而选择器 640、启动按钮 268 却**居中** —— 一页两套对齐系统；
+              · 间距不成体系（`面板 → 提示条` 那一处是 **0**）；
+              · 最重的一块是宽 1036 的卡，真正的主行动只是中间一颗 268 的按钮 ⇒ **没有焦点**；
+              · x≈880–1240 与 y≈610 以下长期空着。
+
+          ★★ 按 design-taste-frontend + frontend-design 两遍法得出的计划（写在 CSS 里那节）：
+              左栏＝**卡带标签**（大图标 + 名字 + 标签/值规格行 + 安静的动作行）；
+              右栏＝**启动轨**（换一个版本 → 大按钮收尾），一条从上到下的动作路径。
+            两栏同一个栅格、全部左对齐；材质分权（左卡有浮起，右栏**不套卡**）。
+
+          ★★ 同时删掉三处"一眼 AI"的模板痕迹（frontend-design 点名的）：
+              ① 中缀圆点拼的 meta 串（`1.20.4 · Fabric 0.15.7 · OptiFine`）；
+              ② 卡片第二行的 `1.21.1 · 原版` 圆点串 ⇒ 改成"名字 + 右对齐标签"；
+              ③ `6 GB · Java 自动 · 管理此版本` 整条删掉 —— 内存/Java 归进规格行，
+                 而「管理此版本」与「版本设置」是**同一个落点**，
+                 按"一个意图只留一个名字"的规矩只保留「版本设置」。
+      */}
+      <div className="launch-board">
+        {/* 左栏：身份卡 + 本机状态。★ 必须包一层 —— 直接并列的话，`
+            .launch-facts` 会被栅格自动放进**第二列**（真机踩过：右栏被挤到第二行）。 */}
+        <div className="lb-main">
         {/*
           ★★ 0.1.0-beta.1：给选中的版本一块"身份卡"（用户："主页面太简单，
             简单到感觉像我们不会做软件，留着大片空区不要，简直浪费"）。
@@ -648,7 +671,7 @@ export function LaunchPage() {
         {target ? (
           /* ★ 2026-10-16：挂上 glass —— 这一块原来是平色卡，与全站材质不统一
              （设置页/下载页的卡都是玻璃，主页面最大的一张反而是平色板）。 */
-          <div className="launch-hero glass">
+          <section className="launch-hero glass" aria-labelledby="lb-name">
             {/*
               ★★ 2026-09-30（用户）：「这两个地方的整合包显示**整合包自己的图标**，
                 而且要**直接在卡片上，不整那个跟槽一样的东西**」。
@@ -656,89 +679,183 @@ export function LaunchPage() {
               `packIcons[slug]` 是装包时从包体里抽出来的作者图标（Rust 侧
               `install_pack_plan` 留的）。没有就退回自绘的版本图标 ——
               那本来就是"这个版本没有真图标"时的样子。
+
+              ★ 2026-10-16：尺寸 72 → **96**。这一块现在是整页唯一的"用力点"
+                （frontend-design：「把胆子花在一个地方，周围保持安静」），
+                大图标 + 大字名字是它的身份，其余信息一律降级成规格行。
             */}
-            <PackIcon icon={packIcons[target.config.slug]} version={target.mcVersion} size={72} />
+            <PackIcon icon={packIcons[target.config.slug]} version={target.mcVersion} size={96} />
             <div className="lh-main">
-              <div className="lh-name">{target.config.name}</div>
-              <div className="lh-meta">
-                <Chip tone="accent">{target.mcVersion}</Chip>
-                <span className="dim">
-                  {target.loader ? loaderName(target.loader.kind) : '原版'}
-                  {target.loader?.version ? ' ' : ''}
-                  {target.loader?.version ? <span className="mono">{target.loader.version}</span> : null}
-                  {target.addons.length > 0 ? ' · ' : ''}
-                  {target.addons.map((a) => (a.kind === 'optifine' ? 'OptiFine' : 'LiteLoader')).join(' · ')}
-                  {/*
-                    ★★ 2026-09-27（0.7.0）：这一格以前写的是 `isolation !== 'off' ? ' · 已隔离' : ''` ——
-                      它按**用户选的那个模式**说话，而不是按**最终结论**：
-                      选「自动」而全局默认是共享时，启动页会说"已隔离"，游戏其实读共享目录。
-                      现在只在**后端判定为隔离**时才说这句（结论来自 `state.isolation`）。
-                  */}
-                  {launchIsolation?.isolated ? ' · 已隔离' : ''}
-                </span>
-              </div>
-              <div className="lh-sub">
-                <span>
-                  <IconRam /> {Math.round(target.config.memoryMb / 1024)} GB 内存
-                </span>
-                <span>
-                  <IconJava /> {javaLabel(target.config.javaMode)}
-                </span>
-                {/* ★ 2026-09-16 用户："记录时间的功能删掉，这没有用" ——
-                    「累计 xx / 还没玩过」这一格已删（那是"从未启动"的另一个说法）。 */}
+              <h2 className="lh-name" id="lb-name">
+                {target.config.name}
+              </h2>
+              {/*
+                ★ 2026-10-16：这里原来是**中缀圆点串**（`1.20.4 · Fabric 0.15.7 · OptiFine`
+                  外加一颗 Chip）—— frontend-design 把它列成"无论什么主题都会出现的
+                  模板痕迹"之一。现在改成**标签/值规格行**：同一批数据从
+                  "一句话"变成"一张能扫的表"，也是这块卡该有的样子（它就是一份规格）。
+              */}
+              <dl className="lb-specs">
+                <div className="lb-spec">
+                  <dt>MC 版本</dt>
+                  <dd className="mono">{target.mcVersion}</dd>
+                </div>
+                <div className="lb-spec">
+                  <dt>加载器</dt>
+                  <dd>
+                    {target.loader ? (
+                      <>
+                        {loaderName(target.loader.kind)}
+                        {target.loader.version ? ` ${target.loader.version}` : ''}
+                      </>
+                    ) : (
+                      '原版'
+                    )}
+                  </dd>
+                </div>
+                {target.addons.length > 0 ? (
+                  <div className="lb-spec">
+                    <dt>附加</dt>
+                    <dd>
+                      {target.addons
+                        .map((a) => (a.kind === 'optifine' ? 'OptiFine' : 'LiteLoader'))
+                        .join('、')}
+                    </dd>
+                  </div>
+                ) : null}
+                <div className="lb-spec">
+                  <dt>内存</dt>
+                  <dd className="mono">{Math.round(target.config.memoryMb / 1024)} GB</dd>
+                </div>
+                <div className="lb-spec">
+                  <dt>Java</dt>
+                  {/* ★ 去掉值里那个多余的「Java」——标签已经写着 Java 了（原来显示成 "Java Java 自动"） */}
+                  <dd>{javaLabel(target.config.javaMode).replace(/^Java\s*/, '') || '自动'}</dd>
+                </div>
+                {/*
+                  ★★ 2026-09-27（0.7.0）：这一格以前写的是 `isolation !== 'off' ? '已隔离' : ''`——
+                    它按**用户选的那个模式**说话，而不是按**最终结论**：
+                    选「自动」而全局默认是共享时，启动页会说"已隔离"，游戏其实读共享目录。
+                    现在只在**后端判定为隔离**时才说这句（结论来自 `state.isolation`）。
+                */}
+                {launchIsolation?.isolated ? (
+                  <div className="lb-spec">
+                    <dt>隔离</dt>
+                    <dd>已开启</dd>
+                  </div>
+                ) : null}
+              </dl>
+              {/*
+                ★★ 2026-10-16：动作从"卡片右侧那一列"挪到**卡片内部左下**。
+                  原来它们单独占一列，于是卡片中段（x≈880–1240）长期空着 ——
+                  那是"看着空"的一半来源。挪下来之后卡片是一块**完整的简报**：
+                  身份在上、规格在中、动作在下，右边不再有空洞。
+              */}
+              <div className="lh-actions">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={async () => {
+                    const p = await api?.launcher.openFolder(target.config.slug);
+                    if (!p) {
+                      toast('info', '演示模式', '桌面版才能打开目录');
+                      return;
+                    }
+                    toast('info', '版本目录', p);
+                  }}
+                >
+                  <IconFolder /> 打开目录
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => openVersion(target.id, 'logs')}>
+                  <IconTerminal /> 日志
+                </Button>
+                {/*
+                  ★ 2026-09-17 用户（截图 图六）：「主页这里，也不给原版 mod 管理的键」。
+
+                    判据用 `target.loader`（真值判断）—— 与同文件 402 行的
+                    `target.loader ? loaderName(...) : '原版'` 一致，
+                    也与 `ModsPanel.tsx:720/886/891` 那三处「纯原版不能加载 Mod」
+                    用的是同一个概念。**不另写一套判据**（ADR-020 的教训：
+                    同一件事两处判定，早晚会不一致）。
+
+                    为什么该藏而不是置灰：原版实例**根本没有 mods 能加载**
+                    （`ModsPanel` 里那句"纯原版实例不能加载 Mod"就是这个意思）。
+                    置灰会让人以为"差一点就能用"，藏起来才是实话。
+                */}
+                {target.loader ? (
+                  <Button variant="ghost" size="sm" onClick={() => openVersion(target.id, 'mods')}>
+                    <IconPuzzle /> Mod 管理
+                  </Button>
+                ) : null}
+                {/*
+                  ★ 2026-09-17 用户（截图）："主页的管理这个版本改成『管理此版本』，
+                    然后直接转到这个版本的设置页，而不是版本列表"。
+
+                  原来它 `go('versions')` —— 把人送去**版本列表**，还得再找到这一行、
+                  再点进设置。而用户此刻看的就是这个版本的卡片，点"管理"当然是
+                  "管理**这一个**"，不该让他去列表里再找一遍。
+
+                  ★ 2026-10-16：下面那条「管理此版本」的**文字链已经删掉** ——
+                    它和这颗按钮是**同一个落点**（都是 `openVersion(id,'setup')`），
+                    frontend-design 的规矩是"一个意图只留一个名字"。留按钮、去文字链：
+                    按钮有图标、有位置、能键盘走到，是两者里更好的那个。
+                */}
+                <Button variant="ghost" size="sm" onClick={() => openVersion(target.id, 'setup')}>
+                  <IconGear /> 版本设置
+                </Button>
               </div>
             </div>
-            <div className="lh-actions">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={async () => {
-                  const p = await api?.launcher.openFolder(target.config.slug);
-                  if (!p) {
-                    toast('info', '演示模式', '桌面版才能打开目录');
-                    return;
-                  }
-                  toast('info', '版本目录', p);
-                }}
-              >
-                <IconFolder /> 打开目录
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => openVersion(target.id, 'logs')}>
-                <IconTerminal /> 日志
-              </Button>
-              {/*
-                ★ 2026-09-17 用户（截图 图六）：「主页这里，也不给原版 mod 管理的键」。
+          </section>
+        ) : null}
 
-                  判据用 `target.loader`（真值判断）—— 与同文件 402 行的
-                  `target.loader ? loaderName(...) : '原版'` 一致，
-                  也与 `ModsPanel.tsx:720/886/891` 那三处「纯原版不能加载 Mod」
-                  用的是同一个概念。**不另写一套判据**（ADR-020 的教训：
-                  同一件事两处判定，早晚会不一致）。
-
-                  为什么该藏而不是置灰：原版实例**根本没有 mods 能加载**
-                  （`ModsPanel` 里那句"纯原版实例不能加载 Mod"就是这个意思）。
-                  置灰会让人以为"差一点就能用"，藏起来才是实话。
-                */}
-              {target.loader ? (
-                <Button variant="ghost" size="sm" onClick={() => openVersion(target.id, 'mods')}>
-                  <IconPuzzle /> Mod 管理
-                </Button>
-              ) : null}
-              <Button variant="ghost" size="sm" onClick={() => openVersion(target.id, 'setup')}>
-                <IconGear /> 版本设置
-              </Button>
+        {/* ---------- 左栏第二块：本机状态（真数据，不是装饰） ----------
+            ★ 2026-10-16：从"页脚一条横带"挪到这里 —— 见上面那段说明。
+              它**不是卡片**（只有一条上分割线）：卡片在这一页只留一张（身份卡），
+              块与块之间靠留白和细线分层，这样"浮起"才代表层级。 */}
+        {state.machine ? (
+          <div className="launch-facts">
+            <div className="lf-item">
+              <IconRam />
+              <span className="lf-k">可用内存</span>
+              <span className="lf-v mono">
+                {state.machine.availableMemoryGb} / {state.machine.totalMemoryGb} GB
+              </span>
+            </div>
+            <div className="lf-item">
+              <IconCpu />
+              <span className="lf-k">CPU</span>
+              <span className="lf-v mono">
+                {state.machine.cpuCount} 核 · {state.machine.arch}
+              </span>
+            </div>
+            <div className="lf-item">
+              <IconJava />
+              <span className="lf-k">Java</span>
+              <span className="lf-v mono">
+                {state.java.runtimes.length > 0
+                  ? state.java.runtimes.map((r) => r.major).join(' / ')
+                  : '一个都没探测到'}
+              </span>
+            </div>
+            <div className="lf-item">
+              <IconDrive />
+              <span className="lf-k">数据目录</span>
+              <span className="lf-v mono">{state.machine.dataDir}</span>
             </div>
           </div>
         ) : null}
+        </div>
+        {/* /左栏 */}
 
-        {/* 版本选择器（A+：卡片排 + 「全部版本」入口） —— 取代原来的下拉与「其它版本」两块 */}
-        <div className="launch-picker">
-          <div className="launch-picker-head">
-            <label className="launch-version-label" id="launch-picker-label">
-              要启动的版本
-            </label>
+        {/* ---------- 右栏：启动轨（换一个版本 → 启动） ---------- */}
+        <section className="lb-rail">
+          <div className="lb-rail-head">
+            <h2 className="lb-rail-title" id="launch-picker-label">
+              换一个版本
+            </h2>
             <span className="lp-count">{launchable.length} 个</span>
           </div>
+
           <div className="lp-row" role="listbox" aria-labelledby="launch-picker-label">
             {pickerShown.map((i) => {
               const on = i.id === target?.id;
@@ -752,14 +869,14 @@ export function LaunchPage() {
                   className={`lp-card glass${on ? ' on' : ''}`}
                   onClick={() => setLaunchTarget(i.id)}
                 >
-                  <VersionIcon version={i.mcVersion} size={34} />
+                  <VersionIcon version={i.mcVersion} size={30} />
                   <span className="lp-main">
                     <span className="lp-name">{instanceTitle(i.config.name, i.mcVersion, i.loader)}</span>
-                    <span className="lp-sub">
-                      {i.mcVersion}
-                      {i.loader ? ` · ${loaderName(i.loader.kind)}` : ' · 原版'}
-                    </span>
+                    {/* ★ 版本号单独一行、等宽字体（数字对齐）；不再用圆点把它和加载器串起来 */}
+                    <span className="lp-ver mono">{i.mcVersion}</span>
                   </span>
+                  {/* ★ 加载器右对齐、安静 —— 顶替原来 ` · 原版` 那半句 */}
+                  <span className="lp-tag">{i.loader ? loaderName(i.loader.kind) : '原版'}</span>
                   {on ? (
                     <span className="lp-check" aria-hidden="true">
                       <IconCheck />
@@ -780,12 +897,11 @@ export function LaunchPage() {
                 </span>
                 <span className="lp-main">
                   <span className="lp-name">全部版本…</span>
-                  <span className="lp-sub">还有 {launchable.length - pickerShown.length} 个</span>
+                  <span className="lp-ver dim">还有 {launchable.length - pickerShown.length} 个</span>
                 </span>
               </button>
             ) : null}
           </div>
-        </div>
 
         {/* 启动按钮 */}
         {/*
@@ -843,6 +959,17 @@ export function LaunchPage() {
         </div>
 
         {/*
+          ★ 2026-10-16：原来那条状态线里的「已运行 12:34」**不能跟着一起删** ——
+            它是**当下的状态**（跑着多久了），不是历史记录（用户 2026-09-16 删掉的是
+            "上次 3 天前 / 从未启动"那种回忆）。挪到启动按钮下面：
+            按钮此刻显示的是「停止游戏」，下面这行正好说明它跑了多久。
+        */}
+        {isRunning ? (
+          <div className="lb-running">
+            正在运行 · 已 {formatElapsed(Date.now() - (runInfo?.startedAt ?? 0))}
+          </div>
+        ) : null}
+        {/*
           ★★★★ 2026-09-30（用户）：「**启动整合包很慢**」「**为什么切换别的页面会停止启动**」。
 
           `launching` 期间把**后端正在做什么**显示出来。整合包首次启动时这一步要
@@ -885,51 +1012,21 @@ export function LaunchPage() {
           </div>
         ) : null}
 
-        {/* 一行状态 */}
-        {target ? (
-          <div className="launch-status">
-            <span>
-              <IconRam /> {Math.round(target.config.memoryMb / 1024)} GB
-            </span>
-            <span className="dot" />
-            <span>
-              <IconJava /> {javaLabel(target.config.javaMode)}
-            </span>
-            <span className="dot" />
-            {/*
-              ★ 2026-09-16 用户："记录时间的功能删掉，这没有用"。
-                原来这里在没跑的时候显示「上次 3 天前 / 从未启动」——
-                现在只在**真的在跑**时显示已运行时长（那是当下的状态，不是历史记录），
-                其余情况什么都不显示。
-            */}
-            {isRunning ? (
-              <span>已运行 {formatElapsed(Date.now() - (runInfo?.startedAt ?? 0))}</span>
-            ) : null}
-            {isRunning ? <span className="dot" /> : null}
-            {/*
-              ★ 2026-09-17 用户（截图）："主页的管理这个版本改成『**管理此版本**』，
-                然后**直接转到这个版本的设置页**，而不是版本列表"。
+        {/*
+          ★★ 2026-10-16：这里原来还有一条「一行状态」——
+                `🖫 6 GB · 🍵 Java 自动 · 管理此版本`
 
-              原来它 `go('versions')` —— 把人送去**版本列表**，然后还得再找到
-              这一行、再点进设置。而用户此刻看的就是这个版本的卡片，
-              点"管理"当然是"管理**这一个**"，不该让他去列表里再找一遍
-              （卡片上已经有版本名和图标，再让他去列表里对号入座是多余的一步）。
+             它被删掉，原因有两条，都不是"嫌它多余"这么随意：
 
-              现在直接 `openVersion(target.id, 'setup')` —— 与右边那颗
-              「版本设置」按钮**同一个落点**，两条路通向同一个地方。
-              ★ 文案也从「管理这个版本」改成「管理此版本」：
-                "这个/那个"在中文里带指代距离，而卡片上就有版本名，
-                "此"才是"我正看着的这一个"。
-            */}
-            <button
-              type="button"
-              className="link-btn"
-              onClick={() => openVersion(target.id, 'setup')}
-            >
-              管理此版本
-            </button>
-          </div>
-        ) : null}
+                ① 那串信息**已经在左栏的规格行里**（内存、Java 各占一行），
+                   同一件事说两遍；而且中缀圆点串本身是模板痕迹。
+                ② 「管理此版本」与左栏那颗「版本设置」是**同一个落点**
+                   （都是 `openVersion(id,'setup')`）—— 一个意图两个名字，
+                   按规矩只留一个（留按钮：有图标、能键盘走到）。
+
+             现在右栏就是一条干净的动作路径：换版本 → 启动。
+        */}
+        </section>
       </div>
 
       {/* 内存偏低提示（唯一保留的告警） */}
@@ -956,41 +1053,12 @@ export function LaunchPage() {
             更贴这块的意图（留在主页就能换）。
       */}
 
-      {/* ==================== 本机状态（真数据，不是装饰） ==================== */}
-      {state.machine ? (
-        <div className="launch-facts">
-          <div className="lf-item">
-            <IconRam />
-            <span className="lf-k">可用内存</span>
-            <span className="lf-v mono">
-              {state.machine.availableMemoryGb} / {state.machine.totalMemoryGb} GB
-            </span>
-          </div>
-          <div className="lf-item">
-            <IconCpu />
-            <span className="lf-k">CPU</span>
-            <span className="lf-v mono">
-              {state.machine.cpuCount} 核 · {state.machine.arch}
-            </span>
-          </div>
-          <div className="lf-item">
-            <IconJava />
-            <span className="lf-k">Java</span>
-            <span className="lf-v mono">
-              {state.java.runtimes.length > 0
-                ? state.java.runtimes.map((r) => r.major).join(' / ')
-                : '一个都没探测到'}
-            </span>
-          </div>
-          <div className="lf-item">
-            <IconDrive />
-            <span className="lf-k">数据目录</span>
-            <span className="lf-v mono">
-              {state.machine.dataDir}
-            </span>
-          </div>
-        </div>
-      ) : null}
+      {/*
+        ★ 2026-10-16：本机状态那一块**已经挪进板里**（左栏、身份卡下面）——
+          原来它横在页面底部，于是"板"只占上半屏、下半屏空着（用户说的"大片空区"
+          就是这个）。挪进左栏之后：左栏＝"这一版 + 这台机器"，右栏＝"换版本 + 启动"，
+          两栏高度也接近了。
+      */}
 
       {/* ==================== 全部版本（A+ 的「全部版本…」入口） ====================
           什么时候会出现：这个文件夹里的版本**超过 6 个**时，卡片排只平铺前 5 张，
@@ -1033,11 +1101,10 @@ export function LaunchPage() {
                 <VersionIcon version={i.mcVersion} size={30} />
                 <span className="lp-main">
                   <span className="lp-name">{instanceTitle(i.config.name, i.mcVersion, i.loader)}</span>
-                  <span className="lp-sub">
-                    {i.mcVersion}
-                    {i.loader ? ` · ${loaderName(i.loader.kind)}` : ' · 原版'}
-                  </span>
+                  {/* 与右栏同一条规矩：版本号与加载器分成两个字段，不拼圆点串 */}
+                  <span className="lp-ver mono">{i.mcVersion}</span>
                 </span>
+                <span className="lp-tag">{i.loader ? loaderName(i.loader.kind) : '原版'}</span>
                 {on ? (
                   <span className="lp-check" aria-hidden="true">
                     <IconCheck />
