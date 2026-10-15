@@ -2700,10 +2700,22 @@ tbody tr.clickable:focus-visible {
  */
 :root {
   /* 材质的**档位参数**（三档各自覆盖下面这几条） */
-  --glass-blur: 14px;
+  /* ★ 2026-10-16：14 → 16px（"优化毛玻璃质感"那一轮，见 `.glass` 里的三条说明） */
+  --glass-blur: 16px;
   --glass-tint: 91 141 239; /* 由 JS 按位置覆盖；这是 accent 蓝的兜底 */
   --glass-lum: 0.25; /* 下方亮度 0..1，由 JS 覆盖（越亮越收敛） */
   --glass-alpha: 0.12; /* 调色层不透明度 */
+  /*
+   * ★★ 2026-10-16（「优化毛玻璃质感」）：0.12 → **0.17**。
+   *
+   *   这一层就是"玻璃跟着底下的光斑调色"（`--glass-tint` 由 JS 按卡片所在位置
+   *   从背景采样）—— 也就是**折射**本身。原来 17% 才有存在感的那点色，之前只给
+   *   12%，在近黑底上几乎看不出来：卡片于是像"一块压暗的透明片"而不是"吸了底下
+   *   颜色的玻璃"。
+   *   ★ 与"卡片不许自己带颜色"（色散那条）不冲突：那说的是**卡片自己写死**的
+   *     红/蓝边，而这一层是**从背景采到**的颜色 —— 背景换了它跟着换。
+   */
+  --glass-alpha: 0.17;
   --glass-rim: 0.1; /* ④ 边缘厚度亮 */
 }
 
@@ -2737,8 +2749,20 @@ tbody tr.clickable:focus-visible {
      调色是叠在它上面的一层透明色（`--glass-layers` 最后一条）。 */
   background-color: var(--bg-raised);
   background-image: var(--glass-layers);
-  backdrop-filter: blur(var(--glass-blur)) saturate(145%);
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(145%);
+  /*
+   * ★★ 2026-10-16（用户：「开始优化 UI 质感，优化毛玻璃质感」）——
+   *   这一轮**只动"玻璃自己的物理"**，一层装饰都没加：
+   *
+   *     ① `blur` 抬一档（14 → 16px，见三档的 `--glass-blur`）：糊得更匀，
+   *        "霜面"才成立（糊到 10px 以下就只是"变模糊"）。
+   *     ② `saturate` 145% → 158%：隔着玻璃看背景的颜色应该**更浓**一点
+   *        —— 这是折射，不是给内容染色（染色那条线用户划得很清楚）。
+   *     ③ `brightness(1.06)`：玻璃会**聚光**。近黑底上这一条最能让它从"半透明
+   *        塑料片"变成"一块真的磨砂玻璃"。★ 它作用在**背后透上来的画面**，
+   *        不是卡片自己发光（自发光那条仍然是禁的）。
+   */
+  backdrop-filter: blur(var(--glass-blur)) saturate(158%) brightness(1.06);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(158%) brightness(1.06);
   /*
    * ★★ ④ 厚度走**内阴影**，不走渐变层（理由见上面 `--glass-layers` 的实测）。
    *   顺序（从下往上画）：投影 → 底影 → 顶光 → 厚度内辉光。
@@ -2753,19 +2777,50 @@ tbody tr.clickable:focus-visible {
    * ★★ 同一轮稍后：**柔光内辉也删掉** —— 用户说「**我不希望卡片会自发光**」。
    *   原来那两条（`inset 0 0 26px -14px` 的一圈白辉 + `inset 0 1px 0` 的顶光）
    *   合起来就是"卡片自己在发光"的观感。
-   *   现在改成**一条清晰的内边**（`inset 0 0 0 1px`，白 4.5%）：
+   *   现在改成**一条清晰的内边**（`inset 0 0 0 1px`）：
    *   "厚度感"靠**边界的清晰**表达，而不是靠**光晕**。
    *   ★ 这三次删减连起来是一句话：**玻璃的"高级"来自透明与折射，
    *     不来自往卡片上叠装饰**（色散 → 指针高光 → 自发光，一路删下来）。
+   *
+   * ★★ 2026-10-16：那条内边从白 **4.5% → 6.5%**。它本来就是"厚度"的唯一来源，
+   *   而 4.5% 在近黑底上实测只有一两级的差 —— 边界立不住，卡片就"没有形"。
+   *   仍然是**一条 1px 的线**（不是辉光、不是渐变），所以这条修改没有越界。
    */
   box-shadow:
     var(--shadow-card),
-    inset 0 -1px 1px rgba(0, 0, 0, 0.2),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.22),
     /* ④ 厚度感 = 一条清晰的内边（不是辉光）*/
-    inset 0 0 0 1px rgba(255, 255, 255, 0.045);
+    inset 0 0 0 1px rgba(255, 255, 255, 0.065);
   transition:
     box-shadow var(--dur-base) var(--ease),
     background-color var(--dur-base) var(--ease);
+}
+
+/*
+ * ★★ 霜面（毛玻璃的"毛"）—— 2026-10-16（用户：「优化毛玻璃质感」）。
+ *
+ *   前面的三轮把"装饰"全删干净之后，玻璃只剩"糊 + 透明"，看着像一张半透明的
+ *   塑料片 —— 缺的正是**磨砂面本身**。真实的磨砂玻璃（以及 Windows 的 Acrylic、
+ *   macOS 的材质）都带一层**极细的亮度噪点**：它不是装饰，是"面"的微观结构。
+ *
+ *   ★ 强度是关键：**3%**。再高一档就从"霜面"变成"画面有噪点"（那是另一种东西）。
+ *   ★ 中性灰噪点，**不加任何颜色**，也不用混合模式 —— 用户早先明确否过
+ *     "卡片自己带颜色"（色散那件事），这里绝不能以任何形式把颜色加回来。
+ *   ★ `z-index: -1`：压在卡片自己的底色**之上**、内容**之下**
+ *     —— 文字上蒙一层噪点会显得脏，霜面只该在"玻璃里"。
+ *     `.glass` 自带 `isolation: isolate`，所以负层级不会跑到卡片外面去。
+ *   ★ 弱化视效 / 低性能损耗两档不装这一层（见下面三档那段）。
+ */
+.glass::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 140px 140px;
+  opacity: 0.03;
+  pointer-events: none;
 }
 
 /* ---------- ① 边缘折射：中/灵动档用 JS 装真滤镜；这两条只是"便宜的兜底" ---------- */
@@ -2838,20 +2893,26 @@ tbody tr.clickable:focus-visible {
   background-image: none;
   box-shadow: var(--shadow-card);
 }
+/* ★ 弱化档连霜面颗粒也不装：这一档的承诺是"一个滤镜都不发、最省" */
+:root[data-vfx='weak'] .glass::after {
+  display: none;
+}
 :root[data-vfx='weak'] .glass-ambient-gl {
   display: none;
 }
 
 /* 适中视效：五条都在，但都收着 —— 背景是静的，高光只跟指针 */
 :root[data-vfx='mid'] {
-  --glass-blur: 13px;
+  /* ★ 2026-10-16：13 → 15px（霜面要糊得更匀，见 `.glass` 那段说明） */
+  --glass-blur: 15px;
   --glass-hi: 0.12;
   --glass-rim: 0.09;
 }
 
 /* 灵动视效：折射更厚、色散更明显、高光会自己流 */
 :root[data-vfx='aura'] {
-  --glass-blur: 18px;
+  /* ★ 2026-10-16：18 → 20px */
+  --glass-blur: 20px;
   --glass-hi: 0.17;
   --glass-rim: 0.14;
 }

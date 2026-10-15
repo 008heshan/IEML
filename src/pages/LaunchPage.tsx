@@ -599,7 +599,9 @@ export function LaunchPage() {
           一个按钮，下面大片空白。
         */}
         {target ? (
-          <div className="launch-hero">
+          /* ★ 2026-10-16：挂上 glass —— 这一块原来是平色卡，与全站材质不统一
+             （设置页/下载页的卡都是玻璃，主页面最大的一张反而是平色板）。 */
+          <div className="launch-hero glass">
             {/*
               ★★ 2026-09-30（用户）：「这两个地方的整合包显示**整合包自己的图标**，
                 而且要**直接在卡片上，不整那个跟槽一样的东西**」。
@@ -869,7 +871,7 @@ export function LaunchPage() {
               <button
                 key={i.id}
                 type="button"
-                className="lo-card"
+                className="lo-card glass"
                 onClick={() => setLaunchTarget(i.id)}
               >
                 <VersionIcon version={i.mcVersion} size={38} />

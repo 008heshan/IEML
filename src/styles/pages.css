@@ -196,10 +196,24 @@
   gap: var(--space-5);
   width: 100%;
   padding: 22px 24px;
-  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
-  background: var(--card-bg);
-  box-shadow: var(--shadow-card);
+  /*
+   * ★★ 2026-10-16（用户：「开始优化 UI 质感，优化毛玻璃质感」）
+   *
+   *   这一块**原来是平色卡**（`background: var(--card-bg)` + 1px 边框 +
+   *   `--shadow-card`）—— 全启动器里就它和下面那排小卡没走玻璃，
+   *   材质于是不统一：设置页 / 下载页的卡是有霜面的玻璃，主页面最大的一张
+   *   却是一块平色板。
+   *   现在它在 `LaunchPage.tsx` 里挂上了 `glass`，材质交给玻璃那一套
+   *   （背景调色层 + 磨砂 + 霜面颗粒 + 内边 + 多层投影）。
+   *
+   *   ★ 这里必须**删掉** background / border / box-shadow 三条：
+   *     `pages.css` 在 `app.css` **之后**加载，`.launch-hero` 与 `.glass`
+   *     都是一级选择器 ⇒ 前者赢；留着就把玻璃的调色层、内边、多层投影全盖掉了。
+   *     这正是那段"改样式前先搜一遍类名"的老账。
+   *   ★ 不挂 `glass-refract`（折射镜片）：给 978px 宽的大块装 SVG 滤镜，
+   *     代价与收益不成比例 —— 霜面 + 内边已经把它立起来了。
+   */
 }
 .lh-main {
   flex: 1;
@@ -268,7 +282,13 @@
   padding: var(--row-pad-y) var(--row-pad-x);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
-  background: var(--bg-raised);
+  /*
+   * ★★ 2026-10-16：同 `.launch-hero` —— 这一排小卡也挂上了 `glass`
+   *   （见 LaunchPage.tsx），所以这里不再自己铺平色底。
+   *   ★ 边框**留着**：`:hover` 靠它变强调色（`border-color: var(--accent)`），
+   *     那条交互提示不该为了统一材质而丢掉。玻璃的内边在它内侧 1px，
+   *     合起来是一条略厚的边 —— 小卡上看着更"实"，正好。
+   */
   color: var(--text-primary);
   font-family: inherit;
   text-align: left;
