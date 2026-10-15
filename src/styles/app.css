@@ -1099,6 +1099,35 @@
 .card-padded {
   padding: var(--card-pad);
 }
+/*
+ * ★★ 卡片里的下拉打开时，**把这张卡整体提到兄弟卡片前面**
+ *   （2026-10-15 用户截图：「这个渲染层级不对」——
+ *    实例设置页「Java 运行时 → 选择方式」的下拉被下面那张「启动选项」卡盖住）。
+ *
+ * ## 根因不是"菜单的 z-index 不够高"
+ *
+ *   `.glass`（每张卡都有）带 `isolation: isolate` + `backdrop-filter` ——
+ *   **每张卡自己就是一个层叠上下文**，而卡片的 z-index 都是 `auto`
+ *   ⇒ 谁在 DOM 后面，谁就画在上面。
+ *   于是卡片里那个 `.cs-menu` 的 `z-index: var(--z-dropdown)`（60）被**关在自己这张卡里**，
+ *   出不去：后面那张卡整个画在它上面，调多高都没用
+ *   （实测：菜单伸出卡片底边 125px，那一段整个被下一张卡的玻璃糊掉）。
+ *
+ * ## 所以修法是"抬卡片"，不是"抬菜单"
+ *
+ *   ★ 用 `:has()`：`data-open` 在组件内部，CSS 从子级选不了父级
+ *     （这个仓库已经在用 `:has()`：见 pages.css 的 `.ver-actions:has([aria-expanded='true'])`）。
+ *   ★ 值取 **1**，不取 `--z-dropdown`(60)：只要比兄弟卡片高就够了；
+ *     60 会让这张卡在滚动时压过顶栏玻璃（`--z-sticky` = 20）与页头 —— 那是换一处错。
+ *   ★ 只认 `.card`，**不认 `.glass`**：`.modal` 也是 `.glass` 且自带
+ *     `z-index: var(--z-modal)`(90)，照 `.glass` 写会把弹窗反而压到 1。
+ *   ★ `position: relative` 写在这里是为了不依赖"卡片一定带 `.glass`"这件事
+ *     （`z-index` 只在定位元素上生效）。
+ */
+.card:has(.cs[data-open='true']) {
+  position: relative;
+  z-index: 1;
+}
 .card-title {
   display: flex;
   align-items: center;
