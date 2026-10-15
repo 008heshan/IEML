@@ -2235,6 +2235,30 @@
    */
   overflow-y: auto;
   overscroll-behavior: contain;
+  /*
+   * ★★ 2026-10-16（用户：「这个弹出菜单，做成**以按钮为原点展开**」）。
+   *
+   *   `transform-origin` 由 JS 按实测坐标写上（`right -4px`，翻上去时
+   *   `right calc(100% + 4px)` —— 那 4px 就是 `MENU_GAP`，菜单与按钮之间的缝），
+   *   这里只负责"从那个原点长出来"：`scale(0.9)` + 透明 → 1。
+   *
+   *   ★ 只动 `transform` / `opacity`：
+   *     `max-height`、`overflow-y`、翻转判据那套一律不碰 ——
+   *     "上下都不够时自己内部滚"是靠它们成立的。
+   *   ★ 减弱动效 / 系统 `prefers-reduced-motion` 由 tokens.css 的全局规则压平
+   *     （动画只跑一次、时长 0.01ms ⇒ 直接停在终态，也就是"不闪、直接出现"）。
+   */
+  animation: rowMenuIn var(--dur-base) var(--ease-out);
+}
+@keyframes rowMenuIn {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 .row-menu button {
   display: flex;

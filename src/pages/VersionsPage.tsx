@@ -96,8 +96,17 @@ interface MenuPos {
  * ★ 这里**不用"估算高度"**：条目数随版本类型变（原版那行少一项）。
  *   高度由调用方量出真实值再传进来（`useLayoutEffect` 里量，绘制之前完成）。
  */
+/**
+ * 菜单与「⋯」按钮之间那道缝（px）。
+ *
+ * ★ 2026-10-16：从 `menuLayout` 里提到了模块级 —— 因为**展开动画的原点**也要用它：
+ *   菜单是从按钮的角上"长"出来的（`transform-origin` 写在按钮那一侧，
+ *   距离就是这道缝）。两处各写一个 4 迟早会对不上。
+ */
+const MENU_GAP = 4;
+
 function menuLayout(anchor: DOMRect, height: number): MenuPos {
-  const GAP = 4; // 与按钮之间的缝
+  const GAP = MENU_GAP; // 与按钮之间的缝
   const EDGE = 8; // 离窗口边缘留一点，别贴着
   const below = Math.round(window.innerHeight - anchor.bottom - EDGE);
   const above = Math.round(anchor.top - EDGE);
@@ -189,6 +198,19 @@ export function VersionsPage() {
   useEffect(() => {
     if (!menuFor) return;
     const onDown = (e: MouseEvent) => {
+      /*
+       * ★★ 2026-10-16（用户：「**二次点击"三个点"按钮，也可收回菜单**」）。
+       *
+       *   点在「⋯」按钮上**不算"点了别处"** —— 那一下的收/放交给按钮自己的
+       *   `onClick` 切换。否则同一次点击会走两条路：
+       *     mousedown（这条）先把菜单关掉 → React 用新状态重渲染 →
+       *     紧接着的 click 拿到的 `openMenu` 已经是 `false` →
+       *     于是又把它**打开**。用户看到的就是"点第二下关不掉"。
+       *   ★ 判据挂在 `data-row-menu-trigger` 上，而不是"等于当前那一行的按钮"：
+       *     点**别的行**的「⋯」时也走按钮自己的切换，正好是"换一个菜单"。
+       */
+      const target = e.target as Element | null;
+      if (target?.closest('[data-row-menu-trigger]')) return;
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuFor(null);
     };
     const onScroll = () => setMenuFor(null);
@@ -1039,6 +1061,11 @@ export function VersionsPage() {
               iconOnly
               aria-label={`${inst?.config.name ?? fv.dir} 的更多操作`}
               aria-expanded={openMenu}
+              /*
+               * ★ 2026-10-16：给外面那个"点别处就关"的监听一个判据 ——
+               *   点在它身上时不关（那一下由本按钮自己切换收放，见上面 onDown 的说明）。
+               */
+              data-row-menu-trigger
               onClick={(e) => {
                 /*
                  * ★★ 菜单位置按**按钮的屏幕坐标**算，面板用 `position: fixed`
@@ -1103,6 +1130,22 @@ export function VersionsPage() {
                             bottom: menuPos.bottom,
                             right: menuPos.right,
                             maxHeight: menuPos.maxHeight,
+                            /*
+                             * ★★ 2026-10-16（用户：「这个弹出菜单，做成**以按钮为原点展开**」）：
+                             *   原点是**按钮那个角**，不是一个笼统的"右上角"：
+                             *     · 朝下展开 → 菜单位于按钮下方 `MENU_GAP`，
+                             *       原点取菜单的 `right -4px`（＝按钮的右下角）；
+                             *     · 翻上去   → 菜单在按钮上方，原点取 `right calc(100% + 4px)`
+                             *       （＝菜单底边再往下 4px，正好是按钮的上沿）。
+                             *   菜单是**右对齐**按钮的（`right` 就是那么算的），
+                             *   所以横向原点固定写 `right` 就是精准的。
+                             *   配合 pages.css 里 `rowMenuIn` 的 `scale(0.9) → 1`，
+                             *   看起来就是"从那个按钮里长出来"。
+                             */
+                            transformOrigin:
+                              menuPos.bottom != null
+                                ? `right calc(100% + ${MENU_GAP}px)`
+                                : `right -${MENU_GAP}px`,
                           }
                         : // 还没量出坐标时先藏起来，别闪一下再跳位
                           { visibility: 'hidden', top: 0, right: 0 }
