@@ -3640,17 +3640,22 @@ tbody tr.clickable:focus-visible {
     transform var(--dur-fast) var(--ease);
 }
 /*
- * ★★ 闲着的时候"活着"：一条光带每隔几秒从左扫到右（2026-10-16，用户：
- *   「按钮的动效呢」—— 换成平色之后它一动不动了）。
+ * ★★ 闲着的时候：一条光带每隔几秒从左扫到右。
  *
- *   上一版（液态玻璃那代）的闲置动效是"呼吸泛光"（`::after` 的径向渐变，
- *   opacity 0→0.55 来回）。那一层是**给玻璃用的**：半透明的彩色雾气压在实色上
- *   只会糊成一团脏色，所以没有原样搬过来 —— 平色按钮上"活起来"的经典做法是
- *   **光带扫过**：一条斜的白色半透明带子，扫完歇一会儿再扫。
+ *   2026-10-16 的第一轮（用户：「按钮的动效呢」）我给按钮补了**两样**自己会走的东西：
+ *     ① 这条**扫过的光带**（`::before` + `launchSheen`）；
+ *     ② 启动中那个**一明一暗的泛光脉冲**（`is-launching` + `launchPulse`）。
+ *   随后用户说「**这个呼吸灯去掉吧**」—— 我按"两颗灯都算"先全删了，
+ *   他紧接着补了一句「**光带可以留着**」。
+ *
+ *   ⇒ 结论落在这里：**光带留，脉冲删**。两条的分别也是这个用户的审美分别 ——
+ *     · 光带是**一道掠过的反光**（像玻璃上扫过的高光），不是按钮在发光；
+ *     · 脉冲是**按钮自己一明一暗**，那正是他一路在删的"自发光装饰"
+ *       （卡片自发光、指针高光、色散都删过）。
  *   ★ 只在按钮本体上；**启动中不扫**（那时转圈才是主角，两处动效会抢注意力）。
  *   ★ `overflow: hidden` 正好把带子裁在圆角里（不会溢出到按钮外）。
  *   ★ 减少动效（应用内那档）与系统的 `prefers-reduced-motion` 由 tokens.css
- *     的两条全局规则压平 —— 这里不必再写一遍。
+ *     的两条全局规则压平；下面另有一条显式停掉它，理由见那里。
  */
 .launch-btn::before {
   content: '';
@@ -3806,10 +3811,14 @@ tbody tr.clickable:focus-visible {
  *   ★ 判据从 `.btn-loading` 换成 `.is-launching`：这个按钮不再用 `Button` 的
  *     `loading` 通道（那条通道会把转圈渲染在**文字前面**，而这里要的是
  *     "转圈待在托盘里"）。`disabled` / `aria-busy` 在调用点自己给。
+ *
+ * ★★ 2026-10-16 稍后（用户：「**这个呼吸灯去掉吧**」→ 又说「**光带可以留着**」）：
+ *   启动中那个 `launchPulse`（泛光一明一暗地呼吸）**已删** —— 启动中的反馈交给
+ *   **托盘里那颗转圈**，按钮自己不再发光；掠过的那条光带**留着**（用户明确要留，
+ *   它是"反光"不是"自发光"）。
+ *   `.is-launching` 这个类仍然要留着：`LaunchPage` 用它决定托盘里放三角还是转圈，
+ *   也在 `disabled` 之外提供"正在启动"这个语义钩子。
  */
-.launch-btn.is-launching {
-  animation: launchPulse 1.4s var(--ease-in-out) infinite;
-}
 /* ★ 启动中不扫光带：那时转圈是主角，两处动效一起动会显得慌 */
 .launch-btn.is-launching::before {
   display: none;
@@ -3827,24 +3836,11 @@ tbody tr.clickable:focus-visible {
   border-width: 2px;
   color: var(--slab);
 }
-@keyframes launchPulse {
-  0%,
-  100% {
-    box-shadow: inset 0 0 1.6em -0.6em var(--slab-deep);
-  }
-  50% {
-    box-shadow:
-      inset 0 0 1.6em -0.6em var(--slab-deep),
-      0 0 0 1px var(--slab-glow),
-      0 8px 26px var(--slab-glow);
-  }
-}
 @media (prefers-reduced-motion: reduce) {
-  /* 光带与脉冲都停掉。★ tokens.css 里那条全局规则已经把 duration 压到 0.01ms，
-     这里再显式写一遍是因为**动画会停在最后一帧**（光带会停在按钮右侧的边界上），
-     而"停下"应该是"看不见" */
-  .launch-btn::before,
-  .launch-btn.is-launching {
+  /* 光带停掉。★ tokens.css 里那条全局规则已经把 duration 压到 0.01ms，
+     这里再显式写一遍是因为**动画会停在最后一帧**（带子会停在按钮右侧的边界上），
+     而"停下"应该是"看不见"（`animation: none` 会让它回到基准位置：左侧屏外）。 */
+  .launch-btn::before {
     animation: none;
   }
 }
