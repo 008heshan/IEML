@@ -475,13 +475,11 @@ export function createWebBackend(): Backend {
      *   （与 `listIsolation` 空表、`modIcons` 空表同一条理由：
      *    演示版没有的东西就说没有，界面据此显示"演示模式里同步不了"）。
      */
-    news: {
-      async load() {
-        return null;
-      },
-      async sync(): Promise<never> {
-        throw new Error('浏览器演示模式没有数据目录，同步不了 —— 桌面版才有');
-      },
+    async newsLoad() {
+      return null;
+    },
+    async newsSync(): Promise<never> {
+      throw new Error('浏览器演示模式没有数据目录，同步不了 —— 桌面版才有');
     },
   };
 }

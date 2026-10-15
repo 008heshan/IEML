@@ -219,13 +219,18 @@ export interface Backend {
    * ★ **这一层不改数据的形状**：返回的是站点那几份 JSON 的**原文**，
    *   解析与校验只有一份实现（`src/domain/mc-news.ts`，有单测钉着）。
    *   图则转成 `data:` URI（与 Mod 图标同一套做法）——数据目录里当然也有那份图。
+   *
+   * ★★ **必须是两个扁平方法，不许收成一个 `news: { … }` 子对象**
+   *   （2026-10-15 真机踩过）：`getBackend()` 在 Tauri 下是个懒加载 `Proxy`，
+   *   它的 `get` **一律返回一个函数** —— 于是 `api.news` 拿到的是个函数、
+   *   `api.news.load` 是 `undefined`，界面上显示「news.load is not a function」，
+   *   而**类型检查完全看不出来**（`Backend` 说 `news` 是个对象，运行时不是）。
+   *   ⇒ 这条规矩由 `tools/gates/check-backend-flat.mjs` 守着。
    */
-  news: {
-    /** 读数据目录里那份（**不联网**）；没同步过时 `null` */
-    load(): Promise<NewsCachePayload | null>;
-    /** 从网站同步一次（失败时一个字节都不写），返回刚同步好的那份 */
-    sync(): Promise<NewsCachePayload>;
-  };
+  /** 读数据目录里那份（**不联网**）；没同步过时 `null` */
+  newsLoad(): Promise<NewsCachePayload | null>;
+  /** 从网站同步一次（失败时一个字节都不写），返回刚同步好的那份 */
+  newsSync(): Promise<NewsCachePayload>;
 }
 
 /**

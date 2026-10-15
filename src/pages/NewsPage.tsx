@@ -271,7 +271,7 @@ export function NewsPage() {
     setPhase('syncing');
     setError('');
     try {
-      const fresh = await getBackend().news.sync();
+      const fresh = await getBackend().newsSync();
       setCache(fresh);
       setPhase('ready');
     } catch (e) {
@@ -291,7 +291,7 @@ export function NewsPage() {
     let alive = true;
     void (async () => {
       try {
-        const local = await getBackend().news.load();
+        const local = await getBackend().newsLoad();
         if (!alive) return;
         if (local) {
           setCache(local);

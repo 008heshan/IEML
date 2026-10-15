@@ -187,6 +187,20 @@ results.push([
 ]);
 
 /*
+ * ★★ **`Backend` 只许有扁平方法**（2026-10-15 真机踩过）。
+ *
+ *   用户截了张图：MC 新闻页上写着「这次没能取到：…news.load is not a function」。
+ *   根因在桥接的懒加载代理：`getBackend()` 在 Tauri 下的 `get` **一律返回一个函数**，
+ *   于是 `api.news`（本意是个子对象）拿到的是函数、`.load` 是 `undefined`。
+ *   ★ 最难受的是 `tsc` 一个字都不说 —— 类型声明说 `news` 是个对象，运行时不是。
+ *   ⇒ 规矩交给判据守（`tools/gates/check-backend-flat.mjs`，自带自检）。
+ */
+results.push([
+  'Backend 只有扁平方法',
+  run('Backend 只有扁平方法', 'node', ['tools/gates/check-backend-flat.mjs']),
+]);
+
+/*
  * ★★ 九套主题的令牌与对比度（2026-09-22 用户要求 9 套主题）。
  *
  *   为什么这是**门禁**而不是"看一眼"：9 套 × 30 个令牌全是手写的颜色，

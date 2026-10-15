@@ -2637,17 +2637,18 @@ export function createTauriBackend(): Backend {
      * 用户 2026-10-15：「网站更新了版本大图功能，启动器同步一下」
      *            +「其实这些东西应该保存在启动器的数据文件夹里的」。
      *
-     * ★ 两条命令的分工：`load` **只读盘**（打开页面时不联网），
-     *   `sync` 才去网站取（用户点「同步」或页面发现本地是空的时）。
+     * ★ 两条命令的分工：`newsLoad` **只读盘**（打开页面时不联网），
+     *   `newsSync` 才去网站取（用户点「同步」或页面发现本地是空的时）。
      * ★ 原样搬运：Rust 不算数据的形状，解析交给 `domain/mc-news.ts` 那一份实现。
+     * ★ **扁平方法，不许收成 `news: { load }` 子对象**：`getBackend()` 是个懒加载
+     *   Proxy，它只把**顶层**属性变成函数 —— 收成子对象就会在真机上变成
+     *   `news.load is not a function`，而类型检查看不出来（见 `types.ts` 那段说明）。
      */
-    news: {
-      async load() {
-        return call<NewsCachePayload | null>('news_load', {});
-      },
-      async sync() {
-        return call<NewsCachePayload>('news_sync', {});
-      },
+    async newsLoad() {
+      return call<NewsCachePayload | null>('news_load', {});
+    },
+    async newsSync() {
+      return call<NewsCachePayload>('news_sync', {});
     },
   };
 }
