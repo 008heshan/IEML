@@ -183,19 +183,31 @@
 }
 
 /* ============================ 侧边栏 ============================
-   一级与二级共用同一条 218px 侧栏 —— 二级页把整条替换掉，
+   一级与二级共用同一条侧栏 —— 二级页把整条替换掉，
    而不是并排成"两栏导航"。理由见 AppShell.tsx 顶部注释。
+
+   ★★ 2026-10-16（用户：「**左侧栏缩进到只剩图标**」）：从 196px 的"图标 + 文字"
+   收成 **64px 图标轨**。名字没有丢：它变成悬停/聚焦时向右浮出的气泡（`.nav-text`），
+   而且**留在 DOM 里**（读屏仍然念得出名字，不必再补一遍 aria-label）。
    ============================================================== */
 .sidebar {
   width: var(--sidebar-w);
   flex: 0 0 var(--sidebar-w);
   display: flex;
   flex-direction: column;
+  align-items: center;
   background: transparent;
   border-right: 1px solid var(--border-subtle);
-  padding: var(--space-2) var(--space-2) var(--space-3);
+  padding: var(--space-2) 0 var(--space-3);
   gap: var(--space-1);
-  overflow-y: auto;
+  /*
+   * ★ 必须 `visible`：`.nav-text` 那颗气泡要浮到侧栏**右边外面**去。
+   *   原来是 `overflow-y: auto` —— 一条轴不是 visible 时另一条会被算成 auto，
+   *   于是气泡横着就被裁掉了（看不见的那种坏）。
+   *   ★ 代价：窗口极矮时侧栏不再自己滚。窗口最小高度 640（tauri.conf.json），
+   *     这一列最多约 8 项 + 运行列表，装得下。
+   */
+  overflow: visible;
 }
 
 .nav-label {
@@ -208,19 +220,19 @@
 }
 
 .nav-item {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  width: 100%;
+  justify-content: center;
+  /* ★ 图标轨：40×40 方块（原来是一整条"图标 + 文字"的横条） */
+  width: 40px;
+  height: 40px;
   min-height: 40px;
-  padding: 0 var(--space-4);
+  padding: 0;
   /*
    * ★★ 侧栏文字**永远不换行**（用户 2026-09-15：
    *   "限制启动器最小窗口大小，保证左侧文字最长的也能一字排开"）。
-   *   侧栏是固定宽度（196px），但文字一换行整条就变两行高、
-   *   侧栏高度跟着跳，看起来像"排版坏了"。最长的一项是「关于与设置」。
-   *   配合窗口 `minWidth: 1040`（见 tauri.conf.json）：那个下限保证
-   *   侧栏 196px + 内容区最小 ~840px 都放得下，谁都不挤谁。
+   *   ★ 2026-10-16：文字改成浮出的气泡之后这条仍然要留着 —— 气泡更不许换行。
    */
   white-space: nowrap;
   border: none;
@@ -232,6 +244,41 @@
   cursor: pointer;
   text-align: left;
   transition: background var(--dur-fast), color var(--dur-fast);
+}
+/*
+ * 名字气泡（图标轨的核心）：
+ *   · 默认 `opacity: 0` 且**留在文档流之外**（绝对定位），所以不占宽度；
+ *   · 悬停 / 键盘聚焦时浮到图标右边。
+ *   ★ 为什么不删掉文字、改用 `aria-label`：气泡本身就是文字，
+ *     读屏念的就是它 —— 一个元素同时干"可访问名字"与"悬停提示"两件事，
+ *     不必再维护第二份文案。
+ *   ★ 为什么不用 `title=`：仓库在 2026-09 那一轮把 60 多处原生 title 全删了
+ *     （慢、丑、无法统一），有门禁盯着（`tools/gates/check-tooltips.mjs`）。
+ */
+.nav-text {
+  position: absolute;
+  left: calc(100% + var(--space-3));
+  top: 50%;
+  translate: 0 -50%;
+  padding: 5px 9px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-overlay);
+  box-shadow: var(--shadow-lg);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease);
+  z-index: var(--z-menu);
+}
+.nav-item:hover .nav-text,
+.nav-item:focus-visible .nav-text,
+.side-link:hover .nav-text,
+.side-link:focus-visible .nav-text {
+  opacity: 1;
 }
 .nav-item:hover {
   background: var(--bg-hover);
@@ -246,7 +293,8 @@
 .nav-item[aria-current='page']::before {
   content: '';
   position: absolute;
-  left: 2px;
+  /* ★ 图标轨：小竖条贴在这条轨道自己的左边缘（方块左边还有 12px 的居中留白） */
+  left: calc(-1 * var(--space-3));
   top: 50%;
   transform: translateY(-50%);
   width: 3px;
@@ -264,30 +312,46 @@
   stroke-linecap: round;
   stroke-linejoin: round;
 }
+/*
+ * 数字角标：图标轨里挪到方块的**右上角**（原来靠 `margin-left:auto` 排在文字右边，
+ * 文字没了之后那样会掉到方块正中）。
+ */
 .nav-item .nav-badge {
-  margin-left: auto;
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  min-width: 15px;
+  height: 15px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
   font-size: 10px;
   font-style: normal;
+  line-height: 1;
   font-variant-numeric: tabular-nums;
-  padding: 1px 6px;
   border-radius: var(--radius-full);
-  background: var(--bg-active);
-  color: var(--text-tertiary);
+  background: var(--accent);
+  color: #fff;
+  border: 1px solid var(--bg-base);
 }
 /*
- * ★★ 2026-09-24（用户：「「关于」两字的右边写「有更新」」）：
- *   侧栏「关于」右边那个标记。与 `.nav-badge` 的区别是**它要说事**（不是数字），
- *   用强调色，让它在一列灰字里能被一眼看到 —— 而它只在真的有更新时出现。
+ * ★★ 2026-09-24（用户：「「关于」两字的右边写「有更新」」）：侧栏「关于」那个标记。
+ *   与 `.nav-badge` 的区别是**它要说事**（不是数字）。
+ * ★ 2026-10-16：图标轨里没有"右边"了 —— 它收成一颗强调色**小圆点**挂在图标右上角
+ *   （文字仍然留在 DOM 里，读屏照样听得到「有更新」，只是画面上不占地方）。
  */
 .side-link .side-badge {
-  margin-left: auto;
-  font-size: 10px;
-  font-style: normal;
-  padding: 1px 6px;
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  font-size: 0;
+  color: transparent;
   border-radius: var(--radius-full);
-  background: var(--accent-subtle);
-  color: var(--accent);
-  border: 1px solid var(--accent-border);
+  background: var(--accent);
 }
 
 /**
@@ -319,13 +383,14 @@
   height: 16px;
 }
 
+/*
+ * ★★ 2026-10-16：二级页那张"我在哪个版本里"的卡**在图标轨里藏起来**。
+ *   64px 装不下名字 + MC 版本 + 加载器三行；而这件事**顶栏的面包屑已经在说**
+ *   （`版本列表 › 星河整合包`），所以不是"信息丢失"，只是换了地方。
+ *   ★ 实例内的二级导航（概览 / 设置 / Mod / 日志）仍然是 40×40 图标 + 气泡。
+ */
 .side-inst {
-  padding: var(--space-3);
-  margin-bottom: var(--space-2);
-  border-radius: var(--radius-md);
-  background: var(--bg-raised);
-  border: 1px solid var(--border-subtle);
-  min-width: 0;
+  display: none;
 }
 .side-inst-name {
   font-size: var(--text-base);
@@ -346,23 +411,45 @@
   padding-top: var(--space-3);
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: var(--space-2);
+  width: 100%;
 }
 
 /* 运行中实例卡 —— 这东西在主页与侧栏都出现，是全局状态 */
+/*
+ * ★★ 2026-10-16（图标轨）：它收成 **44px 一颗的方块**：状态点 + 停止键。
+ *   名字与时长在 64px 里放不下 ⇒ **视觉隐藏但留在 DOM 里**（读屏念得出），
+ *   而停止键自带 `aria-label`（"停止 <名字>"），所以"停哪一个"不会含糊。
+ *   ★ 主页那句"侧栏底部可以逐个停止"因此仍然成立。
+ */
 .running-chip {
   margin-top: auto;
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-3);
+  justify-content: center;
+  gap: var(--space-1);
+  width: 44px;
+  padding: 4px 0;
   border-radius: var(--radius-md);
   background: var(--success-subtle);
   border: 1px solid transparent;
   cursor: pointer;
   text-align: left;
-  width: 100%;
   font-family: inherit;
+}
+/*
+ * 视觉隐藏但**不进垃圾桶**：`clip-path` 那套（不是 `display: none`）——
+ * 读屏仍然念得出实例名与已运行时长。
+ */
+.running-chip .txt,
+.running-chip .running-head {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 .running-chip:hover {
   border-color: var(--success);
@@ -809,18 +896,24 @@
 .side-links {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 2px;
   margin-top: var(--space-3);
   padding-top: var(--space-3);
   border-top: 1px solid var(--border-subtle);
+  width: 100%;
 }
 .side-link {
+  /* ★ 与 `.nav-item` 同一套：40×40 方块 + 浮出的名字气泡（见 `.nav-text`） */
+  position: relative;
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2);
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
   border: none;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: none;
   color: var(--text-tertiary);
   font-family: inherit;
@@ -3334,22 +3427,27 @@ tbody tr.clickable:focus-visible {
    排版：每行只有名字 +（必要时）一个短状态，不写解释性小字。
    ============================================================================ */
 .acct-wrap {
-  position: relative;
-  padding: 0 var(--space-3) var(--space-2);
-  flex: 0 0 auto;
   /*
-   * ★ 贴到侧栏最底部（用户："把账号按钮放到最底部"）。
-   *   侧栏是 flex 列，导航那一段不占满高度 —— 不加 `margin-top: auto`
-   *   按钮会浮在半空（实测距底 401px）。
+   * ★★ 2026-10-16（用户：「**左下角胶囊改到右上角最小化按钮的左边**」）：
+   *   它从"侧栏最底部、向上展开"搬到了**顶栏**（窗口按钮左边）。
+   *   ⇒ 这里的 `margin-top: auto` / 底部内边距是侧栏时代的写法，全部去掉；
+   *     现在它只是顶栏那一行里的一个普通格子。
+   *   ★ 历史：2026-09-22 用户说过"把账号按钮放到最底部，点击可以向上展开"，
+   *     当时顶栏那个胶囊被撤掉、只留侧栏这一处（"同一个动作两个入口会让人以为
+   *     是两件事"）。这次是**移回来**，不是两处都放 —— 侧栏那份已经删掉，
+   *     入口仍然只有一处。
    */
-  margin-top: auto;
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
 }
 .acct-btn {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  width: 100%;
-  padding: 7px var(--space-2);
+  /* 顶栏那一行是 48px 高：胶囊按内容宽（不再撑满侧栏） */
+  padding: 4px var(--space-2);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   background: var(--bg-raised);
@@ -3381,10 +3479,11 @@ tbody tr.clickable:focus-visible {
 }
 .acct-menu {
   position: absolute;
-  left: var(--space-3);
-  right: var(--space-3);
-  /* ★ 向上展开：贴着按钮的上沿 */
-  bottom: calc(100% + 6px);
+  /* ★ 2026-10-16：胶囊搬到顶栏之后改成**向下展开**（原来在侧栏底部，向上弹）。
+     右对齐到胶囊的右沿，免得菜单超出窗口右边。 */
+  right: 0;
+  top: calc(100% + 6px);
+  width: 220px;
   z-index: var(--z-menu, 60);
   display: flex;
   flex-direction: column;

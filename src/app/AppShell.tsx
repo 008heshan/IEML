@@ -729,6 +729,20 @@ export function App() {
 
         <TaskCenter />
 
+        {/*
+          ★★ 2026-10-16（用户：「**左下角胶囊改到右上角最小化按钮的左边**」）：
+          账号入口从**侧栏底部**搬到**顶栏**，紧挨窗口按钮（最小化）的左边。
+
+          ★ 这是一次**移动**，不是新增第二处：侧栏那份（`</nav>` 之后那个
+            `<AccountMenu />`）已经删掉，入口仍然只有一处 —— 2026-09-22 那条
+            "同一个动作有两个入口，用户会以为它们是两件事"的教训仍然守着。
+          ★ 反过来，2026-09-22 用户还说过"把账号按钮放到最底部，点击可以向上展开"；
+            这次是他自己改回来的（需求变了，不是当时做错了），注释留在这里说明
+            来龙去脉，免得下一个人以为有人手滑。
+          ★ 菜单现在是**向下展开**（胶囊在顶栏，向上会顶出窗口）。
+        */}
+        <AccountMenu onOpenAccount={() => setAccountOpen(true)} />
+
         {/* ★★ 2026-09-16 用户要求"删除白色模式"：那个太阳/月亮按钮已经删掉。
            只保留深色 —— 一个主题就没有"两套值必须同步"的负担，
            也不会再出现"浅色下某个 rgba 变成污渍"这类只在一半用户那里出现的问题。 */}
@@ -904,7 +918,8 @@ export function App() {
                   aria-current={state.page === 'news' ? 'page' : undefined}
                   onClick={() => go('news')}
                 >
-                  <IconNews /> MC 新闻
+                  <IconNews />
+                  <span className="nav-text">MC 新闻</span>
                 </button>
                 <button
                   type="button"
@@ -912,7 +927,8 @@ export function App() {
                   aria-current={state.page === 'changelog' ? 'page' : undefined}
                   onClick={() => go('changelog')}
                 >
-                  <IconLayers /> 更新日志
+                  <IconLayers />
+                  <span className="nav-text">更新日志</span>
                 </button>
                 <button
                   type="button"
@@ -925,7 +941,8 @@ export function App() {
                    *   ★ 只在**真的有**更新时出现 —— 没有更新时这一行与以前完全一样。
                    */
                 >
-                  <IconInfo /> 关于
+                  <IconInfo />
+                  <span className="nav-text">关于</span>
                   {hasUpdate ? (
                     <em className="side-badge" data-testid="about-update-badge">
                       有更新
@@ -982,11 +999,10 @@ export function App() {
           )}
             {/*
               ★★ 2026-09-22 用户：「把账号按钮放到最底部，点击可以向上展开」。
-              ★ 位置放在**侧栏最外层**（</nav> 之后、</aside> 之前）——
-                因为侧栏里有两套底栏（实例页一套、普通页一套），
-                账号入口只该有一处，而且两种状态下都要在。
+              ★ 2026-10-16：**那份又搬回顶栏了**（用户：「左下角胶囊改到右上角
+                最小化按钮的左边」）—— 所以这里不再渲染 `AccountMenu`，
+                入口在 `titlebar` 里那个。留这段注释是为了说明"它去哪了"。
             */}
-            <AccountMenu onOpenAccount={() => setAccountOpen(true)} />
         </aside>
 
         {/* ==================== 内容区 ==================== */}
