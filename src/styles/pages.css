@@ -408,10 +408,18 @@
 .launch-btn {
   height: 56px;
   min-width: 268px;
-  padding: 0 var(--space-10);
+  /*
+   * ★★ 2026-10-16（用户给了一份 Uiverse 样式：「开始按钮做成这样」）：
+   *   右边要留出那块**托盘**的位置（托盘 2.2em 见方 + 0.3em 边距），
+   *   文字因此靠左排（`justify-content: flex-start`）。
+   *   ★ 这一条是**几何**，皮肤在 app.css 的「启动按钮：实心强调色 + 右侧托盘」一节
+   *     —— 同一个类名散在两个文件里、后加载的这个赢，改之前先搜一遍类名。
+   */
+  padding: 0 3.6em 0 1.2em;
   font-size: var(--text-lg);
   font-weight: 600;
   border-radius: var(--radius-lg);
+  justify-content: flex-start;
 }
 .launch-btn svg {
   width: 20px;

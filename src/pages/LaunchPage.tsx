@@ -701,6 +701,15 @@ export function LaunchPage() {
         </div>
 
         {/* 启动按钮 */}
+        {/*
+          ★★ 2026-10-16（用户给了一段 Uiverse 的 `.cssbuttons-io-button`：
+             「**开始按钮做成这样**」）：按钮不再是"图标 + 文字"并排，而是
+             **文字 + 右侧一块方形托盘**（托盘里放那个三角），悬停时托盘铺满整颗按钮。
+             ★ 图标从文字**前面**挪到托盘里 —— 这是那份样式的一部分，不是漏了。
+             ★ 托盘是 `aria-hidden`：它装的是同一个图标的另一种位置，
+               `id="ieml-launch-btn"` 与 `onClick` 都没变（外壳靠这个 id 点它，
+               见 AppShell 里那段"启动请求"的处理）。
+        */}
         <div className="launch-btn-wrap">
           {isRunning ? (
             <Button
@@ -709,7 +718,10 @@ export function LaunchPage() {
               className="launch-btn"
               onClick={() => void stop()}
             >
-              <IconStop /> 停止游戏
+              停止游戏
+              <span className="launch-btn-plate" aria-hidden="true">
+                <IconStop />
+              </span>
             </Button>
           ) : (
             <Button
@@ -719,7 +731,10 @@ export function LaunchPage() {
               loading={launching}
               onClick={() => void launch()}
             >
-              <IconPlay /> 启动游戏
+              启动游戏
+              <span className="launch-btn-plate" aria-hidden="true">
+                <IconPlay />
+              </span>
             </Button>
           )}
         </div>

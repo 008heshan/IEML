@@ -2553,8 +2553,17 @@ tbody tr.clickable:focus-visible {
 }
 
 /* ---------- ③ 按钮 ---------- */
-:root[data-motion='mid'] .btn,
-:root[data-motion='aura'] .btn {
+/*
+ * ★★ 2026-10-16：这两个选择器加了 `:not(.launch-btn)`。
+ *
+ *   起因（用户：「按钮的动效呢」）：启动按钮自己的过渡表里写了 `filter` / `transform`，
+ *   但这一条的**优先级更高**（`:root[data-motion=…]` + `.btn`），于是它一直被盖住 ——
+ *   真机量出来是 `background/border-color/color/box-shadow/transform`，
+ *   而**没有 `filter`**：悬停变亮是瞬跳，抬升只有 80ms（`--dur-instant`）。
+ *   ⇒ 启动按钮的过渡交给它自己那一节（那里 filter/transform 都写了）。
+ */
+:root[data-motion='mid'] .btn:not(.launch-btn),
+:root[data-motion='aura'] .btn:not(.launch-btn) {
   transition:
     background var(--dur-fast) var(--ease),
     border-color var(--dur-fast) var(--ease),
@@ -2569,9 +2578,15 @@ tbody tr.clickable:focus-visible {
 :root[data-motion='aura'] .btn:active:not(:disabled) {
   transform: translateY(0) scale(0.975);
 }
-/* 灵韵：主按钮悬停时"亮起来"（同色系外发光，不是黑影） */
-:root[data-motion='aura'] .btn-primary:not(:disabled):hover {
-  box-shadow: 0 8px 22px rgba(74, 123, 224, 0.38);
+/*
+ * 灵韵：主按钮悬停时"亮起来"（同色系外发光，不是黑影）。
+ * ★ 2026-10-16：这句话原来写的是 `rgba(74, 123, 224, 0.38)` —— 一个**写死的蓝**，
+ *   换主题不变色（与本节第 ③ 条同一个毛病）。改成按主题声明的 `--accent-glow-strong`。
+ * ★ 排除 `.launch-btn`：启动按钮自己那套"实心色 + 托盘"的悬停阴影里带着
+ *   `inset` 厚度，被这条更具体的选择器盖掉就会少一层。
+ */
+:root[data-motion='aura'] .btn-primary:not(:disabled):not(.launch-btn):hover {
+  box-shadow: 0 8px 22px var(--accent-glow-strong);
 }
 
 /* ---------- ④ 可点卡片：悬停抬升（适中）/ 辉光（灵韵） ---------- */
@@ -3471,8 +3486,27 @@ tbody tr.clickable:focus-visible {
 }
 
 /* ============================================================================
-   ★★ 启动按钮：自发光液态玻璃（2026-09-23，用户：「启动器按钮做个自发光液态玻璃效果…
-   启动游戏时用转圈把三角替换掉…启动按钮也要随着主题颜色变」）
+   ★★ 启动按钮：实心强调色 + 右侧托盘（2026-10-16）
+
+   用户给了一段 Uiverse 的 `.cssbuttons-io-button`（作者 adamgiebl）并说
+   「**开始按钮做成这样**」。那一份是"实心色 + 右侧一块方形托盘，悬停时托盘
+   铺满整颗按钮、箭头往右挪一下"。
+
+   ★ 与那一份的四处出入（都有原因，不是走样）：
+     ① **颜色不写死**。原文是 `#a370f0` / `#714da6` / `#7b52b9` 三个紫色 ——
+        这里全部走主题令牌，否则九套主题里它永远是紫的
+        （这个仓库为"不随主题变"栽过两次，见 pages.css 里那段更正）。
+     ② **尺寸不写死 17px / 2.8em**。字号与高宽由 pages.css 的 `.launch-btn` 给，
+        这里用 em 跟着它走。
+     ③ **保留"启动中"的呼吸**与 `prefers-reduced-motion` 分支 —— 那是用户
+        早先点名要的反馈（"看得出它在使劲"），换皮不该把它弄丢。
+        原来的"液态玻璃高光（::before）"与"泛光漂移（::after）"随之删掉：
+        这一版是实心色，那两层是玻璃时代的装饰。
+     ④ 托盘**用主题的"主文字色"当白块**（原文是纯白）：九套主题里它是各自的
+        近白色，压在强调色上就是原文那种"白块 + 彩箭头"的对比。
+
+   ★ 悬停时托盘会**盖住文字**：原文就是这么设计的（英文 `Get started` 同样被盖住），
+     这里照做 —— 铺开之后箭头仍在，仍然一眼看得出这是"开始"。
    ============================================================================ */
 
 /*
@@ -3513,148 +3547,190 @@ tbody tr.clickable:focus-visible {
 }
 
 .launch-btn {
+  /*
+   * 颜色：默认跟着强调色；`btn-danger`（停止游戏）换成危险色 ——
+   * 同一个元素两种语义，用两个局部变量切换，不写两套规则。
+   */
+  --slab: var(--accent);
+  --slab-deep: var(--accent-active);
+  --slab-glow: var(--accent-glow);
   position: relative;
   overflow: hidden;
-  /*
-   * 颜色**全部走令牌** —— 9 套主题的强调色不同，按钮必须跟着变。
-   * 不写死 #5b8def 这类值（那就是"不随主题变"的根源）。
-   */
-  /*
-   * ★★ 2026-09-23 用户（截图）：「**我的玻璃呢**？」
-   *   上一版为了让按钮"自发光"，把它写成了**实心渐变** —— 发光有了，
-   *   但**不透光、没有磨砂**，看着就是一块实心板，和界面里其它玻璃不是一路。
-   *
-   *   真玻璃三样缺一不可（这里三样都有）：
-   *     ① 半透明底色（--accent-veil，按主题声明）
-   *     ② 磨砂 backdrop-filter（见下面那段）
-   *     ③ 顶部高光边（::before 那道亮线）
-   *   发光仍然保留 —— 玻璃与光晕是**叠加**关系，不是二选一。
-   */
-  background: var(--accent);
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.16) 0%,
-    rgba(255, 255, 255, 0.04) 45%,
-    rgba(0, 0, 0, 0.06) 100%
-  ), var(--accent-veil);
-  border: 1px solid var(--accent);
-  border: 1px solid var(--accent-edge);
-  /*
-   * ★ 磨砂：把按钮**后面**的内容糊掉再上色 —— 这一条才是"玻璃"与"半透明色块"的分界。
-   *   saturate 稍微提一点，避免糊完之后发灰。
-   */
-  backdrop-filter: blur(14px) saturate(150%);
-  -webkit-backdrop-filter: blur(14px) saturate(150%);
+  background: var(--slab);
   color: #fff;
+  letter-spacing: 0.05em;
   /*
-   * 「自发光」：两层光 —— 近处一圈紧贴按钮的光晕，远处一团散开的辉光。
-   * 都用**按主题声明好的**派生令牌（tokens.css 里由 --accent 派生）——
-   ★ 不在这里现算：color-mix 参与 background-image / box-shadow 时
-     不会随主题重算（真机量到按钮冻在蓝色），这条仓库里早有教训。
+   * 内阴影压出"厚度"（原文 `inset 0 0 1.6em -0.6em #714da6`）。
+   * ★ 用 --slab-deep（每个主题里那颗更深的强调色），不写死紫色。
    */
-  box-shadow: 0 6px 18px var(--accent); /* 兜底，同上 */
-  box-shadow:
-    0 0 0 1px var(--accent-glow),
-    0 6px 18px var(--accent-glow),
-    0 14px 46px rgba(0, 0, 0, 0.12),
-    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  box-shadow: inset 0 0 1.6em -0.6em var(--slab-deep);
+  /*
+   * ★★ 过渡要**列全**（2026-10-16，用户：「按钮的动效呢」）。
+   *   上一版这里只写了 background / box-shadow 两项，于是：
+   *     · 悬停那句 `filter: brightness(1.06)` 是**瞬间跳**过去的；
+   *     · 适中/灵韵档给 `.btn` 加的悬停抬升（`transform: translateY(-1px)`）
+   *       也被这条更具体的 transition 覆盖掉，同样变成瞬变。
+   *   ⇒ filter / transform 两项补回来。
+   */
   transition:
+    background var(--dur-base) var(--ease),
     box-shadow var(--dur-base) var(--ease),
-    transform var(--dur-fast) var(--ease),
-    filter var(--dur-fast) var(--ease);
+    filter var(--dur-fast) var(--ease),
+    transform var(--dur-fast) var(--ease);
 }
-/* 液态玻璃的那道高光：一条斜向的亮带，只是**贴着上沿**，不抢文字 */
+/*
+ * ★★ 闲着的时候"活着"：一条光带每隔几秒从左扫到右（2026-10-16，用户：
+ *   「按钮的动效呢」—— 换成平色之后它一动不动了）。
+ *
+ *   上一版（液态玻璃那代）的闲置动效是"呼吸泛光"（`::after` 的径向渐变，
+ *   opacity 0→0.55 来回）。那一层是**给玻璃用的**：半透明的彩色雾气压在实色上
+ *   只会糊成一团脏色，所以没有原样搬过来 —— 平色按钮上"活起来"的经典做法是
+ *   **光带扫过**：一条斜的白色半透明带子，扫完歇一会儿再扫。
+ *   ★ 只在按钮本体上；**启动中不扫**（那时转圈才是主角，两处动效会抢注意力）。
+ *   ★ `overflow: hidden` 正好把带子裁在圆角里（不会溢出到按钮外）。
+ *   ★ 减少动效（应用内那档）与系统的 `prefers-reduced-motion` 由 tokens.css
+ *     的两条全局规则压平 —— 这里不必再写一遍。
+ */
 .launch-btn::before {
   content: '';
   position: absolute;
-  inset: 0 0 auto 0;
-  height: 50%;
+  top: 0;
+  bottom: 0;
+  width: 55%;
   background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.42),
-    rgba(255, 255, 255, 0.06) 70%,
+    100deg,
+    transparent,
+    rgba(255, 255, 255, 0.3) 45%,
+    rgba(255, 255, 255, 0.42) 50%,
+    rgba(255, 255, 255, 0.3) 55%,
     transparent
   );
+  transform: translateX(-160%);
+  animation: launchSheen 5.4s var(--ease-in-out) infinite;
   pointer-events: none;
 }
-/* 呼吸：非常慢、幅度很小 —— 目的是"活着"，不是闪 */
-.launch-btn:not(:disabled):not(.btn-loading)::after {
-  content: '';
-  position: absolute;
-  inset: -40% -10%;
-  /*
-   * ★★ 2026-09-23 用户（截图）：「**启动游戏的泛光没有跟随按钮的颜色**」——
-   *   问题出在这一层：它是**白色**径向渐变，压在按钮上就是一团白雾，
-   *   换什么主题都是白的。改成**按主题声明的强调色**（--accent-glow 系列），
-   *   于是泛光与按钮同色。
-   */
-  background: radial-gradient(
-    45% 60% at 50% 50%,
-    var(--accent-glow-strong),
-    transparent 70%
-  );
-  opacity: 0;
-  animation: launchBreath 4.2s var(--ease-in-out) infinite;
-  pointer-events: none;
-}
-@keyframes launchBreath {
-  0%,
+@keyframes launchSheen {
+  /* 0 → 60% 完成一次扫过，剩下 40% 停在右边（外面）——扫动只占一轮的一小半，
+     不至于变成一颗一直在闪的按钮 */
+  0% {
+    transform: translateX(-160%);
+  }
+  60%,
   100% {
-    opacity: 0;
-    transform: translateX(-18%);
-  }
-  50% {
-    opacity: 0.55;
-    transform: translateX(18%);
+    transform: translateX(260%);
   }
 }
-.launch-btn:not(:disabled):hover {
-  transform: translateY(-1px);
+/* 停止游戏（危险色）：同一套皮肤，只换三个局部变量 */
+.launch-btn.btn-danger,
+.launch-btn.btn-warning {
+  --slab: var(--danger);
+  --slab-deep: var(--danger);
+  --slab-glow: var(--danger-border);
+}
+/* 悬停 / 键盘聚焦：底下多一圈同色辉光（内阴影那层厚度不变） */
+.launch-btn:not(:disabled):hover,
+.launch-btn:not(:disabled):focus-visible {
+  background: var(--slab);
   filter: brightness(1.06);
-  /* ★ 悬停时玻璃更"实"一点（--accent-veil-strong 按主题声明） */
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.2) 0%,
-    rgba(255, 255, 255, 0.05) 45%,
-    rgba(0, 0, 0, 0.06) 100%
-  ), var(--accent-veil-strong);
   box-shadow:
-    0 0 0 1px var(--accent-glow-strong),
-    0 8px 22px var(--accent-glow-strong),
-    0 18px 60px var(--accent-glow),
-    inset 0 1px 0 rgba(255, 255, 255, 0.34);
+    inset 0 0 1.6em -0.6em var(--slab-deep),
+    0 6px 18px var(--slab-glow);
 }
 .launch-btn:not(:disabled):active {
-  transform: translateY(0);
-  filter: brightness(0.98);
+  filter: brightness(0.97);
 }
-/* 启动中：光收一点，但**保留**发光（要让用户看出"它正在使劲"） */
+/*
+ * 右侧那块托盘：静止时**正方形**；悬停时铺满整颗按钮（四周留 0.3em）。
+ * ★ 它是绝对定位的、且在文字**之后**渲染 ⇒ 铺开时压在文字上面（原文就是这么设计的）。
+ * ★ 用 `aspect-ratio` 而不是 `width: 2.2em`：按钮高 56px 而字号只有 16px，
+ *   2.2em 出来是 35px，比上下各留 0.3em 算出的高度（44px）矮 —— 托盘会变成长方形。
+ *   改成"高度由 top/bottom 定、宽度跟着高度走"。
+ *   悬停那条 `width: calc(100% - 0.6em)` 是显式宽度，会盖过 aspect-ratio（正是"铺满"）。
+ */
+.launch-btn-plate {
+  position: absolute;
+  top: 0.3em;
+  right: 0.3em;
+  bottom: 0.3em;
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.7em;
+  background: var(--text-primary);
+  box-shadow: 0.1em 0.1em 0.6em 0.2em var(--slab-glow);
+  /*
+   * ★ 托盘铺开用 `--dur-slow`（260ms）：样式稿里写的是 `all 0.3s` ——
+   *   比按钮其它过渡（180ms）慢一档，"一块白板推过去"才看得清。
+   */
+  transition:
+    width var(--dur-slow) var(--ease-out),
+    transform var(--dur-fast) var(--ease);
+}
+/*
+ * 托盘里的箭头。
+ * ★ 选择器要比 pages.css 那条 `.launch-btn svg { width: 20px }` 更具体 ——
+ *   否则图标被钉死在 20px。
+ * ★ 1.4em（≈22px）对 44px 的托盘：正好一半，与样式稿里图标/托盘的比例一致。
+ */
+.launch-btn .launch-btn-plate svg {
+  width: 1.4em;
+  height: 1.4em;
+  color: var(--slab);
+  /* 同托盘那档：箭头的位移跟着白板一起走（样式稿 `all 0.3s`） */
+  transition: transform var(--dur-slow) var(--ease-out);
+}
+.launch-btn:not(:disabled):hover .launch-btn-plate {
+  /*
+   * ★★ 这两行必须成对出现（真机踩过）：
+   *   `aspect-ratio: 1` + 显式宽度 ⇒ 浏览器会**反过来把高度也撑成那个宽度**
+   *   （256px），而按钮有 `overflow: hidden` —— 结果托盘变成一颗 256×256 的巨块，
+   *   居中在里面的箭头正好被裁在可视区之外：**悬停时箭头凭空消失**。
+   *   ⇒ 铺开这一瞬间把 aspect-ratio 关掉，高度仍由上下 0.3em 定住。
+   */
+  aspect-ratio: auto;
+  width: calc(100% - 0.6em);
+}
+.launch-btn:not(:disabled):hover .launch-btn-plate svg {
+  transform: translateX(0.1em);
+}
+.launch-btn:not(:disabled):active .launch-btn-plate {
+  transform: scale(0.95);
+}
+/*
+ * 启动中：托盘让位给转圈。
+ * ★ 托盘里装的就是那个三角 —— 转圈出现时它必须消失（用户 2026-10-09：
+ *   「**在原有的图标的左侧再来一个旋转图标**，这是个重复，万万不可」）。
+ *   同时把右侧留白收回去：托盘都没了，还留着 3.6em 的空档会让文字看着偏左。
+ */
 .launch-btn.btn-loading {
+  padding-right: 1.2em;
   animation: launchPulse 1.4s var(--ease-in-out) infinite;
+}
+.launch-btn.btn-loading .launch-btn-plate {
+  display: none;
+}
+/* ★ 启动中不扫光带：那时转圈是主角，两处动效一起动会显得慌 */
+.launch-btn.btn-loading::before {
+  display: none;
 }
 @keyframes launchPulse {
   0%,
   100% {
-    box-shadow:
-      0 0 0 1px rgba(0, 0, 0, 0.12),
-      0 6px 18px rgba(0, 0, 0, 0.12),
-      inset 0 1px 0 rgba(255, 255, 255, 0.22);
+    box-shadow: inset 0 0 1.6em -0.6em var(--slab-deep);
   }
   50% {
     box-shadow:
-      0 0 0 1px var(--accent-glow),
-      0 8px 26px var(--accent-glow-strong),
-      0 16px 54px var(--accent-glow),
-      inset 0 1px 0 rgba(255, 255, 255, 0.28);
+      inset 0 0 1.6em -0.6em var(--slab-deep),
+      0 0 0 1px var(--slab-glow),
+      0 8px 26px var(--slab-glow);
   }
 }
-/* 停止按钮不该发光（它是主色，但语义是"打断"，视觉上要沉下来） */
-.launch-btn.btn-danger,
-.launch-btn.btn-warning {
-  animation: none;
-}
 @media (prefers-reduced-motion: reduce) {
-  .launch-btn::after,
+  /* 光带与脉冲都停掉。★ tokens.css 里那条全局规则已经把 duration 压到 0.01ms，
+     这里再显式写一遍是因为**动画会停在最后一帧**（光带会停在按钮右侧的边界上），
+     而"停下"应该是"看不见" */
+  .launch-btn::before,
   .launch-btn.btn-loading {
     animation: none;
   }
