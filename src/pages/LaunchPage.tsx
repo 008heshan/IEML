@@ -22,16 +22,19 @@
 import { useEffect, useMemo, useState, useRef } from 'react';
 import { useApp } from '../state/AppContext';
 import { isInstanceRunning, runningInfo, runningCount } from '../state/store';
-import { Button, Chip, CustomSelect, EmptyState, Modal, Note, Spinner } from '../ui';
+import { Button, Chip, EmptyState, Modal, Note, SearchBox, Spinner } from '../ui';
 import { instanceTitle } from '../state/instance-name';
+import { pickerPlan } from '../domain/launch-picker';
 import { PackIcon } from '../components/PackIcon';
 import {
   IconAlert,
   IconBox,
+  IconCheck,
   IconCpu,
   IconDrive,
   IconFolder,
   IconGear,
+  IconGrid,
   IconJava,
   IconPlay,
   IconPuzzle,
@@ -415,6 +418,50 @@ export function LaunchPage() {
     [launchable, target?.id],
   );
 
+  /* ====================== 版本选择器（2026-10-16 用户选 A+） ======================
+   *
+   * 用户：「我想替换掉主页的下拉选单，请给我一个合适的整改方式」→ 看过草案后选了
+   * **A+：卡片排 + 「全部版本」入口**。
+   *
+   * ## 为什么要换掉下拉（不只是"换个样子"）
+   *
+   *   ① **同一个决定本来就有两套入口**：下拉列 `launchable`，下面「其它版本」列
+   *      `others`（＝ `launchable` 去掉当前项）—— 一屏里把同一批版本列了两遍。
+   *   ② **信息更全的反而是卡片**（图标 + 名字 + MC版本·加载器），而下拉只有一行文字。
+   *   ③ 下拉还有一个**说不出话的状态**：记忆里的目标在**别的目录**里时，
+   *      `value` 不在 `options` 里 → 显示成「请选择」（真机案例记在文件头）。
+   *      卡片排没有这个隐藏态：**选中的那张永远在列表里**。
+   *
+   * ## 规则
+   *
+   *   · 当前目标**固定第一张**，其余按"最近玩过在前"（沿用 `others` 的排序）；
+   *   · 总数 ≤ 6 全部平铺；> 6 就只平铺前 5 张 + 一张「全部版本…」卡
+   *     （点开弹层，可搜索）—— 这是"版本多的人主页不被撑长"的唯一机制；
+   *   · 运行中禁用（与原来的下拉一致：跑着的时候换目标没有意义）。
+   */
+  const pickerList = useMemo(
+    () => (target ? [target, ...others.filter((i) => i.id !== target.id)] : others),
+    [target, others],
+  );
+  /*
+   * "平铺几张 / 要不要「全部版本…」入口"是一条**规则**，放在 domain 里
+   * （`pickerPlan`），由 `tests/launch-picker.test.mjs` 钉住 ——
+   * 本机只有 4 个版本，永远走不到折叠那一支，靠手点验不出来。
+   */
+  const picker = pickerPlan(pickerList.length);
+  const pickerShown = picker.hasMore ? pickerList.slice(0, picker.shown) : pickerList;
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerQuery, setPickerQuery] = useState('');
+  const pickerFiltered = useMemo(() => {
+    const q = pickerQuery.trim().toLowerCase();
+    if (!q) return pickerList;
+    return pickerList.filter((i) =>
+      `${instanceTitle(i.config.name, i.mcVersion, i.loader)} ${i.mcVersion} ${i.loader?.kind ?? ''}`
+        .toLowerCase()
+        .includes(q),
+    );
+  }, [pickerList, pickerQuery]);
+
   /* ---------- 空状态：这个文件夹里没有可启动的版本 ---------- */
   if (launchable.length === 0) {
     return (
@@ -684,22 +731,60 @@ export function LaunchPage() {
           </div>
         ) : null}
 
-        {/* 版本下拉 */}
-        <div className="launch-version">
-          <label className="launch-version-label">
-            要启动的版本
-          </label>
-          <CustomSelect
-            value={target?.id ?? ''}
-            onChange={setLaunchTarget}
-            disabled={isRunning}
-            ariaLabel="要启动的版本"
-            options={launchable.map((i) => ({
-              value: i.id,
-              /* ★ 2026-09-22：统一格式（"Minecraft 26.2 + Fabric 26.2：模组加载器"） */
-              label: instanceTitle(i.config.name, i.mcVersion, i.loader),
-            }))}
-          />
+        {/* 版本选择器（A+：卡片排 + 「全部版本」入口） —— 取代原来的下拉与「其它版本」两块 */}
+        <div className="launch-picker">
+          <div className="launch-picker-head">
+            <label className="launch-version-label" id="launch-picker-label">
+              要启动的版本
+            </label>
+            <span className="lp-count">{launchable.length} 个</span>
+          </div>
+          <div className="lp-row" role="listbox" aria-labelledby="launch-picker-label">
+            {pickerShown.map((i) => {
+              const on = i.id === target?.id;
+              return (
+                <button
+                  key={i.id}
+                  type="button"
+                  role="option"
+                  aria-selected={on}
+                  disabled={isRunning}
+                  className={`lp-card glass${on ? ' on' : ''}`}
+                  onClick={() => setLaunchTarget(i.id)}
+                >
+                  <VersionIcon version={i.mcVersion} size={34} />
+                  <span className="lp-main">
+                    <span className="lp-name">{instanceTitle(i.config.name, i.mcVersion, i.loader)}</span>
+                    <span className="lp-sub">
+                      {i.mcVersion}
+                      {i.loader ? ` · ${loaderName(i.loader.kind)}` : ' · 原版'}
+                    </span>
+                  </span>
+                  {on ? (
+                    <span className="lp-check" aria-hidden="true">
+                      <IconCheck />
+                    </span>
+                  ) : null}
+                </button>
+              );
+            })}
+            {picker.hasMore ? (
+              <button
+                type="button"
+                disabled={isRunning}
+                className="lp-card lp-more glass"
+                onClick={() => setPickerOpen(true)}
+              >
+                <span className="lp-more-ic" aria-hidden="true">
+                  <IconGrid />
+                </span>
+                <span className="lp-main">
+                  <span className="lp-name">全部版本…</span>
+                  <span className="lp-sub">还有 {launchable.length - pickerShown.length} 个</span>
+                </span>
+              </button>
+            ) : null}
+          </div>
         </div>
 
         {/* 启动按钮 */}
@@ -860,59 +945,16 @@ export function LaunchPage() {
         </Note>
       ) : null}
 
-      {/* ==================== 其它版本：一眼换、一眼进 ====================
-          ★ 用户说主页面"留着大片空区"。这里填的是**真东西**：本机其它版本，
-            点一下切启动目标，点右边的小箭头直接进它的设置。
-            只有一个版本时整块不渲染（不留空标题）。 */}
-      {others.length > 0 ? (
-        <>
-          <div className="section-head">
-            <h2 className="section-title">其它版本</h2>
-            {/*
-              ★ 2026-09-17 用户（截图 图七）：这里的「全部版本」按钮删掉 ——
-                「这个全部版本的按钮是没必要的」。
-
-              为什么它是多余的：下面那排卡片已经能点一下切启动目标、
-              点右边箭头直接进它的设置，"其它版本"这块本身就是**快捷入口**；
-              再去跳一个"版本列表"页，是把用户从主页推走，与这块的意图相反。
-              （`go` 这个函数本身不会变成未使用变量 —— 本页还有
-                `go('launch')` / `go('download')` / `go('settings')` 三处。
-                ★ 注：`go('versions')` 到第五十轮已经**一处都不剩**了，
-                  最后两处分别是这里和下面那颗「管理这个版本」，
-                  两处都改成直达目标而不是绕去列表。）
-            */}
-          </div>
-          <div className="launch-others">
-            {others.map((i) => (
-              <button
-                key={i.id}
-                type="button"
-                className="lo-card glass"
-                onClick={() => setLaunchTarget(i.id)}
-              >
-                <VersionIcon version={i.mcVersion} size={38} />
-                <span className="lo-main">
-                  {/*
-                    ★★ 2026-09-23 用户（截图）：「**怎么没统一主页版本的命名**」——
-                      这一排原来直接显示 `config.name`，而实例名是历代不同规则生成的，
-                      于是同一屏里同时出现 `1.8.9`、`Minecraft 1.12.2`、`Fabric 26.2`、
-                      `26.3 (2)` 四种写法。
-                      现在走 `instanceTitle()`（与版本列表同一个函数）：
-                      自动生成的名字统一成 `Minecraft <MC> [+ <加载器> <版本>]`，
-                      **用户自己改过名的仍然显示他改的**。
-                  */}
-                  <span className="lo-name">{instanceTitle(i.config.name, i.mcVersion, i.loader)}</span>
-                  <span className="lo-sub">
-                    {i.mcVersion}
-                    {i.loader ? ` · ${loaderName(i.loader.kind)}` : ' · 原版'}
-                  </span>
-                  {/* ★ 2026-09-16：卡片右下角那行"从未启动 / 3 天前"已删（用户要求） */}
-                </span>
-              </button>
-            ))}
-          </div>
-        </>
-      ) : null}
+      {/*
+        ★★ 2026-10-16：「其它版本」这一整块**并进了上面的版本选择器**（用户选了 A+）。
+          它原来和下拉在干同一件事（`others` ＝ `launchable` 去掉当前项），
+          一屏里把同一批版本列了两遍 —— 现在只有**一处**在选版本。
+          旧注释里那两条历史（"主页留白太多所以填真东西"、"全部版本按钮没必要"）
+          依然成立，只是载体从"另一排卡片"变成了选择器里的「全部版本…」入口：
+          · 平铺够用时不出现那个入口（≤6 个版本就是几卡片）；
+          · 超过 6 个才出现，点开是**可搜索**的弹层 —— 这比原先"推你去版本列表页"
+            更贴这块的意图（留在主页就能换）。
+      */}
 
       {/* ==================== 本机状态（真数据，不是装饰） ==================== */}
       {state.machine ? (
@@ -949,6 +991,68 @@ export function LaunchPage() {
           </div>
         </div>
       ) : null}
+
+      {/* ==================== 全部版本（A+ 的「全部版本…」入口） ====================
+          什么时候会出现：这个文件夹里的版本**超过 6 个**时，卡片排只平铺前 5 张，
+          第 6 张位置放「全部版本…」—— 主页因此不会被版本数量撑长。
+
+          ★ 用 `Modal`（app 里一致的弹层）而不是浮层：这里要给**搜索框 + 长列表**，
+            浮层在小窗口里会把自己挤到屏幕外（`.row-menu` 那套翻转逻辑就是为这个写的）。
+          ★ 列表项与卡片排是同一套信息与命名（`instanceTitle` / `VersionIcon`）。
+      */}
+      <Modal
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        title="选择要启动的版本"
+        subtitle={`这个文件夹里共 ${launchable.length} 个`}
+        size="lg"
+      >
+        <div className="lp-search">
+          <SearchBox
+            value={pickerQuery}
+            onChange={setPickerQuery}
+            label="搜索版本"
+            placeholder="搜索名称或版本号…"
+          />
+        </div>
+        <div className="lp-list" role="listbox" aria-label="全部版本">
+          {pickerFiltered.map((i) => {
+            const on = i.id === target?.id;
+            return (
+              <button
+                key={i.id}
+                type="button"
+                role="option"
+                aria-selected={on}
+                className={`lp-item${on ? ' on' : ''}`}
+                onClick={() => {
+                  setLaunchTarget(i.id);
+                  setPickerOpen(false);
+                }}
+              >
+                <VersionIcon version={i.mcVersion} size={30} />
+                <span className="lp-main">
+                  <span className="lp-name">{instanceTitle(i.config.name, i.mcVersion, i.loader)}</span>
+                  <span className="lp-sub">
+                    {i.mcVersion}
+                    {i.loader ? ` · ${loaderName(i.loader.kind)}` : ' · 原版'}
+                  </span>
+                </span>
+                {on ? (
+                  <span className="lp-check" aria-hidden="true">
+                    <IconCheck />
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
+          {pickerFiltered.length === 0 ? (
+            <div className="dim" style={{ padding: '18px 4px' }}>
+              没有匹配的版本。换个词试试，或者去「版本列表」看看。
+            </div>
+          ) : null}
+        </div>
+      </Modal>
 
       {/* ==================== 启动命令预览 ====================
           ★ 2026-09-16 用户（截图）：删掉了副标题

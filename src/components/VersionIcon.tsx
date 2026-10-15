@@ -54,7 +54,15 @@ export function VersionIcon({ version, size = 34 }: { version: string; size?: nu
   const fam = versionFamily(version);
   return (
     <span className={`vi vi-${fam.tone}`} style={{ width: size, height: size }} aria-hidden="true">
-      <img src={versionIcon} width={size} height={size} alt="" style={{ borderRadius: 4 }} />
+      {/*
+        ★ 2026-10-16（design-taste-frontend 的「形状锁」体检出来的）：
+          这里原来是写死的 `borderRadius: 4` —— 4px **不在本项目的圆角刻度上**
+          （刻度是 6 / 8 / 12 / 16 / 9999），而且外面那层 `.vi` 用的是 `--radius-md`
+          （8px），于是图片自己的圆角与外框差 4px，四角会露出一点点底色。
+          ⇒ 改成 `inherit`：跟着外框走，刻度与"图/回退方块看起来是同一个东西"
+            两件事一起解决，也不再有一个魔数需要维护。
+      */}
+      <img src={versionIcon} width={size} height={size} alt="" style={{ borderRadius: 'inherit' }} />
     </span>
   );
 }

@@ -269,52 +269,14 @@
   }
 }
 
-/* ---------- 其它版本（换启动目标） ---------- */
-.launch-others {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-  gap: var(--space-2);
-}
-.lo-card {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--row-pad-y) var(--row-pad-x);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  /*
-   * ★★ 2026-10-16：同 `.launch-hero` —— 这一排小卡也挂上了 `glass`
-   *   （见 LaunchPage.tsx），所以这里不再自己铺平色底。
-   *   ★ 边框**留着**：`:hover` 靠它变强调色（`border-color: var(--accent)`），
-   *     那条交互提示不该为了统一材质而丢掉。玻璃的内边在它内侧 1px，
-   *     合起来是一条略厚的边 —— 小卡上看着更"实"，正好。
-   */
-  color: var(--text-primary);
-  font-family: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition: border-color var(--dur-fast), background var(--dur-fast);
-}
-.lo-card:hover {
-  border-color: var(--accent);
-  background: var(--bg-hover);
-}
-.lo-main {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-.lo-name {
-  font-size: var(--text-base);
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.lo-sub {
-  font-size: var(--text-xs);
-  color: var(--text-secondary);
-}
+/*
+ * ★★ 2026-10-16：`.launch-others` / `.lo-card` / `.lo-main` / `.lo-name` / `.lo-sub`
+ *   这一整块样式**已删** —— 它们服务的是「其它版本」那一排卡片，而那一块已经并进
+ *   上面的版本选择器（`.launch-picker` / `.lp-*`）。TSX 里 0 处引用，留着就是死代码
+ *   （这个仓库对"没人用的东西"一向是删掉而不是留着，见 tokens.css 里删死令牌那条）。
+ *   ★ 其中 `.lo-card` 那段关于"也挂 glass、边框留给 hover"的说明，现在由
+ *     `.lp-card` 承接（信息与交互一模一样，只是换了名字）。
+ */
 
 /* ---------- 本机状态一行 ---------- */
 .launch-facts {
@@ -353,48 +315,204 @@
   white-space: nowrap;
 }
 
-.launch-version {
+/* ============================================================================
+   ★★ 版本选择器（2026-10-16，用户：「我想替换掉主页的下拉选单，请给我一个合适的
+   整改方式」→ 看过草案后选 **A+：卡片排 + 「全部版本」入口**）
+   ----------------------------------------------------------------------------
+   这里原来是一个 `CustomSelect`（下拉），下面还有一整块「其它版本」的卡片排 ——
+   两块在选同一件东西（`others` ＝ `launchable` 去掉当前项）。现在合成一处：
+   **一排可选择卡片**，当前目标固定第一张并带明确选中态。
+
+   ★ 版式：`max-width: 640px` 居中、`flex-wrap` 自动换行。用 640 而不是旧下拉的
+     420：卡片里要放图标 + 名字 + "MC 版本 · 加载器"，420 会把名字压成两行。
+   ★ 选中态只走令牌（`--accent` / `--accent-subtle`），九套主题自动跟着变。
+   ★ 运行中禁用（与旧下拉一致）：跑着的时候换目标没有意义。
+   ============================================================================ */
+.launch-picker {
   width: 100%;
-  max-width: 420px;
+  max-width: 640px;
   display: flex;
   flex-direction: column;
   align-items: center;
+  gap: var(--space-2);
+}
+.launch-picker-head {
+  display: flex;
+  align-items: baseline;
   gap: var(--space-2);
 }
 .launch-version-label {
   font-size: var(--text-sm);
   color: var(--text-tertiary);
 }
-.launch-select {
+/* 一共几个 —— 版本多的人一眼知道"这里只列了一部分" */
+.lp-count {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  opacity: 0.8;
+}
+.lp-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
+  width: 100%;
+}
+.lp-card {
   position: relative;
-  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  /* 宽度跟着内容走，但给一个下限：卡片排要看得出是"一批同级的选项" */
+  min-width: 190px;
+  max-width: 100%;
+  padding: 10px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  /*
+   * ★ 2026-10-16（按 design-taste-frontend 的「交互状态要全」那条体检出来的）：
+   *   这一排卡原来只有 hover 的边色变化，**按下去没有任何反馈**。
+   *   现在补上与 `.btn:active` 同一套的手感（`scale(0.985)`），并把 `transform`
+   *   加进过渡列表 —— 不加的话那一下会瞬变（这个坑本仓库踩过：过渡表漏属性，
+   *   动画"看起来没有"，控制台一句话都不说）。
+   */
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease),
+    transform var(--dur-instant) var(--ease);
 }
-.launch-select select {
-  width: 100%;
-  height: 40px;
+.lp-card:active:not(:disabled) {
+  transform: scale(0.985);
+}
+.lp-card:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.lp-card:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+/*
+ * 选中那张：强调色底 + 强调色边 + 右上角对勾。
+ * ★ 三重编码（底色、边、图标）而不是只换个颜色 —— 色觉差异、低对比屏幕、
+ *   以及"扫一眼找当前"这三种场景都能成立。
+ */
+.lp-card.on {
+  border-color: var(--accent);
+  background-color: var(--accent-subtle);
+}
+.lp-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.lp-name {
   font-size: var(--text-md);
-  padding-right: var(--space-8);
-  text-align: center;
-  text-align-last: center;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-/* ★ select 的原生箭头在深色主题下是黑的，所以自己画一个并把它藏掉 */
-.launch-select select {
-  appearance: none;
-  background-image: none;
+.lp-card.on .lp-name {
+  color: var(--accent);
+  font-weight: 600;
 }
-.launch-select > svg {
+.lp-sub {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lp-check {
   position: absolute;
-  right: var(--space-3);
-  top: 50%;
-  transform: translateY(-50%);
-  width: 16px;
-  height: 16px;
-  pointer-events: none;
-  fill: none;
-  stroke: var(--text-tertiary);
-  stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+  top: -7px;
+  right: -7px;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  color: #fff;
+}
+.lp-check svg {
+  width: 11px;
+  height: 11px;
+  stroke-width: 3;
+}
+/* 「全部版本…」那张：虚线边 + 图标块，一眼看出它不是某个版本 */
+.lp-more {
+  border-style: dashed;
+}
+.lp-more-ic {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--bg-active);
+  color: var(--text-secondary);
+}
+.lp-more-ic svg {
+  width: 17px;
+  height: 17px;
+}
+
+/* ---------- 「全部版本」弹层 ---------- */
+.lp-search {
+  margin-bottom: var(--space-3);
+}
+.lp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* ★ 弹层里自己滚，不把整个弹窗撑高（与版本列表的长清单同一套做法） */
+  max-height: min(52vh, 420px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.lp-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text-primary);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: transform var(--dur-instant) var(--ease);
+}
+.lp-item:hover {
+  background: var(--bg-hover);
+}
+/* ★ 同 `.lp-card`：弹层里的行也要有按下去的手感（交互状态不许只有 hover） */
+.lp-item:active {
+  transform: scale(0.995);
+}
+.lp-item.on {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+}
+.lp-item.on .lp-name {
+  color: var(--accent);
+  font-weight: 600;
+}
+/* 弹层里那一项的对勾不再挂在角上（列表是整行，角标会被切） */
+.lp-item .lp-check {
+  position: static;
+  margin-left: auto;
 }
 
 .launch-btn-wrap {
@@ -436,8 +554,26 @@
    *     —— 同一个类名散在两个文件里、后加载的这个赢，改之前先搜一遍类名。
    */
   padding: 0 3.6em 0 1.2em;
-  font-size: var(--text-lg);
-  font-weight: 600;
+  /*
+   * ★★ 2026-10-16（design-taste-frontend 的按钮对比度体检，真机量出来的）：
+   *
+   *   白字压在强调色上，实测 **3.23:1**（玄夜：`#fff` on `rgb(91,141,239)`）。
+   *   WCAG AA 对**正文**要求 4.5:1，对**大字**要求 3:1 —— 而"大字"的定义是
+   *   ≥24px 常规，**或 ≥18.66px 且 700 字重**。原来是 16px/600：两条都不满足，
+   *   所以严格算它是不达标的。
+   *
+   *   两条路可以选：
+   *     ① 把强调色压暗到达标（白字需要底色亮度 ≤0.183，大约再暗 10%+）——
+   *        代价是九套主题的主色全要重算，而且用户刚定的"亮色实心按钮"会变闷；
+   *     ② 把主按钮的文字**提到大字档**：20px + 700 ⇒ 3:1 就够，实测 3.23 ✓。
+   *   选了 ②：主按钮本来就是全屏唯一的主行动，字大一号也正好是它该有的分量；
+   *   而且改动只在**这一个按钮**上，不动主题、不动别处。
+   *   ★ 顺带记一笔：仓库自己的对比度判据（`tests/theme-tokens.test.mjs`）量的是
+   *     "文字压背景 / 主色压背景"，**没有**覆盖"白字压主色"这一对 —— 这次是靠
+   *     外部清单才发现的，值得补一条（本轮先不动那份判据，以免越改越宽）。
+   */
+  font-size: var(--text-xl);
+  font-weight: 700;
   border-radius: var(--radius-lg);
   justify-content: flex-start;
 }
