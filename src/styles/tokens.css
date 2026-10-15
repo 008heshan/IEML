@@ -766,10 +766,29 @@ body::before {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+/*
+ * ★★ **按钮类元素不画焦点框**（2026-10-16，用户截图 +「去掉 shift 会把按钮类交互键
+ *   框上的效果（这是个通用问题）」）。
+ *
+ *   原来按钮上叠了**两**层：上面那条 `outline`（2px + offset 2px）**再加**一圈
+ *   `box-shadow: var(--focus-ring)` —— 表现出来就是一个套在按钮外面的方框
+ *   （用户截图里那个蓝框）。用户明确不要它，而且是"通用问题" ⇒ 在这里一次关掉，
+ *   不在各个按钮上逐个写（逐个写必然漏，这个仓库为此栽过多次）。
+ *
+ *   ★ 只关**按钮类**（button / a / [role=button]）。这两类**保留**焦点提示：
+ *     · 文字输入框（`.input:focus-visible` / `.searchbox:focus-within`）——
+ *       没有提示就看不出"光标在哪个框里"；
+ *     · 整行可点元素（`.res-version.clickable` / `tbody tr.clickable`）——
+ *       它们横跨一整行，圈出来才知道选中的是哪一行。
+ *   ★ 代价如实写在这里（给下一个改这里的人）：键盘用户在按钮上**没有可见焦点**了。
+ *     用户要的就是这个效果，所以照做；要恢复的话，把 `box-shadow: var(--focus-ring)`
+ *     加回来即可 —— 令牌与九套主题的值都还在。
+ */
 button:focus-visible,
 a:focus-visible,
 [role='button']:focus-visible {
-  box-shadow: var(--focus-ring);
+  outline: none;
+  box-shadow: none;
 }
 
 
