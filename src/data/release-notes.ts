@@ -94,6 +94,20 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.21.6',
+    date: '2026-10-17',
+    headline: '这一版修好了备注框打字会被抢走的问题。',
+    groups: [
+      {
+        title: '修复了',
+        items: [
+          '修复了 给好友写备注时，每打一个字光标就会跳走，没法接着打下去。',
+          '修复了 弹窗打开时可能把光标放在关闭按钮上，而不是该输入的地方。',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.21.5',
     date: '2026-10-17',
     headline: '这一版让好友状态在拿不到的时候说真话。',

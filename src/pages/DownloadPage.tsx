@@ -815,6 +815,13 @@ function ModpackTab({
    *     安装实现**一行都不用动**，仍然只有一份。
    */
   const [installTarget, setInstallTarget] = useState<PackCard | null>(null);
+  /*
+   * ★ 2026-10-17 判过（与 `Modal` 那处焦点 bug 同形的候选）：**不用改**。
+   *   `onInstallViewChange` 的身份变化会让它重跑，但唯一的调用方
+   *   （本文件 442 行 `onInstallViewChange={setInModpackInstall}`）传的是
+   *   **useState 的 setter**（身份稳定）；而且重跑只是"把同一个布尔值再 set 一遍"
+   *   （React 同值 bail out）—— 幂等，不搬家焦点、不重置草稿、不重发请求。
+   */
   useEffect(() => {
     onInstallViewChange?.(installTarget !== null);
   }, [installTarget, onInstallViewChange]);

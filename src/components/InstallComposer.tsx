@@ -558,6 +558,13 @@ export function InstallComposer({
    *   注意 `null` 与 `[]` 的区别：查不到（null）→ 不传，走静态兜底；
    *   查到了但是空数组 → 传空数组，那是"上游确实没有"。
    */
+  /*
+   * ★ 2026-10-17 判过（同形的候选）：**不用改**。
+   *   两个依赖都是 `useMemo` 出来的派生值（`onlineBases` ← `queries`、
+   *   `optifineReal` ← `optifine`，都是 state），**身份只在内容真的变时才变** ——
+   *   不存在"父组件每渲染一次就换一个"的情况；就算重算，这里也只是纯函数再跑一遍
+   *   （没有 setState、没有请求、没有焦点），属幂等。
+   */
   const online = useMemo(() => {
     const addons = optifineReal ? { optifine: optifineReal.map((v) => v.version) } : undefined;
     if (!onlineBases && !addons) return undefined;
@@ -1102,6 +1109,17 @@ export function InstallComposer({
    *   第 2 屏是"模组加载器自己的一页"，下载页的页头与页签在那时要收起来。
    */
   const [step, setStep] = useState<'version' | 'loader'>('version');
+  /*
+   * ★ 2026-10-17 判过（与 `Modal` 那处焦点 bug 同形的候选）：**不用改**。
+   *
+   *   `onStepChange` 的身份变化会让这两条 effect 重跑，但今天它不可能变 ——
+   *   唯一的调用方（`DownloadPage.tsx:432`）传的是 `setInLoaderPage`，
+   *   一个 **useState 的 setter**（身份永久稳定）；而且即便将来有人传内联箭头，
+   *   这两条也只是"把同一个布尔值再 set 一遍"（React 同值 bail out），
+   *   —— 幂等，不搬家焦点、不重置草稿、不重发请求。所以这里**不动**，
+   *   只把判断记下来（判据见 `state/back-nav.ts` 的 `useBackTarget`：
+   *   "回调身份不稳定就放进 ref"那条路是留给"重跑有副作用"的场合的）。
+   */
   useEffect(() => {
     onStepChange?.(step === 'loader');
   }, [step, onStepChange]);

@@ -580,10 +580,30 @@ export function CustomSelect({
     return () => document.removeEventListener('mousedown', onDown);
   }, [open]);
 
-  /** 打开时把光标放到当前项上 */
+  /**
+   * 打开时把光标放到当前项上。
+   *
+   * ★★★★ 2026-10-17（与上面 `Modal` 那处焦点 bug**同一形状**）：
+   *   依赖里原来直接放 `options`，而调用方**普遍传内联数组**
+   *   （`options={[...]}` / `options={list.map(...)}`，全仓库二十多处），
+   *   于是父组件**每渲染一次** `options` 就是一个新数组 ⇒ 这个 effect 每次都重跑。
+   *
+   *   **不修会怎样**：下拉菜单**开着的时候**，父组件任何一次重渲染
+   *   （后台加载器清单回来了、弹了一条 toast、别处 setState）都会把光标
+   *   **拽回当前选中那一项** —— 用户方向键走了三格，突然跳回第一格；
+   *   紧接着按回车，选中的是**跳回来那一项**，不是他高亮的那一项。
+   *   它没有"焦点被抢走"那么响，但同属"用户操作到一半被重置"。
+   *
+   *   ⇒ 依赖改成**内容指纹**（值列表拼起来）+ `value`：选项内容真的变了照样重算
+   *     （这才是它本来要的语义），而数组**身份**变化不再触发。
+   *     同一条路子见 `ExportModpackModal` 的 `picked.join('|')`。
+   */
+  const optionsKey = options.map((o) => o.value).join('\u0000');
   useEffect(() => {
     if (open) setCursor(options.findIndex((o) => o.value === value));
-  }, [open, options, value]);
+    // 依赖用 optionsKey（内容）、不用 options（身份）—— 理由见上面那段
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, optionsKey, value]);
 
   function onKeyDown(e: React.KeyboardEvent) {
     if (disabled) return;
@@ -762,6 +782,25 @@ export function Modal({
   const restoreRef = useRef<HTMLElement | null>(null);
   const auto = useId();
   const titleId = labelledBy ?? `modal-title-${auto}`;
+  /*
+   * ★★★★ 2026-10-17 修（用户：「这个输入框，一次输入，一次删除，都会导致不让在此操作」）：
+   *
+   *   下面那个焦点管理 effect 原来依赖 `[open, onClose]`，而调用方普遍传**内联箭头**
+   *   （`onClose={() => setNoteTarget(null)}`）⇒ 父组件**每渲染一次**就是"新的 onClose"。
+   *   于是备注框里**每敲一个字**（`setNoteDraft` 触发父组件重渲染）都会：
+   *     ① cleanup 把焦点**还给上一个元素**；② effect 重跑，`first?.focus()`
+   *   —— 而弹窗里"第一个可聚焦元素"是**标题栏那个 × 关闭按钮** ✗✗
+   *   ⇒ 焦点每敲一键就被抢到 × 上，输入框再也收不到键盘 —— 看着就是"不让在此操作"。
+   *
+   *   ⇒ 结论：**焦点管理只该在开关那一瞬发生**。依赖只留 `[open]`，
+   *     最新的 `onClose` 走 ref（键处理里要用的永远是最新那个，但它的**身份变化**
+   *     不该触发焦点搬家）。
+   */
+  const closeRef = useRef(onClose);
+  /* 这个 effect 会因为 `onClose` 的身份变化重跑，但它只写一个 ref —— 幂等，不搬家焦点 */
+  useEffect(() => {
+    closeRef.current = onClose;
+  }, [onClose]);
 
   /* 焦点陷阱：Tab 循环留在弹窗内；打开时移入首元素，关闭时归还焦点 */
   useEffect(() => {
@@ -777,13 +816,21 @@ export function Modal({
         ),
       ).filter((el) => el.offsetParent !== null);
 
-    const first = focusables()[0];
-    first?.focus();
+    /*
+     * ★ 落点三条（2026-10-17）：① 若焦点**已经在弹窗里**（例如输入框的 autoFocus 已生效）
+     *   就一个字都别动 —— 抢焦点正是那个 bug 的一半；② 否则优先弹窗里带 `autofocus` 的元素
+     *   （备注框就是它，"打开就能打字"）；③ 再退回第一个可聚焦元素。
+     */
+    if (!node.contains(document.activeElement)) {
+      const wanted =
+        node.querySelector<HTMLElement>('[autofocus], [data-autofocus]') ?? focusables()[0];
+      wanted?.focus();
+    }
 
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation();
-        onClose();
+        closeRef.current();
         return;
       }
       if (e.key !== 'Tab') return;
@@ -810,7 +857,8 @@ export function Modal({
       document.body.style.overflow = prevOverflow;
       restoreRef.current?.focus?.();
     };
-  }, [open, onClose]);
+    /* ★ 只依赖 open：onClose 的身份变化**不许**让焦点搬家（见上面那段修） */
+  }, [open]);
 
   if (!open) return null;
 

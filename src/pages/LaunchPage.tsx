@@ -179,7 +179,25 @@ export function LaunchPage() {
    *   多开时两个版本可能同时在准备，混着显示会让人以为进度倒退了。
    * ★ 监听**一直挂着**（不只在 `launching` 为真时）：
    *   预览那条路也会跑准备流程，而且事件可能比 `setLaunching(true)` 先到。
+   *
+   * ★★★★ 2026-10-17（与 `ui/index.tsx` 里 `Modal` 那处焦点 bug**同一形状**）：
+   *
+   *   下面这个 effect 原来依赖 `launchState`，而它是 `AppContext` 里
+   *   `value.launch` 这个**每次 Provider 渲染都新建的对象字面量**
+   *   （`AppContext.tsx` 末尾 `const value: AppContextValue = { … }`，其中 `launch: { … }`）。
+   *   于是**任何**一次全局状态变化都会让它重跑 —— 包括这条监听**自己**收到的事件：
+   *   `launch-progress` → `setProgress` → dispatch → Provider 重渲染 → 依赖变了。
+   *   重跑的代价是 cleanup 先 `unlisten?.()` **注销**，再异步 `await listen(...)` 重新注册，
+   *   中间那段窗口里的事件**全丢**；而丢掉的进度事件又正好是下一次重注册的触发者。
+   *
+   *   **不修会怎样**：启动自检 / 补齐文件时那个进度条会缺格、卡在上一格不动
+   *   （用户看到的是"进度不动了，但其实还在跑"）。那条注释写的是"监听**一直挂着**"
+   *   —— 重注册恰好把它推翻了。
+   *
+   *   ⇒ 真正要的是"跟着 `target` 重新挂"，而写入用的 setter 是 `useState` 的、
+   *     身份天然稳定 ⇒ 依赖只留 `[target, setLaunchProgress]`。
    */
+  const setLaunchProgress = launchState.setProgress;
   useEffect(() => {
     if (!('__TAURI_INTERNALS__' in window)) return;
     let unlisten: (() => void) | undefined;
@@ -195,7 +213,7 @@ export function LaunchPage() {
       }>('launch-progress', (ev) => {
         const p = ev.payload;
         if (target && p.taskId && p.taskId !== target.id) return;
-        launchState.setProgress({
+        setLaunchProgress({
           stage: p.stage,
           finished: p.finishedFiles,
           total: p.totalFiles,
@@ -205,7 +223,7 @@ export function LaunchPage() {
       });
     })();
     return () => unlisten?.();
-  }, [target, launchState]);
+  }, [target, setLaunchProgress]);
 
   /*
    * ★★ 2026-09-24（A-1 修复）：这里的 `ieml:launch-request` 监听器**搬走了** ——
