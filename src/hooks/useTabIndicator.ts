@@ -35,23 +35,53 @@ export interface TabIndicator {
   style: { transform: string; width: number } | null;
 }
 
-export function useTabIndicator(activeKey: string): TabIndicator {
+/**
+ * 同一条判据，两种用法（2026-10-16）：
+ *
+ *   · **横向**（默认）：下载页/资源页那排页签 —— `[role=tab][aria-selected=true]`，
+ *     指示条是一条下划线（`translateX` + `width`）。
+ *   · **纵向**：左侧图标轨的导航 —— 用 `[aria-current="page"]` 找人，
+ *     指示条是左边缘一根小竖条（`translateY` + `height`）。
+ *
+ * ★ 为什么做成一个 hook 的两个方向，而不是各写一份：这套"量出选中项的位置、
+ *   交给一个绝对定位的元素滑过去"的机制只该有一份 —— 两份必然会在
+ *   "什么时候重量"（首帧、切换、ResizeObserver）上漂移。
+ */
+export interface TabIndicatorOptions {
+  /** 谁是"选中项"。默认页签那套 */
+  selector?: string;
+  /** 指示条的方向：`x` = 下划线，`y` = 左侧竖条 */
+  axis?: 'x' | 'y';
+}
+
+export function useTabIndicator(
+  activeKey: string,
+  opts: TabIndicatorOptions = {},
+): TabIndicator {
+  const selector = opts.selector ?? '[role="tab"][aria-selected="true"]';
+  const axis = opts.axis ?? 'x';
   const listRef = useRef<HTMLElement | null>(null);
   const [style, setStyle] = useState<TabIndicator['style']>(null);
 
   const measure = useCallback(() => {
     const list = listRef.current;
     if (!list) return;
-    const active = list.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]');
+    const active = list.querySelector<HTMLElement>(selector);
     if (!active) {
+      /*
+       * ★ 这一条容器里没有选中项 ⇒ **不渲染指示条**（`null`）。
+       *   左侧轨就是这么用的：主导航与"新闻/更新日志/关于"是两条容器，
+       *   谁的里面没有当前页，谁就不画 —— 不需要外面再判一次。
+       */
       setStyle(null);
       return;
     }
-    setStyle({
-      transform: `translateX(${active.offsetLeft}px)`,
-      width: active.offsetWidth,
-    });
-  }, []);
+    setStyle(
+      axis === 'y'
+        ? { transform: `translateY(${active.offsetTop}px)`, width: active.offsetHeight }
+        : { transform: `translateX(${active.offsetLeft}px)`, width: active.offsetWidth },
+    );
+  }, [selector, axis]);
 
   /* ① 换页签（以及首次挂载）时量一次 */
   useLayoutEffect(measure, [measure, activeKey]);
@@ -62,9 +92,9 @@ export function useTabIndicator(activeKey: string): TabIndicator {
     if (!list || typeof ResizeObserver !== 'function') return;
     const ro = new ResizeObserver(measure);
     ro.observe(list);
-    for (const tab of list.querySelectorAll('[role="tab"]')) ro.observe(tab);
+    for (const tab of list.querySelectorAll(selector)) ro.observe(tab);
     return () => ro.disconnect();
-  }, [measure, activeKey]);
+  }, [measure, selector, activeKey]);
 
   /* ③ 回调 ref：节点挂上来的那一刻（还在 commit 阶段）就量 */
   const setRef = useCallback(

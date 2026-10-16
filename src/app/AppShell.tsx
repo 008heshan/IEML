@@ -23,6 +23,7 @@ import brandIcon from '../assets/brand-icon.png'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../state/AppContext';
 import { useHoverRows } from '../hooks/useHoverRows';
+import { useTabIndicator } from '../hooks/useTabIndicator';
 import { setPendingPack } from '../state/pending-pack';
 import { isTauri } from '../bridge';
 import type { PageId, SubPageId } from '../state/store';
@@ -188,6 +189,24 @@ export function App() {
     update.state.phase === 'ready';
   const [updateNoticeDismissed, setUpdateNoticeDismissed] = useState(false);
   const [updateNoticeOpen, setUpdateNoticeOpen] = useState(false);
+  /*
+   * ★★ 2026-10-16（用户：「**左侧栏 tab 条位置统一一下，然后做成和下载页同款滑动 tab**」）：
+   *   侧栏图标轨里那根"我在哪一页"的小竖条，改成**一个会滑过去的指示条** ——
+   *   与下载页那排页签**同一套机制**（`useTabIndicator`，只是方向是纵的）。
+   *
+   *   · 位置统一：指示条挂在**容器**上（`left: 0`），所以主导航那 5 项与下面
+   *     「新闻/更新日志/关于」那 3 项**共用同一条轴线**（以前是每项各自的
+   *     `::before`，位置由项自己的内边距决定）。
+   *   · 两条容器各挂一次：谁的里面没有当前页，谁就**不画**（hook 返回 null）。
+   */
+  const navInd = useTabIndicator(`${state.page}/${state.subPage}`, {
+    selector: '[aria-current="page"]',
+    axis: 'y',
+  });
+  const sideLinksInd = useTabIndicator(state.page, {
+    selector: '[aria-current="page"]',
+    axis: 'y',
+  });
   useEffect(() => {
     /* 关掉过一次就不再自动弹（同一个版本、同一个会话）—— 但侧栏那个标记一直留着 */
     if (hasUpdate && !updateNoticeDismissed) setUpdateNoticeOpen(true);
@@ -781,7 +800,7 @@ export function App() {
                 </div>
               </div>
 
-              <nav aria-label="版本内导航">
+              <nav aria-label="版本内导航" ref={navInd.ref}>
                 {/*
                   ★★ 原版实例**不开放 Mod 列表**（用户 2026-09-15：
                   "我觉得原版不应开放 mod 列表功能"）。
@@ -811,6 +830,14 @@ export function App() {
                     </button>
                   );
                 })}
+                {/* 会滑的指示条（见上面 `navInd` 那段说明） */}
+                {navInd.style ? (
+                  <span
+                    className="rail-ind"
+                    aria-hidden="true"
+                    style={{ transform: navInd.style.transform, height: navInd.style.width }}
+                  />
+                ) : null}
               </nav>
 
               {/*
@@ -824,7 +851,7 @@ export function App() {
               */}
             </>
           ) : (
-            <nav aria-label="主导航">
+            <nav aria-label="主导航" ref={navInd.ref}>
               {PRIMARY_NAV.map((item) => {
                 const Icon = item.icon;
                 const current = state.page === item.id;
@@ -894,7 +921,7 @@ export function App() {
                     打开目录的能力没丢：设置页那一行的「打开」按钮还在。
                   · 「关于与设置」原先是跳到设置页 → 现在有自己的页面。
               */}
-              <div className="side-links">
+              <div className="side-links" ref={sideLinksInd.ref}>
                 {/*
                   ★★ 2026-09-23 用户：「**更新日志、关于没有选中提示**」——
                     这两个入口原来完全没有 active 状态：点进去之后侧栏上看不出自己在哪一页
@@ -949,6 +976,14 @@ export function App() {
                     </em>
                   ) : null}
                 </button>
+                {/* 与主导航共用同一条轴线（见 `sideLinksInd` 的说明） */}
+                {sideLinksInd.style ? (
+                  <span
+                    className="rail-ind"
+                    aria-hidden="true"
+                    style={{ transform: sideLinksInd.style.transform, height: sideLinksInd.style.width }}
+                  />
+                ) : null}
               </div>
 
               <div className="side-foot">

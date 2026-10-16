@@ -3484,6 +3484,38 @@
 
 /* ---- Mod 管理页的本地列表行（社区资源中心的卡片是另一套） ---- */
 /*
+ * ★★ 2026-10-16（用户：「**把详情和选择圈改成在鼠标移上去时才显示**」）：
+ *   `.mod-act`（详情 / 更新）与 `.mod-select`（那个勾选框）默认隐形，
+ *   鼠标悬停这一行、或键盘聚焦到行内时显形。
+ *
+ *   ★ 做法照抄版本列表那一行（`.ver-actions`）—— **同一个交互只该有一种写法**：
+ *     · 隐形用 `opacity + pointer-events`，不是 `display`/`visibility`：
+ *       前者能淡入，而且控件**仍在 tab 序里**（`:focus-within` 会让它显形），
+ *       键盘用户不会因此够不到「详情」。
+ *     · **状态不藏**：已勾选的框一直看得见（它是"状态"，不是动作）——
+ *       与 `.ver-fav.on` 那条规矩同源。
+ */
+.mod-item .mod-act,
+.mod-item .mod-select {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.mod-item:hover .mod-act,
+.mod-item:hover .mod-select,
+.mod-item:focus-within .mod-act,
+.mod-item:focus-within .mod-select {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* 已勾选 / 已选中：这一行有状态要表达，框不许藏 */
+.mod-item.selected .mod-select,
+.mod-item:has(.mod-select input:checked) .mod-select {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/*
  * ★★ 2026-09-30（用户四条追加反馈）：
  *   「图标没居中」「点一下这个栏就可以选择」「图标不想嵌在槽里，直接放在上面」
  *   「框选框有些难看，做一个更好的效果」

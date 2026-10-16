@@ -246,6 +246,39 @@
   transition: background var(--dur-fast), color var(--dur-fast);
 }
 /*
+ * ★★ 2026-10-16（用户：「**左侧栏 tab 条位置统一一下，然后做成和下载页同款滑动 tab**」）：
+ *   侧栏"我在哪一页"的那根小竖条，从**每项各自的 `::before`** 换成
+ *   **容器里唯一一个会滑过去的指示条**（与下载页那排页签同一套机制，只是纵向）。
+ *
+ *   · 位置统一：它挂在**容器**上（`left: 0`），主导航与"新闻/更新日志/关于"
+ *     因此共用同一条轴线 —— 以前每项的竖条位置由自己的内边距决定。
+ *   · 会滑：`transform` / `height` 过渡（不碰 `top`，那会触发重排）。
+ *   · 容器必须有 `position: relative`（下面两条）。
+ */
+.sidebar nav,
+.side-links {
+  position: relative;
+  width: 100%;
+}
+.rail-ind {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 3px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  pointer-events: none;
+  transition:
+    transform var(--dur-slow) var(--ease-out),
+    height var(--dur-slow) var(--ease-out);
+}
+/* ★ 每项自己的那根竖条删掉（两条旧规则在下面被覆盖成透明；留着会变成两根） */
+.nav-item[aria-current='page']::before,
+.side-link[aria-current='page']::before {
+  content: none;
+}
+
+/*
  * 名字气泡（图标轨的核心）：
  *   · 默认 `opacity: 0` 且**留在文档流之外**（绝对定位），所以不占宽度；
  *   · 悬停 / 键盘聚焦时浮到图标右边。
@@ -3279,21 +3312,39 @@ tbody tr.clickable:focus-visible {
      · 来源改成**标签/值**两行（与主页规格行同一套语言）。
      · 宽屏两栏、窄屏堆叠（`<1080px` 一栏）。
    ============================================================================ */
+/*
+ * ★★ 2026-10-16 二改（用户：「**还有新闻页不适最大化**」）。
+ *
+ *   第一版给整页加了 `max-width: 1120px; margin-inline: auto` —— 阅读量体是对的，
+ *   但**在最大化窗口下错了**：内容缩在正中一条，两边各留 400px 空白，
+ *   而且与其它页（版本列表 / 下载 / 设置全都铺满内容区）不一致，看着像没做完。
+ *
+ *   ⇒ 改成"**让图片吸收多余宽度，正文保住理想行宽**"：
+ *     · 页面**不再限量体**（与其它页同宽）；
+ *     · 卡内栅格右列**钉死在 ~520px**（约 37 个汉字一行，中文最舒服的量体），
+ *       左列用 `1fr` 吃掉剩下的宽度 —— 窗口越宽，封面越大，文字一行永远是那么长。
+ *   ★ 由此 `.news-hero` 的宽高比会从 16:9 变宽（≈2.4:1 的横幅），这是**有意的**：
+ *     它本来就是宣传画（源图 540×540 方图，任何比例都在裁），当横幅用正好。
+ */
 .news-page {
-  /*
-   * 阅读型页面的量体：1120px 大约等于"左图 430 + 右文 600"，中文约 42 字/行。
-   * ★ 居中而不是左对齐：这一页只有两张卡，居中读起来才像"文章"；
-   *   页头也在同一中轴上，所以不会出现两套对齐。
-   */
-  max-width: 1120px;
-  margin-inline: auto;
+  /* 铺满内容区（不再居中限量体）；文字量体由卡内右列负责 */
+  width: 100%;
 }
 .news-grid {
   display: grid;
-  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+  /* ★ 右列是"量体"，左列是"吸收多余宽度的那一列" */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 520px);
   gap: var(--space-5);
   align-items: start;
   margin-top: var(--space-4);
+  /*
+   * ★ 但吸收也不是无上限：1920 窗口下内容区 1808，若让图一直长，封面会变成
+   *   1234×320 的**扁条**（3.86:1，实测过）—— 那就从"缩在中间"变成"拉成一条"。
+   *   1400px 时：图 860×340（≈2.5:1，横幅该有的样子）、正文仍是 520（37 汉字/行）。
+   *   ★ 左对齐而不是居中：这样多出来的空间只在**右边一处**，
+   *     不会又变成"两边各空一片"（那正是用户说的不适最大化）。
+   */
+  max-width: 1400px;
 }
 @media (max-width: 1080px) {
   .news-grid {
@@ -3332,7 +3383,8 @@ tbody tr.clickable:focus-visible {
   display: block;
   width: 100%;
   aspect-ratio: 16 / 9;
-  max-height: 320px;
+  /* ★ 宽版封面的上限（860 宽时约 2.5:1）——再高就吃掉正文的位置，再矮就成一条缝（190px 那版就是这么坏的） */
+  max-height: 340px;
   object-fit: cover;
   object-position: center;
   border-radius: var(--radius-md);
