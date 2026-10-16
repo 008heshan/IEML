@@ -7952,6 +7952,12 @@ pub async fn friends_decline(uuid: String, profile_id: String) -> Result<(), Str
 }
 
 /// 上报在线状态并拿回好友们的状态（界面的心跳就是它）
+///
+/// ★ **启动器只报 `ONLINE`，进游戏后由游戏自己报"在玩什么"**：启动器说不了
+///   自己在哪个世界，所以**不许**冒充 `PLAYING_OFFLINE`（"在玩单机"）之类的
+///   具体状态（`AppContext` 的心跳传 `'ONLINE'`，关窗口时补一发 `'OFFLINE'`）。
+///   ★ 这条行为**只有这一处说明**（Rust 侧曾经有个"启动器上报用哪一档"的辅助
+///     函数，因为没有任何调用点已删）—— `status` 是**调用方**的决定，后端只原样发出去。
 #[tauri::command]
 pub async fn friends_presence(
     uuid: String,
@@ -7989,22 +7995,20 @@ pub async fn friends_blocklist(uuid: String) -> Result<Vec<String>, String> {
     friends::blocklist(&uuid).await.map_err(|e| e.to_string())
 }
 
-/// 名单 + 状态的合并视图（一次调用把界面要的东西给全）
-///
-/// ★ ETag 之后这里要当心：`snapshot` 回 `None` 是"没变"，而这个命令**没有本地缓存
-///   可沿用** ⇒ 只能如实回一条空名单。界面走的不是这个命令
-///   （它用 `friends_snapshot` 把结果存进 state，才好沿用 304 时的旧数据）。
-#[tauri::command]
-pub async fn friends_view(uuid: String) -> Result<Vec<friends::FriendView>, String> {
-    let snap = friends::snapshot(&uuid).await.map_err(|e| e.to_string())?;
-    let entries = snap.map(|s| s.friends).unwrap_or_default();
-    let presence = friends::presence(&uuid, friends::PresenceStatus::for_launcher())
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    Ok(friends::merge_presence(&entries, &presence))
-}
+/*
+ * ★★ 2026-10-17：`friends_view` 这条命令**删掉了**（"删除测试"）。
+ *
+ *   它原来返回"名单 + 每人在线状态"的合并结果，但：
+ *     ① 前端**零调用点**（`friendsApi.view` 只是个没人用的壳，一起删了）；
+ *     ② 它那份 label 口径是「不在在场名单里 ⇒ 未知」，而前端
+ *        `domain/friends.ts::resolvePresence` 的正确口径是
+ *        「名单拿到了、他不在里面 ⇒ **离线**」（判据是用户 2026-10-12 的游戏截图）。
+ *        留着就是**两套说法各说各话**，而这个 bug 恰恰就是口径错了才发生的。
+ *     ③ 它连 304 都处理不了（`snapshot` 回 None 时它只能如实回空名单 ——
+ *        那正是"把不知道说成没有"的形状）。
+ *   ⇒ 界面要的数据由 `friends_snapshot`（存进 state，能沿用 304 的旧数据）
+ *     与心跳 `friends_presence` 两路给，合并与显示口径只有前端那一套。
+ */
 
 /* ====================== 整合包 ====================== */
 

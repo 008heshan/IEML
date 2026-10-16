@@ -6626,6 +6626,18 @@ mod tests {
 
         assert_eq!(verify_expected(&ExpectedHash::Sha1(sha1.clone()), &f).await, Some(true));
         assert_eq!(verify_expected(&ExpectedHash::Sha512(sha512), &f).await, Some(true));
+        /*
+         * ★★ 2026-10-17（补 ① 那一轮没做完的一半）：**"不符"这一档也要钉住 sha512**。
+         *   原来这里只有 sha1 的错值例子（下一段），于是"sha512 接线成没成"在仓库里
+         *   只有"匹配"那半条；另一半当时只在临时真跑台里验过（那里断言过
+         *   `Sha512("0".repeat(128)) == Some(false)`），没进仓库。
+         *   ⇒ 匹配与不符各一条，才算自洽。
+         */
+        assert_eq!(
+            verify_expected(&ExpectedHash::Sha512("0".repeat(128)), &f).await,
+            Some(false),
+            "★ sha512 不符必须判 false（与 sha1 那条同一个代码路径，但也要自己有断言）"
+        );
         assert_eq!(
             verify_expected(&ExpectedHash::None, &f).await,
             None,

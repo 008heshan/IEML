@@ -26,8 +26,8 @@ import type {
   ReleaseType,
 } from '../domain';
 import type { RunningGameInfo, IsolationInfo } from '../bridge/tauri';
-import type { FriendNotes } from '../domain/friends.ts';
-import type { FriendsSettings, FriendsSnapshot, PresenceStatus } from '../bridge/tauri';
+import { applyPresenceBeat, type FriendNotes, type PresenceBeat, type PresenceMap } from '../domain/friends.ts';
+import type { FriendsSettings, FriendsSnapshot } from '../bridge/tauri';
 /*
  * ★ 2026-09-30：这里原来写的是 `'../ui/theme'`（**没有扩展名**）。
  *   Vite 能解析它，所以界面一直正常 —— 但 Node 的 ESM 解析器不能，
@@ -268,16 +268,30 @@ export interface AppState {
   friends: {
     /** 服务端给的名单（好友 + 收到/发出的请求）；null = 还没取到 */
     snapshot: FriendsSnapshot | null;
-    /** profileId（小写）→ 在线状态。取值只有服务端报过的那几个 */
-    presence: Record<string, PresenceStatus | null>;
+    /**
+     * profileId（小写）→ 在线状态。取值只有服务端报过的那几个；
+     * `null` = **他在服务端的在场名单里，但那一行没带 status** ⇒ 在线（见 `resolvePresence`）。
+     */
+    presence: PresenceMap;
     /**
      * ★★ 上一次**成功**拿到在场列表的时刻（null = 从没成功过）。
      *
      *   它决定"不在列表里的人"怎么解释 —— 见 `domain/friends.ts` 的
      *   `resolvePresence`：成功拿到过 ⇒ 缺席就是**离线**（与游戏客户端一致，
      *   用户 2026-10-12 的截图是判据）；从没拿到过 ⇒ 才是「未知」。
+     *
+     *   ★ 失败时**不许**动它（2026-10-17）：把"未知"盖成"已知"就是用户看到的
+     *     "十个好友全离线"。判据在 `applyPresenceBeat`。
      */
     presenceAt: number | null;
+    /**
+     * ★★ 最近一次**在场状态**没拿到的原因（2026-10-17，null = 没失败）。
+     *
+     *   为什么要单独一个字段、而不是并进 `error`：名单与在场是**两件事** ——
+     *   名单拿到了、状态没拿到时，页面必须能说清"这几行状态可能过时"，
+     *   而不是把整个好友页判成失败。见 `domain/friends.ts::applyPresenceBeat`。
+     */
+    presenceError: string | null;
     /** 谁能加我 / 谁能邀请我 */
     settings: FriendsSettings | null;
     /** 正在取（界面显示骨架/转圈） */
@@ -435,6 +449,7 @@ export const initialState: AppState = {
     snapshot: null,
     presence: {},
     presenceAt: null,
+    presenceError: null,
     settings: null,
     loading: false,
     error: null,
@@ -582,6 +597,16 @@ export type Action =
   | { type: 'prefs/patch'; patch: Partial<AppState['prefs']> }
   /* ★ 好友切片：每一样都可以单独更新（心跳只更新 presence，列表只更新 snapshot） */
   | { type: 'friends/patch'; patch: Partial<AppState['friends']> }
+  /*
+   * ★★ 一次**在场心跳**的结论（2026-10-17）。
+   *
+   *   为什么不直接 dispatch 一个算好的 patch：算"这次心跳该得出什么"需要
+   *   **当前**那份 presence（失败要保住它、304 要沿用它）—— 而调用它的
+   *   `useEffect` 只在 `[ready, uuid, pageOpen]` 变化时重建，闭包里那份 state
+   *   是**旧的**。交给 reducer 算就没有这个坑（它拿到的永远是当前 state）。
+   *   判据本身（纯函数）在 `domain/friends.ts::applyPresenceBeat`，那边有用例。
+   */
+  | { type: 'friends/presence'; beat: PresenceBeat; now: number }
   /* ★★ 隔离判定（ADR-005）：整批换掉 —— 它是后端算的结论，前端不许自己拼 */
   | { type: 'isolation/set'; list: IsolationInfo[] };
 
@@ -911,6 +936,24 @@ export function reducer(state: AppState, action: Action): AppState {
     /* ★ 好友切片：每一样都能单独更新（心跳只动 presence，列表只动 snapshot） */
     case 'friends/patch':
       return { ...state, friends: { ...state.friends, ...action.patch } };
+
+    /*
+     * ★★ 在场心跳：**失败不许产出"没人在线"这个假事实**（2026-10-17，用户：
+     *   「我的朋友游戏在线，但启动器读不到」）。三种结果各自的含义只写在
+     *   `applyPresenceBeat` 一处（那边有判据）；这里只负责把它接到 state 上。
+     */
+    case 'friends/presence': {
+      const next = applyPresenceBeat(
+        {
+          presence: state.friends.presence,
+          presenceAt: state.friends.presenceAt,
+          presenceError: state.friends.presenceError,
+        },
+        action.beat,
+        action.now,
+      );
+      return { ...state, friends: { ...state.friends, ...next } };
+    }
 
     /* ★★ 隔离判定整批换（后端算的结论；空列表也是有效结论，不是"没读到"） */
     case 'isolation/set':

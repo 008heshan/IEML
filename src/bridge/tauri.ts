@@ -1404,8 +1404,15 @@ export const friendsApi = {
   /** 名单（好友 + 收到的请求 + 发出的请求） */
   snapshot: (uuid: string) => call<FriendsSnapshot>('friends_snapshot', { uuid }),
 
-  /** 名单 + 每个人当前的在线状态（会顺带上报一次"我在线"） */
-  view: (uuid: string) => call<FriendView[]>('friends_view', { uuid }),
+  /*
+   * ★ 2026-10-17：这里原来是 `view: (uuid) => call('friends_view')`（"名单 + 状态"
+   *   合并视图），与后端那条命令**一起删了**：
+   *     · 前端零调用点（grep 过）；
+   *     · 它那份"不在在场名单里 ⇒ 未知"的口径与 `domain/friends.ts::resolvePresence`
+   *       （"名单拿到了、他不在里面 ⇒ 离线"）正好相反，留着就是两套说法。
+   *   界面要的两样分别拿：`snapshot`（存进 state，能沿用 304 的旧数据）
+   *   + 心跳 `presence`（见 AppContext 的在线状态那一节）。
+   */
 
   /** 按玩家名查这个人（加好友之前先查 uuid；查不到会明确报错） */
   lookup: (name: string) => call<FriendEntry>('friends_lookup', { name }),
@@ -1470,14 +1477,8 @@ export interface PresenceRow {
   pmid?: string | null;
 }
 
-/** 名单 + 状态的合并视图（后端算好的：没状态的写"未知"，不编） */
-export interface FriendView {
-  profileId: string;
-  name: string;
-  presence?: PresenceStatus | null;
-  presenceLabel: string;
-  note?: string | null;
-}
+/* ★ 2026-10-17：`FriendView`（"名单 + 状态的合并视图"）已随 `friends_view` 一起删掉 ——
+   合并与显示口径现在只有前端那一套（`domain/friends.ts::resolvePresence`）。 */
 
 export type Toggle = 'ENABLED' | 'DISABLED';
 

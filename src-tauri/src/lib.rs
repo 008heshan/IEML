@@ -587,7 +587,12 @@ pub fn run() {    /*
              *   ★ 令牌不进前端：这些命令只收 uuid。
              */
             commands_real::friends_snapshot,
-            commands_real::friends_view,
+            /*
+             * ★ 2026-10-17：这里原来是 `friends_view`（"名单 + 状态"合并视图），
+             *   已删 —— 前端零调用点，且它那份"缺席 ⇒ 未知"的口径与前端
+             *   `resolvePresence`（"缺席 + 名单已拿到 ⇒ 离线"）正好相反。
+             *   理由写在 `commands_real.rs` 原处那段注释里。
+             */
             commands_real::friends_lookup,
             commands_real::friends_add,
             commands_real::friends_remove,

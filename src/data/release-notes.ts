@@ -94,6 +94,20 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.21.5',
+    date: '2026-10-17',
+    headline: '这一版让好友状态在拿不到的时候说真话。',
+    groups: [
+      {
+        title: '修复了',
+        items: [
+          '修复了 网络不好时好友状态会被说成离线，现在会说清是没拿到状态。',
+          '修复了 好友确实在线却可能被显示成离线。',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.21.4',
     date: '2026-10-17',
     headline: '这一版让下载完的核对更严一点，也更说得清。',

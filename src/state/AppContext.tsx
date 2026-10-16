@@ -35,7 +35,7 @@ import {
 import { looksLikeUuid } from '../domain/account.ts';
 /* ★ 2026-10-12：好友服务（正版专用）—— 端点与协议见 src-tauri/src/friends.rs 头部 */
 import { friendsApi } from '../bridge/tauri';
-import type { PresenceStatus, Toggle } from '../bridge/tauri';
+import type { Toggle } from '../bridge/tauri';
 // ★ 目录名规范只有一份（Rust `domain::naming` 的镜像）—— 见那个模块的说明
 import { sanitizeDirName, uniqueDirName } from '../domain/naming.ts';
 import type { FolderVersion } from '../bridge/tauri';
@@ -60,6 +60,18 @@ import {
 import { createGlassController } from '../ui/glass';
 import { useLauncherUpdate } from '../hooks/useLauncherUpdate';
 import type { UpdateState } from '../hooks/useLauncherUpdate';
+
+/**
+ * 把一个 `unknown` 异常翻成给用户看的一句话。
+ *
+ * ★ 好友那两路（名单 / 在场）都是用 `Promise.allSettled` 结算的，拿到的
+ *   reason 是 `unknown` —— 这个仓库里"e instanceof Error ? … : String(e)"
+ *   已经手写过十遍，判据再写第十一遍迟早会有一处漏掉 `String(e)` 而显示
+ *   `[object Object]`。收成一处。
+ */
+function reasonOf(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
 
 /** 启动器更新的三件事（见 `AppContextValue.update` 的说明） */
 export interface LauncherUpdate {
@@ -1967,41 +1979,54 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const refreshFriends = useCallback(async (): Promise<void> => {
     if (!friendsUuid) return;
     dispatch({ type: 'friends/patch', patch: { loading: true, error: null } });
-    try {
-      const [snapshot, presence] = await Promise.all([
-        friendsApi.snapshot(friendsUuid),
-        // 状态拿不到不该让整次刷新失败（名单才是主体）
-        friendsApi.presence(friendsUuid, 'ONLINE').catch(() => []),
-      ]);
+    /*
+     * ★★★★ 2026-10-17（用户：「**我的朋友游戏在线，但启动器读不到**」——好友页
+     *   10 个人全显示「离线」）。这里原来是：
+     *
+     *     friendsApi.presence(friendsUuid, 'ONLINE').catch(() => [])   // ← 捏造空名单
+     *     patch.presenceAt = Date.now();                               // ← 把"未知"盖成"已知"
+     *
+     *   空数组的语义是**"我问过了、没人在线"**，可它其实是"我没问到"——
+     *   于是十个好友全被判成离线。⇒ 现在：
+     *
+     *     · 两条路**各自**结算（`allSettled`）：名单失败 ⇒ `error`；
+     *       状态失败 ⇒ `presenceError`，**不许**退化成"空名单"（判据见
+     *       `domain/friends.ts::applyPresenceBeat`，`tests/friends.test.mjs` 有用例）；
+     *     · `presenceAt` 由那条判据决定，这里不再无脑刷。
+     */
+    const [snapRes, presenceRes] = await Promise.allSettled([
+      friendsApi.snapshot(friendsUuid),
+      friendsApi.presence(friendsUuid, 'ONLINE'),
+    ]);
+
+    /* ---------- 名单那一路 ---------- */
+    const patch: Partial<typeof state.friends> = {
+      loading: false,
       /*
        * ★★ 304 的处理（用户 2026-10-12 给的设计图）：`null` 表示**服务端说没变**，
        *   那就**沿用本地那份**，绝不能把它当成"名单空了"（那会让界面突然空掉，
-       *   而用户的好友一个没少）。名单与在场各自判各自的。
+       *   而用户的好友一个没少）。
        */
-      const patch: Partial<typeof state.friends> = {
-        loading: false,
-        error: null,
-        updatedAt: Date.now(),
-      };
-      if (snapshot) patch.snapshot = snapshot;
-      if (presence) {
-        const map: Record<string, PresenceStatus | null> = {};
-        for (const p of presence) map[p.profileId.toLowerCase()] = p.status ?? null;
-        patch.presence = map;
-      }
-      /* `presenceAt` 每次都记：304 也说明"我们手上的状态是最新的" */
-      patch.presenceAt = Date.now();
-      dispatch({ type: 'friends/patch', patch });
-    } catch (e) {
-      /*
-       * ★ 失败原因**留在 state 里**（页面显示它），不只弹个 toast 就没了 ——
-       *   用户要照着它决定"是不是得重新登录一次"。
-       */
-      dispatch({
-        type: 'friends/patch',
-        patch: { loading: false, error: e instanceof Error ? e.message : String(e) },
-      });
+      error: snapRes.status === 'rejected' ? reasonOf(snapRes.reason) : null,
+    };
+    if (snapRes.status === 'fulfilled') {
+      /* `updatedAt` 的字面意思是"上一次**成功**拿到名单的时刻" ⇒ 失败时不许推进 */
+      patch.updatedAt = Date.now();
+      if (snapRes.value) patch.snapshot = snapRes.value;
     }
+    dispatch({ type: 'friends/patch', patch });
+
+    /* ---------- 在场状态那一路（独立结算：名单拿到了也不许替它编） ---------- */
+    dispatch({
+      type: 'friends/presence',
+      now: Date.now(),
+      beat:
+        presenceRes.status === 'fulfilled'
+          ? presenceRes.value
+            ? { kind: 'ok', rows: presenceRes.value }
+            : { kind: 'notModified' } // 304：服务端说没变 ⇒ 沿用旧 map
+          : { kind: 'failed', reason: reasonOf(presenceRes.reason) },
+    });
   }, [friendsUuid]);
 
   /** 关系动作（加/删/同意/拒绝/撤销）走同一条路：调用 → 成功就刷新名单 */
@@ -2143,7 +2168,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
    *
    *   ★ 关窗口时补一发 `OFFLINE`（尽力而为）—— 服务端有 `lastUpdated` 会自己判过期，
    *     所以这只是"更干净"，不是唯一依赖。
-   *   ★ 心跳失败**不打扰用户**：名单那条路有自己的错误显示，心跳失败多半只是网络抖。
+   *   ★ 心跳失败**不弹任何东西**（多半只是网络抖），但**不许装作成功**（2026-10-17）：
+   *     三种结果（200 / 304 / 失败）各自的含义只写在 `applyPresenceBeat` 一处，
+   *     由 reducer 结算 —— 失败时旧 map 与 `presenceAt` 都不动，只留一句
+   *     `presenceError`（好友页显示成一行"状态没拿到"，下一次成功就消失）。
    */
   useEffect(() => {
     if (!state.ready || !friendsUuid) return;
@@ -2152,26 +2180,38 @@ export function AppProvider({ children }: { children: ReactNode }) {
       try {
         const rows = await friendsApi.presence(friendsUuid, 'ONLINE');
         if (!alive) return;
+        /* `rows === null` 是 304：服务端说没变 ⇒ 沿用本地那份，但算"刚确认过" */
+        dispatch({
+          type: 'friends/presence',
+          now: Date.now(),
+          beat: rows ? { kind: 'ok', rows } : { kind: 'notModified' },
+        });
+      } catch (e) {
+        if (!alive) return;
         /*
-         * ★ 只有**成功**才更新 presence / presenceAt。失败时保持上一次的结论 ——
-         *   否则一次网络抖动就会把"离线"错说成"未知"（反过来也是编）。
-         *   ★ `rows === null` 是 304：服务端说没变 ⇒ 沿用本地那份。
+         * ★ 心跳失败：**保住上一次的结论**、不动 `presenceAt`（否则一次网络抖动
+         *   就会把"离线"错说成"未知"，反过来也是编）—— 这条规则在
+         *   `domain/friends.ts::applyPresenceBeat` 里，这里只把结果发出去。
          */
-        const patch: Partial<typeof state.friends> = { presenceAt: Date.now() };
-        if (rows) {
-          const map: Record<string, PresenceStatus | null> = {};
-          for (const p of rows) map[p.profileId.toLowerCase()] = p.status ?? null;
-          patch.presence = map;
-        }
-        dispatch({ type: 'friends/patch', patch });
-      } catch {
-        /* 心跳失败不弹东西（见上），也不动上一次的结论 */
+        dispatch({
+          type: 'friends/presence',
+          now: Date.now(),
+          beat: { kind: 'failed', reason: reasonOf(e) },
+        });
       }
     };
     void beat();
     /* ★ 间隔按"好友页开着没有"切：30 秒 / 90 秒（见 domain/friends.ts 那段说明） */
     const timer = window.setInterval(() => void beat(), presenceBeatIntervalMs(state.friends.pageOpen));
     const goodbye = () => {
+      /*
+       * ★ 这里的 `.catch(() => [])` 与 H3 那处**形状相同**（失败时捏一个空数组当结论），
+       *   但**无害**：这是关窗口时的"尽力而为"告别（把自己标成离线），
+       *   返回值**被丢弃**（`void`），没有任何人会把它当成"好友都不在线"，
+       *   也不碰 state。所以逻辑不动 —— 但形状别再扩散：凡是**返回值会被用来显示**
+       *   的调用，失败一律走 `applyPresenceBeat` 的 `failed`（保住旧结论 + 露错误），
+       *   不许 `catch(() => [])`。
+       */
       void friendsApi.presence(friendsUuid, 'OFFLINE').catch(() => []);
     };
     window.addEventListener('beforeunload', goodbye);

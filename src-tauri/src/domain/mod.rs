@@ -42,6 +42,11 @@ pub mod naming;
 pub mod pack_plan;
 /// ★ 整合包安装记录与"装全了没有"（ADR-025 的 Completion 阶段）—— 纯判定，不做下载
 pub mod pack_record;
+/// ★★ **在线状态**（2026-10-17 修「好友游戏在线，启动器读不到」）—— 纯逻辑：
+///    服务端状态字符串 → 客户端枚举（**未知取值只让这一行没状态，不许打掉整份名单**）、
+///    以及"一份在场名单压成一行诊断文字"（分界 H1/H2 与"他那边根本没上报"）。
+///    ★ 零 `crate::` 依赖：本机 `cargo test` 起不来时，这一份能用 rustc 单编真跑断言
+pub mod presence;
 /// ★ 整合包**有没有新版本**、新清单会让盘上换掉哪些文件（ADR-025 第 4 条）—— 纯判定，不碰网络
 pub mod pack_update;
 pub mod resources;

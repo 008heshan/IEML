@@ -51,7 +51,15 @@ import { SkinHead } from '../components/SkinHead';
 import { getRealApi } from '../bridge';
 import type { FriendEntry, PresenceStatus, Toggle } from '../bridge/tauri';
 
-/** 状态 → 中文。★ 与后端 `friends::presence_label` 保持同一套说法 */
+/**
+ * 状态 → 中文。★★ **用户看到的措辞只有两份，都在前端**：这里（中文）与
+ * `domain/friends.ts::presenceTone`（颜色档）。
+ *
+ *   ★ 2026-10-17：这里原来写着"与后端保持同一套说法"，而 Rust 那一份**已经删掉**
+ *     了 —— 用户能看到的措辞只能有**一处**说法，留两份迟早漂移
+ *     （同一个状态两种写法，正是这个 bug 的形式之一）。
+ *     现在 Rust 侧只说"这一行还在/没带 status"，一个字的中文标签都不出。
+ */
 function presenceText(status: PresenceStatus | string | null | undefined): string {
   switch (status) {
     case 'ONLINE':
@@ -216,6 +224,8 @@ export function FriendsPage() {
    *   规则本身在 `domain/friends.ts` 的 `resolvePresence`（那边有用例）。
    */
   const presenceKnown = state.friends.presenceAt !== null;
+  const presenceAt = state.friends.presenceAt;
+  const presenceError = state.friends.presenceError;
 
   const run = async (key: string, fn: () => Promise<boolean>) => {
     setBusy(key);
@@ -398,6 +408,28 @@ export function FriendsPage() {
       {error ? (
         <Note tone="warning" title="好友服务这次没成">
           {error}
+        </Note>
+      ) : null}
+
+      {/*
+        ★★★★ 2026-10-17（用户：「**我的朋友游戏在线，但启动器读不到**」——好友页
+          10 个人全显示「离线」）。
+
+          原来这里**没有**这一行：在场状态那一路失败时被悄悄当成"没人在线"
+          （`catch(() => [])` + 无条件刷 `presenceAt`），于是十个好友全被判成离线，
+          而页面上一个字都不说。现在失败**必须露出来** —— 用户要能分清
+          「他们真的都离线」与「我们没拿到状态」这两件事。
+
+          ★ 措辞里刻意点明"下面可能过时"：`presenceAt` 没被刷，所以缺席的人
+            仍然显示上一次的结论（多半是「离线」）。不说这一句，用户会以为
+            刚拿到的就是最新的。
+      */}
+      {presenceError ? (
+        <Note tone="info" title="在线状态没拿到">
+          {presenceError}
+          {presenceAt
+            ? '（下面那几行的状态还是上一次拿到的，可能已经过时；下一次心跳会再试）'
+            : '（还没成功拿到过在场名单，所以状态栏写的是「未知」—— 那不是「离线」）'}
         </Note>
       ) : null}
 
