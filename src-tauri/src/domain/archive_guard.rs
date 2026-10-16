@@ -230,17 +230,34 @@ pub enum ArtifactClass {
 ///   | natives jar | 实测 `lwjgl-3.3.1-natives-windows` ≈ 1 MB | 64 MiB | ×60 |
 ///   | 资源文件 | `assets/objects` 单文件最大约 10 MB | 64 MiB | ×6 |
 ///   | 资源索引 | 1.20.1 的 `indexes/…json` = 600 KB | 32 MiB | ×50 |
-///   | 整合包包体 | Better MC 113 MB（用户实测） | 2 GiB | ×18 |
-///   | 单个 mod | 大 mod（光影/结构）约 100 MB | 512 MiB | ×5 |
+///   | 整合包包体 | 实测 20 个热门包最大 377 MB（Prominence II） | 2 GiB | ×5.4 |
+///   | 单个 mod | ★ **Pixelmon 一个 jar = 407.7 MB**（实测） | 1 GiB | ×2.5 |
 ///   | 图片 | 图标是给人看的小图 | 8 MiB | 已存在 2 MiB 那道闸门 |
 ///   | Java 运行时 | JDK 17 压缩包约 190 MB | 1 GiB | ×5 |
 ///   | 安装器 | Forge/NeoForge 安装器 < 30 MB | 256 MiB | ×8 |
 ///
 ///   ★ 上限**只用于"拒绝荒谬的响应体"**，不是"预期大小"：正常文件离上限
-///     还有 5~50 倍。设小了会误杀真实版本（例如某天 Mojang 把客户端做到 300 MB），
+///     还有几倍到几十倍。设小了会误杀真实版本（例如某天 Mojang 把客户端做到 300 MB），
 ///     所以留的余量按"历史上最大值 × 5 以上"取。
 ///   ★ `Unknown` 故意最紧（64 MiB）：**不知道是什么**的时候保守优先 ——
 ///     它会被拒、会被如实报出来，而不是悄悄写满磁盘。
+///
+/// ## ★★★★ 2026-10-17：`Mod` 从 512 MiB 提到 1 GiB（量出来的，不是拍的）
+///
+///   起因：用户装整合包时两个 mod（92.5 MB / 69.1 MB）被 64 MiB 的 `Unknown`
+///   档掐死 —— 那是**分类**的错（见 `class_of_task`）。顺手复核 mod 这一档时
+///   量到了真数：
+///     · **Pixelmon 的 jar = 427,522,531 字节（407.7 MB）** —— 实测
+///       （`mod.mcimirror.top/curseforge/v1/mods/search?classId=6`，
+///       `latestFiles[].fileLength`，项目 id 389487）；
+///     · 下载量前 250 的 mod 里最大的是 AmbientSounds 6 = 80.9 MB；
+///     · 用户现场那两个文件是 92.5 MB 与 69.1 MB。
+///   ⇒ 512 MiB 对 Pixelmon 只有 **1.26 倍**余量，**违反本表自己那条"×5"规则**
+///     （Pixelmon 这些版本从 ~200 MB 长到 408 MB —— 下一版就可能越过 512 MiB，
+///     那时一个**合法**的 mod 会再次被当成"荒谬的响应体"掐死，正是这次事故的形状）。
+///   ⇒ 1 GiB = 对已知最大 mod **2.5 倍**、对热门 mod 最大值 12.6 倍。
+///     ★ **没有取消上限**：它仍然是一道真闸门（一个被劫持的源最多写 1 GiB
+///     就会被断开 + 删掉临时文件），只是把"误杀合法文件"的余量补回来。
 pub fn default_limit_for(class: ArtifactClass) -> u64 {
     const MIB: u64 = 1024 * 1024;
     match class {
@@ -250,7 +267,9 @@ pub fn default_limit_for(class: ArtifactClass) -> u64 {
         ArtifactClass::Asset => 64 * MIB,
         ArtifactClass::AssetIndex => 32 * MIB,
         ArtifactClass::ModpackArchive => 2 * 1024 * MIB, // 2 GiB
-        ArtifactClass::Mod => 512 * MIB,                  // 注意：512 * MIB 在 32 位下会溢出，见测试
+        // ★ 2026-10-17：512 → 1024（见上面那段实测依据）。
+        //   注意：1024 * MIB 在 32 位下会溢出，见测试。
+        ArtifactClass::Mod => 1024 * MIB,
         ArtifactClass::Image => 8 * MIB,
         ArtifactClass::JavaRuntime => 1024 * MIB, // 1 GiB
         ArtifactClass::LoaderInstaller => 256 * MIB,
@@ -427,6 +446,121 @@ pub fn class_from_label(label: &str) -> ArtifactClass {
         }
     }
     ArtifactClass::Unknown
+}
+
+/// **从"落盘路径"推类别** —— 比标签可靠的那一份证据。
+///
+/// ## ★★★★ 2026-10-17 为什么补上这一条（用户现场）
+///
+///   用户装 1.20.1 的整合包，两个 mod 被"体积上限"掐死：
+///   `better-end-4.0.11.jar`（92 MB）与 `the_bumblezone-7.9.8+1.20.1-fabric.jar`
+///   （69 MB）—— 它们被判进了 `Unknown`（64 MiB）那一档。
+///
+///   根因**不是上限太紧，是类别判低了**：
+///     · CurseForge 那条路给任务的标签是**纯文件名**（`better-end-4.0.11.jar`，
+///       见 `net/curseforge.rs` 里构造 `DownloadTask` 的那一处）；
+///     · 而 `class_from_label` 的表认的是**中文类别前缀**（`"mod "` / `"库 "` /
+///       `"整合包 "`…）—— 纯文件名一个都不匹配 ⇒ `Unknown` ⇒ 64 MiB；
+///     · ★ 连 Modrinth 那条路（标签是 `mods/xxx.jar` 这种相对路径）也一样认不出来：
+///       表里的前缀是 `"mod "`（**带一个空格**），而 `"mods/…"` 匹配不上。
+///
+///   ⇒ 判据换成"**东西要落到哪儿**"：目的路径里的目录名是**我们自己拼的**
+///     （不是上游给的字符串），它比标签权威得多。标签只在路径认不出来时兜底
+///     （见 [`class_of_task`]）。
+///
+/// ## 判据
+///
+///   ① **文件所在的那个目录名**（大小写不敏感）：
+///      `mods` / `resourcepacks` / `shaderpacks` / `datapacks` ⇒ [`ArtifactClass::Mod`]；
+///      `natives` ⇒ [`ArtifactClass::NativesJar`]。
+///   ② 两个**结构固定但很深**的（文件名的父目录不是桶名，所以扫整条路径）：
+///      `…/assets/indexes/<id>.json` ⇒ [`ArtifactClass::AssetIndex`]；
+///      `…/assets/objects/<hash>` ⇒ [`ArtifactClass::Asset`]；
+///      `…/libraries/<maven 深层路径>/x.jar` ⇒ [`ArtifactClass::Library`]。
+///   ③ 其余 ⇒ [`ArtifactClass::Unknown`]（**然后由标签兜底**）。
+///
+///   ★ **为什么不看扩展名**：`.jar` 可能是 mod、库、加载器安装器、客户端 jar；
+///     `.zip` 可能是整合包体、资源包、数据包 —— 它们**差三个数量级**，
+///     猜错就是这次的事故。扩展名在这里提供不了"这一格"需要的那条信息。
+///   ★ **为什么不把 `versions` 当桶**：客户端 jar（39 MB，标签 `"客户端 …"`，
+///     256 MiB 档）就住在 `versions/<id>/<id>.jar` 里 —— 把它算成一个桶
+///     只会**压低**一个本来判对了的标签。
+///   ★ 这个函数**零 `crate::` 依赖**（只用 `std::path`），所以本机可以
+///     `rustc` 单编真跑断言（见模块头的说明）。
+pub fn class_from_dest_path(dest: &std::path::Path) -> ArtifactClass {
+    let lower = |s: &std::ffi::OsStr| s.to_string_lossy().to_ascii_lowercase();
+
+    // ① 文件**所在的那个目录**（最常见、最权威的那一格）
+    if let Some(parent) = dest.parent().and_then(|p| p.file_name()) {
+        match lower(parent).as_str() {
+            "mods" | "resourcepacks" | "shaderpacks" | "datapacks" => return ArtifactClass::Mod,
+            "natives" => return ArtifactClass::NativesJar,
+            _ => {}
+        }
+    }
+
+    // ② 结构固定、但文件名的父目录不是桶名的两条深路径
+    let parts: Vec<String> = dest.components().map(|c| lower(c.as_os_str())).collect();
+    for (i, p) in parts.iter().enumerate() {
+        match p.as_str() {
+            // `assets/indexes/…` 与 `assets/objects/…` 是两类东西（32 MiB vs 64 MiB）
+            "assets" => {
+                return match parts.get(i + 1).map(|s| s.as_str()) {
+                    Some("indexes") => ArtifactClass::AssetIndex,
+                    _ => ArtifactClass::Asset,
+                }
+            }
+            // 库走 maven 深层路径（`libraries/net/fabricmc/…/x.jar`），
+            // 所以只能按路径里有没有这一层来判
+            "libraries" => return ArtifactClass::Library,
+            _ => {}
+        }
+    }
+    ArtifactClass::Unknown
+}
+
+/// **这个任务是什么东西** —— 判据的**唯一**入口（`net/download.rs::cap_of` 与
+/// `DownloadTask::new` 都走它）。
+///
+/// ## 两张证据合起来用：**取更宽的那一档**
+///
+///   · **落盘路径**是我们自己拼的（目的目录），它认得 `mods` / `resourcepacks` /
+///     `shaderpacks` / `datapacks` / `assets` / `libraries` / `natives` ——
+///     这是本次修复的主力（CurseForge 那条路的标签是**纯文件名**，
+///     一个类别都推不出来，见 `class_from_dest_path` 的说明）；
+///   · **标签**是调用方写的（`"客户端 …"` / `"Java … 运行时"` / `"整合包 …"` /
+///     `"LiteLoader 依赖 …"`）—— 它认得出**路径认不出的那些**
+///     （客户端 jar 住在 `versions/` 下、Java 压缩包与整合包体住在 cache 下），
+///     而且带的是调用方**明确的意图**。
+///
+///   ⇒ 两边都有结论时**取上限更大的那一档**（相等时用标签的）。
+///
+/// ## ★ 为什么不是"路径一律优先"
+///
+///   因为路径那一步**会压低**一个本来判对的标签 —— 这是量出来的，不是假设：
+///     · `net/liteloader.rs` 把依赖下到 `…/libraries/…`（`libs_root.join(rel)`），
+///       而它的标签是 `"LiteLoader 依赖 …"`（`LoaderInstaller`，256 MiB）；
+///       只看路径 ⇒ `Library`（128 MiB）⇒ **压低了一半**。
+///   ★ 而"取更宽的那一档"有个好性质：**它只可能把判低了的救回来**，
+///     永远不会把一个已经判对的压低（见 `path_never_lowers_a_correct_label`）。
+///     代价是"路径说小、标签说大"时会从宽 —— 但两者最多差一两档，
+///     远小于"把 92 MB 的 mod 判成 64 MiB 上限"那种误杀。
+///   ★ **它没有取消闸门**：两边都是有限值，取更宽的那个也仍然是硬上限。
+pub fn class_of_task(label: &str, dest: &std::path::Path) -> ArtifactClass {
+    let by_path = class_from_dest_path(dest);
+    let by_label = class_from_label(label);
+    if by_path == ArtifactClass::Unknown {
+        return by_label;
+    }
+    if by_label == ArtifactClass::Unknown {
+        return by_path;
+    }
+    // 两个都认出来了 ⇒ 取更宽的那一档（宁可宽一点，也不要误杀合法文件）
+    if default_limit_for(by_path) > default_limit_for(by_label) {
+        by_path
+    } else {
+        by_label
+    }
 }
 
 #[cfg(test)]
@@ -639,12 +773,33 @@ mod tests {
         assert!(!ByteCap::for_class(ArtifactClass::ClientJar).over_limit(39_193_383));
         // Better MC 包体 113 MB（用户实测）
         assert!(!ByteCap::for_class(ArtifactClass::ModpackArchive).over_limit(113 * MIB));
+        // ★ 2026-10-17 实测：20 个热门整合包里最大的包体 = 377 MB（Prominence II）
+        assert!(!ByteCap::for_class(ArtifactClass::ModpackArchive).over_limit(395_141_154));
+        /*
+         * ★★★★ 2026-10-17 实测：**Pixelmon 的 jar = 427,522,531 字节（407.7 MB）**
+         *   （CF `classId=6` 搜索 / 项目 id 389487 / `latestFiles[].fileLength`）。
+         *   `Mod` 原来是 512 MiB —— 对只有 1.26 倍余量，违反本模块那条"×5"规则，
+         *   所以提到了 1 GiB。这条断言钉住"已知最大的真 mod 必须过闸"。
+         */
+        assert!(
+            !ByteCap::for_class(ArtifactClass::Mod).over_limit(427_522_531),
+            "★ Pixelmon（407.7 MB）必须过 Mod 档 —— 否则下一个被误杀的合法 mod 就是它"
+        );
+        // 用户现场那两个文件（92.5 MB / 69.1 MB）
+        assert!(!ByteCap::for_class(ArtifactClass::Mod).over_limit(92_544_800));
+        assert!(!ByteCap::for_class(ArtifactClass::Mod).over_limit(69_091_268));
         // JDK 17 压缩包约 190 MB
         assert!(!ByteCap::for_class(ArtifactClass::JavaRuntime).over_limit(190 * MIB));
         // 1.20.1 资源索引 600 KB
         assert!(!ByteCap::for_class(ArtifactClass::AssetIndex).over_limit(600 * 1024));
         // 整合包图标 2 MiB 那道既有闸门的量级
         assert!(!ByteCap::for_class(ArtifactClass::Image).over_limit(2 * MIB));
+        /*
+         * ★ 但**不许**因为"放行真文件"就把它变成"不限"：荒谬的量级仍然要被拒。
+         *   （这是"提高余量"与"取消上限"的分界线。）
+         */
+        assert!(ByteCap::for_class(ArtifactClass::Mod).over_limit(4 * 1024 * MIB));
+        assert!(ByteCap::for_class(ArtifactClass::Mod).over_limit(u64::MAX / 2));
     }
 
     #[test]
@@ -734,7 +889,6 @@ mod tests {
     }
 
     /// ★★ 续传**不许绕过上限**（引擎那两处写盘路径的判据就在这里被钉住）。
-    ///
     ///   形状：一个 200 MB 的响应体，上限 100 MB，客户端"下一半 → 断 → 续传剩下一半"。
     ///   如果 meter 只算这一轮新收的字节，两轮各 100 MB 都"没超限" —— 绕过去了。
     ///   `starting_at(already)` 把盘上已有的字节当**初值**，计量口径永远是整份文件。
@@ -773,5 +927,223 @@ mod tests {
         // 不设上限的任务照旧不受影响（内部 file:// 复制）
         let unlimited = ByteCap::unlimited();
         assert!(ByteMeter::new(unlimited).starting_at(u64::MAX).is_ok());
+    }
+
+    /* ---------- 按落盘路径判类别（2026-10-17：用户现场那个缺陷） ---------- */
+
+    /// ★★★★ **复现用户现场**：92 MB 的 mod 被判成 `Unknown`（64 MiB）⇒ 被掐死。
+    ///
+    ///   两个输入都是**原样抄下来**的：
+    ///     · `"better-end-4.0.11.jar"` = CurseForge 那条路给的**纯文件名**标签；
+    ///     · 92_544_800 字节 = 任务中心里"已收 92544800 字节，上限 64 MiB"那个数。
+    ///
+    ///   ★ 断言分两半，缺一不可：
+    ///     ① **旧判据确实会掐死它**（不然这条测试证明不了什么）；
+    ///     ② 新判据（看落盘路径）**必须放行它**。
+    #[test]
+    fn a_92mb_mod_is_not_killed_by_the_size_cap() {
+        use ArtifactClass::*;
+        const MIB: u64 = 1024 * 1024;
+        // 用户现场那个数：92544800 字节（≈88.3 MiB）
+        const RECEIVED: u64 = 92_544_800;
+        let dest = std::path::Path::new("E:/ieml/instances/pack/game/mods/better-end-4.0.11.jar");
+
+        // ① 旧判据（只看标签）—— 这条就是根因，钉住它别回来
+        assert_eq!(
+            class_from_label("better-end-4.0.11.jar"),
+            Unknown,
+            "纯文件名的标签认不出任何类别"
+        );
+        assert_eq!(
+            default_limit_for(class_from_label("better-end-4.0.11.jar")),
+            64 * MIB,
+            "★ 旧判据给它 64 MiB —— 92 MB 的文件必被掐死（用户现场）"
+        );
+        assert!(
+            ByteCap::for_class(class_from_label("better-end-4.0.11.jar")).over_limit(RECEIVED),
+            "★ 这就是那句「响应体超过这个类别的体积上限（没下完）」的来源"
+        );
+        /*
+         * ★ 同样认不出来的还有 Modrinth 那条路的标签：它是 `mods/xxx.jar`
+         *   （相对路径），而表里的前缀是 `"mod "`（**带一个空格**）。
+         *   两条路一起坏，这才是"两个来源都不对"的原因。
+         */
+        assert_eq!(
+            class_from_label("mods/better-end-4.0.11.jar"),
+            Unknown,
+            "★ `mods/…` 也匹配不上 `\"mod \"` 前缀 —— Modrinth 那条路同样被判 64 MiB"
+        );
+
+        // ② 新判据（看落盘路径）—— 必须放行
+        assert_eq!(
+            class_from_dest_path(dest),
+            Mod,
+            "落盘在 `…/game/mods/` 下的就是 Mod"
+        );
+        assert_eq!(
+            class_of_task("better-end-4.0.11.jar", dest),
+            Mod,
+            "★ 路径认出来了 ⇒ 用路径的结论（不用管标签长什么样）"
+        );
+        assert_eq!(default_limit_for(Mod), 512 * MIB);
+        assert!(
+            !ByteCap::for_class(class_of_task("better-end-4.0.11.jar", dest)).over_limit(RECEIVED),
+            "★★ 92544800 字节必须过闸 —— 这条就是本次修复的判据"
+        );
+        // 用户现场第二个文件（69,091,268 字节）同样必须过
+        let bumble = std::path::Path::new(
+            "E:/ieml/instances/pack/game/mods/the_bumblezone-7.9.8+1.20.1-fabric.jar",
+        );
+        assert_eq!(class_of_task("the_bumblezone-7.9.8+1.20.1-fabric.jar", bumble), Mod);
+        assert!(
+            !ByteCap::for_class(class_of_task("the_bumblezone-7.9.8+1.20.1-fabric.jar", bumble))
+                .over_limit(69_091_268),
+            "★ 69 MB 的 the_bumblezone 也必须过闸"
+        );
+    }
+
+    /// 四个"内容"目录（mods / resourcepacks / shaderpacks / datapacks）都要认出来。
+    #[test]
+    fn dest_dirs_of_content_files_are_recognised() {
+        use ArtifactClass::*;
+        for d in ["mods", "resourcepacks", "shaderpacks", "datapacks"] {
+            let p = std::path::PathBuf::from(format!("E:/i/game/{d}/x.bin"));
+            assert_eq!(class_from_dest_path(&p), Mod, "落盘目录 {d} 应当是 Mod 那一档");
+            // 大小写在 Windows 上不敏感（上游/我们自己都可能给出大写）
+            let upper = std::path::PathBuf::from(format!("E:/i/Game/{}", d.to_uppercase()));
+            assert_eq!(
+                class_from_dest_path(&upper.join("x.bin")),
+                Mod,
+                "目录名大小写不该影响判定：{d}"
+            );
+        }
+    }
+
+    /// 两条"很深但不是桶名"的固定结构：`assets/indexes` 与 `assets/objects`、
+    /// 以及 maven 深层的 `libraries`。
+    #[test]
+    fn deep_structures_are_recognised() {
+        use ArtifactClass::*;
+        let p = std::path::Path::new("E:/i/assets/indexes/1.20.1.json");
+        assert_eq!(class_from_dest_path(p), AssetIndex, "资源索引不能被当成普通资源");
+        assert_eq!(default_limit_for(AssetIndex), 32 * 1024 * 1024);
+
+        let p = std::path::Path::new("E:/i/assets/objects/ab/cdef0123");
+        assert_eq!(class_from_dest_path(p), Asset, "assets/objects 下的才是资源文件");
+
+        let p = std::path::Path::new("E:/i/libraries/net/fabricmc/fabric-loader/0.19.5/x.jar");
+        assert_eq!(class_from_dest_path(p), Library, "库在 maven 深层路径下");
+
+        let p = std::path::Path::new("E:/i/x/natives/lwjgl-natives.jar");
+        assert_eq!(class_from_dest_path(p), NativesJar);
+    }
+
+    /// ★★ **新判据只可能把判低了的救回来，不会把已经判对的压低**。
+    ///
+    ///   这是"取更宽的那一档"这个规则的**安全性质**，必须钉住 ——
+    ///   它有两个真实的反例方向：
+    ///     · **路径认不出来、只有标签知道**：客户端 jar 住在
+    ///       `versions/<id>/<id>.jar` 下（所以 `versions` **不许**当桶）；
+    ///     · **路径认出来了、但它比标签窄**：LiteLoader 的依赖落在
+    ///       `…/libraries/…`（`Library` 128 MiB），而标签是
+    ///       `"LiteLoader 依赖 …"`（`LoaderInstaller` 256 MiB）——
+    ///       只看路径就会把它压低一半。
+    #[test]
+    fn path_never_lowers_a_correct_label() {
+        use ArtifactClass::*;
+        let cases: [(&str, &str); 6] = [
+            // 客户端 jar：路径在 versions/ 下，类别靠标签
+            ("客户端 1.20.1.jar", "E:/i/versions/1.20.1/1.20.1.jar"),
+            // Java 运行时：落在 cache 下
+            ("Java 17.0.10 运行时", "E:/i/cache/java/temurin-17.zip"),
+            // 整合包体：落在 cache 下
+            ("整合包 Better MC", "E:/i/cache/cfpack-t1.zip"),
+            // 加载器安装器：落在 cache 下
+            ("Forge 安装器 1.20.1", "E:/i/cache/forge-installer.jar"),
+            // ★ 路径说 `libraries`（128 MiB）而标签说 256 MiB ⇒ **不许压低**
+            (
+                "LiteLoader 依赖 lwjgl",
+                "E:/i/libraries/com/mumfrey/liteloader/1.12.2/liteloader.jar",
+            ),
+            // 资源索引：两条判据**一致**（32 MiB），不能变成 64 MiB
+            ("资源索引 5", "E:/i/assets/indexes/5.json"),
+        ];
+        for (label, dest) in cases {
+            let by_label = class_from_label(label);
+            let got = class_of_task(label, std::path::Path::new(dest));
+            assert_eq!(
+                got, by_label,
+                "★ 这个例子里标签是对的，新判据必须保留它：{label} @ {dest}"
+            );
+            assert!(
+                default_limit_for(got) >= default_limit_for(by_label),
+                "★ 新判据不许把上限压低：{label} @ {dest}"
+            );
+        }
+        // 而 `versions` 里那个目录**故意不是桶** —— 否则客户端 jar 会被降成库那档
+        assert_eq!(
+            class_from_dest_path(std::path::Path::new("E:/i/versions/1.20.1/1.20.1.jar")),
+            Unknown,
+            "★ `versions/` 不许是桶：客户端 jar 的类别只能由标签给出"
+        );
+        // ★ 反过来：路径认出来了、标签认不出来 ⇒ **必须**用路径（本次修复的方向）
+        assert_eq!(
+            class_of_task(
+                "better-end-4.0.11.jar",
+                std::path::Path::new("E:/i/game/mods/x.jar")
+            ),
+            Mod,
+            "标签是纯文件名 ⇒ 只能靠路径"
+        );
+    }
+
+    /// ★★ **回归**：两类**真实任务形状**按新判据落在哪一档（逐条钉住）。
+    ///
+    ///   证据来源：全仓库 `DownloadTask` 的构造点（本文件改动时的清单），
+    ///   每一行都写着"标签是什么形状、落盘路径是什么"。
+    #[test]
+    fn real_task_shapes_land_in_the_right_class() {
+        use ArtifactClass::*;
+        let cases: [(&str, &str, ArtifactClass); 9] = [
+            // ① CurseForge 整合包里的 mod（用户现场；标签是纯文件名）
+            (
+                "mods/better-end-4.0.11.jar",
+                "E:/i/instances/p/game/mods/better-end-4.0.11.jar",
+                Mod,
+            ),
+            // ② Modrinth 整合包里的 mod（标签是相对路径）
+            (
+                "mods/sodium.jar",
+                "E:/i/instances/p/game/mods/sodium.jar",
+                Mod,
+            ),
+            // ③ 资源包 / 光影 / 数据包
+            ("resourcepacks/x.zip", "E:/i/game/resourcepacks/x.zip", Mod),
+            ("shaderpacks/x.zip", "E:/i/game/shaderpacks/x.zip", Mod),
+            ("datapacks/x.zip", "E:/i/game/datapacks/x.zip", Mod),
+            // ④ 客户端 jar（标签说了算）
+            ("客户端 1.20.1.jar", "E:/i/versions/1.20.1/1.20.1.jar", ClientJar),
+            // ⑤ 库
+            ("本地库 lwjgl-3.3.1", "E:/i/libraries/org/lwjgl/lwjgl/3.3.1/lwjgl.jar", Library),
+            // ⑥ Java 运行时
+            ("Java 21.0.1 运行时", "E:/i/cache/java/t21.zip", JavaRuntime),
+            // ⑦ 整合包体
+            ("整合包 Fabulously Optimized", "E:/i/cache/mrpack-t1.mrpack", ModpackArchive),
+        ];
+        for (label, dest, want) in cases {
+            assert_eq!(
+                class_of_task(label, std::path::Path::new(dest)),
+                want,
+                "标签 {label} @ {dest} 应当落在 {want:?}"
+            );
+        }
+        /*
+         * ⑧ 资源文件（`installer.rs` 那条路的标签就是资源名，没有类别前缀）：
+         *    `assets/objects/…` ⇒ Asset（64 MiB）。真实资源单文件最大 ~10 MB。
+         */
+        assert_eq!(
+            class_of_task("minecraft/sounds/a.ogg", std::path::Path::new("E:/i/assets/objects/ab/cdef")),
+            Asset
+        );
     }
 }

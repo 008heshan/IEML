@@ -94,6 +94,21 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.21.8',
+    date: '2026-10-17',
+    headline: '这一版修好了整合包装不上、加载器不显示这两件事。',
+    groups: [
+      {
+        title: '修复了',
+        items: [
+          '修复了 有些整合包和 Mod 会因为在体积上限上被认错，正常的文件也下载失败。',
+          '修复了 一个文件出问题会把整批下载停掉，后面本该能下的文件根本没被尝试。',
+          '修复了 CurseForge 的整合包卡片不显示模组加载器类型。',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.21.7',
     date: '2026-10-17',
     headline: '这一版让启动按钮的光跟着它自己的颜色走。',

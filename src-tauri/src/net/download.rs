@@ -179,12 +179,19 @@ pub async fn actual_expected(expected: &ExpectedHash, path: &Path) -> Option<Str
 impl DownloadTask {
     /// 只带一个 URL 的任务（最常见的情况）
     ///
-    /// ★★ `max_bytes` 在这里就按 `label` 推出来填好（`Some(该类别的默认上限)`）——
-    ///    于是"忘了设"这件事不可能发生：任务一被造出来就带着闸门。
-    ///    类别表在 `domain::archive_guard`（`class_from_label` + `default_limit_for`）。
+    /// ★★ `max_bytes` 在这里就按**落盘路径 + 标签**推出来填好
+    ///    （`Some(该类别的默认上限)`）—— 于是"忘了设"这件事不可能发生：
+    ///    任务一被造出来就带着闸门。类别表在 `domain::archive_guard`
+    ///    （`class_of_task`：两张证据**取更宽的那一档**）。
+    ///
+    /// ★★★★ 2026-10-17（用户现场）：这一行原来只看 `label`，于是
+    ///    CurseForge 那条路（标签是**纯文件名**）与 Modrinth 那条路
+    ///    （标签是 `mods/xxx.jar`）**双双**落进 `Unknown` 的 64 MiB 档 ——
+    ///    一个 92 MB 的 mod 因此被判成"超过上限"。现在用 `path` 判：
+    ///    `…/game/mods/better-end-4.0.11.jar` 里的 `mods` 就是那条证据。
     pub fn new(path: PathBuf, url: String, sha1: String, size: u64, label: String) -> Self {
         let cap = crate::domain::archive_guard::default_limit_for(
-            crate::domain::archive_guard::class_from_label(&label),
+            crate::domain::archive_guard::class_of_task(&label, &path),
         );
         Self {
             path,
@@ -277,21 +284,28 @@ impl DownloadTask {
     ///
     ///   三态（判据在 `domain::archive_guard`，纯逻辑、有断言钉住）：
     ///     ① `max_bytes = Some(n)` ⇒ 用 n（调用方比标签更清楚时显式指定）；
-    ///     ② `max_bytes = None`（老数据 / 老调用点）⇒ **按 `label` 推类别**再取该类别的
-    ///        默认上限 —— 语义定死为"推断"，**不是"不设上限"**；
-    ///     ③ 标签也认不出来 ⇒ 类别 `Unknown` ⇒ 最紧的一档（64 MiB）。
+    ///     ② `max_bytes = None`（老数据 / 老调用点）⇒ **按目的路径 + 标签推类别**
+    ///        再取该类别的默认上限 —— 语义定死为"推断"，**不是"不设上限"**；
+    ///     ③ 两者都认不出来 ⇒ 类别 `Unknown` ⇒ 最紧的一档（64 MiB）。
+    ///
+    ///   ★★ 2026-10-17：判据从"只看 `label`"改成 `class_of_task(&label, &path)`
+    ///     （**落盘路径 + 标签，取更宽的那一档**）—— 见
+    ///     `archive_guard::class_of_task` 与 `DownloadTask::new` 上那段用户现场的说明。
     pub fn byte_cap(&self) -> crate::domain::archive_guard::ByteCap {
         cap_of(self)
     }
 }
 
 /// 任务的体积闸门（见 [`DownloadTask::byte_cap`] 的三态说明）。
+///
+/// ★ 与 `DownloadTask::new` 里的那一份**必须是同一个函数**（`class_of_task`）：
+///   两处各算一遍正是"同一个判据写两遍"，而这个缺陷就是从那里进来的。
 pub fn cap_of(task: &DownloadTask) -> crate::domain::archive_guard::ByteCap {
-    use crate::domain::archive_guard::{class_from_label, default_limit_for, ByteCap};
+    use crate::domain::archive_guard::{class_of_task, default_limit_for, ByteCap};
     match task.max_bytes {
         Some(n) => ByteCap { max_bytes: Some(n) },
         None => ByteCap {
-            max_bytes: Some(default_limit_for(class_from_label(&task.label))),
+            max_bytes: Some(default_limit_for(class_of_task(&task.label, &task.path))),
         },
     }
 }
@@ -1402,7 +1416,8 @@ where
                             "[IEML/download] {} 失败且**换源也没用**（{}）：{e} → 立刻结束，不再重试",
                             task.label,
                             match class {
-                                FailureClass::Fatal => "致命",
+                                FailureClass::Fatal => "整批都不可能好",
+                                FailureClass::GiveUp => "这一个文件没戏",
                                 FailureClass::Busy => "文件被占用",
                                 FailureClass::Retryable => "可重试",
                             }
@@ -1477,7 +1492,9 @@ where
                          */
                         let again = verify_mismatches >= 1;
                         verify_mismatches += 1;
-                        last_class = FailureClass::Fatal;
+                        // ★ 2026-10-17：逐文件的结论 ⇒ GiveUp（第一次只换源重取，
+                        //   第二次才放弃 —— "不吃重试轮"这半句由 `is_hopeless` 保住）
+                        last_class = FailureClass::GiveUp;
                         last_err = format!(
                             "{} 返回的文件校验失败（期望 {}，实际 {}）",
                             src.as_str(),
@@ -1492,10 +1509,15 @@ where
                                 expected.algo()
                             );
                             let _ = tokio::fs::remove_file(&part).await;
+                            /*
+                             * ★ 2026-10-17：`Fatal` → `GiveUp`。
+                             *   "这份文件的字节与期望不符"是**逐文件**的结论，
+                             *   不该让同批其它几百个文件跟着停。
+                             */
                             return Err(NetError::AllSourcesFailed {
                                 tried: tried_sources.max(ordered.len()),
                                 last: last_err,
-                                class: FailureClass::Fatal,
+                                class: FailureClass::GiveUp,
                             });
                         }
                         continue;
@@ -1509,7 +1531,8 @@ where
                          */
                         manager.note_failure(*src, None);
                         last_err = format!("{}：校验结果无法判定（{}）", src.as_str(), expected.algo());
-                        last_class = FailureClass::Fatal;
+                        // ★ 同上：逐文件的结论 ⇒ GiveUp
+                        last_class = FailureClass::GiveUp;
                         continue;
                     }
                 }
@@ -1605,9 +1628,17 @@ where
          *     · `download_batch` 里管"整个批次的 3 轮补下"（用 `AllSourcesFailed.class`）。
          *   少了这里，`is_retryable` 就还是一个没有调用点的判据
          *   （那正是审计点名的问题之一）。
+         *
+         * ★★ 2026-10-17：判据从 `!= FailureClass::Fatal` 改成
+         *    `!is_worth_retrying()`（= 没戏的两种：`Fatal` 与 `GiveUp`）。
+         *    这不是等价改写 —— 上一版写成 `!= Fatal` 时，"超上限"这类
+         *    逐文件没戏的失败会被**重新当成可重试**（因为它不再是 `Fatal`），
+         *    于是"超上限不吃重试轮"那半句会当场失效。
+         *    ⇒ 两问分开问：这里问的是"**这个文件**还值不值得再试"
+         *      （`is_worth_retrying`），不是"要不要停整批"。
          */
         let retry_this_file = last_err.is_empty()
-            || crate::domain::failure::classify_message(&last_err) != FailureClass::Fatal;
+            || crate::domain::failure::classify_message(&last_err).is_worth_retrying();
         if attempt < MAX_FILE_RETRIES && retry_this_file {
             let delay = backoff_delay(
                 attempt,
@@ -1619,10 +1650,11 @@ where
             }
         } else if attempt < MAX_FILE_RETRIES {
             say!(
-                "[IEML/download] {} 的失败是**致命**的 → 不吃后面的重试轮，直接报错：{last_err}",
+                "[IEML/download] {} 的失败**再试也没用**（逐文件的结论）→ 不吃后面的重试轮，\
+                 直接报错（**只放弃它自己**，不牵连同批的其它文件）：{last_err}",
                 task.label
             );
-            last_class = FailureClass::Fatal;
+            last_class = crate::domain::failure::classify_message(&last_err);
             break;
         }
     }
@@ -3403,6 +3435,15 @@ impl BatchOptions {
     }
 }
 
+/// **批次被"整批都不可能好"的原因停下时**，那些没轮到 / 还要再试的文件上写的话。
+///
+/// ★ 措辞里的三个原因必须与 `FailureClass::stops_the_batch` 的判据**一一对应**
+///   （磁盘满 / 权限 / 取消）—— 2026-10-17 之前这里还写着"校验反复不符"，
+///   而校验不符是**逐文件**的结论（现在归 `GiveUp`），那句话会让用户
+///   以为整批都出了问题。
+pub const BATCH_HALTED_REASON: &str =
+    "因为本轮出现**整批都不可能好**的失败（磁盘满 / 权限 / 已取消），这一批已停止";
+
 /// 并发下载一批文件。
 ///
 /// 三段式：
@@ -3543,7 +3584,7 @@ pub async fn download_batch(tasks: Vec<DownloadTask>, opts: BatchOptions) -> Res
         round_ms.push(round_t0.elapsed().as_millis() as u64);
 
         /*
-         * ★★ 判据 1 的落地（四）：**致命失败立刻结束整个批次**。
+         * ★★ 判据 1 的落地（四）：**"整批都不可能好"的失败立刻结束整个批次**。
          *
          *   审计：*A fatal failure must fail the batch with a useful message
          *   naming the artifact* + *Disk-full and permission errors are not
@@ -3555,12 +3596,28 @@ pub async fn download_batch(tasks: Vec<DownloadTask>, opts: BatchOptions) -> Res
          *   0.8→15 秒退避）会把**剩下的所有任务**再造一遍 ——
          *   磁盘满的时候那等于一边失败一边重试几十个文件。
          *
-         *   ⇒ 一旦本轮出现**致命**失败，就把剩下的任务全部收进最终失败清单，
-         *     立刻跳出补下循环（`pending` 清空 + `round` 拉到上限）。
+         *   ⇒ 一旦本轮出现**整批都不可能好**的失败，就把剩下的任务全部收进
+         *     最终失败清单，立刻跳出补下循环（`pending` 清空 + `round` 拉到上限）。
          *   ★ 判据用 `FailureClass`，不是字符串 —— 见 `DownloadFailure`。
+         *
+         * ★★★★ 2026-10-17 修（用户现场：整合包里两个 60~100 MB 的 mod 撞上
+         *   体积上限 ⇒ **整批停下**，剩下几百个文件连试都没试，日志却说
+         *   "因为本轮出现致命失败（磁盘满/权限/校验反复不符）"）。
+         *
+         *   根因：这里原来问的是 `class.is_fatal()`，而 `Fatal` 当时把
+         *   "**整批**都不可能好"（磁盘满 / 权限）与"**这一个文件**没戏"
+         *   （404 / 超上限 / 校验不符）挤成了一档。
+         *
+         *   ⇒ 现在只问 `stops_the_batch()`（= 只有 `Fatal`）。逐文件的那些
+         *     落进 `GiveUp`：它们**不进这个分支**，批次照常往下跑，
+         *     那些文件各自在最终失败清单里点名 ——
+         *     而"哪些文件根本没轮到"这件事也就不再发生了。
          */
-        let fatal = round_failures.iter().filter(|f| f.class.is_fatal()).count();
-        if fatal > 0 {
+        let batch_stoppers = round_failures
+            .iter()
+            .filter(|f| f.class.stops_the_batch())
+            .count();
+        if batch_stoppers > 0 {
             /*
              * ★ 这里**不能** `std::mem::take(&mut pending)`：`pending` 是循环条件
              *   在读的变量，而 `break` 语句会把"take 之后的值"重新赋回 ——
@@ -3569,9 +3626,9 @@ pub async fn download_batch(tasks: Vec<DownloadTask>, opts: BatchOptions) -> Res
              */
             let unstarted_n = unstarted.len();
             say!(
-                "[IEML/download] 本轮出现 {fatal} 个**致命**失败（磁盘满 / 权限 / 校验反复不符），\
-                 立刻结束：不再补下 {} 个文件（本轮另有 {unstarted_n} 个没轮到）\
-                 —— 重试治不好这些错",
+                "[IEML/download] 本轮出现 {batch_stoppers} 个**整批都不可能好**的失败\
+                 （磁盘满 / 权限 / 取消），立刻结束：不再补下 {} 个文件\
+                 （本轮另有 {unstarted_n} 个没轮到）—— 重试治不好这些错",
                 still_failed.len()
             );
             /*
@@ -3587,18 +3644,12 @@ pub async fn download_batch(tasks: Vec<DownloadTask>, opts: BatchOptions) -> Res
             failures_all.extend(round_failures.iter().cloned());
             failures_all.extend(still_failed.iter().map(|t| DownloadFailure {
                 label: t.label.clone(),
-                reason: "因为本轮出现致命失败（磁盘满 / 权限 / 校验反复不符），这一批已停止".into(),
+                reason: BATCH_HALTED_REASON.into(),
                 class: FailureClass::Fatal,
             }));
             failed = failures
                 .into_iter()
-                .chain(still_failed.iter().map(|t| {
-                    (
-                        t.label.clone(),
-                        "因为本轮出现致命失败（磁盘满 / 权限 / 校验反复不符），这一批已停止"
-                            .to_string(),
-                    )
-                }))
+                .chain(still_failed.iter().map(|t| (t.label.clone(), BATCH_HALTED_REASON.to_string())))
                 .collect();
             round += 1;
             break;
@@ -5568,10 +5619,19 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("体积上限"), "错误要说清原因：{msg}");
         assert!(msg.contains("故意超限"), "要点名是哪个文件：{msg}");
+        /*
+         * ★★ 2026-10-17：超限是 **`GiveUp`**（不再是 `Fatal`）—— 见
+         *   `FailureClass::GiveUp` 的说明与 `over_cap_error_is_fatal_not_retryable`。
+         *   "这一个文件没戏"与"整批停下"是两问：前者 yes，后者 **no**。
+         */
         assert_eq!(
             err.class(),
-            FailureClass::Fatal,
-            "★ 超限是致命（不重试 3×3 轮）：{msg}"
+            FailureClass::GiveUp,
+            "★ 超限是逐文件的结论（不重试 3×3 轮，但**不许停整批**）：{msg}"
+        );
+        assert!(
+            !err.class().stops_the_batch(),
+            "★★ 超限绝对不许停下整批 —— 用户现场就是几百个文件被它拦住的：{msg}"
         );
         // ③ 当段被删掉：0 号段是先写的那个，一定碰过超限
         let seg0 = segment_path(&target, 0);
@@ -5908,27 +5968,41 @@ mod tests {
         assert!(ByteMeter::new(cap).starting_at(120 * MB).is_err());
     }
 
-    /// ★★ **超限必须是"致命"，不许被重试 3×3 轮**（这条测试直接问引擎的分类器）。
+    /// ★★ **超限不许被重试 3×3 轮，但也不许停下整批**（这条测试直接问引擎的分类器）。
     ///
     ///   为什么值得单开一条：我第一版的文案是"响应体超过这个类别的体积上限：…"，
-    ///   而 `domain::failure::classify_message` 里致命那一组认的是
+    ///   而 `domain::failure::classify_message` 里认的是
     ///   `磁盘满/权限/校验/大小不对/没下完/…` —— **一个都不匹配**，
     ///   于是这条错误被判成 `Retryable`：3 轮退避 + 换源重下 + 批次层再 3 轮，
     ///   十几秒后给用户看到同一句话（审计原话：retrying just makes the UI lie
     ///   for longer）。现在文案里带上判据认得的那几个词，这条测试钉住它。
+    ///
+    ///   ★★★★ 2026-10-17（用户现场：装整合包时 `better-end`(92 MB) 与
+    ///   `the_bumblezone`(69 MB) 撞上 `Unknown` 的 64 MiB 档 ⇒ **整批停下**，
+    ///   剩下几百个文件连试都没试）：这条测试原来只断言了"不重试"，
+    ///   而**缺了**"它不该停整批"那一半 —— 缺陷正是从那个缺口进来的。
+    ///   现在两半都钉住（`GiveUp`：不重试、不换源、**批次继续**）。
     #[test]
-    fn over_cap_error_is_fatal_not_retryable() {
+    fn over_cap_error_gives_up_one_file_without_stopping_the_batch() {
         use crate::domain::archive_guard::{ArtifactClass, ByteCap};
         let cap = ByteCap::for_class(ArtifactClass::Image);
         let err = cap_exceeded_error("图标 故意超限.png", cap, 999 * 1024 * 1024);
         assert_eq!(
             err.class(),
-            FailureClass::Fatal,
-            "★ 超限必须判成致命（否则会白烧 3×3 轮重试与退避）：{err}"
+            FailureClass::GiveUp,
+            "★ 超限是逐文件的结论（否则会白烧 3×3 轮重试与退避）：{err}"
+        );
+        assert!(
+            !err.class().is_worth_retrying(),
+            "★ ① 超限不许重试（这一半与改动前完全一致）"
         );
         assert!(
             err.fatal_without_trying_other_sources(),
-            "★ 也不该去换源重下同一份超限的东西"
+            "★ ② 也不该去换源重下同一份超限的东西"
+        );
+        assert!(
+            !err.class().stops_the_batch(),
+            "★★★ ③ 但只要还有一个文件没跑，批次就必须继续 —— 用户现场就是这里出的事"
         );
         let msg = err.to_string();
         assert!(msg.contains("体积上限"), "文案要给人看得懂的原因：{msg}");
@@ -7593,6 +7667,111 @@ mod tests {
             again.processed_files, N,
             "★ 续下必须把这一批处理完（{N} 个）—— 否则进度永远到不了头"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★★★★ 2026-10-17（用户现场）：**一个文件超上限，不许停下整批**。
+    ///
+    ///   现场：装整合包时 `better-end`(92 MB) 与 `the_bumblezone`(69 MB) 两个
+    ///   mod 被体积上限掐死，而批次层把"超上限"当成**致命** ⇒
+    ///   「因为本轮出现致命失败（磁盘满/权限/校验反复不符），这一批已停止」
+    ///   ⇒ 剩下几百个文件**连试都没试**。
+    ///
+    ///   这条测试直接跑**真的批次**（本地假服务器），钉住四件事：
+    ///     ① 只有那一个文件失败；
+    ///     ② 与它无关的文件**真的落盘了**（这才是"批次继续"的意思，
+    ///        光断言"没停"是断言不出来的）；
+    ///     ③ 失败原因说的是"体积上限"，**不是**"这一批已停止"；
+    ///     ④ 档位是 `GiveUp`（不重试、不换源），**不是** `Fatal`。
+    ///
+    ///   ★ 本机 `cargo test --lib` 在加载阶段就退出（`0xc0000139`，见项目记忆），
+    ///     所以这条**写了但没在本机跑过** —— 但它能编（`cargo test --lib --no-run`）。
+    ///     同一份判据另有一条**本机真跑过**的替身：
+    ///     `domain/failure.rs::oversize_gives_up_one_file_but_not_the_batch`。
+    #[tokio::test]
+    async fn oversize_stops_only_that_file_not_the_batch() {
+        let dir = std::env::temp_dir().join(format!("ieml-capbatch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 服务端固定给 4096 字节；三个任务都指向它
+        let server = FakeServer::start(|_idx, _range| (200, vec![], vec![7u8; 4096]));
+        let url = server.url();
+
+        // ① 撞上限的那一个：上限 1 KiB < 4096 字节
+        let mut over = DownloadTask::new(
+            dir.join("mods").join("over.bin"),
+            url.clone(),
+            String::new(),
+            4096,
+            "mods/over.bin".into(),
+        );
+        over.max_bytes = Some(1024);
+        // ② 两个正常的（默认闸门；它们必须**真的下下来**）
+        let ok1 = DownloadTask::new(
+            dir.join("mods").join("ok1.bin"),
+            url.clone(),
+            String::new(),
+            4096,
+            "mods/ok1.bin".into(),
+        );
+        let ok2 = DownloadTask::new(
+            dir.join("mods").join("ok2.bin"),
+            url.clone(),
+            String::new(),
+            4096,
+            "mods/ok2.bin".into(),
+        );
+
+        let out = download_batch(
+            vec![over, ok1, ok2],
+            BatchOptions::new(1, Source::Mojang, CancelToken::new()),
+        )
+        .await
+        .expect("批次本身不该崩");
+
+        say!(
+            "\n批次结论：processed={} failed={:?}",
+            out.processed_files,
+            out.failed
+        );
+
+        // ① 只失败了一个
+        assert_eq!(out.failed.len(), 1, "只该有一个文件失败：{:?}", out.failed);
+        assert!(out.failed[0].0.contains("over.bin"), "{:?}", out.failed);
+        // ② 与它无关的**必须真的落盘** —— 这条才是"批次继续"的证据
+        assert!(
+            dir.join("mods").join("ok1.bin").is_file(),
+            "★★ 超上限的那个文件不该拦下同批的其它文件（ok1.bin 没落盘）"
+        );
+        assert!(
+            dir.join("mods").join("ok2.bin").is_file(),
+            "★★ 超上限的那个文件不该拦下同批的其它文件（ok2.bin 没落盘）"
+        );
+        // ③ 原因说的是实话
+        assert!(
+            out.failed[0].1.contains("体积上限"),
+            "原因要指向体积上限：{:?}",
+            out.failed
+        );
+        assert!(
+            !out.failed[0].1.contains("这一批已停止"),
+            "★★★ 超上限**不许**说成「这一批已停止」—— 用户现场那句话就是它：{:?}",
+            out.failed
+        );
+        // ④ 档位
+        let f = out
+            .failures
+            .iter()
+            .find(|f| f.label.contains("over.bin"))
+            .expect("要有结构化的失败记录");
+        assert_eq!(
+            f.class,
+            FailureClass::GiveUp,
+            "★ 超上限是逐文件的结论：{f:?}"
+        );
+        assert!(!f.class.stops_the_batch());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

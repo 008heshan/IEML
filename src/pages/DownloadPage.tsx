@@ -38,6 +38,13 @@ import { isCancellation } from '../domain/cancel';
  *   两者都有 `tests/pack-missing.test.mjs` 钉着。
  */
 import { missingSummary, repairEntry } from '../domain/pack-missing';
+/*
+ * ★★ 2026-10-17（用户：「curseforge 的整合包，不显示整合包的模组加载器类型」）：
+ *   整合包卡片上"加载器"那一格的判据（值 → 规范串 | **null**）。
+ *   提出来是为了：① 取不到时**不渲染那一格**（而不是显示一个假的 `—`）；
+ *   ② 它能被 `tests/pack-loader.test.mjs` 真跑着钉住。
+ */
+import { packLoaderOf } from '../domain/pack-loader';
 import type { Instance } from '../domain';
 import type {
   ModrinthVersion,
@@ -548,7 +555,19 @@ interface PackCard {
   author: string;
   summary: string;
   mc: string;
-  loader: string;
+  /**
+   * **这个整合包的模组加载器**（规范串：`fabric`/`forge`/`neoforge`/`quilt`）。
+   *
+   * ★★★★ 2026-10-17（用户：「curseforge 的整合包，不显示整合包的模组加载器
+   *   类型」）：类型从 `string` 改成 `string | null` —— 原来"没有值"被兜底成
+   *   字符串 `'—'`，卡片上就出现一个**假的破折号格子**，读起来像
+   *   "这个包的加载器是空的"，而不是"我们没这个信息"。
+   *
+   *   ⇒ `null` = **我们没拿到这个信息** ⇒ **那一格不渲染**（见下面
+   *     `.pack-tags` 那一段）。判据（值 → 规范串 | null）在
+   *     `domain/pack-loader.ts::packLoaderOf`，有 `node --test` 的断言钉着。
+   */
+  loader: string | null;
   downloads: string;
   weight: 'light' | 'medium' | 'heavy';
   /**
@@ -737,7 +756,29 @@ function ModpackTab({
           author: h.author || '未知作者',
           summary: h.description,
           mc: h.versions.slice(-1)[0] ?? '—',
-          loader: h.categories.find((c) => ['fabric', 'forge', 'neoforge', 'quilt'].includes(c)) ?? '—',
+          /*
+           * ★★★★ 2026-10-17（用户：「curseforge 的整合包，不显示整合包的
+           *   模组加载器类型」）：
+           *
+           *   这一格原来写的是
+           *     `h.categories.find(c => ['fabric','forge','neoforge','quilt'].includes(c)) ?? '—'`
+           *   两个毛病：
+           *     ① 值缺失时兜底成 `'—'` ⇒ 卡片上出现一个**假的破折号格子**，
+           *        读起来是"这个包的加载器是空的"，而事实是"**我们没这个信息**"
+           *        （仓库一贯的纪律：不许把"不知道"说成"没有"）；
+           *     ② 判据埋在 effect 里，没有测试碰得到它。
+           *
+           *   ⇒ 判据搬到 `domain/pack-loader.ts::packLoaderOf`（纯函数、
+           *     `node --test` 能真跑），**取不到就是 `null`**，
+           *     由下面渲染那一段决定"**不渲染那一格**"（见 `PackCard.loader`）。
+           *
+           *   ★ CurseForge 那边为什么原来是空的：CF 自己的 `categories` 是
+           *     **内容分类**（`Exploration`/`Tech`/`Quests`…），里面永远没有加载器；
+           *     加载器在 `latestFiles[].gameVersions` 里（`["1.21.1","NeoForge"]`），
+           *     后端现在把那一半并进了同名的 `categories` 字段
+           *     （`net/curseforge.rs::categories_with_loaders`）。
+           */
+          loader: packLoaderOf(h.categories),
           downloads: h.downloads > 1000 ? `${Math.round(h.downloads / 1000)}k` : String(h.downloads),
           weight: 'medium' as const,
           icon: h.icon_url ?? null,
@@ -1964,7 +2005,22 @@ function ModpackTab({
             </div>
             <div className="pack-tags">
               <Chip tone="accent">{p.mc}</Chip>
-              <Chip tone="neutral">{p.loader}</Chip>
+              {/*
+                ★★★★ 2026-10-17（用户截图：「curseforge 的整合包，不显示整合包的
+                  模组加载器类型」—— 那一格是一个只有「—」的小方块）：
+
+                  **拿不到加载器时，这一格整个不渲染。**
+
+                  原来它渲染 `<Chip>{p.loader}</Chip>`，而 `p.loader` 拿不到时是
+                  字符串 `'—'` ⇒ 屏幕上出现一个**像模像样的空格子**。它传达的是
+                  "加载器的值是空的"，而正确的事实是"**我们没拿到这个信息**"——
+                  与仓库一贯的"不许编"冲突（同类判据见 `friends.ts`：拿不到名单
+                  只能显示「未知」，不许写成「离线」）。
+
+                  ★ 取值本身**两个源同一套**（小写规范串，与 Modrinth 逐字节同形状），
+                    不在这里为来源分两套渲染。
+              */}
+              {p.loader !== null ? <Chip tone="neutral">{p.loader}</Chip> : null}
             </div>
             <div className="pack-meta">{p.downloads} 次下载</div>
           </button>

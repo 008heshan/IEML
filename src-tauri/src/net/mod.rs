@@ -219,33 +219,48 @@ impl NetError {
 
     /// **这一次失败该怎么处置**（判据本体在 `domain::failure`）。
     ///
-    /// 三档：`Fatal`／`Retryable`／`Busy`。下载引擎据此决定
-    /// "立刻结束"还是"退避重试"还是"短退避等占用解除"。
+    /// 四档：`Fatal`（整批都不可能好）／`GiveUp`（这一个文件没戏，**不牵连别的**）
+    /// ／`Retryable`／`Busy`。下载引擎据此决定"停整批"还是"放弃这一个"还是
+    /// "退避重试"还是"短退避等占用解除"。
+    ///
+    /// ★★ 2026-10-17：`Fatal` 原来把"整批都不可能好"与"这一个文件没戏"挤成
+    ///   一档，而批次层把 `Fatal` 读成"**整批停下**" —— 于是 404 / 超上限
+    ///   这类**逐文件**的结论会牵连整批（用户现场：一个 92 MB 的 mod 撞上
+    ///   64 MiB 的 `Unknown` 档 ⇒ 整个整合包的安装停下）。
+    ///   现在两者分开，判据见 `FailureClass::{is_hopeless, stops_the_batch}`。
     pub fn class(&self) -> crate::domain::failure::FailureClass {
         use crate::domain::failure::{classify_message, FailureClass};
         match self {
             // ★ 取消不是"失败"，它单独一档（调用方会立刻退出，不问处置）
             Self::Cancelled => FailureClass::Fatal,
             /*
-             * ★★ 4xx（除 408/429）**立刻致命** —— 与元数据路径
+             * ★★ 4xx（除 408/429）**立刻放弃这一个文件** —— 与元数据路径
              *   （`get_text_with_headers`，本文件上面那段注释）同一个结论。
              *
              *   这条修复的是一处**只改了一条路**的漏改：元数据早就是
              *   "一次 4xx 就返回"，而下载那条路会带着 404 走满
              *   `MAX_FILE_RETRIES(3) × MAX_BATCH_ROUNDS(3) = 9` 次 + 退避。
+             *   ★ 2026-10-17：`Fatal` → `GiveUp`（同一条结论，但不再停整批）。
              */
             Self::Status { status, .. } => FailureClass::from_parts(Some(*status), None),
             /*
              * 服务器不支持 Range：这不是"重试就会好"，换源也一样
-             * （同一个 CDN 的所有边缘节点行为一致）—— 所以是致命。
+             * （同一个 CDN 的所有边缘节点行为一致）—— 所以**放弃这一个文件**。
              * ★ 它**不会**让下载失败：`download_to_part` 会在同一个调用里
              *   回退单连接（`is_permanent_range_failure`）。
+             * ★ 2026-10-17：`Fatal` → `GiveUp`（同一个调用里就能绕过去，
+             *   更不该让它停下了整批）。
              */
-            Self::RangeUnsupported { .. } => FailureClass::Fatal,
-            // 本地文件系统：磁盘满 / 权限拒绝 → 致命；真被占用 → Busy
+            Self::RangeUnsupported { .. } => FailureClass::GiveUp,
+            // 本地文件系统：磁盘满 / 权限拒绝 → 致命（**停整批**）；真被占用 → Busy
             Self::Io(e) => FailureClass::from_parts(None, e.raw_os_error()),
-            // 校验不符：见 `HashMismatch` 那一档下面的说明
-            Self::HashMismatch { .. } => FailureClass::Fatal,
+            /*
+             * 校验不符：见 `HashMismatch` 那一档下面的说明。
+             * ★ 2026-10-17：`Fatal` → `GiveUp` —— "源上这一份的字节与期望不符"
+             *   是**逐文件**的事实（审计要的是"别对同一个文件永远重试"，
+             *   那半句由 `is_hopeless()` 原样保住）。
+             */
+            Self::HashMismatch { .. } => FailureClass::GiveUp,
             /*
              * 网络层错误：按 reqwest 自己的分类走。
              *
@@ -303,11 +318,12 @@ impl NetError {
     ///     `domain::failure::classify_message` —— **同一个判据源头**，
     ///     这里这一份是给"还能拿到 `NetError`"的调用方用的。
     pub fn is_retryable(&self) -> bool {
-        use crate::domain::failure::FailureClass;
-        match self.class() {
-            FailureClass::Fatal => false,
-            FailureClass::Retryable | FailureClass::Busy => true,
-        }
+        /*
+         * ★★ 2026-10-17：判据交给 `FailureClass::is_worth_retrying()`
+         *   （= `Retryable` ∪ `Busy`），别再在这里手写一遍匹配 ——
+         *   `GiveUp` 加进来的那一轮，"哪些档还值得重试"正是最容易漏一处的判据。
+         */
+        self.class().is_worth_retrying()
     }
 
     /// **这条致命错误换个源还有没有戏？**
@@ -327,12 +343,16 @@ impl NetError {
     ///     ① 这一档是致命的（`class() == Fatal`）；
     ///     ② 这个错误**与 URL 无关**（权限 / 磁盘 / 校验 / 分片拼装 / 不支持的 Range）。
     ///
-    ///   ★ 换句话说：URL 相关的 4xx（403/404/410…）仍然是致命的
-    ///     （**整份重下那 3×3 次预算一轮都不给**），但候选源列表照旧走完 ——
+    ///   ★ 换句话说：URL 相关的 4xx（403/404/410…）仍然是"对这**一个文件**
+    ///     没戏"（**整份重下那 3×3 次预算一轮都不给**），但候选源列表照旧走完 ——
     ///     那一条不是"重试"，是"换个地方找"，它有独立的证据支持。
+    ///
+    /// ★★ 2026-10-17：判据从 `class() == Fatal` 放宽成 `class().is_hopeless()`
+    ///   （= `Fatal` ∪ `GiveUp`）。`GiveUp` 里的那些（超上限 / 校验不符 /
+    ///   大小不符 / Range 不支持）同样"换个源也没用" —— 换源重下的还是
+    ///   同一份超限的东西，只是让用户多等十几秒再看到同一句话。
     pub fn fatal_without_trying_other_sources(&self) -> bool {
-        use crate::domain::failure::FailureClass;
-        if self.class() != FailureClass::Fatal {
+        if !self.class().is_hopeless() {
             return false;
         }
         // URL 相关的 4xx / 3xx：换源（换路径）可能有戏

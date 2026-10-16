@@ -151,6 +151,57 @@ pub fn loaders_of(game_versions: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// **命中的 `categories`** —— 内容分类 + 加载器（统一形状里加载器就住在这个字段）。
+///
+/// ## ★★★★ 2026-10-17 为什么要把加载器并进来（用户现场）
+///
+///   用户：「**curseforge 的整合包，不显示整合包的模组加载器类型**」——
+///   整合包卡片上"版本号旁边那一格"只显示一个 `—`（空值的兜底）。
+///
+///   根因：界面那一格读的是命中的 **`categories`**
+///   （`DownloadPage.tsx`：`h.categories.find(c => ['fabric','forge','neoforge','quilt'].includes(c))`），
+///   而这一层原来只填了 CurseForge 自己的 `categories` —— **那是内容分类**
+///   （`Exploration` / `Extra Large` / `Magic` / `Tech` / `Quests`…），
+///   里面**永远不会有加载器** ⇒ 那一格永远是空 ⇒ 显示成 `—`。
+///
+/// ## 加载器真正的住处在 `latestFiles[].gameVersions`
+///
+///   ★ 实测（2026-10-17，`mod.mcimirror.top/curseforge/v1/mods/search?classId=4471`）：
+///     · `All the Mods 10 - ATM10` → `["1.21.1", "NeoForge"]`，
+///       `categories` = `Exploration / Extra Large / Magic / Tech / Quests`；
+///     · `DeceasedCraft` → `["1.20.1", "Forge"]`；
+///     · `COBBLEVERSE` → `["1.21.1", "Fabric"]`；
+///     · `SkyFactory 4` → `["1.12", "1.12.1", "1.12.2"]`（**没有加载器** —— 老包）。
+///     20 个热门整合包逐个看过：19 个带加载器，1 个（SkyFactory 4）真的没有。
+///
+///   ⇒ 于是"版本号"与"加载器"是从**同一个 `gameVersions` 数组**里各取一半
+///     （`mc_versions_of` 取数字那半、`loaders_of` 取名字那半）——
+///     这一层早就用 `mc_versions_of` 填 `versions` 了，却漏了另一半。
+///
+/// ## 为什么并进 `categories` 而不是新开一个字段
+///
+///   Modrinth 的 `categories` **本来就是混装的**（实测：`sodium` →
+///   `[fabric, neoforge, optimization, quilt]`；`Better Adventures++` →
+///   `[adventure, fabric, quilt]`）—— 加载器在那边就是"分类"之一
+///   （facets 里写作 `categories:fabric`）。ADR-052 要的是**两个源同一个形状**，
+///   所以正确做法是把加载器补进 `categories`，而不是让界面为来源分两套读法。
+///   ★ 加载器**追加在末尾**：`ResourceBrowser` 会显示 `categories.slice(0, 3)`，
+///     把内容分类排在前面，那三格就不会变成 "fabric / forge / quilt"。
+///
+///   ★ 找不到加载器时**什么都不补**（返回原样的内容分类）——
+///     界面据此**不渲染那一格**，而不是显示一个"加载器是空"的 `—`。
+pub fn categories_with_loaders(content_categories: &[String], files: &[CfFile]) -> Vec<String> {
+    let mut out: Vec<String> = content_categories.to_vec();
+    for f in files {
+        for l in loaders_of(&f.game_versions) {
+            if !out.contains(&l) {
+                out.push(l);
+            }
+        }
+    }
+    out
+}
+
 /* ====================== 请求 ======================
  *
  * ## 为什么只剩镜像这一条路（三次演进的终点，别再往回改）
@@ -554,7 +605,20 @@ pub fn modpack_download_tasks(
             expected,
             reason,
             file.file_length,
-            name.clone(),
+            /*
+             * ★★★★ 2026-10-17（用户现场：「装整合包会被体积上限掐死」）：
+             *   这里原来传的是**纯文件名**（`name.clone()`，如
+             *   `better-end-4.0.11.jar`）—— 而体积上限要按类别取，类别又只能
+             *   从"这是个什么东西"推出来，纯文件名推不出任何东西 ⇒
+             *   `Unknown`（64 MiB）⇒ **一个 92 MB 的 mod 当场被判超限**。
+             *
+             *   ⇒ 改成传**相对路径**（`mods/<文件名>`，与 Modrinth 那条路
+             *     `modrinth.rs` 传 `f.path` 完全同形状）。
+             *   ★ 它同时也是更诚实的展示标签：进度/错误里直接看得出落点。
+             *   ★ 判据本身**不依赖**标签变长（见 `archive_guard::class_of_task`
+             *     ——先看落盘路径），这里修的是"别让分类去猜"这件事。
+             */
+            rel,
         );
         // 同一份内容的其它候选（mediafilez / 镜像）—— 与 mod 下载同一套推导
         task.urls = download_candidates(file.id, &name, Some(&url))
@@ -789,7 +853,16 @@ pub async fn search(
                 slug: m.slug.clone(),
                 title: m.name.clone(),
                 description: m.summary.clone(),
-                categories: m.categories.iter().map(|c| c.name.clone()).collect(),
+                /*
+                 * ★★★★ 2026-10-17（用户：「curseforge 的整合包，不显示整合包的
+                 *   模组加载器类型」）：这里面**要含加载器** —— 见
+                 *   `categories_with_loaders` 的说明（CF 自己的 `categories` 是
+                 *   内容分类，加载器在 `latestFiles[].gameVersions` 里）。
+                 */
+                categories: categories_with_loaders(
+                    &m.categories.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
+                    &m.latest_files,
+                ),
                 project_type: kind.key().to_string(),
                 downloads: m.download_count,
                 follows: m.thumbs_up_count,
@@ -1319,6 +1392,95 @@ mod tests {
         let fabric: Vec<String> = ["1.21.1", "Fabric"].iter().map(|s| s.to_string()).collect();
         assert_eq!(mc_versions_of(&fabric), vec!["1.21.1".to_string()]);
         assert_eq!(loaders_of(&fabric), vec!["fabric".to_string()]);
+    }
+
+    /// ★★★★ 2026-10-17（用户：「curseforge 的整合包，不显示整合包的模组加载器类型」）：
+    ///   **命中的 `categories` 里必须含加载器**（界面那一格读的就是它）。
+    ///
+    ///   ★ 判据喂的是**真机抄下来的 JSON 片段**（2026-10-17，
+    ///     `mod.mcimirror.top/curseforge/v1/mods/search?gameId=432&classId=4471`
+    ///     的原文，只裁掉用不到的字段）—— 不是编的：
+    ///     · ATM10：`gameVersions = ["1.21.1", "NeoForge"]`，
+    ///       `categories = Exploration / Extra Large / Magic / Tech / Quests`；
+    ///     · DeceasedCraft：`["1.20.1", "Forge"]`；
+    ///     · COBBLEVERSE：`["1.21.1", "Fabric"]`。
+    ///   ★ 这一条同时钉住"**别拿 CF 的 categories 当加载器**"：
+    ///     那里面是 `Exploration` / `Tech` 这种**内容分类**，一个加载器都没有。
+    #[test]
+    fn search_hits_carry_the_loader_inside_categories() {
+        let raw = r#"{"data":[
+          {"id":925200,"name":"All the Mods 10 - ATM10","slug":"all-the-mods-10",
+           "categories":[{"id":4476,"name":"Exploration"},{"id":4482,"name":"Extra Large"},
+                         {"id":4473,"name":"Magic"},{"id":4472,"name":"Tech"},{"id":4478,"name":"Quests"}],
+           "latestFiles":[{"id":5146301,"modId":925200,"fileName":"ATM10.zip",
+                           "gameVersions":["1.21.1","NeoForge"]}]},
+          {"id":574444,"name":"DeceasedCraft","slug":"deceasedcraft",
+           "categories":[{"id":4474,"name":"Combat / PvP"},{"id":4481,"name":"Hardcore"}],
+           "latestFiles":[{"id":1,"modId":574444,"gameVersions":["1.20.1","Forge"]}]},
+          {"id":893546,"name":"COBBLEVERSE","slug":"cobbleverse",
+           "categories":[{"id":4465,"name":"Adventure and RPG"}],
+           "latestFiles":[{"id":2,"modId":893546,"gameVersions":["1.21.1","Fabric"]}]},
+          {"id":1,"name":"SkyFactory 4","slug":"skyfactory-4",
+           "categories":[{"id":4478,"name":"Quests"}],
+           "latestFiles":[{"id":3,"modId":1,"gameVersions":["1.12","1.12.1","1.12.2"]}]}
+        ]}"#;
+        #[derive(serde::Deserialize)]
+        struct List {
+            data: Vec<CfMod>,
+        }
+        let list: List = serde_json::from_str(raw).expect("真机抄下来的这段应当能解析");
+
+        let cats = |i: usize| {
+            let m = &list.data[i];
+            categories_with_loaders(
+                &m.categories.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
+                &m.latest_files,
+            )
+        };
+
+        // ① ATM10 ⇒ neoforge（★ 这就是用户截图里显示 `—` 的那一格）
+        let atm = cats(0);
+        assert!(
+            atm.contains(&"neoforge".to_string()),
+            "★ ATM10 的命中里必须带 neoforge：{atm:?}"
+        );
+        // ② 内容分类一个都不能丢（资源浏览器显示前 3 个）
+        assert!(atm.contains(&"Exploration".to_string()), "{atm:?}");
+        assert!(atm.contains(&"Tech".to_string()), "{atm:?}");
+        // ③ 加载器排在末尾 —— 否则 `categories.slice(0, 3)` 会显示成 fabric/forge/neoforge
+        assert_eq!(atm.last().map(|s| s.as_str()), Some("neoforge"), "{atm:?}");
+
+        // ④ 取值是前端认识的**规范串**（小写，与 Modrinth 的 categories 同一套）
+        assert!(cats(1).contains(&"forge".to_string()), "{:?}", cats(1));
+        assert!(cats(2).contains(&"fabric".to_string()), "{:?}", cats(2));
+        // 凡是在那四个规范串里的条目都必须是**小写**（CF 的内容分类不在此列）
+        for c in cats(0).iter().chain(cats(1).iter()).chain(cats(2).iter()) {
+            let lower = c.to_ascii_lowercase();
+            if ["fabric", "forge", "neoforge", "quilt"].contains(&lower.as_str()) {
+                assert_eq!(
+                    *c, lower,
+                    "★ 加载器必须是小写规范串（界面按小写比、也直接把它显示出来）"
+                );
+            }
+        }
+
+        // ⑤ ★ 拿不到加载器时**什么都不补**（老包 SkyFactory 4）——
+        //    界面据此**不渲染那一格**，而不是显示一个假的 `—`
+        let sf = cats(3);
+        assert_eq!(sf, vec!["Quests".to_string()], "没有加载器就不许编一个：{sf:?}");
+        for l in ["fabric", "forge", "neoforge", "quilt"] {
+            assert!(!sf.contains(&l.to_string()), "{sf:?}");
+        }
+        // ⑥ ★ **CF 的 categories 里一个加载器都没有**（这就是原来那格永远为空的原因）
+        for l in ["fabric", "forge", "neoforge", "quilt"] {
+            for m in &list.data {
+                assert!(
+                    !m.categories.iter().any(|c| c.name.eq_ignore_ascii_case(l)),
+                    "★ CF 的 categories 是内容分类，不该被当成加载器用：{:?}",
+                    m.categories.iter().map(|c| &c.name).collect::<Vec<_>>()
+                );
+            }
+        }
     }
 
     /* ---------- 指纹（向量表两侧共用） ---------- */
