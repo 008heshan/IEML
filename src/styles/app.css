@@ -1370,10 +1370,26 @@
   color: var(--text-primary);
   border-color: var(--border-strong);
 }
+/*
+ * ★★ 2026-10-17：`.chip-btn.chip-accent` 的描边原来是**写死的**
+ *   `rgba(91, 141, 239, 0.3)` —— 正是深色主题的强调色 `#5b8def`。
+ *
+ *   不修会怎样：旁边那两句（`background: var(--accent-subtle)`、`color: var(--accent)`）
+ *   都跟着主题走，**只有描边不跟** —— 于是换到别的主题上，这个 chip 都是
+ *   "强调色的底 + 强调色的字 + **一圈与主题无关的蓝**描边"，一块色里两种色相。
+ *   逐套量色相距离（写死色 hue 219.9° vs 该主题 `--accent`）：琥珀 **173.6°**、
+ *   卡其 170.3°、酒红 145.4°、藕荷 102.0°、墨绿 63.2°、绛紫 47.4°、黛青 35.5°
+ *   —— 只有深色（**0.0°**）与藏蓝（0.1°）看不出来，所以它一直没被发现
+ *   （写死的就是深色主题的强调色，开发机上永远是对的）。
+ *   它与启动按钮那圈蓝辉光是同一个来路（写死深色主题的强调色），
+ *   是整个仓库里同一族缺陷的最后两处。
+ *   ⇒ 换成 `--accent-border`（九套主题各自声明的强调色描边，深色是 0.34、
+ *     绛紫是 0.36 —— 与原来那个 0.3 同一档，语义正是"强调色的描边"）。
+ */
 .chip-btn.chip-accent {
   background: var(--accent-subtle);
   color: var(--accent);
-  border-color: rgba(91, 141, 239, 0.3);
+  border-color: var(--accent-border);
 }
 
 /* 状态点 */
@@ -2776,24 +2792,81 @@ tbody tr.clickable:focus-visible {
 }
 
 /* ---------- ⑥ 启动按钮的呼吸（灵韵） ---------- */
+/*
+ * ★★ 2026-10-17（用户截图 +「**这个辉光并不是跟随按钮颜色**」）：
+ *   这两帧原来写的是 `rgba(74, 123, 224, 0.32 / 0.46)` —— 一个**写死的蓝**
+ *   （74/123/224 = `#4a7be0`，正好是深色那套的 `--accent-active`）。
+ *   它就是 `pages.css` 里那段"启动按钮曾经整体写死蓝色"（见 pages.css 的
+ *   「这一段原来写死了蓝色」）在搬迁时**漏下来的最后一处**：颜色都搬去 app.css
+ *   走 `--accent*` 令牌了，这两帧还留在原地用旧蓝。
+ *
+ *   ## 不修会怎样（哪套主题上出什么颜色的错光）
+ *   灵韵档下，**除了深色与藏蓝，其余七套主题的启动按钮外面都顶着一圈蓝光**：
+ *     绛紫（填充 #a06be0，hue 267°）上那圈光 hue 220° ⇒ 差 47°，紫按钮配蓝光；
+ *     琥珀（hue 33°）差 173°、卡其（30°）差 170°、酒红（5°）差 145° ⇒ 暖色按钮
+ *     外面一圈冷蓝，最刺眼。
+ *   ★ 深色（Δhue 0.7°）与藏蓝（Δhue 0.8°）上**几乎看不出差别** —— 这正是它
+ *     一直没被发现的原因：默认那套主题的强调色本来就是蓝的。
+ *   ★ 而且它**只在灵韵档看得见**：适中/减少两档这条动画根本不挂
+ *     （减少档被 tokens.css 的 `data-motion='lite'` 压平），所以"默认档看着没问题"。
+ *
+ *   ## 证据：那圈光为什么认定是这一条画的
+ *   灵韵档静止时，`.launch-btn` 身上能画出**轮廓之外**那圈光的只有这条 `animation`：
+ *     · `.launch-btn` 自己的 `box-shadow` 是 `inset …`（画在轮廓**内**）；
+ *     · 托盘 `.launch-btn-plate` 的 `0.1em 0.1em 0.6em 0.2em var(--slab-glow)`
+ *       被按钮的 `overflow: hidden` 裁在轮廓里；
+ *     · 悬停那条 `0 6px 18px var(--slab-glow)` 只在悬停/聚焦时生效，
+ *       而且它下面这条规则会把动画停掉 —— 静止态轮不到它。
+ *   而**动画里的值优先级高于一切普通声明**（CSS Cascading 4：animation 在
+ *   normal 声明之上），所以只要这条动画在跑，`box-shadow` 就是它说了算。
+ *   ⇒ 用脚本把 app.css / pages.css / tokens.css 里**所有** box-shadow / drop-shadow
+ *     声明里的非中性字面量扫了一遍，全仓只扫出**这两帧**（其余阴影全是黑/白/灰）
+ *     —— 也就是说它是"不跟主题的彩色辉光"的唯一来源。
+ *
+ *   ## 修法：颜色从按钮自己的两个局部变量取
+ *   `--slab-deep`（内层厚度）与 `--slab-glow`（外层辉光）都声明在 `.launch-btn` 上，
+ *   按**按钮语义**取值：`primary` → `--accent*`，停止游戏（`.btn-danger`）→ `--danger*`。
+ *   ⇒ 九套主题与危险色**自动**跟对，不需要为每套主题各写一条。
+ *   ★ 为什么用 `--slab-glow` 而不是 `color-mix()` 现算：实测九套主题的
+ *     `--accent-glow` **就是该主题 `--accent` 的低透明度版本**（RGB 完全相同、
+ *     只是 alpha 0.42；逐套算色相，Δhue 全部 = 0.00°）。既然是现成的同源令牌，
+ *     就没有理由在消费端再 `color-mix` 一次 —— 而且仓库顶部早就记着一条教训：
+ *     在消费端现算的 `color-mix` **不随主题重算**，真机上量到过按钮冻在蓝色。
+ *   ★ 内层也一并换成 `--slab-deep`：原来那帧用 `inset 0 1px 0 rgba(255,255,255,.24)`
+ *     顶掉了基础态的紫色厚度，于是"灵韵档的按钮里面"和"适中档"长得不一样 ——
+ *     现在三个档共用同一个 `inset 0 0 1.6em -0.6em var(--slab-deep)`。
+ *   ★ 呼吸的幅度从"改透明度"改成**只改外发光的扩散**（18px/6px ↔ 26px/10px）：
+ *     用户否掉的是"按钮自己**一明一暗**"（见下面 `.launch-btn::before` 那节里
+ *     "光带留、脉冲删"那几句），而"光晕一张一缩"仍是原来那颗呼吸的形状 ——
+ *     现在它连颜色带明暗都只由 `--slab-glow` 一个值决定，不再有第二个来源。
+ *   ★ 启动中（`.is-launching` ⇒ `disabled`）**不挂**这条动画（`:not(:disabled)`），
+ *     按钮自己不发光 —— 这是用户的明确要求（「这个呼吸灯去掉吧」），保持原样。
+ */
 @keyframes ieml-breathe {
   0%,
   100% {
     box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.24),
-      0 6px 18px rgba(74, 123, 224, 0.32);
+      inset 0 0 1.6em -0.6em var(--slab-deep),
+      0 6px 18px var(--slab-glow);
   }
   50% {
     box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.24),
-      0 10px 26px rgba(74, 123, 224, 0.46);
+      inset 0 0 1.6em -0.6em var(--slab-deep),
+      0 10px 26px var(--slab-glow);
   }
 }
 :root[data-motion='aura'] .launch-btn:not(:disabled) {
   animation: ieml-breathe 3.6s var(--ease-in-out) infinite;
 }
-/* 悬停时交给 `.launch-btn:hover` 那套（亮一档 + 抬 1px），两套发光不许打架 */
-:root[data-motion='aura'] .launch-btn:not(:disabled):hover {
+/*
+ * 悬停 / 键盘聚焦时交给 `.launch-btn:hover` 那套（亮一档 + 抬 1px），两套发光不许打架。
+ * ★ `:focus-visible` 与 hover 归一组：基础态里这两态本来就共用同一条 box-shadow
+ *   （见 `.launch-btn:not(:disabled):hover, .launch-btn:not(:disabled):focus-visible`），
+ *   这里也必须一起把动画停掉 —— 否则键盘聚焦时那圈光还在自己一张一缩，
+ *   和聚焦环抢注意力，而且与悬停态的颜色来源分成了两条不同的路。
+ */
+:root[data-motion='aura'] .launch-btn:not(:disabled):hover,
+:root[data-motion='aura'] .launch-btn:not(:disabled):focus-visible {
   animation: none;
 }
 

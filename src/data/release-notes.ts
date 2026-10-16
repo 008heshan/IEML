@@ -94,6 +94,19 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.21.7',
+    date: '2026-10-17',
+    headline: '这一版让启动按钮的光跟着它自己的颜色走。',
+    groups: [
+      {
+        title: '修复了',
+        items: [
+          '修复了 某些主题下启动按钮外面的光晕是另一种颜色，和按钮本身对不上。',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.21.6',
     date: '2026-10-17',
     headline: '这一版修好了备注框打字会被抢走的问题。',

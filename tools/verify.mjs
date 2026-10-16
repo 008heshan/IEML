@@ -256,6 +256,25 @@ results.push([
   'CSS 令牌引用完整',
   run('CSS 令牌引用完整', 'node', ['tools/gates/check-css-tokens.mjs']),
 ]);
+/*
+ * ★★ **阴影/发光的颜色不许写死**（2026-10-17，用户截图 +「**这个辉光并不是
+ *   跟随按钮颜色**」）。
+ *
+ *   启动按钮外面那圈辉光是 `@keyframes ieml-breathe` 画的，两帧里写着
+ *   `rgba(74, 123, 224, 0.32 / 0.46)` = **深色主题的强调色** —— 而 `pages.css`
+ *   里早就记着「这一段原来写死了蓝色…用户报『启动按钮也要随着主题颜色变』」，
+ *   颜色都搬去走令牌了，**唯独漏下这两帧**。
+ *
+ *   为什么这是门禁：这类错**一个都不会报错**，它只是"在别的主题上看着不对"。
+ *   而默认主题的强调色与被写死那个色只差 **0.7°** ⇒ 开发机上永远看不出问题；
+ *   换主题又是低频操作，人眼 review 也抓不到"某个 keyframe 里有个旧的蓝"。
+ *   ⇒ 判据做成"有彩色字面量一律走令牌"，见 `tools/gates/check-shadow-colors.mjs`
+ *     （自带自检：量法坏了先红）。
+ */
+results.push([
+  '阴影颜色走令牌',
+  run('阴影颜色走令牌', 'node', ['tools/gates/check-shadow-colors.mjs']),
+]);
 results.push([
   '主题令牌与对比度',
   run('主题令牌与对比度', 'node', ['--test', 'tests/theme-tokens.test.mjs']),
