@@ -2916,6 +2916,33 @@ tbody tr.clickable:focus-visible {
   pointer-events: none;
 }
 
+/* ============================================================================
+   ★★ 材质分档：**版面级的大面**比普通卡再厚一档（2026-10-16，按前端设计 skill
+   的"材质要表达层级"那条做的一轮）
+   ----------------------------------------------------------------------------
+   之前所有玻璃表面**一个参数**：不管是一整页的新闻大卡，还是侧栏里一颗小胶囊，
+   都是同一层霜 —— 于是"谁浮在谁上面"只能靠边框和阴影去猜，材质本身不说话。
+
+   现在只分两档（**不做成一堆档位** —— 档位多了就没人记得住哪块该用哪个）：
+
+     `.glass`   默认：卡片、菜单、面板 ……
+     `.glass-2` **版面级大面**：整页的主卡（新闻卡、主页身份卡）。
+                更厚的霜、更高的取色、稍亮的内边 —— 大面才有面积"吃"得住
+                照片与长文本；小胶囊上加厚只会糊成一团。
+
+   ★ 与档位（`data-vfx` 的 弱化/适中/灵动）**正交**：那三档是"这台机器扛不扛得住"，
+     这里是"这块面该有多厚"。弱化档不发滤镜的规矩不受影响（它在更后面覆盖）。
+   ★ 仍然只用"透明与折射"三件事：模糊、取色、一条内边。没有发光、没有颜色叠加。
+   ============================================================================ */
+.glass-2 {
+  backdrop-filter: blur(calc(var(--glass-blur) * 1.25)) saturate(172%) brightness(1.07);
+  -webkit-backdrop-filter: blur(calc(var(--glass-blur) * 1.25)) saturate(172%) brightness(1.07);
+  box-shadow:
+    var(--shadow-card),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.22),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.075);
+}
+
 /* ---------- ① 边缘折射：中/灵动档用 JS 装真滤镜；这两条只是"便宜的兜底" ---------- */
 
 /*
@@ -3229,9 +3256,58 @@ tbody tr.clickable:focus-visible {
      这一页的正文很长，九套主题下它都得读得清，不能硬编码任何颜色。
    ============================================================================ */
 
+/* ============================================================================
+   ★★ 2026-10-16：新闻卡重排（用户：「MC 新闻页面排版来一次升级，现在的太乱」）
+   ----------------------------------------------------------------------------
+   真机上量到的四个病根：
+
+     ① **行长失控**：正文一行铺满 1620px（1920 窗口）—— 中文一行 110+ 字，
+        眼睛横着扫两趟才读完一行。阅读型页面的第一号问题就是这个。
+     ② **大图被裁成扁条**：图是 540×540 的方图，卡里固定 `height: 190px` +
+        `object-fit: cover` ⇒ 只剩一条缝，看不清也谈不上封面。
+     ③ **来源那行是中缀圆点串**：`正文整理自 中文 Minecraft Wiki · 抓取于 … · rev …`
+        —— 前端设计 skill 点名的模板痕迹之一。
+     ④ **两张卡完全同权**：正式版与快照长得一模一样，而它们不是一回事。
+
+   改法（阅读型页面的标准做法）：
+
+     · 整页收成一个**量体**：`.news-page { max-width: 1120px; margin-inline: auto }`
+       —— 页头、提示条、卡片全在同一条中轴上（不再是"页头整宽 + 卡片整宽"）。
+     · 卡内**两栏**：左图右文。文字列因此天然收在 ~42 个汉字/行（中文的舒适区），
+       展开的整篇正文也落在同一列里，不必另设 `max-width` 打补丁。
+     · 图回到 **16:9**（`aspect-ratio` + `max-height` 兜底），不再是扁条。
+     · 来源改成**标签/值**两行（与主页规格行同一套语言）。
+     · 宽屏两栏、窄屏堆叠（`<1080px` 一栏）。
+   ============================================================================ */
+.news-page {
+  /*
+   * 阅读型页面的量体：1120px 大约等于"左图 430 + 右文 600"，中文约 42 字/行。
+   * ★ 居中而不是左对齐：这一页只有两张卡，居中读起来才像"文章"；
+   *   页头也在同一中轴上，所以不会出现两套对齐。
+   */
+  max-width: 1120px;
+  margin-inline: auto;
+}
+.news-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+  gap: var(--space-5);
+  align-items: start;
+  margin-top: var(--space-4);
+}
+@media (max-width: 1080px) {
+  .news-grid {
+    grid-template-columns: 1fr;
+    gap: var(--space-4);
+  }
+}
+.news-text {
+  min-width: 0;
+}
+
 /* 首段：卡片上最先看到的字，比正文重一档 */
 .news-lead {
-  margin: var(--space-2) 0 0;
+  margin: 0;
   color: var(--text-primary);
   font-size: var(--text-md);
   line-height: 1.75;
@@ -3246,38 +3322,60 @@ tbody tr.clickable:focus-visible {
 /*
  * 版本大图（用户 2026-10-15：「网站更新了版本大图功能，启动器同步一下」）。
  *
- * ★ 固定高度 + `object-fit: cover`：站点给的是 540×540 的方图，
- *   按原比例铺满卡片会占掉大半屏、把正文挤到看不见；裁成一条横幅
- *   才像"这一版的封面"。裁掉的部分不影响识别（图本身就是宣传画）。
+ * ★ 2026-10-16：从"固定 190px 高的扁条"改成 **16:9**。站点给的是 540×540 方图，
+ *   按原比例铺满会占掉大半屏；而裁成 190px 的扁条又只剩一条缝 —— 两头都不对。
+ *   16:9 是"封面"该有的比例，`max-height` 兜住超高窗口。
+ * ★ 内嵌一条 1px 内边（`box-shadow: inset`）：照片压在玻璃上要有一圈"卡纸边"，
+ *   否则它的边缘会和玻璃的边混在一起，看着像没贴进去。
  */
 .news-hero {
   display: block;
   width: 100%;
-  height: 190px;
+  aspect-ratio: 16 / 9;
+  max-height: 320px;
   object-fit: cover;
   object-position: center;
-  margin-top: var(--space-3);
-  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
   background: var(--bg-hover);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
-/* 出处那一行：抓取日期与 rev 都在这里，弱化但不能看不见 */
-.news-meta {
-  margin-top: var(--space-3);
+/*
+ * 来源与修订：标签 / 值两行（换掉原来的中缀圆点串）。
+ * ★ 与主页 `.lb-specs` 用同一套语言 —— 同一件事在两个页面长同一个样子，
+ *   用户不用重新学。
+ */
+.news-src {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-5);
+  margin: var(--space-4) 0 0;
+}
+.news-src > div {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.news-src dt {
+  font-size: var(--text-xs);
   color: var(--text-tertiary);
+}
+.news-src dd {
+  margin: 0;
   font-size: var(--text-sm);
+  color: var(--text-secondary);
 }
 .news-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
-  margin-top: var(--space-3);
+  margin-top: var(--space-4);
 }
 
 /* ---------- 展开的正文 ---------- */
 .news-body {
-  margin-top: var(--space-4);
+  margin-top: var(--space-5);
   padding-top: var(--space-4);
   border-top: 1px solid var(--border-subtle);
 }

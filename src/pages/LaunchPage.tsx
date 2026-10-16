@@ -670,8 +670,10 @@ export function LaunchPage() {
         */}
         {target ? (
           /* ★ 2026-10-16：挂上 glass —— 这一块原来是平色卡，与全站材质不统一
-             （设置页/下载页的卡都是玻璃，主页面最大的一张反而是平色板）。 */
-          <section className="launch-hero glass" aria-labelledby="lb-name">
+             （设置页/下载页的卡都是玻璃，主页面最大的一张反而是平色板）。
+             ★ 再加 `glass-2`：它是**版面级的大面**（整页的主卡），比普通卡厚一档 ——
+               材质分档见 app.css 的「材质分档」一节（新闻卡走同一档）。 */
+          <section className="launch-hero glass glass-2" aria-labelledby="lb-name">
             {/*
               ★★ 2026-09-30（用户）：「这两个地方的整合包显示**整合包自己的图标**，
                 而且要**直接在卡片上，不整那个跟槽一样的东西**」。

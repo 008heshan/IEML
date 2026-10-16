@@ -131,7 +131,7 @@ function NewsCard({ entry, cache }: { entry: NewsEntry; cache: NewsCachePayload 
   );
 
   return (
-    <Card>
+    <Card className="news-card glass-2">
       <CardTitle
         icon={<IconNews />}
         actions={
@@ -147,54 +147,89 @@ function NewsCard({ entry, cache }: { entry: NewsEntry; cache: NewsCachePayload 
       </CardTitle>
 
       {/*
-        版本大图（用户网站上那一版带的宣传图）。
-        ★ 图是**从数据目录读出来**的 data URI —— 断网也在，因为它已经在盘上了。
-        ★ 没有图（或还没同步到）时整块不渲染：留一个灰框比没有更难看。
+        ★★ 2026-10-16 重排（用户：「MC 新闻页面排版来一次升级，现在的太乱」）：
+          卡内改成**两栏 —— 左图右文**。理由写在 app.css 那一节里，一句话是：
+          文字必须收在"一行 40 来个汉字"的量体里，而图要回到 16:9 的比例。
+          宽屏并排、窄屏堆叠。
       */}
-      {image ? <img className="news-hero" src={image} alt={`${entry.title || entry.version} 的封面图`} /> : null}
+      <div className="news-grid">
+        {/*
+          版本大图（用户网站上那一版带的宣传图）。
+          ★ 图是**从数据目录读出来**的 data URI —— 断网也在，因为它已经在盘上了。
+          ★ 没有图（或还没同步到）时整块不渲染：留一个灰框比没有更难看。
+        */}
+        <div className="news-media">
+          {image ? (
+            <img
+              className="news-hero"
+              src={image}
+              alt={`${entry.title || entry.version} 的封面图`}
+            />
+          ) : null}
+        </div>
 
-      {text ? (
-        <p className="news-lead">{text}</p>
-      ) : (
-        <p className="news-lead dim">这一版还没有可显示的中文说明。</p>
-      )}
-      {!lead && fallback ? (
-        <p className="news-note">
-          上面这句来自 Mojang 官方说明的英文摘要 —— 中文 Wiki 的条目还没建好 / 还没翻译。
-        </p>
-      ) : null}
+        <div className="news-text">
+          {text ? (
+            <p className="news-lead">{text}</p>
+          ) : (
+            <p className="news-lead dim">这一版还没有可显示的中文说明。</p>
+          )}
+          {!lead && fallback ? (
+            <p className="news-note">
+              上面这句来自 Mojang 官方说明的英文摘要 —— 中文 Wiki 的条目还没建好 / 还没翻译。
+            </p>
+          ) : null}
 
-      {/* 署名与出处：中文正文是别人的东西，这一行不能省 */}
-      <div className="news-meta">
-        正文整理自{' '}
-        <button
-          type="button"
-          className="link-btn"
-          onClick={() => go(entry.wiki.page || entry.links.zh)}
-        >
-          中文 Minecraft Wiki
-        </button>
-        {entry.wiki.fetchedAt ? ` · 抓取于 ${entry.wiki.fetchedAt}` : ''}
-        {entry.wiki.revid ? ` · rev ${entry.wiki.revid}` : ''}
-      </div>
+          {/*
+            署名与出处：中文正文是别人的东西，这一行不能省。
+            ★ 2026-10-16：从"一句话 + 圆点"改成**标签/值**（与主页规格行同一套语言）。
+          */}
+          <dl className="news-src">
+            <div>
+              <dt>来源</dt>
+              <dd>
+                <button
+                  type="button"
+                  className="link-btn"
+                  onClick={() => go(entry.wiki.page || entry.links.zh)}
+                >
+                  中文 Minecraft Wiki
+                </button>
+              </dd>
+            </div>
+            {entry.wiki.revid ? (
+              <div>
+                <dt>修订</dt>
+                <dd className="mono">rev {entry.wiki.revid}</dd>
+              </div>
+            ) : null}
+            {entry.wiki.fetchedAt ? (
+              <div>
+                <dt>抓取</dt>
+                <dd className="mono">{entry.wiki.fetchedAt}</dd>
+              </div>
+            ) : null}
+          </dl>
 
-      <div className="news-actions">
-        {entry.hasDoc && doc ? (
-          <Button size="sm" variant="secondary" onClick={() => setOpen((o) => !o)}>
-            {open ? '收起' : '展开完整更新内容'}
-          </Button>
-        ) : entry.hasDoc ? (
-          /* 清单说有中文条目，但本地没同步到 —— 如实说，并给出去处 */
-          <Chip tone="neutral">正文还没同步下来</Chip>
-        ) : (
-          <Chip tone="neutral">这一版没有中文全文</Chip>
-        )}
-        <Button size="sm" variant="ghost" onClick={() => go(entry.links.zh)}>
-          中文 Wiki
-        </Button>
-        <Button size="sm" variant="ghost" onClick={() => go(entry.links.en)}>
-          MC Wiki（英文）
-        </Button>
+          <div className="news-actions">
+            {entry.hasDoc && doc ? (
+              <Button size="sm" variant="secondary" onClick={() => setOpen((o) => !o)}>
+                {open ? '收起' : '展开完整更新内容'}
+              </Button>
+            ) : entry.hasDoc ? (
+              /* 清单说有中文条目，但本地没同步到 —— 如实说，并给出去处 */
+              <Chip tone="neutral">正文还没同步下来</Chip>
+            ) : (
+              <Chip tone="neutral">这一版没有中文全文</Chip>
+            )}
+            <Button size="sm" variant="ghost" onClick={() => go(entry.links.zh)}>
+              中文 Wiki
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => go(entry.links.en)}>
+              MC Wiki（英文）
+            </Button>
+          </div>
+        </div>
       </div>
 
       {/* ---------- 展开的正文 ---------- */}
@@ -336,7 +371,7 @@ export function NewsPage() {
   /* ---------- 还没有数据（第一次打开 / 同步失败 / 本地那份读不出来） ---------- */
   if (!cache || !manifest) {
     return (
-      <>
+      <div className="news-page">
         <div className="page-head">
           <div>
             <h1 className="page-title">MC 新闻</h1>
@@ -376,12 +411,12 @@ export function NewsPage() {
             />
           )}
         </div>
-      </>
+      </div>
     );
   }
 
   return (
-    <>
+    <div className="news-page">
       <div className="page-head">
         <div>
           <h1 className="page-title">MC 新闻</h1>
@@ -448,6 +483,6 @@ export function NewsPage() {
           </Button>
         </div>
       </div>
-    </>
+    </div>
   );
 }
