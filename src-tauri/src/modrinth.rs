@@ -633,14 +633,27 @@ pub fn mrpack_download_tasks(
             skipped.push(f.path.clone());
             continue;
         };
-        // SHA1 优先，其次 SHA512（我们用不上，但保留哈希用于校验）
-        let sha1 = f.hashes.get("sha1").cloned().unwrap_or_default();
+        /*
+         * ★★ 2026-10-17（① 哈希接线）：**上游两个都发布时用强的那个**。
+         *
+         *   Modrinth 的 `version.files[].hashes` 同时有 `sha512` 与 `sha1`
+         *   （官方必填字段）；以前这里只取 sha1、把 sha512 丢了。选择规则与
+         *   "为什么没有校验值"的三态判定都在 `domain::hash_choice`（纯逻辑、可单测）。
+         */
+        let pairs: Vec<(&str, &str)> =
+            f.hashes.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let chosen = crate::domain::hash_choice::choose_from_hashes(&pairs);
+        let (expected, reason) = match chosen {
+            Ok(h) => (h, None),
+            Err(why) => (crate::domain::hash_choice::ExpectedHash::None, Some(why)),
+        };
         // 整合包可能给出多个镜像下载地址（CurseForge / Modrinth CDN 都在里面）
         let extras: Vec<String> = f.downloads.iter().skip(1).cloned().collect();
-        let mut task = crate::net::download::DownloadTask::new(
+        let mut task = crate::net::download::DownloadTask::with_hash(
             game_dir.join(&rel),
             url,
-            sha1,
+            expected,
+            reason,
             f.file_size,
             f.path.clone(),
         );

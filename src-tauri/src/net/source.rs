@@ -658,6 +658,7 @@ mod tests {
             // ★ 第一阶段同伴给 `DownloadTask` 加的新字段（"没有校验值"要成为数据）——
             //   这里是测试夹具，沿用老口径（`None`）。
             expected_hash: None,
+            hash_reason: None,
             // ★ 第二阶段 A：`None` = 按 label 推类别取默认上限（引擎用 `cap_of` 解析）
             max_bytes: None,
         }

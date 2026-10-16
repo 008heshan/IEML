@@ -88,6 +88,13 @@ pub struct DownloadTask {
      */
     #[serde(default)]
     pub expected_hash: Option<ExpectedHash>,
+    /// **为什么这个任务没有可用的校验值**（三态；`None` = 有值、或调用方没说明）。
+    ///
+    ///   ★ 只有"为什么**没有**校验值"才需要它 —— 见 `domain::hash_choice::UnverifiedReason`：
+    ///     上游确实没发布 / 上游只给了我们不支持的算法（CF 的 MD5）/ 我们有字段却没解析出来。
+    ///     最后那一档是**我们的 bug 信号**，批次层要显眼报出来（不许悄悄等于成功）。
+    #[serde(default)]
+    pub hash_reason: Option<UnverifiedReason>,
     /*
      * ★★★★ 第二阶段 A（安全加固）：**这个任务的响应体体积上限**。
      *
@@ -134,84 +141,39 @@ pub struct DownloadTask {
 ///     但**本阶段不接线**：接线要给"库/资源/原生库"三条解析路径与
 ///     `modrinth.rs` 的 `HashMap<String,String>` 都加一层算法选择，
 ///     属于第二阶段（见报告）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ExpectedHash {
-    /// SHA-1（Mojang 的清单/库/资源、CurseForge 的 `algo=1`）
-    Sha1(String),
-    /// SHA-512（Modrinth 同时发布，比 SHA-1 强）—— ★ 尚未接线，见类型说明
-    Sha512(String),
-    /// **上游确实没有发布校验值。**
-    ///
-    /// 它不是"跳过校验"的同义词：它是"**我们无法证明这个文件是对的**"，
-    /// 必须如实报给用户（`DownloadOutcome::unverified_files`）。
-    None,
+/*
+ * ★★ 2026-10-17（① 哈希接线）：`ExpectedHash`、以及"算一个文件的摘要"的**唯一实现**，
+ *    现在都在 `domain/hash_choice.rs` —— 那一份零 `crate::` 依赖，所以本机可以用
+ *    `rustc` 单独编成小程序**真跑**断言（`cargo test --lib` 在本机加载阶段就退出，
+ *    见项目记忆）。
+ *
+ *    ★ 为什么把类型搬走、而不是在这里再留一份：两份 `ExpectedHash` 必然会在
+ *      "哪一档才算没有校验值"上漂移，而那个判断正是审计点名的地方
+ *      （*None must not silently become "skip verification and assume success"*）。
+ *
+ *    这里只留**两个异步壳**：引擎是 async 的，那边是同步实现 —— 包进
+ *    `spawn_blocking`，别把算哈希这种 CPU/磁盘活堵在 tokio worker 上。
+ */
+pub use crate::domain::hash_choice::{ExpectedHash, UnverifiedReason};
+
+/// [`ExpectedHash::verify_file_sync`] 的异步壳：算一个文件、看它**对不对**。
+pub async fn verify_expected(expected: &ExpectedHash, path: &Path) -> Option<bool> {
+    let expected = expected.clone();
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || expected.verify_file_sync(&path))
+        .await
+        .ok()
+        .flatten()
 }
 
-impl ExpectedHash {
-    /// 有没有一个**能用来比对**的值。
-    pub fn is_some(&self) -> bool {
-        !matches!(self, Self::None)
-    }
-
-    /// **上游确实没有发布校验值**这一档（与 `is_some` 互为反面）。
-    ///
-    /// ★ 单独给一个名字（而不是让调用方写 `!is_some()`）：这个判断在
-    ///   "如实上报未经校验的文件"那段代码里出现得多，而
-    ///   `!x.is_some()` 读起来像"没有值"，容易与
-    ///   "解析失败所以是空的"混为一谈 —— 这里的语义是**事实**，不是缺陷。
-    pub fn is_none(&self) -> bool {
-        matches!(self, Self::None)
-    }
-
-    /// 校验值本身（`None` 时是空串）
-    pub fn value(&self) -> &str {
-        match self {
-            Self::Sha1(v) | Self::Sha512(v) => v,
-            Self::None => "",
-        }
-    }
-
-    /// 算法名（给日志与错误文案用）
-    pub fn algo(&self) -> &'static str {
-        match self {
-            Self::Sha1(_) => "SHA1",
-            Self::Sha512(_) => "SHA512",
-            Self::None => "（无）",
-        }
-    }
-
-    /// 算一个文件，看它**对不对**。`None` 一律返回 `None`（= 无从判断）。
-    pub async fn verify_file(&self, path: &Path) -> Option<bool> {
-        match self {
-            Self::None => None,
-            Self::Sha1(want) => sha1_of_file(path)
-                .await
-                .ok()
-                .map(|got| got.eq_ignore_ascii_case(want)),
-            Self::Sha512(want) => sha512_of_file(path)
-                .await
-                .ok()
-                .map(|got| got.eq_ignore_ascii_case(want)),
-        }
-    }
-
-    /// 算一个文件的实际值（错误信息要说"实际是多少"）
-    pub async fn actual_of(&self, path: &Path) -> Option<String> {
-        match self {
-            Self::None => None,
-            Self::Sha1(_) => sha1_of_file(path).await.ok(),
-            Self::Sha512(_) => sha512_of_file(path).await.ok(),
-        }
-    }
-
-    /// 从一个老口径的 `sha1` 字符串来（空串 = `None`）
-    pub fn from_sha1(s: &str) -> Self {
-        if s.is_empty() {
-            Self::None
-        } else {
-            Self::Sha1(s.to_string())
-        }
-    }
+/// [`ExpectedHash::actual_of_sync`] 的异步壳（校验不符的文案要说"实际是多少"）。
+pub async fn actual_expected(expected: &ExpectedHash, path: &Path) -> Option<String> {
+    let expected = expected.clone();
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || expected.actual_of_sync(&path))
+        .await
+        .ok()
+        .flatten()
 }
 
 impl DownloadTask {
@@ -233,6 +195,7 @@ impl DownloadTask {
             label,
             allow_chunked: false,
             expected_hash: None,
+            hash_reason: None,
             max_bytes: Some(cap),
         }
     }
@@ -244,6 +207,7 @@ impl DownloadTask {
     /// 两者都不校验，但**后者是缺陷、前者是事实** —— 混在一起就没法督办。
     pub fn without_verification(mut self) -> Self {
         self.expected_hash = Some(ExpectedHash::None);
+        self.hash_reason = Some(UnverifiedReason::NotPublished);
         self.sha1.clear();
         self
     }
@@ -258,6 +222,36 @@ impl DownloadTask {
         } else {
             ExpectedHash::Sha1(self.sha1.clone())
         }
+    }
+
+    /// ★★ **带着"校验值 + 为什么没有"的任务**（2026-10-17 ① 接线）。
+    ///
+    ///   给手里**有上游哈希表**的解析点用（`modrinth.rs` / `curseforge.rs`）：
+    ///   选择规则（优先 SHA-512）与三态判定都在 `domain::hash_choice`
+    ///   （`choose_from_hashes` / `choose_from_algo_list`，纯逻辑、可单测），
+    ///   这里只负责把它落成一个任务。
+    pub fn with_hash(
+        path: PathBuf,
+        url: String,
+        expected: ExpectedHash,
+        reason: Option<UnverifiedReason>,
+        size: u64,
+        label: String,
+    ) -> Self {
+        let mut t = Self::new(path, url, String::new(), size, label);
+        /* 老字段 `sha1` 仍然填上（别的地方还在读它：展示、备份对账、日志） */
+        t.sha1 = match &expected {
+            ExpectedHash::Sha1(v) => v.clone(),
+            _ => String::new(),
+        };
+        t.expected_hash = Some(expected);
+        t.hash_reason = reason;
+        t
+    }
+
+    /// 这个任务"为什么没有校验值"（有值时不看它；没说明时按**事实**那一档兜底）。
+    pub fn unverified_reason(&self) -> UnverifiedReason {
+        self.hash_reason.unwrap_or(UnverifiedReason::NotPublished)
     }
 
     /// 允许这个任务走分片（多连接）。
@@ -459,6 +453,42 @@ pub(crate) mod conn_stats {
     }
 }
 
+/// **分片连接预算**（审计点名的连接爆炸：8 段 × 64 并发 ≈ 512 socket）。
+///
+/// ## 它是什么
+///
+///   一个**独立的**信号量，许可数 = [`chunk_count()`]（一个文件分片的上限，默认 8）。
+///   语义是「**任何时刻多开的分片连接不超过一份分片**」——
+///   而不是"每个分片任务各 8 条"。
+///
+/// ## 为什么独立、不与任务许可共用（死锁论证）
+///
+///   * **本方案**：分片段协程**只从这个池取许可**；而这个池的许可
+///     **从不被"正在等别的许可的人"持有**（拿到它的协程只做一件事：
+///     发这一段的请求、收完、释放）。⇒ 不存在等待环，**结构上不可能死锁**。
+///   * **共用任务池那条路（本仓库不采用）**：任务许可被"正在等分片许可的任务"
+///     占着，而分片许可又要等任务许可腾出来 —— 两个池互相等，形成环。
+///     那是经典的"把两种资源的顺序混着拿"的死锁形状，所以**不做**。
+///
+/// ## 预算口径（实际数字）
+///
+///   `总在飞连接 ≤ 任务许可（concurrency，界面默认 64） + 分片预算（chunk_count，默认 8）`
+///   —— 紧上界 **64 + 8 = 72**，而修之前的上界是 **64 × 8 = 512**。
+///   （单连接那条路每个任务只有 1 条连接，所以任务许可与"连接数"一一对应；
+///     分片任务先占 1 个任务许可，再多开的分片连接由本预算限住。）
+///
+/// ## ★ 有意为之的降级：多个大文件同时分片时**共享**这 8 条
+///
+///   两个包体同时分片，各自只能拿到约 4 段（而不是各自 8 段）——
+///   段数变少 ⇒ 单个文件慢一点。这是**有意的取舍**：
+///   「宁可慢一点，也不要把源打爆」——与 `RAMP_UP_TARGET_BPS` 那段注释同源
+///   （429 退避的代价远大于少几条连接）。真机上"同时分片两个包体"的场景
+///   只有整合包导入（一个包体 + 补下），所以这个降级很少被触发。
+fn chunk_budget(chunk_slots: usize) -> Arc<Semaphore> {
+    // ★ 至少 1：为 0 的许可数会让分片段协程永远等下去（那才是真死锁）
+    Arc::new(Semaphore::new(chunk_slots.max(1)))
+}
+
 /// **一条最终失败**（带处置档位）。
 ///
 /// ## 为什么要带上 `class`（而不只是一个字符串）
@@ -510,6 +540,11 @@ pub struct UnverifiedFile {
     ///     在 `false` 这一档里最刺眼 —— 那个文件**是不是我们要的那个**，
     ///     我们完全不知道。
     pub length_checked: bool,
+    /// **为什么这个文件没有校验值**（三态；给用户看的一句话在 `user_text()` 里）
+    ///
+    ///   ★ 光说"未校验"分不出"上游就没给"（事实）与"我们有字段却没解析出来"（我们的 bug）；
+    ///     后者要显眼报出来 —— 这就是审计那句"不能悄悄等于成功"的落点。
+    pub why: UnverifiedReason,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1125,7 +1160,22 @@ pub async fn download_one_with(
     cancel: &CancelToken,
 ) -> Result<bool> {
     let _path_guard = lock_path(&task.path).await;
-    download_one_locked(manager, task, preferred, cancel, None::<&fn(ProgressPhase, &str)>).await
+    /*
+     * ★ 单文件调用点（补齐 / OptiFine / 加载器 / 整合包补齐）**不在批次里**：
+     *   给它一个"只允许 1 条分片连接"的私有预算 —— 于是"一个文件 + 一次调用"
+     *   最多 1 条连接，而不会因为它没进 `run_round` 就完全没有闸门。
+     *   （批次内的分片共享批次那一份预算，见 `run_round` 里的 `chunk_budget(...)`。）
+     */
+    let solo_budget = chunk_budget(1);
+    download_one_locked(
+        manager,
+        task,
+        preferred,
+        cancel,
+        None::<&fn(ProgressPhase, &str)>,
+        &solo_budget,
+    )
+    .await
 }
 
 /// `download_one_with` 的实体（路径锁已由调用方拿住）。
@@ -1145,6 +1195,8 @@ async fn download_one_locked<F>(
     preferred: Source,
     cancel: &CancelToken,
     progress: Option<&F>,
+    // ★★ 分片连接预算（批次内共享；单文件调用点用 `chunk_budget(1)`）
+    chunk_budget: &Arc<Semaphore>,
 ) -> Result<bool>
 where
     F: Fn(ProgressPhase, &str),
@@ -1290,7 +1342,16 @@ where
             let attempt_result = if has_backup {
                 match tokio::time::timeout(
                     PROBE_DEADLINE,
-                    download_to_part(manager, url, &part, task, cancel, ordered.len(), &expected),
+                    download_to_part(
+                        manager,
+                        url,
+                        &part,
+                        task,
+                        cancel,
+                        ordered.len(),
+                        &expected,
+                        chunk_budget,
+                    ),
                 )
                 .await
                 {
@@ -1302,7 +1363,17 @@ where
                     ))),
                 }
             } else {
-                download_to_part(manager, url, &part, task, cancel, ordered.len(), &expected).await
+                download_to_part(
+                    manager,
+                    url,
+                    &part,
+                    task,
+                    cancel,
+                    ordered.len(),
+                    &expected,
+                    chunk_budget,
+                )
+                .await
             };
             let written = match attempt_result {
                 Ok(n) => n,
@@ -1382,11 +1453,11 @@ where
                 if let Some(p) = progress {
                     p(ProgressPhase::Verifying, &task.label);
                 }
-                match expected.verify_file(&part).await {
+                match verify_expected(&expected, &part).await {
                     Some(true) => {}
                     Some(false) => {
                         // ★ 校验失败：删文件、记失败、换源重来
-                        let actual = expected.actual_of(&part).await.unwrap_or_default();
+                        let actual = actual_expected(&expected, &part).await.unwrap_or_default();
                         let _ = tokio::fs::remove_file(&part).await;
                         cleanup_segments(&part).await;
                         manager.note_failure(*src, None);
@@ -1745,10 +1816,10 @@ enum VerifyOutcome {
 ///   （日志点名 + `DownloadOutcome::unverified` 清单）。
 async fn verify_existing(task: &DownloadTask, expected: &ExpectedHash) -> VerifyOutcome {
     if expected.is_some() {
-        return match expected.verify_file(&task.path).await {
+        return match verify_expected(expected, &task.path).await {
             Some(true) => VerifyOutcome::Ok,
             Some(false) => {
-                let actual = expected.actual_of(&task.path).await.unwrap_or_default();
+                let actual = actual_expected(expected, &task.path).await.unwrap_or_default();
                 VerifyOutcome::Mismatch {
                     expected: expected.value().to_string(),
                     actual,
@@ -1797,6 +1868,8 @@ async fn download_to_part(
     cancel: &CancelToken,
     candidate_count: usize,
     expected: &ExpectedHash,
+    // ★★ 分片连接预算（见 `chunk_budget` 的死锁论证与口径）
+    chunk_budget: &Arc<Semaphore>,
 ) -> Result<u64> {
     // 断点续传：已有 .part 且**不是**分片残留 → 单连接续传
     let existing = tokio::fs::metadata(part).await.map(|m| m.len()).unwrap_or(0);
@@ -1849,7 +1922,18 @@ async fn download_to_part(
                     .into_iter()
                     .map(|(_, u)| u)
                     .collect();
-                match download_chunked(url, &cand_urls, part, total, cancel, task.label.clone(), cap_of(task)).await {
+                match download_chunked(
+                    url,
+                    &cand_urls,
+                    part,
+                    total,
+                    cancel,
+                    task.label.clone(),
+                    cap_of(task),
+                    Arc::clone(chunk_budget),
+                )
+                .await
+                {
                     Ok(written) => return Ok(written),
                     Err(NetError::Cancelled) => return Err(NetError::Cancelled),
                     Err(e) => {
@@ -2643,6 +2727,8 @@ async fn download_chunked(
     cancel: &CancelToken,
     label: String,
     cap: crate::domain::archive_guard::ByteCap,
+    // ★★ 分片连接预算（**共享**：多个分片任务同时跑时，它们分这 `chunk_count()` 条）
+    budget: Arc<Semaphore>,
 ) -> Result<u64> {
     /*
      * ★★ 第二阶段 A：**建连前的体积闸门**（分片这条路）。
@@ -2745,6 +2831,8 @@ async fn download_chunked(
         for span in &to_fetch {
             let sources = sources.clone();
             let dead = dead.clone();
+            // ★★ 分片连接预算：这一段协程要用的那**一个**许可
+            let budget = Arc::clone(&budget);
             let part = part.to_path_buf();
             let cancel = cancel.clone();
             let span = *span;
@@ -2780,7 +2868,7 @@ async fn download_chunked(
                         if dead.lock().map(|d| d[si]).unwrap_or(false) {
                             continue;
                         }
-                        match download_range(&sources[si], &part, span, got, total, &cancel, label.clone(), cap).await {
+                        match download_range(&sources[si], &part, span, got, total, &cancel, label.clone(), cap, &budget).await {
                             Ok(n) => {
                                 got += n;
                                 round_progress += n;
@@ -2897,6 +2985,8 @@ async fn download_range(
     cancel: &CancelToken,
     label: String,
     cap: crate::domain::archive_guard::ByteCap,
+    // ★★ 分片连接预算（**在发这一段请求之前取一个许可**，整段结束自然释放）
+    budget: &Arc<Semaphore>,
 ) -> Result<u64> {
     let seg = segment_path(part, span.idx);
     let from = span.start + already;
@@ -2951,6 +3041,34 @@ async fn download_range(
         .append(true)
         .open(&seg)
         .await?;
+
+    /*
+     * ★★★★ 审计点名的**连接爆炸**：分片路径原来**一个许可都不取** ——
+     *   一个任务最多开 `CHUNK_COUNT`(=8) 条连接，而任务许可是 64
+     *   ⇒ 理论上限 ~512 条 socket。
+     *
+     *   现在每一段在**发请求之前**从这个**独立**的池里取一个许可
+     *   （`chunk_count()` 条，默认 8），整段结束（成功/失败/取消/提前 return）
+     *   由 `_permit` 的 Drop 自动释放。
+     *
+     *   ★ 为什么用 `acquire_owned` 而不是 `acquire`：这个 future 在
+     *     `tokio::spawn` 里跑，借用式的 `SemaphorePermit<'_>` 会把 future 的
+     *     生命周期绑在池子上；owned 版自己带着 `Arc`，`'static` 干净。
+     *   ★ `closed()` 只在信号量被 `close()` 时返回 Err —— 本仓库从不 close 它，
+     *     所以那个分支是理论分支（真出现也如实报错，不 panic）。
+     *   ★ 死锁：本池的许可**从不被"正在等别的许可的人"持有**（拿到它只干
+     *     "发这一段请求 + 收完"），所以不存在等待环（详见 `chunk_budget`）。
+     */
+    let _permit = match Arc::clone(budget).acquire_owned().await {
+        Ok(p) => p,
+        Err(_) => {
+            let _ = tokio::fs::remove_file(&seg).await;
+            return Err(NetError::Other(format!(
+                "分片连接预算已关闭（这是内部错误）—— 第 {} 段放弃：{label}",
+                span.idx
+            )));
+        }
+    };
 
     /*
      * ★ 2026-10-02：**尺子** —— 这里才是真正发分段连接的那一行。
@@ -3631,10 +3749,20 @@ pub async fn download_batch(tasks: Vec<DownloadTask>, opts: BatchOptions) -> Res
                  */
                 if copy.task.expected_hash().is_none() {
                     stats.unverified_files.fetch_add(1, Ordering::Relaxed);
+                    if copy.task.unverified_reason().is_our_gap() {
+                            say!(
+                                "[IEML/download] ⚠ 「{}」没有校验值，而且这是**我们的缺口**：{}",
+                                copy.task.label,
+                                copy.task.unverified_reason().engineer_text()
+                            );
+
+                    }
+
                     unverified.push(UnverifiedFile {
                         label: copy.task.label.clone(),
                         path: copy.task.path.clone(),
                         length_checked: copy.task.size > 0,
+                        why: copy.task.unverified_reason(),
                     });
                 }
             }
@@ -4008,6 +4136,19 @@ async fn run_round(
     sort_large_first(&mut tasks);
 
     let semaphore = Arc::new(Semaphore::new(concurrency.max(1)));
+    /*
+     * ★★ **分片连接预算**（审计点名的连接爆炸）。
+     *
+     *   紧挨任务许可建，但**是另一个池**（理由见 `chunk_budget` 的死锁论证）：
+     *     任务许可：同时处理几个**文件**（concurrency）
+     *     分片预算：所有分片任务加起来**多开**几条连接（chunk_count，默认 8）
+     *   口径：总在飞连接 ≤ 64 + 8 = 72（此前上界是 64 × 8 = 512）。
+     *
+     *   ★ 每轮新建一份（不是跨轮累积）：一轮结束后所有段协程都已经结束，
+     *     它们的许可必然已经释放；新建一份让"这一轮的预算"定义清楚，
+     *     也避免把上一轮的额度带进来。
+     */
+    let chunk_budget = chunk_budget(chunk_count() as usize);
     let round_started = std::time::Instant::now();
     let failed: Arc<tokio::sync::Mutex<Vec<(String, String)>>> =
         Arc::new(tokio::sync::Mutex::new(Vec::new()));
@@ -4133,6 +4274,8 @@ async fn run_round(
         let failed_tasks = Arc::clone(&failed_tasks);
         let failures = Arc::clone(&failures);
         let unverified = Arc::clone(&unverified);
+        // ★★ 分片连接预算也要进每个任务的协程（它再传给分片段）
+        let chunk_budget = Arc::clone(&chunk_budget);
 
         handles.push(tokio::spawn(async move {
             let _permit = permit;
@@ -4214,7 +4357,14 @@ async fn run_round(
             // 这一轮里全是网络任务 —— 本地复制已经在批次末尾单独做过（见 CopyJob）
             let expected = task.expected_hash();
             let outcome =
-                download_one_locked(source::global(), &task, source, &cancel, Some(&phase_reporter))
+                download_one_locked(
+                    source::global(),
+                    &task,
+                    source,
+                    &cancel,
+                    Some(&phase_reporter),
+                    &chunk_budget,
+                )
                     .await;
 
             match outcome {
@@ -4253,10 +4403,20 @@ async fn run_round(
                                 "连长度都没有（size=0）"
                             }
                         );
+                        if task.unverified_reason().is_our_gap() {
+                                say!(
+                                    "[IEML/download] ⚠ 「{}」没有校验值，而且这是**我们的缺口**：{}",
+                                    task.label,
+                                    task.unverified_reason().engineer_text()
+                                );
+
+                        }
+
                         unverified.lock().await.push(UnverifiedFile {
                             label: task.label.clone(),
                             path: task.path.clone(),
                             length_checked,
+                            why: task.unverified_reason(),
                         });
                     }
                     /*
@@ -4851,6 +5011,8 @@ mod tests {
             &CancelToken::new(),
             "测试包体".to_string(),
             crate::domain::archive_guard::ByteCap::unlimited(),
+            // 单测里给足预算（分片预算本身另有专门的测试）
+            chunk_budget(chunk_count() as usize),
         )
         .await;
 
@@ -5015,6 +5177,7 @@ mod tests {
             &CancelToken::new(),
             "测试包体".to_string(),
             crate::domain::archive_guard::ByteCap::unlimited(),
+            chunk_budget(chunk_count() as usize),
         )
         .await;
 
@@ -5112,6 +5275,7 @@ mod tests {
             &CancelToken::new(),
             "测试包体".to_string(),
             crate::domain::archive_guard::ByteCap::unlimited(),
+            &chunk_budget(1),
         )
         .await
         .expect("这一段应当能下完");
@@ -5222,6 +5386,202 @@ mod tests {
             peak_chunked > peak_single,
             "★ 分片（{peak_chunked}）不比单连接（{peak_single}）铺得宽，分片就白做了"
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /* ============ ★★ 审计③：分片连接预算（连接爆炸） ============ */
+
+    /// **分片预算真的生效**：3 个 8 MiB 的文件都走分片、批次并发 3，
+    ///   预算是 **2** ⇒ 服务器观测到的**同时处理请求数**峰值只能是 2。
+    ///
+    ///   ★ 判据为什么用**服务器观测的峰值**（`start_full` 的 `peak`）而不是
+    ///     别的：它数的是"同一时刻正在服务的连接"（每个连接一个线程，
+    ///     从读完请求头到写完响应都在计数里）。而 `conn_stats::peak()`
+    ///     **也是同时在线数**（守卫式 `+1/-1` + `fetch_max`，不是累计计数）——
+    ///     两者都是真·并发峰值，所以这条断言不是凑出来的。
+    ///   ★ 另加一条**因果**断言：把预算从 1 提到 4，峰值必须**变大** ——
+    ///     否则"峰值 ≤ 预算"也可能是因为引擎根本没分片（那种情况下这条测试
+    ///     什么都不证明）。`for step in 0..sources.len()` 的那点偏差在
+    ///     1 vs 4 的对比里不影响结论。
+    #[tokio::test]
+    async fn chunk_budget_limits_shared_chunk_connections() {
+        const TOTAL: u64 = 8 * 1024 * 1024; // 8 MB → 4 段（MIN_CHUNK = 2 MB）
+        let (server, peak) = start_full(TOTAL, std::time::Duration::from_millis(150));
+
+        let dir = std::env::temp_dir().join(format!("ieml-budget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mk_tasks = |n: usize| {
+            (0..n)
+                .map(|i| {
+                    let p = dir.join(format!("f{i}.bin"));
+                    let mut t = DownloadTask::new(
+                        p,
+                        server.url(),
+                        String::new(),
+                        TOTAL,
+                        format!("整合包 预算{i}"),
+                    );
+                    t.allow_chunked = true;
+                    t
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // ── 预算 2 ──
+        conn_stats::reset();
+        let out = download_batch(mk_tasks(3), BatchOptions::new(3, Source::Mojang, CancelToken::new()))
+            .await
+            .expect("三个分片任务都该下完");
+        let peak2 = peak.swap(0, std::sync::atomic::Ordering::SeqCst);
+        let reported2 = out.peak_connections;
+        assert!(
+            server.ranges().iter().filter(|r| r.is_some()).count() >= 4,
+            "★ 至少要有几条分段 Range —— 否则这条测试没走到分片路径，\
+              它证明不了任何关于连接数的事。实际 Range：{:?}",
+            server.ranges()
+        );
+        assert!(
+            peak2 <= 2,
+            "★ 分片预算 = chunk_count() = {}，但服务器观测到同时 {peak2} 条连接\
+              —— 预算没生效（这正是审计点名的 8×64≈512 socket 那个洞）",
+            chunk_count()
+        );
+        assert_eq!(
+            reported2, peak2 as u64,
+            "★ 引擎自报峰值（{reported2}）必须等于服务器观测（{peak2}）—— \
+              不一致说明尺子坏了"
+        );
+
+        // ── 预算 1（人为缩到 1）：全局峰值必须落到 1 ──
+        conn_stats::reset();
+        let one = Arc::new(Semaphore::new(1));
+        let mut handles = Vec::new();
+        for t in mk_tasks(2) {
+            let budget = Arc::clone(&one);
+            handles.push(tokio::spawn(async move {
+                download_one_locked(
+                    source::global(),
+                    &t,
+                    Source::Mojang,
+                    &CancelToken::new(),
+                    None::<&fn(ProgressPhase, &str)>,
+                    &budget,
+                )
+                .await
+            }));
+        }
+        for h in handles {
+            let _ = h.await.expect("任务不该 panic");
+        }
+        let peak1 = peak.swap(0, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            peak1, 1,
+            "★ 预算 = 1 时同一时刻只能有 1 条分片连接，实际观测 {peak1}"
+        );
+
+        // ── 预算 4：峰值必须**大于**预算 1 的那次（因果判据）──
+        conn_stats::reset();
+        let four = Arc::new(Semaphore::new(4));
+        let mut handles = Vec::new();
+        for t in mk_tasks(2) {
+            let budget = Arc::clone(&four);
+            handles.push(tokio::spawn(async move {
+                download_one_locked(
+                    source::global(),
+                    &t,
+                    Source::Mojang,
+                    &CancelToken::new(),
+                    None::<&fn(ProgressPhase, &str)>,
+                    &budget,
+                )
+                .await
+            }));
+        }
+        for h in handles {
+            let _ = h.await.expect("任务不该 panic");
+        }
+        let peak4 = peak.swap(0, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            peak4 > peak1,
+            "★ 预算 4 的峰值（{peak4}）不比预算 1（{peak1}）大 ⇒ \
+              说明峰值根本没跟着预算走，这条测试证明不了预算生效"
+        );
+
+        println!(
+            "  分片预算：预算{} 峰值 {peak2}（引擎自报 {reported2}）· 预算1 峰值 {peak1} · 预算4 峰值 {peak4}",
+            chunk_count()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **分片路径的流式累计超限**（上一轮报告里我点名的空白：只有"建连前"那道有覆盖）。
+    ///
+    ///   夹具：一份 4 MiB 的文件（`allow_chunked`），而任务的 `max_bytes` 只有 3 MiB。
+    ///     · "建连前"那道**不会**触发（`probe_content_length` 探到的 4 MiB 也超，
+    ///       但这里刻意让**任务声明大小**小于上限，把闸门留给收 chunk 那道：
+    ///       测的是"服务器一直吐、累计超限"这条路径）；
+    ///     · 收 chunk 那道必须命中 ⇒ 断言：
+    ///       ① 整份失败；
+    ///       ② 错误是**致命**（不重试 3×3 轮）且点名文件；
+    ///       ③ **当段被删掉**（不留下超限的半截段）；
+    ///       ④ 没有拼出 `.part`、更没有落成正式文件。
+    ///
+    ///   ★ 为什么这条必须存在：分片那条路的 meter 是我上一轮加的，而当时
+    ///     只有"建连前"那道有夹具 —— "加了防御但没人测"等于没加。
+    #[tokio::test]
+    async fn chunked_streaming_over_cap_is_fatal_and_deletes_the_segment() {
+        const TOTAL: u64 = 4 * 1024 * 1024; // 4 MB → 2 段
+        const CAP: u64 = 3 * 1024 * 1024; // 3 MiB < 4 MiB ⇒ 一定会超
+        let (server, _peak) = start_full(TOTAL, std::time::Duration::ZERO);
+
+        let dir = std::env::temp_dir().join(format!("ieml-chunkcap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("big.bin");
+
+        let mut task = DownloadTask::new(
+            target.clone(),
+            server.url(),
+            String::new(),
+            TOTAL,
+            "整合包 故意超限".to_string(),
+        );
+        task.allow_chunked = true;
+        task.max_bytes = Some(CAP);
+
+        let budget = chunk_budget(chunk_count() as usize);
+        let err = download_one_locked(
+            source::global(),
+            &task,
+            Source::Mojang,
+            &CancelToken::new(),
+            None::<&fn(ProgressPhase, &str)>,
+            &budget,
+        )
+        .await
+        .expect_err("累计超过 3 MiB 上限 ⇒ 必须失败");
+
+        let msg = err.to_string();
+        assert!(msg.contains("体积上限"), "错误要说清原因：{msg}");
+        assert!(msg.contains("故意超限"), "要点名是哪个文件：{msg}");
+        assert_eq!(
+            err.class(),
+            FailureClass::Fatal,
+            "★ 超限是致命（不重试 3×3 轮）：{msg}"
+        );
+        // ③ 当段被删掉：0 号段是先写的那个，一定碰过超限
+        let seg0 = segment_path(&target, 0);
+        assert!(
+            !seg0.exists(),
+            "★ 超限的那一段必须被删掉（留着会被当成「这一段的进度」）"
+        );
+        // ④ 不许拼出 .part，更不许落成正式文件
+        assert!(!part_path(&target).exists(), "超限不许留下 .part");
+        assert!(!target.exists(), "超限一个字节都不许落成正式文件");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -6264,16 +6624,16 @@ mod tests {
             h.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>()
         };
 
-        assert_eq!(ExpectedHash::Sha1(sha1.clone()).verify_file(&f).await, Some(true));
-        assert_eq!(ExpectedHash::Sha512(sha512).verify_file(&f).await, Some(true));
+        assert_eq!(verify_expected(&ExpectedHash::Sha1(sha1.clone()), &f).await, Some(true));
+        assert_eq!(verify_expected(&ExpectedHash::Sha512(sha512), &f).await, Some(true));
         assert_eq!(
-            ExpectedHash::None.verify_file(&f).await,
+            verify_expected(&ExpectedHash::None, &f).await,
             None,
             "★ 没有校验值 ⇒ 返回 None（= 无从判断），**不是** true"
         );
         // 错的哈希必须 false
         assert_eq!(
-            ExpectedHash::Sha1("0".repeat(40)).verify_file(&f).await,
+            verify_expected(&ExpectedHash::Sha1("0".repeat(40)), &f).await,
             Some(false)
         );
         assert_eq!(ExpectedHash::from_sha1(""), ExpectedHash::None);

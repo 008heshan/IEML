@@ -56,6 +56,7 @@ fn push_task(
         // ★ 第一阶段同伴给 `DownloadTask` 加的新字段（"没有校验值"要成为数据）。
         //   这里是普通库/资源任务：沿用老口径（`None`），不动他的语义。
         expected_hash: None,
+        hash_reason: None,
         // ★ 第二阶段 A：`None` = **按 label 推类别、取该类别的默认上限**（不是"不限"）。
         //   构造点不必知道类别表 —— 引擎会用 `cap_of()` 解析出具体闸门。
         max_bytes: None,

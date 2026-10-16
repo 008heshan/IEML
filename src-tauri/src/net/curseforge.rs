@@ -531,10 +531,28 @@ pub fn modpack_download_tasks(
             skipped.push(format!("{}（作者不允许第三方下载）", name));
             continue;
         };
-        let mut task = crate::net::download::DownloadTask::new(
+        /*
+         * ★★ 2026-10-17（① 哈希接线）：CF 的文件有三种情形 ——
+         *   有 `algo = 1`（SHA1）⇒ **能真校验**；
+         *   只有 `algo = 2`（MD5）⇒ **我们的缺口**（以前它和"上游没发布校验值"
+         *   挤在同一个空串里，看不出该谁修 —— 审计点名的那条）；
+         *   一条哈希都没有 ⇒ 上游确实没发布（事实）。
+         *   判定在 `domain::hash_choice`（纯逻辑，本机可单编真跑断言）。
+         */
+        let pairs: Vec<(i64, &str)> = file
+            .hashes
+            .iter()
+            .map(|h| (h.algo as i64, h.value.as_str()))
+            .collect();
+        let (expected, reason) = match crate::domain::hash_choice::choose_from_algo_list(&pairs) {
+            Ok(h) => (h, None),
+            Err(why) => (crate::domain::hash_choice::ExpectedHash::None, Some(why)),
+        };
+        let mut task = crate::net::download::DownloadTask::with_hash(
             game_dir.join(&safe),
             url.clone(),
-            file.sha1(),
+            expected,
+            reason,
             file.file_length,
             name.clone(),
         );

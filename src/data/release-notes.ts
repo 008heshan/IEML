@@ -94,6 +94,20 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.21.4',
+    date: '2026-10-17',
+    headline: '这一版让下载完的核对更严一点，也更说得清。',
+    groups: [
+      {
+        title: '优化了',
+        items: [
+          '优化了 核对下载好的文件时优先用更强的校验方式，更容易发现文件没下全。',
+          '优化了 没法核对的文件会说清是哪种原因，属于启动器自己的问题会更显眼。',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.21.3',
     date: '2026-10-16',
     headline: '这一版修好了下载里几处毛病。',

@@ -20,6 +20,11 @@ pub mod external;
 ///    纯判定：给 HTTP 状态码与 errno，得出 Fatal / Retryable / Busy。
 ///    退避、换源、落盘都在 `net/`，这一份只管判据（于是能被 rustc 单编验证）
 pub mod failure;
+/// ★★ **校验值怎么选、以及"为什么没有校验值"**（2026-10 审计：`None` 不能悄悄等于成功）——
+///    纯判定：优先 SHA-512（Modrinth 两个都发布）、其次 SHA-1；挑不到时分三态
+///    （上游没发布 / 只给了不支持的算法 / 我们有字段却没解析出来）。
+///    ★ `ExpectedHash` 与"算摘要"的**唯一实现**都在这份里（`net/download.rs` 只留异步壳）
+pub mod hash_choice;
 pub mod java;
 /// ★★ 版本隔离（ADR-005 三段判定）—— **规则只在这一份**，平台层与界面都读它的结论
 pub mod isolation;
