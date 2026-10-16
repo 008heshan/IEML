@@ -485,7 +485,7 @@ impl AppPaths {
 
     /* ============ 隔离判定（ADR-005）：游戏目录到底在哪 ============ */
 
-    /// 启动器自己的一个 JSON 记录（`instances.json` / `prefs.json`）。
+/// 启动器自己的一个 JSON 记录（`instances.json` / `prefs.json`）。
     ///
     /// ★ 读不到、读坏了、不是对象 —— 一律 `None`。调用方必须**按缺证据处理**，
     ///   而不是当成"空对象"继续往下猜（这个仓库已经因为"把读不到当没有"栽过）。
@@ -2267,6 +2267,35 @@ fn flatten_legacy_game_dirs(versions_root: &Path) -> Vec<String> {
 ///   · 全部判据都是"读盘 + 比较"，跑第二遍什么都不做；
 ///   · 改名/删除**只发生在 `versions/` 与账本里**，不碰 `libraries`/`assets`；
 ///   · 账本改动前先写 `.bak`（与 `adopt_records` 同一条纪律）。
+/// 一个版本目录里的**所有** `.json` 文件。
+///
+/// ★★★★ 2026-10-16（用户：「启动器会把整合包的基座版本识别成独立运行版本」）。
+///
+///   以前目录扫描假定"版本描述的文件名 = 目录名"（`versions/<目录>/<目录>.json`）。
+///   **整合包实例不遵守这个约定**：实测 `versions/pack-al3zun/` 里那份版本 JSON 叫
+///   `1.20.1-fabric-0.19.3.json`（按它**继承的版本**命名），于是扫描读不到它 ⇒
+///   `inheritsFrom` 丢了 ⇒ 「被继承的版本 ⇒ 标基座」那条规则不触发 ⇒
+///   加载器基座 `1.20.1-fabric-0.19.3` 被列成一个独立可启动版本
+///   （原版基座 `1.20.1` 是装加载器时显式标的，所以它一直正常 —— 两条路不一致
+///   正是这个 bug 的形状）。
+///
+///   ⇒ 判据改成"目录里有哪些 JSON，内容自己说了算"：读进来之后一律用
+///     `inheritsFrom` / `id` 这些**字段**认关系，不靠文件名猜。
+fn version_json_files(dir: &Path) -> Vec<PathBuf> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    rd.filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && p.extension()
+                    .map(|x| x.eq_ignore_ascii_case("json"))
+                    .unwrap_or(false)
+        })
+        .collect()
+}
+
 pub fn instance_catalog_repair(paths: &AppPaths) -> CatalogRepair {
     let mut report = CatalogRepair::default();
 
@@ -2569,17 +2598,36 @@ pub fn instance_catalog_repair(paths: &AppPaths) -> CatalogRepair {
              */
             let mut flagged_base: Vec<String> = Vec::new();
             {
+                /*
+                 * ★★★★ 2026-10-16（用户：「**启动器会把整合包的基座版本识别成独立运行版本**」）。
+                 *
+                 *   病根就在下面这一行的**文件名假设**：原来读的是
+                 *   `versions/<目录>/<目录>.json`。而整合包实例目录不遵守这个约定 ——
+                 *   实测 `versions/pack-al3zun/` 里那份版本 JSON 叫
+                 *   `1.20.1-fabric-0.19.3.json`（按它**继承的版本**命名），
+                 *   于是这份 JSON 根本读不到 ⇒ `inheritsFrom` 丢了 ⇒
+                 *   加载器版本 `1.20.1-fabric-0.19.3` 不被认成基座、被列成一个
+                 *   独立可启动版本（原版基座 `1.20.1` 是另一条路标的，所以它正常）。
+                 *
+                 *   ⇒ 改成把一个目录里**所有**版本 JSON 都读进来（`version_json_files`），
+                 *     收集它们声明的全部 `inheritsFrom`。
+                 *   ★ 安全性：没有 `inheritsFrom` 的 JSON（options/manifest 之类）会被
+                 *     下面的 `filter` 直接滤掉，不会造出假父子关系。
+                 */
                 let parents: std::collections::HashSet<String> = disk_names
                     .iter()
-                    .filter_map(|d| {
-                        let text =
-                            std::fs::read_to_string(paths.instances.join(d).join(format!("{d}.json")))
-                                .ok()?;
-                        let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-                        v.get("inheritsFrom")
-                            .and_then(|x| x.as_str())
-                            .filter(|s| !s.is_empty())
-                            .map(|s| s.to_lowercase())
+                    .flat_map(|d| {
+                        version_json_files(&paths.instances.join(d))
+                            .into_iter()
+                            .filter_map(|p| {
+                                let text = std::fs::read_to_string(p).ok()?;
+                                let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+                                v.get("inheritsFrom")
+                                    .and_then(|x| x.as_str())
+                                    .filter(|s| !s.is_empty())
+                                    .map(|s| s.to_lowercase())
+                            })
+                            .collect::<Vec<_>>()
                     })
                     .collect();
                 for dir_name in &disk_names {
@@ -2625,12 +2673,15 @@ pub fn instance_catalog_repair(paths: &AppPaths) -> CatalogRepair {
                     if user_asked {
                         continue;
                     }
-                    if !paths
-                        .instances
-                        .join(dir_name)
-                        .join(format!("{dir_name}.json"))
-                        .is_file()
-                    {
+                    /*
+                     * ④ 它**自己有一份版本描述** —— 只有 jar 的目录本来就不是版本，
+                     *    不必给它记号。
+                     * ★ 2026-10-16：判据从"`<目录>.json` 存在"放宽成"目录里有
+                     *   **任何**一份版本 JSON"（同一个文件名假设，见上面那段）。
+                     *   收紧的部分由 `inheritsFrom` 那一侧负责：会被标基座的目录，
+                     *   一定是**别人声明的父版本**，不会是随手的杂项目录。
+                     */
+                    if version_json_files(&paths.instances.join(dir_name)).is_empty() {
                         continue;
                     }
                     if paths.mark_version_as_base(dir_name, "（另一个版本继承它）") {

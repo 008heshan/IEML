@@ -29,7 +29,7 @@ import { isTauri } from '../bridge';
 import type { PageId, SubPageId } from '../state/store';
 import { Button, Chip, Modal, ToastRegion, BackButton } from '../ui';
 import { useBackTargetValue } from '../state/back-nav';
-import { IconChevronRight, IconDownload, IconGear, IconGrid, IconHome, IconLayers, IconNews, IconPlay, IconPuzzle, IconStop, IconTerminal, IconInfo, IconUsers } from '../ui/Icons';
+import { IconChevronRight, IconClock, IconDownload, IconGear, IconGrid, IconHome, IconLayers, IconNews, IconPlay, IconPuzzle, IconStop, IconTerminal, IconInfo, IconUsers } from '../ui/Icons';
 /* ★ C-7：`VersionIcon` 的 import 随「最近玩过」一起删（那个块是它唯一的用处） */
 import { UpdateChip } from '../components/UpdateChip';
 import { LaunchPage } from '../pages/LaunchPage';
@@ -197,14 +197,19 @@ export function App() {
    *   · 位置统一：指示条挂在**容器**上（`left: 0`），所以主导航那 5 项与下面
    *     「新闻/更新日志/关于」那 3 项**共用同一条轴线**（以前是每项各自的
    *     `::before`，位置由项自己的内边距决定）。
-   *   · 两条容器各挂一次：谁的里面没有当前页，谁就**不画**（hook 返回 null）。
+   *
+   *   ★★ 选择器必须**按类名精确写**，不能图省事用 `[aria-current="page"]`：
+   *     `.side-links` 那个 div 是**嵌在主导航 `<nav>` 里面**的（见下面的 JSX），
+   *     通配选择器会越界匹配到下面的链接 ⇒ 上边那组"没有指示条"、下边那组
+   *     "同时画出两根"（用户实测反馈：「上边的 tab 没了，下边的有两个 tab」）。
+   *     这类"结构上嵌套、视觉上分组"的地方，只有写清类名才稳。
    */
   const navInd = useTabIndicator(`${state.page}/${state.subPage}`, {
-    selector: '[aria-current="page"]',
+    selector: '.nav-item[aria-current="page"]',
     axis: 'y',
   });
   const sideLinksInd = useTabIndicator(state.page, {
-    selector: '[aria-current="page"]',
+    selector: '.side-link[aria-current="page"]',
     axis: 'y',
   });
   useEffect(() => {
@@ -904,6 +909,23 @@ export function App() {
               })}
 
               {/*
+                ★ 主导航这一根指示条（2026-10-16 补）。
+                ★★ 上一版漏了它：插入时匹配到了**二级导航**那个 `</nav>`，
+                  于是只有实例页的子导航有指示条，主导航永远不画 ——
+                  用户看到的就是「上边的 tab 没了，下边的有两个 tab」
+                  （下面那两根：一根是越界匹配、一根是 side-links 自己的）。
+                  这条教训记在这里：同一段 JSX 里有两处相似的兄弟结构时，
+                  按"最后一个 `</nav>`"这类模糊锚点插入必然会插错。
+              */}
+              {navInd.style ? (
+                <span
+                  className="rail-ind"
+                  aria-hidden="true"
+                  style={{ transform: navInd.style.transform, height: navInd.style.width }}
+                />
+              ) : null}
+
+              {/*
                 ★★ 侧栏下半部分别再空着（用户："左侧栏设置以下空缺太多，
                   可以想想加什么"）。
 
@@ -954,7 +976,7 @@ export function App() {
                   aria-current={state.page === 'changelog' ? 'page' : undefined}
                   onClick={() => go('changelog')}
                 >
-                  <IconLayers />
+                  <IconClock />
                   <span className="nav-text">更新日志</span>
                 </button>
                 <button
