@@ -98,6 +98,17 @@ pub fn client() -> &'static reqwest::Client {
 pub enum NetError {
     #[error("网络请求失败：{0}")]
     Http(#[from] reqwest::Error),
+    /// 写文件失败。
+    ///
+    /// ★★ 文案分两种，**必须说真话**（见 [`describe_io_failure`]）：
+    ///   · 磁盘满 → `写入文件失败（磁盘空间不够）：…`
+    ///   · 权限拒绝 → `写入文件失败（没有写入权限）：…`
+    ///   · 其它 → 原来的 `写入文件失败：…`
+    ///
+    ///   为什么值得为这两句话单独改：它们是**用户唯一能拿到的线索**。
+    ///   以前磁盘满与权限拒绝都只报一句"写入文件失败"，而引擎会
+    ///   带着这句笼统的话去重试 9 次 —— 用户看到的是"下载失败"，
+    ///   真实原因（该清盘 / 该换目录）一个字都没说出来。
     #[error("写入文件失败：{0}")]
     Io(#[from] std::io::Error),
     /// HTTP 状态码错误（**必须带上状态码**，否则上层无法区分
@@ -110,14 +121,57 @@ pub enum NetError {
     /// 这不是"重试就会好"的错误，退避三轮只是白等。
     #[error("服务器不支持 Range 分片（HTTP {status}）：{url}")]
     RangeUnsupported { status: u16, url: String },
+    /// 所有候选源都试过了还是失败。
+    ///
+    /// ★★ 2026-10：**带上处置档位**（`class`）。
+    ///
+    ///   以前它只有 `tried` 与 `last`（一句话）。而"这条失败是不是致命的"
+    ///   这个信息**只有在失败的现场才知道** —— 到了批次层就只剩一个字符串，
+    ///   于是"磁盘满"也会被补下两轮（多等十几秒，然后看到同一句话）。
+    ///
+    ///   审计：*Disk-full and permission errors are not retryable.
+    ///   Surface them immediately; retrying just makes the UI lie for longer.*
+    ///   ⇒ 把结论带出去，让批次层有据可依（见 `download_batch` 里那段）。
     #[error("所有下载源都失败了（试过 {tried} 个）：{last}")]
-    AllSourcesFailed { tried: usize, last: String },
+    AllSourcesFailed {
+        tried: usize,
+        last: String,
+        /// 最后一次失败的处置档位（判据见 [`NetError::class`]）
+        class: crate::domain::failure::FailureClass,
+    },
     #[error("校验失败：期望 SHA1 {expected}，实际 {actual}")]
     HashMismatch { expected: String, actual: String },
     #[error("任务被取消")]
     Cancelled,
     #[error("{0}")]
     Other(String),
+}
+
+/// 这个 `io::Error` 的系统错误码（判据用；没有就是 `None`）。
+pub fn io_os_code(e: &std::io::Error) -> Option<i32> {
+    e.raw_os_error()
+}
+
+/// **把 `io::Error` 包成"说真话"的那一句**（见 `NetError::Io` 的说明）。
+///
+/// ★ 为什么要重新包一层而不是在 `#[error]` 里做：`std::io::Error` 的
+///   `Display` 归标准库管，我们改不了；而用户看到的就是它。
+///   `io::Error::new(e.kind(), 消息)` 保留 `kind`，但**会丢掉 `raw_os_error`** ——
+///   所以判据（[`NetError::class`]）只看**文案**那一份，而 `is_file_busy`
+///   这类走 `raw_os_error` 的判据要在**包装前**用原始错误判定
+///   （`net/download.rs` 的 `create_part` / `open_part_append` 就是这么做的）。
+pub fn describe_io_failure(e: std::io::Error) -> std::io::Error {
+    let code = e.raw_os_error();
+    let is_disk = code.is_some_and(crate::domain::failure::is_disk_full_errno);
+    let is_perm = code.is_some_and(crate::domain::failure::is_permission_errno);
+    let hint = if is_disk {
+        "（磁盘空间不够）"
+    } else if is_perm {
+        "（没有写入权限）"
+    } else {
+        return e;
+    };
+    std::io::Error::new(e.kind(), format!("{hint}{e}"))
 }
 
 impl NetError {
@@ -143,28 +197,149 @@ impl NetError {
     ///   这种错误**重试同样的动作、但间隔足够长**就能过；
     ///   当时按"普通 IO 错误"处理，3 轮补下没留等待时间，23 个文件一直失败。
     ///
-    /// Windows 上把这几个码都算进来：
-    ///   5 = ACCESS_DENIED · 32 = SHARING_VIOLATION ·
-    ///   33 = LOCK_VIOLATION · 1224 = USER_MAPPED_FILE
+    /// ## ★★ 2026-10（判据层修复）：**errno 5 从这张表里摘出去了**
+    ///
+    ///   原来的表是 `5 | 32 | 33 | 1224` —— 而 **5 是 `ACCESS_DENIED`（权限拒绝）**，
+    ///   它**不会**因为等待而变好。把它算成"占用"的后果是：
+    ///   一个"目录不可写"的文件要等满 4 次落位退避（0.3/0.9/2.1/4 秒），
+    ///   然后再去吃 3×3 次整份重下 —— 用户对着一个永远不会成功的下载等十几秒，
+    ///   而屏幕上只有一句"写入文件失败"。
+    ///
+    ///   32/33/1224 是**真的**被占用（分享冲突 / 区域锁 / 文件被映射），保持不动 ——
+    ///   它们是踩过坑才定下来的（见这条注释第一段）。
+    ///
+    ///   判据本体在 `domain/failure.rs`（纯逻辑、可 rustc 单编验证）；
+    ///   这里只是把它接上来，免得下一个调用点又各写一张表。
     pub fn is_file_busy(&self) -> bool {
         match self {
-            Self::Io(e) => matches!(e.raw_os_error(), Some(5) | Some(32) | Some(33) | Some(1224)),
+            Self::Io(e) => e.raw_os_error().is_some_and(crate::domain::failure::is_busy_errno),
             _ => false,
         }
     }
 
-    /// 是否需要换源（限流 / 服务不可用 / 5xx / 网络层错误 / 超时都要换）
-    pub fn should_switch_source(&self) -> bool {
-        match self.status() {
-            // 404 / 403 这种换源也没用（除非是不同源上路径确实不同，那由候选列表兜）
-            Some(s) => s == 429 || s == 503 || s == 502 || s == 504 || s >= 500,
-            None => !matches!(self, Self::Cancelled),
+    /// **这一次失败该怎么处置**（判据本体在 `domain::failure`）。
+    ///
+    /// 三档：`Fatal`／`Retryable`／`Busy`。下载引擎据此决定
+    /// "立刻结束"还是"退避重试"还是"短退避等占用解除"。
+    pub fn class(&self) -> crate::domain::failure::FailureClass {
+        use crate::domain::failure::{classify_message, FailureClass};
+        match self {
+            // ★ 取消不是"失败"，它单独一档（调用方会立刻退出，不问处置）
+            Self::Cancelled => FailureClass::Fatal,
+            /*
+             * ★★ 4xx（除 408/429）**立刻致命** —— 与元数据路径
+             *   （`get_text_with_headers`，本文件上面那段注释）同一个结论。
+             *
+             *   这条修复的是一处**只改了一条路**的漏改：元数据早就是
+             *   "一次 4xx 就返回"，而下载那条路会带着 404 走满
+             *   `MAX_FILE_RETRIES(3) × MAX_BATCH_ROUNDS(3) = 9` 次 + 退避。
+             */
+            Self::Status { status, .. } => FailureClass::from_parts(Some(*status), None),
+            /*
+             * 服务器不支持 Range：这不是"重试就会好"，换源也一样
+             * （同一个 CDN 的所有边缘节点行为一致）—— 所以是致命。
+             * ★ 它**不会**让下载失败：`download_to_part` 会在同一个调用里
+             *   回退单连接（`is_permanent_range_failure`）。
+             */
+            Self::RangeUnsupported { .. } => FailureClass::Fatal,
+            // 本地文件系统：磁盘满 / 权限拒绝 → 致命；真被占用 → Busy
+            Self::Io(e) => FailureClass::from_parts(None, e.raw_os_error()),
+            // 校验不符：见 `HashMismatch` 那一档下面的说明
+            Self::HashMismatch { .. } => FailureClass::Fatal,
+            /*
+             * 网络层错误：按 reqwest 自己的分类走。
+             *
+             *   · 连接 / 超时 / 请求体 → 传输层的事，重试真的能好；
+             *   · `is_status()` 的那一类被 `Status` 变体接走了（走不到这里）；
+             *   · 其余（读取响应体时断了、解码失败）—— 响应读一半就断
+             *     正是"截断"，**必须可重试**（审计：truncated bodies → retryable）。
+             *     所以这里不细分，一律可重试。
+             */
+            Self::Http(_) => FailureClass::Retryable,
+            Self::Other(msg) => classify_message(msg),
+            /*
+             * 所有源都失败：**这一层不该下结论** —— 它是一条聚合，
+             * 真正的原因在 `last` 那句话里（按文案判，理由见 `classify_message`）。
+             * 好的做法是调用方在**还能拿到具体错误**的时候判（`download_one_with`
+             * 里就是这么做的，那里用的是 `classify_source_error`）。
+             */
+            Self::AllSourcesFailed { last, .. } => classify_message(last),
         }
     }
 
+    /// 是否需要换源（限流 / 服务不可用 / 5xx / 网络层错误 / 超时都要换）。
+    ///
+    /// ## ★★ 2026-10：**它原来零调用点，而且把 `Busy` 也算成"该换源"**
+    ///
+    ///   审计结论：本函数在全仓库**没有任何调用点**，而实现是
+    ///   `None => !matches!(self, Cancelled)` —— 也就是"除取消全该换源"。
+    ///   两个问题：
+    ///     ① 没有调用点的判据等于没有判据（这条注释就是它的第一份文档）；
+    ///     ② "文件被占用（`Busy`）"是**本地**问题，换下载源完全治不好它 ——
+    ///        把它算成该换源，会让引擎去重下一整份文件来绕过一把本地锁。
+    ///
+    ///   现在口径交给 `FailureClass::worth_switching_source`：
+    ///   只有 `Retryable` 值得换源。
+    ///   ★ 调用点见 `net/download.rs` 的 `download_one_with`
+    ///     （那里对"致命"直接结束、对 `Busy` 不换源只等）。
+    pub fn should_switch_source(&self) -> bool {
+        self.class().worth_switching_source()
+    }
+
     /// 是否是"重试有意义"的错误（取消不算）
+    ///
+    /// ## ★★ 2026-10：原来是 `!matches!(self, Cancelled)` —— **除取消全可重试**
+    ///
+    ///   那等于完全不分类。现在按 [`NetError::class`] 走：
+    ///   `Fatal` 不重试、`Retryable` 与 `Busy` 重试
+    ///   （`Busy` 的等待时长短得多，由 `busy_delay` 决定）。
+    ///
+    ///   ★★ **调用点**（它不能只是"实现了但没人用"—— 那正是审计点名的问题）：
+    ///     · `net/download.rs` 的 `download_one_locked`：一轮候选全挂之后
+    ///       决定"还吃不吃后面的重试轮"（致命就 `break`，连退避都不等）；
+    ///     · `FailureClass::worth_switching_source` 也以它为准
+    ///       （`should_switch_source` 的判据）。
+    ///   ★ 那个调用点手上只剩一句错误**文案**（`last_err`），所以它走的是
+    ///     `domain::failure::classify_message` —— **同一个判据源头**，
+    ///     这里这一份是给"还能拿到 `NetError`"的调用方用的。
     pub fn is_retryable(&self) -> bool {
-        !matches!(self, Self::Cancelled)
+        use crate::domain::failure::FailureClass;
+        match self.class() {
+            FailureClass::Fatal => false,
+            FailureClass::Retryable | FailureClass::Busy => true,
+        }
+    }
+
+    /// **这条致命错误换个源还有没有戏？**
+    ///
+    /// ## 为什么"致命"还要再分一次（一个真实的取舍）
+    ///
+    ///   审计要求"4xx（除 408/429）→ Fatal，与元数据路径一致"。而**下载**
+    ///   与元数据有一个真实差别：候选源之间的 URL **未必是同一个地址的镜像** ——
+    ///
+    ///     · Modrinth/CurseForge CDN：mcimirror 是**同一个 API/同一个 CDN 的反代**，
+    ///       404 换过去还是 404（元数据那边早就是这么写的）；
+    ///     · 但 Mojang 的库与 BMCLAPI、以及任务自带的 `urls`
+    ///       （`source::candidates_with`）是**不同的路径、甚至不同的仓库** ——
+    ///       一条路上 404 的文件，另一条路上真的有。
+    ///
+    ///   所以判据是**两条同时成立**才认为"换源没戏"：
+    ///     ① 这一档是致命的（`class() == Fatal`）；
+    ///     ② 这个错误**与 URL 无关**（权限 / 磁盘 / 校验 / 分片拼装 / 不支持的 Range）。
+    ///
+    ///   ★ 换句话说：URL 相关的 4xx（403/404/410…）仍然是致命的
+    ///     （**整份重下那 3×3 次预算一轮都不给**），但候选源列表照旧走完 ——
+    ///     那一条不是"重试"，是"换个地方找"，它有独立的证据支持。
+    pub fn fatal_without_trying_other_sources(&self) -> bool {
+        use crate::domain::failure::FailureClass;
+        if self.class() != FailureClass::Fatal {
+            return false;
+        }
+        // URL 相关的 4xx / 3xx：换源（换路径）可能有戏
+        if matches!(self.status(), Some(400..=499)) {
+            return false;
+        }
+        true
     }
 }
 

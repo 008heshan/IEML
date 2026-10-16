@@ -1252,4 +1252,98 @@ mod tests {
         assert!(tasks.is_empty());
         assert_eq!(skipped, vec!["mods/a.jar".to_string()]);
     }
+
+    /* ============ ★★ 端到端②：overrides 真 zip 的落盘闸门（清单第 204 行） ============ */
+
+    /// 造一个真 `.mrpack`（zip）字节流：条目名逐字写进去，**包括恶意条目**
+    fn mrpack_bytes_with(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let opts = zip::write::SimpleFileOptions::default();
+        for (name, body) in entries {
+            w.start_file(*name, opts).expect("写 zip 条目");
+            use std::io::Write as _;
+            w.write_all(body).expect("写 zip 内容");
+        }
+        w.finish().expect("收尾 zip").into_inner()
+    }
+
+    /// 把目录**下面所有文件**的相对路径按 `/` 列出来（比较用）
+    fn list_files(dir: &std::path::Path) -> Vec<String> {
+        fn walk(dir: &std::path::Path, prefix: &str, out: &mut Vec<String>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                let rel = if prefix.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{prefix}/{name}")
+                };
+                if e.path().is_dir() {
+                    walk(&e.path(), &rel, out);
+                } else {
+                    out.push(rel);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(dir, "", &mut out);
+        out.sort();
+        out
+    }
+
+    /// ★★ 给 `extract_overrides` 喂一个**真 zip**（含 `../escape.txt`、`C:evil.txt`、
+    ///   `a.txt:zone` 这类条目），断言：
+    ///     ① 游戏目录**外**没有生成任何文件；
+    ///     ② 正常的 `overrides/` 条目**照旧落地**（别把功能改死）；
+    ///     ③ 越界条目**一条都不许出去**（一个字节都不许写）。
+    ///
+    ///   ★ 这条路一直有**两道**闸门（`enclosed_name()` + `safe_relative_path`），
+    ///     这条测试把它钉住 —— 尤其是 `a.txt:zone`（`enclosed_name()` 放它过去，
+    ///     只有第二道闸门拦得住）。
+    #[test]
+    fn overrides_end_to_end_rejects_zip_slip_and_keeps_normal_entries() {
+        let base =
+            std::env::temp_dir().join(format!("ieml-overrides-e2e-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let game = base.join("game");
+        std::fs::create_dir_all(&game).unwrap();
+
+        let bytes = mrpack_bytes_with(&[
+            ("overrides/config/ok.toml", b"OK=1"),
+            ("overrides/../escape.txt", b"ESCAPED"),
+            ("overrides/C:evil.txt", b"ESCAPED"),
+            ("overrides/a.txt:zone", b"ESCAPED"),
+        ]);
+
+        let written = extract_overrides(&bytes, &game).expect("解压 overrides 不该整个失败");
+        assert_eq!(written, 1, "只有那条正常条目该落地，实际写了 {written} 条");
+
+        // ① 游戏目录外零写入
+        assert!(
+            !base.join("escape.txt").exists(),
+            "★ 游戏目录外被写了 escape.txt —— 这就是 Zip Slip"
+        );
+        assert!(
+            !base.join("evil.txt").exists(),
+            "★ 游戏目录外被写了 evil.txt（盘符路径）"
+        );
+        assert!(
+            !game.join("escape.txt").exists() && !game.join("evil.txt").exists(),
+            "越界条目连游戏目录里也不许落地"
+        );
+        // ③ 盘上只有那一条正常文件（一个字节都没多）
+        assert_eq!(
+            list_files(&game),
+            vec!["config/ok.toml".to_string()],
+            "游戏目录里只该有那一条正常条目"
+        );
+        assert_eq!(
+            std::fs::read(game.join("config").join("ok.toml")).unwrap(),
+            b"OK=1"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

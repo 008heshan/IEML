@@ -14,6 +14,9 @@ use super::metadata::{self, Library, VersionJson};
 use super::mirror::{self, Source};
 use super::source;
 use super::{NetError, Result};
+// ★ 解压安全判据（Zip Slip 防线）—— 规则本体在 `domain/archive_guard.rs`（纯逻辑）。
+//   体积上限的**解析**不在这一层：唯一那份是 `super::download::cap_of`。
+use crate::domain::archive_guard::classify_archive_path;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -50,7 +53,51 @@ fn push_task(
         // 库/资源文件**不开分片**：它们是"一堆中小文件"，靠 `download_batch`
         // 的并发就够了（见 `DownloadTask::allow_chunked` 的说明）
         allow_chunked: false,
+        // ★ 第一阶段同伴给 `DownloadTask` 加的新字段（"没有校验值"要成为数据）。
+        //   这里是普通库/资源任务：沿用老口径（`None`），不动他的语义。
+        expected_hash: None,
+        // ★ 第二阶段 A：`None` = **按 label 推类别、取该类别的默认上限**（不是"不限"）。
+        //   构造点不必知道类别表 —— 引擎会用 `cap_of()` 解析出具体闸门。
+        max_bytes: None,
     });
+}
+
+/* ================== 按类别的响应体体积上限（第二阶段 A） ================== */
+
+/// 计划阶段的**第一道**体积闸门：清单/上游**声明的大小**就已经超限 ⇒ 现在就拒。
+///
+/// ## 为什么要有这一道（而不是只靠流式累计）
+///
+///   流式累计超限是**兜底**（也是唯一能挡住"不报 `Content-Length`"的那道），
+///   但它要先把字节拿到手里才拦得住 —— 一个声明 8 GiB 的"图标"不该先下满
+///   8 GiB 再发现，那 8 GiB 已经写进磁盘了。
+///
+///   Adoptium 的 `info.size`、Mojang 清单的 `downloads.*.size`、CurseForge 的
+///   `fileLength`、Modrinth 的 `file_size` **都是声明值** —— 计划阶段就能判。
+///
+/// ## 判据只有一份
+///
+///   上限的**解析**在引擎侧唯一的那份：`super::download::cap_of(&task)`
+///   （三态：显式 `max_bytes` → 该值；`None` → 按 `label` 推类别取默认档；
+///   认不出来 → `Unknown` 最紧一档）。这里不再自带一份 `cap_for_task`——
+///   曾经有过，删掉是仓库的规矩（不留死代码，也不留第二份判据）。
+///
+/// ## 返回
+///
+///   `(可跑的任务, 被拒的 (路径, 声明大小, 上限))` —— 被拒的**必须交回调用方去说**。
+///   ★ `size == 0` 一律放行（"未知"不是"超限"；那种情况交给流式累计）。
+pub fn reject_by_declared_size(tasks: Vec<DownloadTask>) -> (Vec<DownloadTask>, Vec<(PathBuf, u64, u64)>) {
+    let mut ok = Vec::with_capacity(tasks.len());
+    let mut rejected = Vec::new();
+    for t in tasks {
+        let cap = super::download::cap_of(&t);
+        if t.size > 0 && cap.rejected_by_declared_size(t.size) {
+            rejected.push((t.path.clone(), t.size, cap.max_bytes.unwrap_or(0)));
+        } else {
+            ok.push(t);
+        }
+    }
+    (ok, rejected)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -856,6 +903,28 @@ fn plan_download_tasks(
         asset_index_path = Some(path);
     }
 
+    /*
+     * ★★ 第二阶段 A：**计划阶段的体积闸门**（清单第 172 行「Cap what you accept」）。
+     *
+     *   到这一步每个任务都已经知道自己的类别（从标签前缀推，见
+     *   `domain::archive_guard::class_from_label`）与**上游声明的大小**
+     *   （Mojang 清单的 `size`）—— 声明就已经超限的条目在这里被剔掉，
+     *   而不是先把它下满磁盘再发现。
+     *
+     *   ★ 声明大小 = 0（未知）**不拦**：那不是"超限"，交给流式累计那道兜底
+     *     （`ByteMeter`，引擎接线点见 `super::download::cap_of` 的说明）。
+     */
+    let (tasks, oversized) = reject_by_declared_size(tasks);
+    for (path, size, limit) in &oversized {
+        say!(
+            "[IEML/installer] ★ 拒绝一个声明体积超限的下载：{}（声明 {} 字节，上限 {} 字节）",
+            path.display(),
+            size,
+            limit
+        );
+    }
+    let total: u64 = total.saturating_sub(oversized.iter().map(|(_, s, _)| *s).sum::<u64>());
+
     Ok((tasks, natives, classpath, client_jar, asset_index_path, total))
 }
 
@@ -1041,7 +1110,18 @@ impl InstallOptions {
 /// ★ `finished_files` 是**这一阶段**的计数，不是整批的 ——
 ///   前端任务中心显示的是 `phase · finished / total 个文件`，
 ///   所以每个阶段开始时必须从 0 重新计数（否则会出现 "12 / 12" 接着又跳回 "0 / 3598"）。
-fn report(opts: &InstallOptions, stage: &str, total_files: usize, finished: usize, current: String) {
+///
+/// ★★ 这里**不再把 `phase` 写死**（原来是 `Downloading`）：`phase` 是**转发**进来的。
+///   为什么这件事重要：写死的值会让"看 `phase` 的调用方"被骗 ——
+///   引擎明明在算校验值，读到的却是"正在下"。现在调用方给什么就是什么。
+fn report(
+    opts: &InstallOptions,
+    stage: &str,
+    phase: super::download::ProgressPhase,
+    total_files: usize,
+    finished: usize,
+    current: String,
+) {
     (opts.on_progress)(
         stage.to_string(),
         super::download::DownloadProgress {
@@ -1055,8 +1135,40 @@ fn report(opts: &InstallOptions, stage: &str, total_files: usize, finished: usiz
             failed_files: 0,
             source: String::new(),
             retry_round: 0,
+            // ★ 转发调用方给的阶段（安装器自己发的那几条传 `Downloading`）
+            phase,
         },
     );
+}
+
+/// 把**引擎的 `phase`** 翻成给界面看的 `stage` 字符串。
+///
+/// ## 为什么必须落在 `stage` 里（而不是只改 `phase` 字段）
+///
+///   前端只读 `stage`：
+///     · 桌面端 `src/bridge/tauri.ts:2497` 把事件字段映射成 `phase: e.stage`；
+///     · 任务中心显示的是 `describeProgress(p)` → `[p.stage, …].join(" · ")`
+///       （`src/flows/install.ts:151`）。
+///   所以"引擎新增了 `Verifying`"这件事，在**只改 `phase` 字段**的情况下
+///   **一个像素都看不见** —— 那是"改了但没有发生"。要让用户看见，就得让
+///   `stage` 这句话跟着阶段变。
+///
+/// ## 引擎的 phase 会不会在聚合时丢掉
+///
+///   **不会**，而且这是实测查证过的链路：
+///     `download_one_locked(…, Some(&phase_reporter))`（`download.rs:4217`，
+///     `phase_reporter` 在 :4192，是逐文件的同步回调）
+///     → 它构造的 `DownloadProgress.phase` 直接进**批次级** `on_progress`
+///     → `installer.rs` 这个回调拿到的那份 `p` 就带着引擎的 `phase`。
+///   所以这条链是通的：**能做**（本函数就是那个转接点）。
+fn stage_for(phase: super::download::ProgressPhase, base: &str) -> String {
+    use super::download::ProgressPhase;
+    match phase {
+        // ★ 说人话：用户看不懂 "verifying"，但看得懂"正在校验已有文件"
+        ProgressPhase::Verifying => "正在校验已有文件".to_string(),
+        // 回到下载档 ⇒ 回到这一批的语境名（"下载核心文件" / "下载资源文件" / …）
+        ProgressPhase::Downloading | ProgressPhase::Done => base.to_string(),
+    }
 }
 
 /// 构造一份"**被暂停**"的安装结果（`paused = true`）。
@@ -1267,6 +1379,8 @@ pub async fn install(input: &PlanInput, opts: InstallOptions) -> Result<Installe
     report(
         &opts,
         "准备",
+        // ★ 安装器自己发的"阶段播报"不是引擎那一档，按"正在下"报
+        super::download::ProgressPhase::Downloading,
         tasks.len(),
         0,
         format!("{} 个库 · {} 个文件 · 源 {}", lib_count, tasks.len(), preferred.as_str()),
@@ -1290,7 +1404,12 @@ pub async fn install(input: &PlanInput, opts: InstallOptions) -> Result<Installe
             pause: opts.pause.clone(),
             on_progress: {
                 let cb = std::sync::Arc::clone(&opts.on_progress);
-                std::sync::Arc::new(move |p| cb("下载核心文件".into(), p))
+                // ★★ 引擎的 phase 在这一层翻成 `stage` 文案（前端只读 stage）：
+                //    校验中 ⇒ "正在校验已有文件"，回到下载 ⇒ "下载核心文件"
+                std::sync::Arc::new(move |p| {
+                    let stage = stage_for(p.phase, "下载核心文件");
+                    cb(stage, p)
+                })
             },
         },
     )
@@ -1367,6 +1486,25 @@ pub async fn install(input: &PlanInput, opts: InstallOptions) -> Result<Installe
 
             let (asset_tasks_v, asset_bytes) =
                 asset_tasks(&index, &shared, opts.asset_limit, preferred);
+            /*
+             * ★★ 第二阶段 A：资源阶段同样过**声明大小**闸门。
+             *
+             *   资源文件的 `size` 来自资源索引（Mojang 发布的内容），是**声明值**；
+             *   一个声明 4 GiB 的"资源文件"在计划阶段就该被剔掉。
+             *   （判据与默认值表在 `domain::archive_guard`，纯逻辑、已单测；
+             *     这里只把类别→上限算出来用。）
+             */
+            let (asset_tasks_v, oversized) = reject_by_declared_size(asset_tasks_v);
+            for (path, size, limit) in &oversized {
+                say!(
+                    "[IEML/installer] ★ 拒绝一个声明体积超限的资源文件：{}（声明 {} 字节，上限 {} 字节）",
+                    path.display(),
+                    size,
+                    limit
+                );
+            }
+            let asset_bytes = asset_bytes
+                .saturating_sub(oversized.iter().map(|(_, s, _)| *s).sum::<u64>());
             assets_count = asset_tasks_v.len();
             total += asset_bytes;
 
@@ -1383,7 +1521,11 @@ pub async fn install(input: &PlanInput, opts: InstallOptions) -> Result<Installe
                     pause: opts.pause.clone(),
                     on_progress: {
                         let cb = std::sync::Arc::clone(&opts.on_progress);
-                        std::sync::Arc::new(move |p| cb("下载资源文件".into(), p))
+                        // ★★ 同上：引擎说"在算校验值"就换成那句人话
+                        std::sync::Arc::new(move |p| {
+                            let stage = stage_for(p.phase, "下载资源文件");
+                            cb(stage, p)
+                        })
                     },
                 },
             )
@@ -1467,6 +1609,8 @@ pub async fn install(input: &PlanInput, opts: InstallOptions) -> Result<Installe
                         failed_files: failed,
                         source: preferred.as_str().to_string(),
                         retry_round: 0,
+                        // ★ 安装器自造的阶段播报（不是下载引擎那一档）
+                        phase: super::download::ProgressPhase::Downloading,
                     },
                 );
             }
@@ -1514,6 +1658,8 @@ pub async fn install(input: &PlanInput, opts: InstallOptions) -> Result<Installe
                         failed_files: outcome.failed.len(),
                         source: preferred.as_str().to_string(),
                         retry_round: outcome.retry_rounds,
+                        // ★ 安装器自造的阶段播报（不是下载引擎那一档）
+                        phase: super::download::ProgressPhase::Downloading,
                     },
                 );
             }
@@ -1707,6 +1853,8 @@ pub async fn repair_missing(
     report(
         &opts,
         "补齐缺失文件",
+        // ★ 同上：安装器自己发的阶段播报，不是引擎那一档
+        super::download::ProgressPhase::Downloading,
         missing_count,
         0,
         format!("缺 {} 个文件，正在补", missing_count),
@@ -1722,7 +1870,11 @@ pub async fn repair_missing(
             pause: None,
             on_progress: {
                 let cb = std::sync::Arc::clone(&opts.on_progress);
-                std::sync::Arc::new(move |p| cb("补齐缺失文件".into(), p))
+                // ★★ 同上（自愈这条路也会经过校验档：它正是在校验已有文件）
+                std::sync::Arc::new(move |p| {
+                    let stage = stage_for(p.phase, "补齐缺失文件");
+                    cb(stage, p)
+                })
             },
         },
     )
@@ -1754,6 +1906,36 @@ pub async fn repair_missing(
     })
 }
 
+/// 解压 natives 的结果报告。
+///
+/// ★ 为什么不用一个 `usize`：这个函数以前返回"写进去几个"，而**没写进去的那些**
+///   （平台不符 / META-INF / git 元数据 / 文件名撞车 / 路径不安全）一个都不说 ——
+///   出了"游戏缺 dll"的现场，日志里查不出为什么。
+///   现在"写进去几个 + 每个没写进去的条目和原因"一起交回调用方。
+#[derive(Debug, Default, Clone)]
+pub struct NativesExtractReport {
+    /// 落盘（或确认已在盘上、内容大小一致）的文件数
+    pub written: usize,
+    /// 被跳过的条目：`(条目名, 原因)`。调用方**必须说出来**，不许静默丢。
+    pub skipped: Vec<(String, String)>,
+}
+
+/// 解压 natives jar（**给我们自己的调用方用**：带被跳过条目的清单）。
+pub fn extract_natives_report(
+    jar: &Path,
+    dest: &Path,
+    exclude: &[String],
+) -> std::io::Result<NativesExtractReport> {
+    try_extract_natives(jar, dest, exclude)
+}
+
+/// 解压 natives jar 到目标目录（**兼容壳**，只返回个数；给 `commands_real.rs` 用）。
+///
+/// ★ 新代码请用 [`extract_natives_report`]：这一版把"被跳过的条目"丢掉了。
+pub fn extract_natives(jar: &Path, dest: &Path, exclude: &[String]) -> std::io::Result<usize> {
+    Ok(try_extract_natives(jar, dest, exclude)?.written)
+}
+
 /// 解压 natives jar 到目标目录。
 ///
 /// 过滤规则（**都是必需的，少一条游戏就起不来或起得莫名其妙**）：
@@ -1763,23 +1945,92 @@ pub async fn repair_missing(
 ///      实测 `lwjgl-3.3.1-natives-windows.jar` 里有 `.dll.git`、`.dll.sha1`
 ///      这类文件（官方启动器也会过滤掉），它们会在 natives 目录里制造噪音
 ///   ④ 只保留当前平台的子目录（jar 内结构是 `windows/x64/org/lwjgl/lwjgl.dll`）
-///   ⑤ zip-slip 防护
-pub fn extract_natives(jar: &Path, dest: &Path, exclude: &[String]) -> std::io::Result<usize> {
+///   ⑤ **zip-slip 防护：两道闸门 + "先全判、再落盘"**
+///
+/// ## ⑤ 为什么是两道闸门
+///
+///   `zip::read::ZipFile::enclosed_name()` 会拒 `Prefix` / `RootDir` / `..` / NUL
+///   —— **但它放 Windows ADS 过去**：`a.txt:zone` 的父目录没逃出压缩包根，
+///   所以它认为"在压缩包里面"。而 `domain::archive_guard::classify_archive_path`
+///   恰好拒"任何含 `:` 的段"（还有保留设备名、反斜杠变体、`.` 段）。
+///   ⇒ 两道**一起**用才完整（这也是 `extract_overrides_dir` 那条路更严的原因）。
+///
+/// ## ⑤ 为什么"先全判、再落盘"（两趟）
+///
+///   第一趟**只读中央目录、不写盘**：任何一个条目名过不了闸门 ⇒ **整包拒绝**，
+///   一个字节都不写（返回 `InvalidData`，调用方会把它记进解压失败清单）。
+///   第二趟才真解压。
+///
+///   ★ 为什么不做"边解边跳过"：那样前几条已经落到盘上了。包的可信度是
+///     **整包**级别的 —— 这是 Mojang 官方库 jar，出现一个穿越条目意味着
+///     文件被换过、或解析器对格式的理解有误。两种情况都该整包停下，
+///     而不是"少装几个文件后报成功"（游戏缺 dll 崩在 `UnsatisfiedLinkError`，
+///     而日志说一切正常）。
+///
+/// ## 文件名的去向没变
+///
+///   natives 在 jar 里是 `windows/x64/org/lwjgl/x.dll`，而 Java 的
+///   `java.library.path` **不递归** ⇒ 照旧**平铺**到 `dest` 下。
+///   `windows/x64/a.dll` 与 `linux/a.dll` 归一后同名是**正常**的（平台过滤
+///   已经只留当前平台那一份），真撞上会记进报告，不静默。
+pub fn try_extract_natives(
+    jar: &Path,
+    dest: &Path,
+    exclude: &[String],
+) -> std::io::Result<NativesExtractReport> {
     let file = std::fs::File::open(jar)?;
     let mut archive = zip::ZipArchive::new(file)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
-    std::fs::create_dir_all(dest)?;
-    let mut count = 0;
+    /* ---------- 第一趟：只判不写 ---------- */
+    // 条目名统一成 `/` 分隔（zip 里两种分隔符都见过）
+    let mut names: Vec<String> = Vec::with_capacity(archive.len());
+    for i in 0..archive.len() {
+        let entry = archive
+            .by_index(i)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        names.push(entry.name().replace('\\', "/"));
+    }
+    let mut escaped: Vec<String> = Vec::new();
+    for name in &names {
+        if let Err(why) = classify_archive_path(name) {
+            escaped.push(format!("{name}（{}）", why.why()));
+        }
+    }
+    if !escaped.is_empty() {
+        say!(
+            "[IEML/installer] ★ natives jar 里有越界条目，**整包拒绝**（一个字节都没写）：{} —— {}",
+            jar.display(),
+            escaped.join("；")
+        );
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "natives jar 里有试图解压到目标目录之外的条目（已整包拒绝，不会写出任何文件）：{}",
+                escaped.join("；")
+            ),
+        ));
+    }
 
+    std::fs::create_dir_all(dest)?;
+    let mut report = NativesExtractReport::default();
+
+    /* ---------- 第二趟：落盘 ---------- */
     for i in 0..archive.len() {
         let mut entry = archive
             .by_index(i)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        let Some(path) = entry.enclosed_name() else {
-            continue; // ⑤ zip-slip 防护
+        let name = names[i].clone();
+
+        // ⑤ 第二道闸门（与第一趟**同一个函数**）：这一趟它只会通过 —— 保留它是为了
+        //    证明"判据只有一份"，而不是再写一遍类似的 if
+        let path = match classify_archive_path(&name) {
+            Ok(p) => p,
+            Err(why) => {
+                report.skipped.push((name.clone(), why.why().to_string()));
+                continue;
+            }
         };
-        let name = path.to_string_lossy().replace('\\', "/");
 
         // ① META-INF
         if name.starts_with("META-INF/") || name.contains("/META-INF/") {
@@ -1805,6 +2056,18 @@ pub fn extract_natives(jar: &Path, dest: &Path, exclude: &[String]) -> std::io::
         if entry.is_dir() {
             continue;
         }
+        /*
+         * ★ 符号链接条目跳过：`zip` 的 `is_symlink()` 读外部属性（Windows 上 zip
+         *   写不出符号链接）。符号链接是"解压到目标之外"的一条捷径（链接指向
+         *   哪里由压缩包作者定），而 natives jar 里**不该有**符号链接 ——
+         *   跳过并记进报告，不静默。
+         */
+        if entry.is_symlink() {
+            report
+                .skipped
+                .push((name.clone(), "是符号链接条目（natives 里不该有）".into()));
+            continue;
+        }
 
         // ④ 只保留当前平台的条目（`windows/x64/...` / `linux/x64/...` / `macos/...`）
         if let Some(first) = name.split('/').next() {
@@ -1820,6 +2083,20 @@ pub fn extract_natives(jar: &Path, dest: &Path, exclude: &[String]) -> std::io::
         }
 
         let out = dest.join(path.file_name().unwrap_or(path.as_os_str()));
+        /*
+         * ★ 文件名撞车：`windows/x64/a.dll` 与 `linux/a.dll` 归一后都叫 `a.dll`。
+         *   平台过滤之后通常只剩一份，但**不许假设** —— 撞了就报出来
+         *   （下面那一步是"最后写赢"，而它不该是静默的）。
+         */
+        if out.exists() {
+            report.skipped.push((
+                name.clone(),
+                format!(
+                    "解压后与已有文件同名（{}）—— 平铺同名会覆盖",
+                    out.display()
+                ),
+            ));
+        }
         if let Some(p) = out.parent() {
             std::fs::create_dir_all(p)?;
         }
@@ -1843,15 +2120,15 @@ pub fn extract_natives(jar: &Path, dest: &Path, exclude: &[String]) -> std::io::
          */
         if let Ok(meta) = std::fs::metadata(&out) {
             if meta.len() == entry.size() {
-                count += 1;
+                report.written += 1;
                 continue; // 内容已经对了 —— 一个字节都不用写
             }
         }
         let mut f = std::fs::File::create(&out)?;
         std::io::copy(&mut entry, &mut f)?;
-        count += 1;
+        report.written += 1;
     }
-    Ok(count)
+    Ok(report)
 }
 
 /// 校验已安装的版本是否完整（启动前自检）
@@ -2271,6 +2548,92 @@ mod tests {
         assert_eq!(lib_key("org.ow2.asm:asm:9.4"), "org.ow2.asm:asm");
     }
 
+    /* ---------- ★★ 按类别的响应体体积上限（第二阶段 A） ---------- */
+
+    /// ★★ **引擎的 `Verifying` 必须变成界面上看得见的一句话**。
+    ///
+    ///   前端只读 `stage`（`src/bridge/tauri.ts:2497` → `phase: e.stage`；
+    ///   `src/flows/install.ts:151` 把它当第一句显示）。所以"引擎新增了
+    ///   校验档"这件事，只改 `phase` 字段是**看不见**的 —— 这条测试钉住
+    ///   `stage_for` 真的把那句话写进 `stage`。
+    #[test]
+    fn verifying_phase_shows_up_in_the_stage_text() {
+        use super::super::download::ProgressPhase;
+        assert_eq!(
+            stage_for(ProgressPhase::Verifying, "下载核心文件"),
+            "正在校验已有文件",
+            "★ 校验档必须换成一句人话出现在 stage 里（否则更新日志那句就是假的）"
+        );
+        // 回到下载档 ⇒ 回到这一批的语境名（不是把校验那句话留着）
+        assert_eq!(stage_for(ProgressPhase::Downloading, "下载核心文件"), "下载核心文件");
+        assert_eq!(stage_for(ProgressPhase::Downloading, "下载资源文件"), "下载资源文件");
+        // 收尾档也回到语境名（"这批跑完了"由 failed_files 那类字段说）
+        assert_eq!(stage_for(ProgressPhase::Done, "补齐缺失文件"), "补齐缺失文件");
+    }
+
+    /// `report()` 不许再把 `phase` 写死：调用方给什么就转发什么。
+    #[test]
+    fn report_forwards_the_phase_it_is_given() {
+        use super::super::download::{CancelToken, ProgressPhase};
+        use std::sync::{Arc, Mutex};
+
+        let seen: Arc<Mutex<Vec<(String, ProgressPhase)>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        let mut opts = InstallOptions::new(2, CancelToken::new());
+        opts.on_progress = Arc::new(move |stage: String, p: super::super::download::DownloadProgress| {
+            sink.lock().unwrap().push((stage, p.phase));
+        });
+
+        report(&opts, "下载核心文件", ProgressPhase::Verifying, 3, 1, "x.jar".into());
+        report(&opts, "准备", ProgressPhase::Downloading, 3, 0, String::new());
+
+        let log = seen.lock().unwrap().clone();
+        assert_eq!(log.len(), 2);
+        assert_eq!(
+            log[0],
+            ("下载核心文件".to_string(), ProgressPhase::Verifying),
+            "★ phase 必须是转发进来的那个（写死 Downloading 会让看 phase 的调用方被骗）"
+        );
+        assert_eq!(log[1].1, ProgressPhase::Downloading);
+    }
+
+    /// 批次开始前就把**声明大小就超限**的任务挑出来（别先下满 8 GiB 再发现）
+    #[test]
+    fn declared_size_gate_rejects_absurd_artifacts() {
+        let mk = |label: &str, size: u64| {
+            DownloadTask::new(
+                PathBuf::from(format!("C:/tmp/{label}.bin")),
+                "https://example.com/x".into(),
+                String::new(),
+                size,
+                label.to_string(),
+            )
+        };
+        let tasks = vec![
+            // 正常量级：1.20.1 的客户端 jar（39 MB）
+            mk("客户端 1.20.1.jar", 39_193_383),
+            // 荒谬：一个"图标"声明 4 GiB ⇒ 必拒（图标上限 8 MiB）
+            mk("图标 pack.png", 4 * 1024 * 1024 * 1024),
+            // 大小未知（0）：**不是**超限，放行（交给流式累计兜底）
+            mk("库 未知大小.jar", 0),
+            // 类别不明 + 声明 1 GiB ⇒ 取最紧那一档（64 MiB）⇒ 拒（保守优先）
+            mk("谁知道这是什么", 1024 * 1024 * 1024),
+        ];
+        let (ok, rejected) = reject_by_declared_size(tasks);
+        assert_eq!(ok.len(), 2, "只有「正常」和「未知大小」两条能留下");
+        assert_eq!(rejected.len(), 2, "两条必须被点名：{rejected:?}");
+        assert!(
+            rejected.iter().any(|(p, ..)| p.to_string_lossy().contains("pack.png")),
+            "荒谬的图标必须被点出来"
+        );
+        assert!(
+            rejected
+                .iter()
+                .any(|(p, ..)| p.to_string_lossy().contains("谁知道")),
+            "类别不明一律按最紧的一档判（保守优先）"
+        );
+    }
+
     /* ---------- 客户端 jar 的归属 ★ 用户报"fabric 下不动" ---------- */
 
     /// ★ 回归测试：**客户端 jar 属于基础版本**，不属于加载器版本。
@@ -2589,6 +2952,170 @@ mod tests {
             }
             Err(_) => { /* 网络不通 → 失败路径，本来就不该谈暂停 */ }
         }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /* ================= ★★ 解压落盘闸门（P0 安全，清单第 204 行） ================= */
+
+    /// 造一个真 zip（条目名逐字写进去，**包括那些恶意名字**）。
+    fn make_zip(path: &Path, entries: &[(&str, &[u8])]) {
+        let f = std::fs::File::create(path).expect("建 zip");
+        let mut w = zip::ZipWriter::new(f);
+        let opts = zip::write::SimpleFileOptions::default();
+        for (name, body) in entries {
+            w.start_file(*name, opts).expect("写 zip 条目");
+            use std::io::Write as _;
+            w.write_all(body).expect("写 zip 内容");
+        }
+        w.finish().expect("收尾 zip");
+    }
+
+    /// 建立 `<temp>/<tag>-<pid>/` 并返回它（用完自己删）
+    fn temp_root(tag: &str) -> PathBuf {
+        let base = std::env::temp_dir().join(format!("ieml-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).expect("建临时根");
+        base
+    }
+
+    /// 把目录**下面所有文件**的相对路径按 `/` 列出来（比较用）
+    fn list_files(dir: &Path) -> Vec<String> {
+        fn walk(dir: &Path, prefix: &str, out: &mut Vec<String>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                let rel = if prefix.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{prefix}/{name}")
+                };
+                if e.path().is_dir() {
+                    walk(&e.path(), &rel, out);
+                } else {
+                    out.push(rel);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(dir, "", &mut out);
+        out.sort();
+        out
+    }
+
+    /// ★★ 端到端①：含 `../escape.txt` / `C:evil.txt` / `a.txt:zone` 的 **真 zip**
+    ///   喂给 natives 解压 ——
+    ///     ① 目标目录**外**不许生成任何文件；
+    ///     ② 越界条目必须被**点名**（错误信息里带上条目名与原因）；
+    ///     ③ 整包拒绝（一个字节都不写）。
+    #[test]
+    fn natives_zip_slip_is_rejected_and_nothing_is_written_outside() {
+        let base = temp_root("natives-escape");
+        let jar = base.join("evil-natives.jar");
+        make_zip(
+            &jar,
+            &[
+                ("../escape.txt", b"ESCAPED"),
+                ("C:evil.txt", b"ESCAPED"),
+                ("a.txt:zone", b"ESCAPED"),
+            ],
+        );
+        let dest = base.join("natives");
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let err = try_extract_natives(&jar, &dest, &[])
+            .expect_err("含越界条目的 jar 必须被拒（整包拒绝）");
+        let msg = err.to_string();
+        for must in ["../escape.txt", "C:evil.txt", "a.txt:zone"] {
+            assert!(msg.contains(must), "拒绝理由必须点名「{must}」，实际：{msg}");
+        }
+        // ① 目标目录外零写入（父目录与目标目录都不能有这些东西）
+        assert!(
+            !base.join("escape.txt").exists(),
+            "★ 目标目录外被写了 escape.txt —— 这就是 Zip Slip"
+        );
+        assert!(
+            !base.join("evil.txt").exists(),
+            "★ 目标目录外被写了 evil.txt（盘符路径）"
+        );
+        assert!(
+            list_files(&dest).is_empty(),
+            "整包拒绝 = 一个字节都不写，实际写了：{:?}",
+            list_files(&dest)
+        );
+        // ③ 目标目录自己也只该是空的（连目录都没建额外的）
+        assert_eq!(list_files(&base), vec!["evil-natives.jar".to_string()]);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// ★★ 端到端②（反向）：**不许把功能改死** —— 正常条目照旧落地，
+    ///   而"越界之外"被跳过的条目（这里用平台不符的 `linux/…` 造一个）
+    ///   必须出现在报告里，不许静默丢。
+    #[test]
+    fn natives_normal_entries_still_land_and_skips_are_named() {
+        let base = temp_root("natives-ok");
+        let jar = base.join("natives.jar");
+        make_zip(
+            &jar,
+            &[
+                ("windows/x64/lwjgl.dll", b"DLL-BYTES"),
+                ("META-INF/MANIFEST.MF", b"MANIFEST"),
+                ("linux/x64/liblwjgl.so", b"SO-BYTES"),
+                ("lwjgl.dll.sha1", b"deadbeef"),
+            ],
+        );
+        let dest = base.join("natives");
+
+        let report = try_extract_natives(&jar, &dest, &[]).expect("正常包必须解压成功");
+        assert!(
+            report.written >= 1,
+            "正常的 windows natives 必须落地（written={}）",
+            report.written
+        );
+        assert!(
+            dest.join("lwjgl.dll").is_file(),
+            "★ natives 必须平铺到目标目录（java.library.path 不递归）"
+        );
+        assert_eq!(std::fs::read(dest.join("lwjgl.dll")).unwrap(), b"DLL-BYTES");
+        assert!(!dest.join("MANIFEST.MF").exists(), "META-INF 照旧要过滤");
+        assert!(!dest.join("lwjgl.dll.sha1").exists(), "git 元数据照旧要过滤");
+        assert!(
+            !dest.join("liblwjgl.so").exists(),
+            "别的平台的 dll 不许落地"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 平铺同名撞车必须说出来（`windows/x64/a.dll` 与 `linux/x64/a.dll`
+    /// 归一后同名 —— 平台过滤之后通常不会同时留下，但**不许假设**）。
+    /// 这一条同时守住"报告不是摆设"：跳过的条目要能叫出名字。
+    #[test]
+    fn natives_flat_name_collision_is_reported_not_silent() {
+        let base = temp_root("natives-collide");
+        let jar = base.join("natives.jar");
+        make_zip(
+            &jar,
+            &[
+                ("windows/x64/a.dll", b"FIRST"),
+                ("windows/x64/sub/a.dll", b"SECOND"),
+            ],
+        );
+        let dest = base.join("natives");
+        let report = try_extract_natives(&jar, &dest, &[]).expect("同名条目不致命");
+        assert_eq!(report.written, 2, "两条都写了（后者覆盖前者）");
+        assert!(
+            report
+                .skipped
+                .iter()
+                .any(|(n, why)| n == "windows/x64/sub/a.dll" && why.contains("同名")),
+            "同名覆盖必须出现在报告的跳过清单里：{:?}",
+            report.skipped
+        );
+        // 最终盘上是后者（覆盖语义没变），且只有一个文件
+        assert_eq!(std::fs::read(dest.join("a.dll")).unwrap(), b"SECOND");
         let _ = std::fs::remove_dir_all(&base);
     }
 }

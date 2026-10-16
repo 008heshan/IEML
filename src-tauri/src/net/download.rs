@@ -20,13 +20,14 @@
 use super::mirror::Source;
 use super::source::{self, SourceManager};
 use super::{client, NetError, Result};
+use crate::domain::failure::FailureClass;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Semaphore;
 
@@ -66,11 +67,163 @@ pub struct DownloadTask {
      */
     #[serde(default)]
     pub allow_chunked: bool,
+    /*
+     * ★★ 2026-10-16（审计点名的"悄悄成功"根因）：**把"没有校验值"变成数据**。
+     *
+     *   `sha1: String` 的语义是"空串 = 不校验"，而那把**两件完全不同的事**
+     *   挤成了同一个值：
+     *     · 上游**确实没有发布**校验值（有些加载器库条目只带 URL；
+     *       Modrinth 的 `.mrpack` 条目也可能没给哈希）；
+     *     · 上游给了，但**我们没解析出来**（`commands_real.rs` 的整合包补齐
+     *       路径就是 `sha1="" size=0` —— 见那里的注释）。
+     *
+     *   两者的处置完全不同：前者是**事实**，要如实告诉用户"这个文件没校验过"；
+     *   后者是**缺陷**，要能被督办。挤成一个空串之后，两者都变成"静默成功"。
+     *
+     *   ⇒ 新增这个**可选**字段（`None` = 沿用老口径，兼容既有落盘记录与调用点）。
+     *     ★ 为什么不做成 `sha512` 也一起上：那要给 `installer.rs` 的库/资源/
+     *       原生库解析与 `modrinth.rs` 全链路加一层"算法"，改动面比这一阶段
+     *       该有的样子大得多。审计里 Modrinth 的 `hashes.sha512`
+     *       （`modrinth.rs:636` 显式丢弃）单独列进下一阶段的建议。
+     */
+    #[serde(default)]
+    pub expected_hash: Option<ExpectedHash>,
+    /*
+     * ★★★★ 第二阶段 A（安全加固）：**这个任务的响应体体积上限**。
+     *
+     *   清单第 172 行：「**Cap what you accept.** A response size limit per
+     *   artifact class stops a hostile server from filling the disk.」
+     *
+     *   语义**定死**：
+     *     · `None`（含老数据 / 老调用点）= **按 `label` 推断类别、取该类别的默认上限**
+     *       —— **不是**"不设上限"！类别表在 `domain::archive_guard`
+     *       （`class_from_label` + `default_limit_for`，纯判据、可单测）。
+     *     · `Some(n)` = 显式指定（调用方比标签更清楚时用）。
+     *
+     *   ★ 为什么语义不设成"None = 不限"：那样任何一个忘了设字段的调用点都会
+     *     静默变成"可以下满磁盘"，而**漏设**恰恰是最可能发生的事。
+     *     现在漏设 = 落到类别表的兜底档（未知类别 = 最紧的 64 MiB）。
+     *
+     *   ★ 真正执行在两处（`cap_of` 解析，见下面 `fn cap_of`）：
+     *     ① 建连前 `rejected_by_declared_size(task.size)`；
+     *     ② 两条写盘路径的流式累计 `ByteMeter`（**含续传已有字节**）。
+     */
+    #[serde(default)]
+    pub max_bytes: Option<u64>,
+}
+
+/// **期望的校验值**（对象是"数据"，不是"一个总是 SHA-1 的字符串"）。
+///
+/// ## 为什么要有 `None` 这一档（审计原话）
+///
+/// > `None` is a real case and must not silently become "skip verification
+/// > and assume success".
+///
+///   原来 `DownloadTask.sha1 == ""` 时，`verify_existing` 在 `size == 0` 的
+///   情况下**直接返回 `Ok`** —— 于是"任何已存在的文件"都算缓存命中，
+///   一个新的、内容完全错误的文件会被当成"下好了"跳过（失败在**下一次
+///   启动游戏**时才以"某个文件坏了"的形状出现，而且没人知道是谁放进去的）。
+///
+/// ## SHA-512 的位置（下一阶段）
+///
+///   ★ 已查证：Modrinth 的 `version.files[].hashes` **同时发布 sha512 与 sha1**，
+///     而 `modrinth.rs:636` 只取 sha1、把 sha512 显式丢弃。
+///     CurseForge 的 `hashes[].algo` 是 `1=SHA1 / 2=MD5`（`curseforge.rs:16`），
+///     Mojang 这一代是 SHA-1。
+///   ⇒ 所以这里先留出 `Sha512` 这一档的形状（枚举 + `verify`），
+///     但**本阶段不接线**：接线要给"库/资源/原生库"三条解析路径与
+///     `modrinth.rs` 的 `HashMap<String,String>` 都加一层算法选择，
+///     属于第二阶段（见报告）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExpectedHash {
+    /// SHA-1（Mojang 的清单/库/资源、CurseForge 的 `algo=1`）
+    Sha1(String),
+    /// SHA-512（Modrinth 同时发布，比 SHA-1 强）—— ★ 尚未接线，见类型说明
+    Sha512(String),
+    /// **上游确实没有发布校验值。**
+    ///
+    /// 它不是"跳过校验"的同义词：它是"**我们无法证明这个文件是对的**"，
+    /// 必须如实报给用户（`DownloadOutcome::unverified_files`）。
+    None,
+}
+
+impl ExpectedHash {
+    /// 有没有一个**能用来比对**的值。
+    pub fn is_some(&self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    /// **上游确实没有发布校验值**这一档（与 `is_some` 互为反面）。
+    ///
+    /// ★ 单独给一个名字（而不是让调用方写 `!is_some()`）：这个判断在
+    ///   "如实上报未经校验的文件"那段代码里出现得多，而
+    ///   `!x.is_some()` 读起来像"没有值"，容易与
+    ///   "解析失败所以是空的"混为一谈 —— 这里的语义是**事实**，不是缺陷。
+    pub fn is_none(&self) -> bool {
+        matches!(self, Self::None)
+    }
+
+    /// 校验值本身（`None` 时是空串）
+    pub fn value(&self) -> &str {
+        match self {
+            Self::Sha1(v) | Self::Sha512(v) => v,
+            Self::None => "",
+        }
+    }
+
+    /// 算法名（给日志与错误文案用）
+    pub fn algo(&self) -> &'static str {
+        match self {
+            Self::Sha1(_) => "SHA1",
+            Self::Sha512(_) => "SHA512",
+            Self::None => "（无）",
+        }
+    }
+
+    /// 算一个文件，看它**对不对**。`None` 一律返回 `None`（= 无从判断）。
+    pub async fn verify_file(&self, path: &Path) -> Option<bool> {
+        match self {
+            Self::None => None,
+            Self::Sha1(want) => sha1_of_file(path)
+                .await
+                .ok()
+                .map(|got| got.eq_ignore_ascii_case(want)),
+            Self::Sha512(want) => sha512_of_file(path)
+                .await
+                .ok()
+                .map(|got| got.eq_ignore_ascii_case(want)),
+        }
+    }
+
+    /// 算一个文件的实际值（错误信息要说"实际是多少"）
+    pub async fn actual_of(&self, path: &Path) -> Option<String> {
+        match self {
+            Self::None => None,
+            Self::Sha1(_) => sha1_of_file(path).await.ok(),
+            Self::Sha512(_) => sha512_of_file(path).await.ok(),
+        }
+    }
+
+    /// 从一个老口径的 `sha1` 字符串来（空串 = `None`）
+    pub fn from_sha1(s: &str) -> Self {
+        if s.is_empty() {
+            Self::None
+        } else {
+            Self::Sha1(s.to_string())
+        }
+    }
 }
 
 impl DownloadTask {
     /// 只带一个 URL 的任务（最常见的情况）
+    ///
+    /// ★★ `max_bytes` 在这里就按 `label` 推出来填好（`Some(该类别的默认上限)`）——
+    ///    于是"忘了设"这件事不可能发生：任务一被造出来就带着闸门。
+    ///    类别表在 `domain::archive_guard`（`class_from_label` + `default_limit_for`）。
     pub fn new(path: PathBuf, url: String, sha1: String, size: u64, label: String) -> Self {
+        let cap = crate::domain::archive_guard::default_limit_for(
+            crate::domain::archive_guard::class_from_label(&label),
+        );
         Self {
             path,
             url,
@@ -79,6 +232,31 @@ impl DownloadTask {
             size,
             label,
             allow_chunked: false,
+            expected_hash: None,
+            max_bytes: Some(cap),
+        }
+    }
+
+    /// ★★ **明确告诉引擎"这个源没有发布校验值"**（不是"我们没解析出来"）。
+    ///
+    /// 见 [`ExpectedHash`] 与 `DownloadOutcome::unverified_files`：
+    /// `sha1` 空串既可能是"上游确实没给"，也可能是"我们没解析出来"，
+    /// 两者都不校验，但**后者是缺陷、前者是事实** —— 混在一起就没法督办。
+    pub fn without_verification(mut self) -> Self {
+        self.expected_hash = Some(ExpectedHash::None);
+        self.sha1.clear();
+        self
+    }
+
+    /// 这个任务**有没有校验值**（含"上游明确说没有"这一档）。
+    pub fn expected_hash(&self) -> ExpectedHash {
+        if let Some(e) = &self.expected_hash {
+            return e.clone();
+        }
+        if self.sha1.is_empty() {
+            ExpectedHash::None
+        } else {
+            ExpectedHash::Sha1(self.sha1.clone())
         }
     }
 
@@ -100,6 +278,83 @@ impl DownloadTask {
             self.url.clone()
         }
     }
+
+    /// ★★ **解析这个任务的体积上限**（`Option<u64>` → 具体闸门）。
+    ///
+    ///   三态（判据在 `domain::archive_guard`，纯逻辑、有断言钉住）：
+    ///     ① `max_bytes = Some(n)` ⇒ 用 n（调用方比标签更清楚时显式指定）；
+    ///     ② `max_bytes = None`（老数据 / 老调用点）⇒ **按 `label` 推类别**再取该类别的
+    ///        默认上限 —— 语义定死为"推断"，**不是"不设上限"**；
+    ///     ③ 标签也认不出来 ⇒ 类别 `Unknown` ⇒ 最紧的一档（64 MiB）。
+    pub fn byte_cap(&self) -> crate::domain::archive_guard::ByteCap {
+        cap_of(self)
+    }
+}
+
+/// 任务的体积闸门（见 [`DownloadTask::byte_cap`] 的三态说明）。
+pub fn cap_of(task: &DownloadTask) -> crate::domain::archive_guard::ByteCap {
+    use crate::domain::archive_guard::{class_from_label, default_limit_for, ByteCap};
+    match task.max_bytes {
+        Some(n) => ByteCap { max_bytes: Some(n) },
+        None => ByteCap {
+            max_bytes: Some(default_limit_for(class_from_label(&task.label))),
+        },
+    }
+}
+
+/// 超限时的**统一失败**：说真话（点名文件 + 类别上限 + 已收多少）。
+///
+/// ## ★★ 文案里的「**没下完**」不是修辞，是**判据的一部分**
+///
+///   下载路径的处置档位是**按文案**判的（`domain::failure::classify_message`，
+///   见 `download_one_with` 的判据 1 与批次层那道）：
+///     `"没下完"` 在**致命**那一组里，`"超时"` 在可重试那一组里。
+///   所以这句话必须**同时**说清两件事，而且都得用判据认得的那几个词：
+///     · "超过这个类别的体积上限" —— 给人看的原因；
+///     · "没下完" —— 让引擎判成 `Fatal`：**不吃后面的重试轮、也不换源重下**
+///       （换源重下的还是同一份超限的东西，只是让用户多等十几秒再看到同一句话）。
+///   ★ 这条不靠"我记得"：`over_cap_error_is_fatal_not_retryable` 直接拿
+///     `NetError::class()` 断言，改文案会让它红。
+fn cap_exceeded_error(label: &str, cap: crate::domain::archive_guard::ByteCap, got: u64) -> NetError {
+    NetError::Other(format!(
+        "★ 响应体超过这个类别的体积上限（**没下完**）：{label} —— 已收 {got} 字节，\
+         上限 {}（{} 字节）。已丢弃临时文件；这不是网络问题，重试/换源都一样，所以直接停下。",
+        cap.describe(),
+        cap.max_bytes.unwrap_or(0)
+    ))
+}
+
+/// **这一条进度事件说的是下载的哪一段**（审计：`downloading` / `verifying` /
+/// `extracting` / `complete` / `failed` / `cancelled` 必须能分开）。
+///
+/// ## 为什么必须有它（审计原话）
+///
+/// > "Verifying" being invisible is why a hash check over a large store
+/// > looks like a hang.
+///
+///   实测形状：一个几百 MB 的整合包包体下完之后，`sha1_of_file` 要读完整份
+///   才出结论；那几秒里**没有任何事件**，界面停在 100% 不动 ——
+///   用户以为卡住了（而对 3000 个小文件的那条路，校验反而是逐文件的小开销，
+///   真正卡的是"已存在文件的校验"那一次静默的 `verify_existing`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum ProgressPhase {
+    /// 正在下（连/传/重试都算这一档）
+    Downloading,
+    /// 正在算校验值（**这一档以前完全不可见**）
+    Verifying,
+    /// 这一批跑完了（最后一条事件用它，`failed_files` 是最终结果）
+    Done,
+}
+
+impl ProgressPhase {
+    /// 给界面看的字符串（前端 `DownloadProgress.phase` 直接读它）
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Downloading => "downloading",
+            Self::Verifying => "verifying",
+            Self::Done => "done",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -116,6 +371,32 @@ pub struct DownloadProgress {
     pub source: String,
     /// 重试轮次（第几轮补下失败的；0 = 第一轮）
     pub retry_round: u32,
+    /// ★★ **这一条说的是哪一段**（见 [`ProgressPhase`]）。
+    ///
+    /// 加了 `#[serde(default)]` 的等价物是 `Default` 实现 —— 见下面。
+    /// 既有调用点（`installer.rs` / `commands_real.rs` / 测试）都用
+    /// `DownloadProgress { .. }` 字面量构造，所以**字段是必填的**：
+    /// 少填一处编译就红（宁可编译期红，也不许悄悄少一档）。
+    pub phase: ProgressPhase,
+}
+
+impl Default for DownloadProgress {
+    /// 默认就是"正在下" —— 绝大多数事件都是这一档。
+    fn default() -> Self {
+        Self {
+            finished_files: 0,
+            total_files: 0,
+            finished_bytes: 0,
+            total_bytes: 0,
+            bytes_per_second: 0,
+            current_file: String::new(),
+            skipped_files: 0,
+            failed_files: 0,
+            source: String::new(),
+            retry_round: 0,
+            phase: ProgressPhase::Downloading,
+        }
+    }
 }
 
 /// **连接观测**（2026-10-02）—— 一把能测"同时在飞的连接数"的尺子。
@@ -178,6 +459,59 @@ pub(crate) mod conn_stats {
     }
 }
 
+/// **一条最终失败**（带处置档位）。
+///
+/// ## 为什么要带上 `class`（而不只是一个字符串）
+///
+///   审计：**A fatal failure must fail the batch with a useful message naming
+///   the artifact, not silently produce an incomplete install.**
+///
+///   而"这条失败是不是致命的"这个信息**只有在失败的现场才知道**：
+///   `download_one_with` 手里有 `NetError`，批次层拿到的只是字符串。
+///   所以在这里带着走 —— 批次层据此**立刻停止补下轮**
+///   （"磁盘满"再补两轮只是让用户多等 20 秒，然后看到同一句话）。
+#[derive(Debug, Clone, Serialize)]
+pub struct DownloadFailure {
+    /// 展示用的相对路径（点名是**哪个**文件）
+    pub label: String,
+    /// 失败原因（原样，用户能看懂）
+    pub reason: String,
+    /// 处置档位
+    pub class: FailureClass,
+}
+
+/// **一个"没有校验值、因此未经校验"就落位的文件**。
+///
+/// ## 为什么必须如实报出来（审计第 102 行）
+///
+/// > `None` is a real case and must not silently become "skip verification
+/// > and assume success".
+///
+///   现实里确实有这样一批：`.mrpack` 里没给哈希的条目、
+///   `commands_real.rs` 的整合包补齐路径（`sha1="" size=0`）。
+///   它们**能装上去，但我们没有任何证据说它们是对的** ——
+///   以前这件事**完全不可见**（`verify_existing` 在 `size==0` 时直接 `Ok`，
+///   于是"任何已存在的文件"都算命中）。现在它至少是一个**能被数出来的清单**。
+///
+/// ★ 界面怎么显示留给第二阶段（审计里前端还有一处存疑：`checkPlan` 是否死代码）。
+///   本阶段先保证**日志与结果里有它**。
+#[derive(Debug, Clone, Serialize)]
+pub struct UnverifiedFile {
+    /// 展示用的相对路径
+    pub label: String,
+    /// 落盘后的完整路径（用户要自己核对时需要它）
+    pub path: PathBuf,
+    /// 这个文件**有没有经过任何判断**
+    ///
+    ///   * `true`  = 用**长度**兜了一层（任务给了 `size`，实际长度对得上）；
+    ///   * `false` = 连长度都没有（`size == 0`）—— **一个字节都没比过**。
+    ///
+    ///   ★ 把这个区别显式说出来很重要：审计那句话（"不能悄悄等于成功"）
+    ///     在 `false` 这一档里最刺眼 —— 那个文件**是不是我们要的那个**，
+    ///     我们完全不知道。
+    pub length_checked: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct DownloadOutcome {
     pub finished_files: usize,
@@ -187,6 +521,16 @@ pub struct DownloadOutcome {
     pub peak_connections: u64,
     pub skipped_files: usize,
     pub failed: Vec<(String, String)>,
+    /// ★★ 与 [`DownloadOutcome::failed`] **同一个清单**，但每条带上处置档位
+    ///   （见 [`DownloadFailure`]）。两条并存是为了不动既有的字符串接口
+    ///   （`installer.rs` / `commands_real.rs` 都按元组读）。
+    #[serde(default)]
+    pub failures: Vec<DownloadFailure>,
+    /// ★★ **没有校验值、因此未经校验就落位的文件**（见 [`UnverifiedFile`]）。
+    ///
+    ///   计数也单独给一个（`unverified_count`），因为调用方经常只想要个数。
+    #[serde(default)]
+    pub unverified: Vec<UnverifiedFile>,
     pub total_bytes: u64,
     pub elapsed_ms: u64,
     /**
@@ -423,6 +767,184 @@ impl CancelToken {
     }
 }
 
+/* ====================== 按目标路径的互斥（判据 2） ====================== */
+
+/// **同一个目标路径，同一时刻只许有一个写手。**
+///
+/// ## 为什么必须要有它（审计点名的真差距）
+///
+///   审计在"Worker pool"那一节里写得很直白：
+///
+///   > **One worker per destination path.** Two workers writing the same path
+///   > is a race that produces a corrupt cache entry. Key the lock on the
+///   > final destination path.
+///
+///   而我们原来的去重键是**内容哈希**（`dedup_pass`），不是目标路径；`IN_FLIGHT`
+///   只是一把"观测用"的计数器（`conn_stats`），**不提供互斥**。
+///   于是下面这个形状会真的发生：
+///
+///   ```text
+///     任务 A：path=P, sha1=H1        →  worker 1: create_part(P.part) 截断
+///     任务 B：path=P, sha1=""        →  worker 2: open_part_append(P.part) 追加
+///                                    两个都 rename 到同一个 P
+///   ```
+///
+///   两个写手一个截断一个追加、各自 rename —— 结果是
+///   **"长度对、内容错"**的缓存条目（最坏的一种：一路走到启动游戏才炸）。
+///   而空哈希那条**发现不了**（它本来就不校验）。
+///
+/// ★ 为什么不是一把全局锁：审计同一份清单里也写着
+///   **Do not hold a global lock for the whole batch; lock per destination path.**
+///
+/// ## ★★ 与 `Semaphore` 的持有顺序（**必须只有一个固定顺序**）
+///
+///   两把锁都在 `run_round` 这条路上，所以顺序必须是死的：
+///
+///   ```text
+///     ① run_round 先 acquire_owned() 拿到 Semaphore 许可（permit）
+///     ② 然后 spawn 任务，任务内部 download_one_with 才去拿路径锁
+///     ⇒ 固定顺序：先 permit，后路径锁
+///   ```
+///
+///   **反过来会死锁**：如果任务先拿住路径锁、再等 permit，那么当所有许可
+///   都被"等在路径锁上的任务"占满时，持锁者又在等许可 —— 谁都不放。
+///   现在这个顺序下，路径锁的等待者**必定已经持有许可**，
+///   而锁的持有者**迟早会放**（它已经拿到了它要的两把），所以不会成环。
+///
+///   ★ 另外两处锁（`failed` / `failed_tasks` 的 `Mutex<Vec<_>>`）都只在
+///     push/len 那一瞬持有，**从不跨 await 拿着它们去等别的锁**，不参与排序。
+///
+/// ## 释放与清理（不许泄漏 map 条目）
+///
+///   `PathLockGuard` 活到任务结束（`Drop` 一定跑，含失败 / 取消 / panic
+///   展开路径）—— 在 `Drop` 里把计数减到 0 时**顺手把条目从 map 里删掉**。
+///   于是 map 的大小恒等于"正在写的路径数"，不会随安装次数增长。
+///   见 `tests::path_lock_registry_does_not_leak_entries`（纯逻辑，本机能跑）。
+struct PathLocks {
+    map: std::sync::Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+impl PathLocks {
+    fn new() -> Self {
+        Self {
+            map: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// 取这个路径的锁（不存在就建一个）。
+    fn get(&self, path: &Path) -> Arc<tokio::sync::Mutex<()>> {
+        let mut g = match self.map.lock() {
+            Ok(g) => g,
+            // 毒化只会发生在"持锁时 panic"，而那意味着路径锁的簿记已经不可信 ——
+            // 直接返回一个独立的锁（退化成"这一条自己互斥"）比 panic 好：
+            // 下载路径不该因为别的任务炸过一次就整体瘫痪。
+            Err(p) => p.into_inner(),
+        };
+        Arc::clone(
+            g.entry(path.to_path_buf())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+        )
+    }
+
+    /// 放掉这个路径（计数归零时把条目删掉 —— 这就是"不泄漏"的那一步）。
+    fn release(&self, path: &Path) {
+        let mut g = match self.map.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Some(l) = g.get(path) {
+            // `try_lock` 成功 **且** 只有我们这一份 Arc ⇒ 没人还拿着它
+            if l.try_lock().is_ok() && Arc::strong_count(l) <= 2 {
+                g.remove(path);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.map.lock().map(|g| g.len()).unwrap_or(0)
+    }
+}
+
+static PATH_LOCKS: OnceLock<PathLocks> = OnceLock::new();
+
+fn path_locks() -> &'static PathLocks {
+    PATH_LOCKS.get_or_init(PathLocks::new)
+}
+
+/// **把规范化后的目标路径统一成判据用的键。**
+///
+/// ## 为什么要规范化（审计："key the lock on the **final destination path**"）
+///
+///   同一个文件在两次调用里可能写成 `E:\a\b.jar` 与 `e:\a\b.jar`、
+///   或者中间多一个 `.\` —— 字符串不同、**盘上是同一个文件**。
+///   拿原样字符串当键，锁就漏了（而漏掉的正是"两个 worker 写同一个文件"）。
+///
+///   做法：
+///     ① Windows 上把 `\` 与 `/` 统一（两边都有人写）；
+///     ② 有父目录时，把父目录**规范化**（`canonicalize`）——这样
+///        大小写与短名（8.3）在 Windows 上也被拉平。
+///        父目录已经存在时 `canonicalize` 一定成功（`download_one_with`
+///        在取锁**之前**不建目录，所以这里失败是正常的：退回"只统一分隔符"）；
+///     ③ Windows 上把结果**小写化**（NTFS 默认大小写不敏感）。
+///
+///   ★ 为什么不去 `canonicalize` 整个路径：目标文件**这会儿还不存在**
+///     （或正要被覆盖），`canonicalize` 会失败。所以只能对父目录做。
+///
+/// ## ★ 它会碰盘（一次 `canonicalize`）
+///
+///   所以**异步调用点必须交给 `spawn_blocking`**（见 [`lock_path`]）。
+///   纯逻辑调用点（`dedup_pass` —— 它本来就是同步的）直接调。
+pub fn path_key(path: &Path) -> PathBuf {
+    let parent = path.parent();
+    let canonical_parent = parent.and_then(|p| std::fs::canonicalize(p).ok());
+    let joined = match (&canonical_parent, path.file_name()) {
+        (Some(dir), Some(name)) => dir.join(name),
+        _ => path.to_path_buf(),
+    };
+    if cfg!(windows) {
+        PathBuf::from(joined.to_string_lossy().replace('/', "\\").to_lowercase())
+    } else {
+        joined
+    }
+}
+
+/// 一把"路径锁"的持有凭证。`Drop` 时自动放锁并清理簿记。
+struct PathLockGuard {
+    key: PathBuf,
+    _inner: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl Drop for PathLockGuard {
+    fn drop(&mut self) {
+        path_locks().release(&self.key);
+    }
+}
+
+/// **等这条目标路径空出来**（同上，见 [`PathLocks`] 的说明）。
+///
+/// ★ 服务不公开：调用点是 `download_one_with`（唯一入口），
+///   这样"谁忘了加锁"在编译期就不可能发生。
+///
+/// ★ `path_key` 里有一次 `canonicalize`（**阻塞**系统调用）——
+///   这里交给 `spawn_blocking`：它在 tokio 的**专用阻塞线程池**里跑，
+///   不会占住 worker（这个仓库有门禁盯着"命令里的阻塞重活"，
+///   同一套道理对引擎内部也成立：一个 64 并发的批次会同时做 64 次规范化）。
+async fn lock_path(path: &Path) -> PathLockGuard {
+    let owned = path.to_path_buf();
+    let key = tokio::task::spawn_blocking(move || path_key(&owned))
+        .await
+        // 后台任务 panic（不该发生）→ 退回"不做规范化"的键：
+        // 宁可少一点大小写合并，也不能让整个下载因为规范化失败而挂掉。
+        .unwrap_or_else(|_| path.to_path_buf());
+    let lock = path_locks().get(&key);
+    let guard = lock.lock_owned().await;
+    PathLockGuard {
+        key,
+        _inner: guard,
+    }
+}
+
 /// 共享的运行时统计
 #[derive(Default)]
 struct Stats {
@@ -430,6 +952,16 @@ struct Stats {
     finished_bytes: AtomicU64,
     skipped_files: AtomicU64,
     repaired_files: AtomicU64,
+    /// ★★ **没有校验值就落位的文件数**（判据 3；明细在 `outcome.unverified`）
+    unverified_files: AtomicU64,
+    /// ★★ 失败条数（给**同步**的进度回调用的原子计数）。
+    ///
+    ///   `failed_files` 在进度事件里本来就有，但它的来源是
+    ///   `failed.lock().await.len()` —— 那是个 async 锁，**同步闭包拿不到**。
+    ///   而"校验中"那一档的报告点（`phase_reporter`）正是同步的。
+    ///   为了那一档不撒谎（界面上的"其中 N 个失败"不该在阶段切换时跳回 0），
+    ///   这里再放一个原子计数。
+    failures_total: AtomicU64,
     /*
      * ★★ **已处理的任务数**（成功 + 跳过 + 失败，每个任务只算一次）。
      *
@@ -562,6 +1094,8 @@ impl ChunkPlan {
 ///   ② 单文件重试（最多 `MAX_FILE_RETRIES` 次，指数退避）
 ///   ③ 候选源依次尝试（源健康排序 + 429 冷却）
 ///   ④ 单源内部：分片并行（可续传）/ 单连接流式（可续传）
+///
+/// ★★ 2026-10：**"致命"错误在这一层就结束**（见 `download_one_with`）。
 pub async fn download_one(
     task: &DownloadTask,
     preferred: Source,
@@ -571,15 +1105,69 @@ pub async fn download_one(
 }
 
 /// 同上，但显式指定源管理器（测试用）
+///
+/// ## ★★ 这一层是**两把锁的交汇处**（持有顺序见 [`PathLocks`] 的说明）
+///
+///   ① 调用方（`run_round`）已经拿住 `Semaphore` 许可才 spawn 到这里；
+///   ② 这里进去先拿**目标路径锁**。
+///   ⇒ 顺序永远是 **permit → 路径锁**，反了就死锁。
+///
+///   ## 为什么锁要在这里、而不是在 `run_round` 里
+///
+///     `download_one` 有**很多别的调用点**（`commands_real.rs` 的整合包补齐、
+///     `installer.rs`、`optifine.rs`、`liteloader.rs`、`adoptium.rs`）——
+///     把互斥放在最里面那个公共入口，才是"谁调都锁得上"。
+///     放在批次层的话，一次安装里"批次内"和"批次外"的两条路仍然会撞。
 pub async fn download_one_with(
     manager: &SourceManager,
     task: &DownloadTask,
     preferred: Source,
     cancel: &CancelToken,
 ) -> Result<bool> {
+    let _path_guard = lock_path(&task.path).await;
+    download_one_locked(manager, task, preferred, cancel, None::<&fn(ProgressPhase, &str)>).await
+}
+
+/// `download_one_with` 的实体（路径锁已由调用方拿住）。
+///
+/// `progress` 是**可选**的进度回调：给了它才会上报"校验中"那一档
+/// （判据 3）。单文件调用点（补齐 / OptiFine / 加载器）没有批次上下文，
+/// 传 `None` 就不会凭空造一条不属于任何批次的进度事件。
+///
+/// ★ 为什么是**泛型**（`F: Fn(..)`）而不是 `Option<&dyn Fn(..)>`：
+///   调用点在 `tokio::spawn` 的 future 里，而 `&dyn Fn` 这个 trait object
+///   在 `Send` 推导上会把整个 future 的 `Send` 判掉（实测报
+///   "future cannot be sent between threads safely"）。
+///   泛型参数没有这个问题，代价只是单态化出两份代码。
+async fn download_one_locked<F>(
+    manager: &SourceManager,
+    task: &DownloadTask,
+    preferred: Source,
+    cancel: &CancelToken,
+    progress: Option<&F>,
+) -> Result<bool>
+where
+    F: Fn(ProgressPhase, &str),
+{
+    let expected = task.expected_hash();
+
     // ---------- ① 已有且校验通过 → 跳过 ----------
     if task.path.is_file() {
-        match verify_existing(task).await {
+        /*
+         * ★★ 判据 3：**先报"校验中"再看盘**。
+         *
+         *   审计：`verifying` 不可见 = "一个大型存储上的哈希校验看起来像卡住"。
+         *   这一条路径尤其隐蔽：它**不发任何网络请求**，所以旧代码在这段时间里
+         *   一条事件都不发 —— 界面停在原地，用户以为死机了。
+         *   ★ 也报在日志里（跑不跑得到不看界面）。
+         */
+        if expected.is_some() {
+            if let Some(p) = progress {
+                p(ProgressPhase::Verifying, &task.label);
+            }
+            say!("[IEML/download] 校验已存在的文件：{}", task.label);
+        }
+        match verify_existing(task, &expected).await {
             VerifyOutcome::Ok => return Ok(true),
             VerifyOutcome::Mismatch { expected, actual } => {
                 // ★ 校验失败 → 删掉重下（PCL2 的「校验失败：删除文件，重新下载」）
@@ -590,6 +1178,29 @@ pub async fn download_one_with(
                     short(&actual)
                 );
                 let _ = tokio::fs::remove_file(&task.path).await;
+            }
+            /*
+             * ★★ 判据 3 的核心：**没有校验值 ≠ 校验通过**。
+             *
+             *   这条路径以前是**静默的**（`verify_existing` 在 `size == 0` 时
+             *   直接返回 `Ok`）—— 于是"任何一个已存在的文件"都算缓存命中。
+             *   现在它至少**留下痕迹**：日志点名 + `unverified` 计数
+             *   （明细由 `run_round` 收进 `DownloadOutcome::unverified`）。
+             *
+             *   ★ 这里**不删文件**：没有证据说它是坏的（删了要重下一整份），
+             *     但也没有证据说它是好的 —— 如实说"未经校验"才是对的。
+             */
+            VerifyOutcome::Unverified { length_checked } => {
+                say!(
+                    "[IEML/download] {} **没有校验值**（{}）→ 未经校验，按已存在跳过 \
+                     —— 这个文件对不对，我们无法证明",
+                    task.label,
+                    if length_checked {
+                        "只比过长度"
+                    } else {
+                        "连长度都没有（size=0）"
+                    }
+                );
             }
             VerifyOutcome::Absent => {}
         }
@@ -612,8 +1223,17 @@ pub async fn download_one_with(
 
     // ---------- ③ 单文件重试 ----------
     let mut last_err = String::new();
+    // ★ 最近一次失败的**处置档位**：批次层要用它决定"还要不要再补下"
+    let mut last_class = FailureClass::Retryable;
     let mut tried_sources = 0usize;
     let mut busy_waits = 0u32;
+    // 这一条任务**已经出现过几次"校验不符"**
+    //
+    // ★ 用计数而不是去 `last_err` 里搜"校验失败"：下游
+    //   （`run_round` 数 `repaired_files`）**正是**靠那句文案判的，
+    //   拿它当自己的控制流等于把两件事绑在一根字符串上 —— 改文案就会
+    //   悄悄改行为。计数是显式的。
+    let mut verify_mismatches = 0u32;
 
     for attempt in 1..=MAX_FILE_RETRIES {
         if cancel.is_cancelled() {
@@ -670,7 +1290,7 @@ pub async fn download_one_with(
             let attempt_result = if has_backup {
                 match tokio::time::timeout(
                     PROBE_DEADLINE,
-                    download_to_part(manager, url, &part, task, cancel, ordered.len()),
+                    download_to_part(manager, url, &part, task, cancel, ordered.len(), &expected),
                 )
                 .await
                 {
@@ -682,7 +1302,7 @@ pub async fn download_one_with(
                     ))),
                 }
             } else {
-                download_to_part(manager, url, &part, task, cancel, ordered.len()).await
+                download_to_part(manager, url, &part, task, cancel, ordered.len(), &expected).await
             };
             let written = match attempt_result {
                 Ok(n) => n,
@@ -690,10 +1310,61 @@ pub async fn download_one_with(
                 Err(e) => {
                     manager.note_failure(*src, e.status());
                     last_err = format!("{}：{e}", src.as_str());
-                    // 404 之类的"换个源也没用"的错误：仍然换（镜像路径可能不同），
-                    // 但不留残留文件
+                    let class = e.class();
+                    last_class = class;
+                    /*
+                     * ★★ 判据 1 的落地（一）：**"换个源也没用"的失败立刻结束。**
+                     *
+                     *   审计：`fatal: 404/403 …, disk full, permission denied`
+                     *   —— 而且明确写着 **Disk-full and permission errors are
+                     *   not retryable. Surface them immediately; retrying just
+                     *   makes the UI lie for longer.**
+                     *
+                     *   `fatal_without_trying_other_sources` 把 404/403 那种
+                     *   **与 URL 相关**的 4xx 排除在外（候选源之间可能是不同的
+                     *   路径、甚至不同的仓库 —— `source::candidates_with` 那条
+                     *   自带的 `urls` 就是为此存在的）。剩下的（磁盘满 / 权限 /
+                     *   哈希反复不符 / 分片拼不齐）与地址无关，换源纯属白等。
+                     */
+                    if e.fatal_without_trying_other_sources() {
+                        say!(
+                            "[IEML/download] {} 失败且**换源也没用**（{}）：{e} → 立刻结束，不再重试",
+                            task.label,
+                            match class {
+                                FailureClass::Fatal => "致命",
+                                FailureClass::Busy => "文件被占用",
+                                FailureClass::Retryable => "可重试",
+                            }
+                        );
+                        let _ = tokio::fs::remove_file(&part).await;
+                        return Err(NetError::AllSourcesFailed {
+                            tried: tried_sources.max(ordered.len()),
+                            last: last_err,
+                            class,
+                        });
+                    }
+                    /*
+                     * 404 之类的"换个源也没用"的错误：仍然换（镜像路径可能不同），
+                     * 但不留残留文件。
+                     */
                     if matches!(e, NetError::Status { status: 404, .. }) {
                         let _ = tokio::fs::remove_file(&part).await;
+                    }
+                    /*
+                     * ★ **`Busy`（文件被占用）不换源。**
+                     *
+                     *   占用是**本地**问题（杀软/索引服务在扫刚落盘的文件），
+                     *   换下载源治不好它 —— 但**也不该在这里结束**：占用是秒级的，
+                     *   `finish_file_with_retry` 会退避等它解除。
+                     *   所以直接进下一轮（那里的落位重试才是对的处置）。
+                     *
+                     *   ★ 判据的"换源"那一半在 `NetError::should_switch_source`
+                     *     （`class().worth_switching_source()`）—— 它回答的是
+                     *     "换源有没有用"，而这里要问的是"该不该继续换候选"，
+                     *     两者在 `Busy` 上恰好一致，但语义不同，所以直接按档位判。
+                     */
+                    if class.is_busy() {
+                        break;
                     }
                     continue;
                 }
@@ -703,25 +1374,71 @@ pub async fn download_one_with(
             //   顺序很重要：如果先改名再校验，校验失败时就得把已经改名到目标位置
             //   的坏文件再删一次 —— 中间那一瞬间，"坏文件 + 正确文件名"是会被
             //   其它代码（启动流程 / 完整性校验）当成好文件用的。
-            if !task.sha1.is_empty() {
-                match sha1_of_file(&part).await {
-                    Ok(actual) if actual == task.sha1 => {}
-                    Ok(actual) => {
+            if expected.is_some() {
+                /*
+                 * ★★ 判据 3：**算校验值这段时间要让界面看得见**。
+                 *   几百 MB 的包体在这里只发一条事件也能说明"它在干活"。
+                 */
+                if let Some(p) = progress {
+                    p(ProgressPhase::Verifying, &task.label);
+                }
+                match expected.verify_file(&part).await {
+                    Some(true) => {}
+                    Some(false) => {
                         // ★ 校验失败：删文件、记失败、换源重来
+                        let actual = expected.actual_of(&part).await.unwrap_or_default();
                         let _ = tokio::fs::remove_file(&part).await;
                         cleanup_segments(&part).await;
                         manager.note_failure(*src, None);
+                        /*
+                         * ★★ 判据 1（二）：**校验反复不符是致命的**。
+                         *
+                         *   审计：*On mismatch of an already-cached file, delete and
+                         *   refetch once. If it mismatches twice, stop and report —
+                         *   a persistently wrong file means a wrong expectation or a
+                         *   bad source, and looping forever hides that.*
+                         *   而且：**Never retry a hash mismatch forever.**
+                         *
+                         *   所以**第一次**不符只换源（`continue`，这是"再取一次"），
+                         *   第二次仍然不符就直接结束 —— 不再吃后面的重试轮。
+                         *   ★ 这一点很要紧：一份"每次都对不上"的文件，
+                         *     每一轮都要重下整份 + 读盘算哈希，而结论早就有了。
+                         */
+                        let again = verify_mismatches >= 1;
+                        verify_mismatches += 1;
+                        last_class = FailureClass::Fatal;
                         last_err = format!(
                             "{} 返回的文件校验失败（期望 {}，实际 {}）",
                             src.as_str(),
-                            short(&task.sha1),
+                            short(expected.value()),
                             short(&actual)
                         );
+                        if again {
+                            say!(
+                                "[IEML/download] {} **两次校验都不符**（{}）→ 判定为致命，\
+                                 不再重试：期望值与源上的文件对不上",
+                                task.label,
+                                expected.algo()
+                            );
+                            let _ = tokio::fs::remove_file(&part).await;
+                            return Err(NetError::AllSourcesFailed {
+                                tried: tried_sources.max(ordered.len()),
+                                last: last_err,
+                                class: FailureClass::Fatal,
+                            });
+                        }
                         continue;
                     }
-                    Err(e) => {
+                    None => {
+                        /*
+                         * ⚠ 走不到这里：`expected.is_some()` 为真时
+                         * `verify_file` 必定返回 `Some(..)`。
+                         * 留这一支是为了**不静默**（真出了这种不一致，
+                         * 宁可当成"校验读不出来"处理）。
+                         */
                         manager.note_failure(*src, None);
-                        last_err = format!("{}：校验读盘失败 {e}", src.as_str());
+                        last_err = format!("{}：校验结果无法判定（{}）", src.as_str(), expected.algo());
+                        last_class = FailureClass::Fatal;
                         continue;
                     }
                 }
@@ -756,18 +1473,71 @@ pub async fn download_one_with(
                         secs,
                         written as f64 / secs / 1024.0
                     );
+                    /*
+                     * ★★ 判据 3：**刚下下来的这份文件有没有被校验过**。
+                     *
+                     *   `expected.is_some()` 为假意味着这个任务**根本没有校验值**
+                     *   （`.mrpack` 里没给哈希的条目、或解析没拿到）—— 它现在
+                     *   落位了，而我们对它的内容**一无所知**。
+                     *   以前这件事在成功路径上**一个字都不说**：用户看到的是
+                     *   "全部下载成功"，而其中几个文件可能压根是错的。
+                     *   ⇒ 至少点名（`DownloadOutcome::unverified` 会在批次层
+                     *     把它收成清单，见那里的说明）。
+                     */
+                    if expected.is_some() {
+                        // 校验过（就在上面那几个分支里），什么都不用记
+                    } else {
+                        if let Some(p) = progress {
+                            p(ProgressPhase::Done, &task.label);
+                        }
+                        say!(
+                            "[IEML/download] {} **没有校验值** → 未经校验就落位\
+                             （这个文件对不对，我们无法证明）",
+                            task.label
+                        );
+                    }
                     return Ok(false);
                 }
                 Err(NetError::Cancelled) => return Err(NetError::Cancelled),
                 Err(e) => {
                     manager.note_failure(*src, None);
                     last_err = format!("{}：落盘失败 {e}", src.as_str());
+                    // ★ 落盘失败大多是"文件被占用"（Busy，还可等）
+                    //   或权限/磁盘（Fatal，等下去没意义）
+                    last_class = e.class();
+                    if e.fatal_without_trying_other_sources() {
+                        return Err(NetError::AllSourcesFailed {
+                            tried: tried_sources.max(ordered.len()),
+                            last: last_err,
+                            class: last_class,
+                        });
+                    }
                 }
             }
         }
 
-        // 一轮候选全挂 → 退避后重试
-        if attempt < MAX_FILE_RETRIES {
+        /*
+         * ★★ 判据 1：**这一轮全挂了之后，还该不该吃下一轮？**
+         *
+         *   判据与 `NetError::is_retryable` **同一个源头**
+         *   （`domain::failure`）—— 只是这里手上只剩一句错误文案
+         *   （`last_err`），所以按文案判：`classify_message` 认不出就是
+         *   **可重试**（那条兜底是有意的，见 `FailureClass::from_parts` 的说明）。
+         *
+         *   为什么必须在这里拦一道：`MAX_FILE_RETRIES = 3` 轮之间**有退避**
+         *   （0.6 → 1.2 → 2.4 秒，抖动 ±20%）—— 一个"磁盘满"的文件在报错之前
+         *   会先白等 4 秒，再进批次层的补下（又是 3 轮、每轮 0.8→15 秒）。
+         *   审计原话：*retrying just makes the UI lie for longer.*
+         *
+         *   ★ 这一条与"批次层那一道"是**两回事**，两个都要有：
+         *     · 这里管"同一个文件的 3 轮"；
+         *     · `download_batch` 里管"整个批次的 3 轮补下"（用 `AllSourcesFailed.class`）。
+         *   少了这里，`is_retryable` 就还是一个没有调用点的判据
+         *   （那正是审计点名的问题之一）。
+         */
+        let retry_this_file = last_err.is_empty()
+            || crate::domain::failure::classify_message(&last_err) != FailureClass::Fatal;
+        if attempt < MAX_FILE_RETRIES && retry_this_file {
             let delay = backoff_delay(
                 attempt,
                 std::time::Duration::from_millis(600),
@@ -776,12 +1546,28 @@ pub async fn download_one_with(
             if !source::sleep_cancellable(delay, cancel).await {
                 return Err(NetError::Cancelled);
             }
+        } else if attempt < MAX_FILE_RETRIES {
+            say!(
+                "[IEML/download] {} 的失败是**致命**的 → 不吃后面的重试轮，直接报错：{last_err}",
+                task.label
+            );
+            last_class = FailureClass::Fatal;
+            break;
         }
     }
 
     Err(NetError::AllSourcesFailed {
         tried: tried_sources,
         last: last_err,
+        /*
+         * ★★ 判据 1 的落地（三）：**把处置档位带出去**。
+         *
+         *   批次层（`download_batch`）拿到的就是这个错误 —— 它据此决定
+         *   "还要不要再补下两轮"。一个"致命"的失败再补两轮只是让用户多等
+         *   十几秒，然后看到同一句话（审计：retrying just makes the UI
+         *   lie for longer）。
+         */
+        class: last_class,
     })
 }
 
@@ -836,6 +1622,14 @@ async fn finish_file_with_retry(
 ///   当时只对"改名落位"做了重试，对"创建/写入"没有 —— 那 23 个文件
 ///   在 3 轮补下里每次都是立刻失败，一次也没等到占用解除。
 ///   现在的策略：创建、追加、改名**三处都**退避重试（占用是秒级的）。
+///
+/// ## ★★ 2026-10：这张表**不再是手写的**（判据 1）
+///
+///   原来这里是 `matches!(e.raw_os_error(), Some(5) | Some(32) | Some(33) | Some(1224))`
+///   —— 与 `NetError::is_file_busy` 里那一张**同样的表**，两处各写一遍。
+///   而这一处**漏了一个致命后果**：`Some(5)` 是 `ACCESS_DENIED`，
+///   于是"目录不可写"会在这里被当成占用，白等 4 次退避（0.3/0.9/2.1/4 秒）。
+///   ⇒ 现在统一问 `domain::failure::is_busy_errno`（errno 5 已被摘出去）。
 async fn create_part(part: &Path) -> Result<tokio::fs::File> {
     let mut last: Option<std::io::Error> = None;
     for attempt in 0..=FILE_BUSY_RETRIES {
@@ -845,16 +1639,18 @@ async fn create_part(part: &Path) -> Result<tokio::fs::File> {
         match tokio::fs::File::create(part).await {
             Ok(f) => return Ok(f),
             Err(e) => {
-                let busy = matches!(e.raw_os_error(), Some(5) | Some(32) | Some(33) | Some(1224));
+                let busy = e
+                    .raw_os_error()
+                    .is_some_and(crate::domain::failure::is_busy_errno);
                 if !busy {
-                    return Err(NetError::Io(e));
+                    return Err(NetError::Io(hinted_io(e)));
                 }
                 say!(
                     "[IEML/download] {}",
                     describe_busy("创建临时文件", part, &e)
                 );
                 if attempt == FILE_BUSY_RETRIES {
-                    return Err(NetError::Io(e));
+                    return Err(NetError::Io(hinted_io(e)));
                 }
                 // 只读属性也会挡住 File::create（占用中的文件常见）
                 let _ = tokio::fs::remove_file(part).await;
@@ -869,24 +1665,28 @@ async fn create_part(part: &Path) -> Result<tokio::fs::File> {
 }
 
 /// 以追加方式打开 `.part`（续传），同样对"被占用"退避重试。
+///
+/// ★ 判据同 `create_part`（★ errno 5 已经不在"占用"那一档里了）。
 async fn open_part_append(part: &Path) -> Result<tokio::fs::File> {
     let mut last: Option<std::io::Error> = None;
     for attempt in 0..=FILE_BUSY_RETRIES {
         match tokio::fs::OpenOptions::new().append(true).open(part).await {
             Ok(f) => return Ok(f),
             Err(e) => {
-                let busy = matches!(e.raw_os_error(), Some(5) | Some(32) | Some(33) | Some(1224));
+                let busy = e
+                    .raw_os_error()
+                    .is_some_and(crate::domain::failure::is_busy_errno);
                 if !busy || attempt == FILE_BUSY_RETRIES {
-                    return Err(NetError::Io(e));
+                    return Err(NetError::Io(hinted_io(e)));
                 }
                 last = Some(e);
                 tokio::time::sleep(busy_delay(attempt)).await;
             }
         }
     }
-    Err(NetError::Io(last.unwrap_or_else(|| {
+    Err(NetError::Io(hinted_io(last.unwrap_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::Other, "打开临时文件失败")
-    })))
+    }))))
 }
 
 /// "文件被占用"的退避时长：0.3s / 0.9s / 2.1s / 4s（加抖动）
@@ -902,24 +1702,78 @@ fn busy_delay(attempt: u32) -> std::time::Duration {
 enum VerifyOutcome {
     Ok,
     Mismatch { expected: String, actual: String },
+    /// ★★ **没有校验值，因此"无从判断"** —— 这一档以前是**静默的 `Ok`**。
+    ///
+    ///   见 [`UnverifiedFile`] 与 `ExpectedHash::None` 的说明：
+    ///   审计的原话是 `None` 不能悄悄等于成功。
+    Unverified {
+        /// 有没有用长度兜一层（`size == 0` 时**一个字节都没比过**）
+        length_checked: bool,
+    },
+    /// ★ 这个变体现在**没有构造点**了：`verify_existing` 只在
+    ///   `task.path.is_file()` 为真时被调用（见 `download_one_locked`），
+    ///   而"校验读盘失败"那一档改成了 [`VerifyOutcome::Unverified`]
+    ///   （读不出来 = **无从判断**，不该冒充"这个文件不在"）。
+    ///
+    ///   ★ 留着它（而不是删掉）是为了让"文件不存在"这个语义在**类型上**
+    ///     仍然是一档 —— 下一个人把 `verify_existing` 用到别处时不会
+    ///     被迫用 `Ok` 去表达"没有"。
+    #[allow(dead_code)]
     Absent,
 }
 
-async fn verify_existing(task: &DownloadTask) -> VerifyOutcome {
-    if !task.sha1.is_empty() {
-        return match sha1_of_file(&task.path).await {
-            Ok(actual) if actual == task.sha1 => VerifyOutcome::Ok,
-            Ok(actual) => VerifyOutcome::Mismatch {
-                expected: task.sha1.clone(),
-                actual,
+/// 校验一个**已经存在**的文件。
+///
+/// ## ★★ 2026-10：`size == 0` 不再直接返回 `Ok`（这是"悄悄成功"的根因）
+///
+///   原来的实现：
+///
+///   ```text
+///     无校验值 → len = 文件长度；if size == 0 || len == size { Ok } else { Mismatch }
+///   ```
+///
+///   而 `size == 0` 的形状**真实存在**：`commands_real.rs` 的整合包补齐路径
+///   就是 `DownloadTask::new(dest, url, String::new(), 0, path)`（`sha1="" size=0`）。
+///   于是两件事同时发生：
+///     · 任何**已存在**的文件都被当成缓存命中（哪怕是上一次留下的半份、
+///       或用户手工放进去的别的文件）；
+///     · 上面那句 `Ok` 还会让 `download_one_with` **直接 return Ok(true)**，
+///       于是"跳过"被计进 `skipped_files` —— 结果看起来一切正常。
+///
+///   现在它返回 [`VerifyOutcome::Unverified`]：**照旧不重下**
+///   （没有证据说它是坏的，删了要白下一整份），但**必须说出来**
+///   （日志点名 + `DownloadOutcome::unverified` 清单）。
+async fn verify_existing(task: &DownloadTask, expected: &ExpectedHash) -> VerifyOutcome {
+    if expected.is_some() {
+        return match expected.verify_file(&task.path).await {
+            Some(true) => VerifyOutcome::Ok,
+            Some(false) => {
+                let actual = expected.actual_of(&task.path).await.unwrap_or_default();
+                VerifyOutcome::Mismatch {
+                    expected: expected.value().to_string(),
+                    actual,
+                }
+            }
+            // `is_some()` 为真时走不到这里；真走到了就按"无从判断"如实说
+            None => VerifyOutcome::Unverified {
+                length_checked: false,
             },
-            Err(_) => VerifyOutcome::Absent,
         };
     }
-    // 无校验值时按大小判断
+    /*
+     * 没有校验值：长度是**唯一**能比的东西，而且只有任务真的知道大小时
+     * 才比得了（`size == 0` = 连长度都不知道）。
+     */
     let len = task.path.metadata().map(|m| m.len()).unwrap_or(0);
-    if task.size == 0 || len == task.size {
-        VerifyOutcome::Ok
+    if task.size == 0 {
+        // ★★ 这一支就是"悄悄成功"那一支：**什么都不知道**，如实说出来
+        VerifyOutcome::Unverified {
+            length_checked: false,
+        }
+    } else if len == task.size {
+        VerifyOutcome::Unverified {
+            length_checked: true,
+        }
     } else {
         VerifyOutcome::Mismatch {
             expected: format!("{} 字节", task.size),
@@ -942,6 +1796,7 @@ async fn download_to_part(
     task: &DownloadTask,
     cancel: &CancelToken,
     candidate_count: usize,
+    expected: &ExpectedHash,
 ) -> Result<u64> {
     // 断点续传：已有 .part 且**不是**分片残留 → 单连接续传
     let existing = tokio::fs::metadata(part).await.map(|m| m.len()).unwrap_or(0);
@@ -994,7 +1849,7 @@ async fn download_to_part(
                     .into_iter()
                     .map(|(_, u)| u)
                     .collect();
-                match download_chunked(url, &cand_urls, part, total, cancel).await {
+                match download_chunked(url, &cand_urls, part, total, cancel, task.label.clone(), cap_of(task)).await {
                     Ok(written) => return Ok(written),
                     Err(NetError::Cancelled) => return Err(NetError::Cancelled),
                     Err(e) => {
@@ -1028,12 +1883,15 @@ async fn download_to_part(
         manager,
         url,
         part,
-        &task.sha1,
+        expected,
         cancel,
         existing,
         proven,
         candidate_count > 1,
         task.size,
+        // ★ 第二阶段 A：标签用于超限文案点名文件；闸门按"标签推类别"或显式值解析
+        &task.label,
+        cap_of(task),
     )
     .await
 }
@@ -1187,12 +2045,14 @@ async fn download_single(
     manager: &SourceManager,
     url: &str,
     part: &Path,
-    expected_sha1: &str,
+    expected: &ExpectedHash,
     cancel: &CancelToken,
     existing: u64,
     proven_bps: u64,
     switchable: bool,
     task_size: u64,
+    label: &str,
+    cap: crate::domain::archive_guard::ByteCap,
 ) -> Result<u64> {
     /*
      * 第一轮：如果本地有残留，就带 `Range` 试着续传。
@@ -1203,6 +2063,20 @@ async fn download_single(
 
     loop {
         attempt += 1;
+
+        /*
+         * ★★ 第二阶段 A：**建连前的体积闸门**（清单第 172 行）。
+         *
+         *   上游声明的大小（任务记录 / `Content-Length`）就已经超过这个类别的上限
+         *   ⇒ 现在就说，别先下满磁盘再发现：一个声明 8 GiB 的"图标"在建连这一行
+         *   之前就该被拒。★ 判据是纯逻辑（`ByteCap::rejected_by_declared_size`）。
+         *   ★ 放在 attempt 循环里是对的：第一轮"对不上"之后第二轮要重下整份，
+         *     声明值没有任何变化，第二轮照样该拦（幂等，不会误伤）。
+         */
+        if cap.rejected_by_declared_size(task_size) {
+            return Err(cap_exceeded_error(label, cap, task_size));
+        }
+
         /*
          * ★ 2026-10-02：**尺子** —— 这是单连接路径真正发请求的地方。
          *   守卫活到本次循环体结束，所以它记的包含"读取响应体"的整段时间。
@@ -1332,7 +2206,35 @@ async fn download_single(
                 url: url.to_string(),
             });
         };
-        let _ = expected_sha1; // 校验由调用方在写完后统一做（续传时流式哈希算不准）
+        /*
+         * ★ 审计明确说**别动这里**：续传那一轮的"不校验"是站得住的 ——
+         *   SHA-1 不能拼接（前一段的哈希 + 后一段的哈希 ≠ 整份的哈希），
+         *   所以续传时必须等写完之后整体算一次（由 `download_one_locked` 做）。
+         *   真要"边下边算"只能改**非续传的单连接轮**，那是另一件事。
+         */
+        let _ = expected;
+
+        /*
+         * ★★ 第二阶段 A：**流式累计的起始口径 = 整份文件**（不是"这一轮新收的"）。
+         *
+         *   `base` = 这份 `.part` 在**本轮开始前**已有的字节（续传时 > 0）。
+         *   把它喂成 meter 的初值，闸门判的就是"这个文件最终会长到多大"——
+         *   否则"下一半 → 断 → 再下另一半"每一轮都只看到半份，上限被绕过。
+         *   ★ `starting_at` 自己也会判 `base` 是否已经超限（那是盘上残留超限的现场）。
+         */
+        let mut meter = match crate::domain::archive_guard::ByteMeter::new(cap).starting_at(base)
+        {
+            Ok(m) => m,
+            Err((limit, got)) => {
+                let _ = tokio::fs::remove_file(part).await;
+                cleanup_segments(part).await;
+                say!(
+                    "[IEML/download] ★ 盘上的残留已经超过体积上限，丢掉它并停下：{label} \
+                     （已有 {got} 字节，上限 {limit} 字节）"
+                );
+                return Err(cap_exceeded_error(label, cap, got));
+            }
+        };
 
         let mut this_run = 0u64;
         let mut stream = resp.bytes_stream();
@@ -1450,12 +2352,30 @@ async fn download_single(
 
             // ★ 写入也可能撞到"文件被占用"：**日志必须能区分是哪一步**，
             //   否则只能看到"写入文件失败"却不知道要修 open 还是修 write。
+            //   ★ 2026-10：`hinted_io` 让磁盘满/权限拒绝在这里就说真话
+            //     （它们原来同样只报一句笼统的"写入文件失败"）。
+            /*
+             * ★★ 第二阶段 A：**收 chunk 时判上限**（唯一能兜住"服务器不报
+             *   Content-Length"的地方）。判在写盘**之前**：超限的字节一个都不落。
+             *   罚则是"断流 + 删 `.part`（含分片残留）+ 致命返回"——留着半份超限
+             *   残留会让下一轮又走一遍同一件事。
+             */
+            if let Err((limit, got)) = meter.add(chunk.len() as u64) {
+                drop(file);
+                let _ = tokio::fs::remove_file(part).await;
+                cleanup_segments(part).await;
+                say!(
+                    "[IEML/download] ★ 响应体超过体积上限，已断流并删掉临时文件：{label} \
+                     （已收 {got} 字节，上限 {limit} 字节）—— {url}"
+                );
+                return Err(cap_exceeded_error(label, cap, got));
+            }
             if let Err(e) = file.write_all(&chunk).await {
                 say!(
                     "[IEML/download] {}",
                     describe_busy("写临时文件", part, &e)
                 );
-                return Err(NetError::Io(e));
+                return Err(NetError::Io(hinted_io(e)));
             }
             this_run += chunk.len() as u64;
             last_data_at = std::time::Instant::now();
@@ -1467,7 +2387,7 @@ async fn download_single(
                 "[IEML/download] {}",
                 describe_busy("flush 临时文件", part, &e)
             );
-            return Err(NetError::Io(e));
+            return Err(NetError::Io(hinted_io(e)));
         }
         drop(file);
 
@@ -1477,7 +2397,7 @@ async fn download_single(
          *   （`note_success`），换成"整份大小"会把续传那一次的速度算虚高，
          *   进而把正常速度误判成坏源。
          */
-        finish_single(manager, url, task_size, base + this_run, expected_sha1).await?;
+        finish_single(manager, url, task_size, base + this_run, expected).await?;
         return Ok(this_run);
     }
 }
@@ -1510,7 +2430,7 @@ async fn finish_single(
     url: &str,
     task_size: u64,
     total_written: u64,
-    expected_sha1: &str,
+    expected: &ExpectedHash,
 ) -> Result<()> {
     /*
      * ★★ **"限流页"检测：服务端用一个小响应搪塞我们。**
@@ -1579,22 +2499,23 @@ async fn finish_single(
      *       那种任务本来就没有别的东西可依）。
      *
      *   ★ 为什么"让位"是安全的：SHA1 对不上时调用方一定会失败重下
-     *     （见下面 `if !task.sha1.is_empty()` 那一段），所以这里放过去
-     *     不会让坏文件落地。
+     *     （见 `download_one_locked` 里 `expected.verify_file` 那一段），
+     *     所以这里放过去不会让坏文件落地。
      *   ★ 反过来才是危险的：现在这样会让**好文件**永远装不上，
      *     而用户完全看不出为什么（错误信息说的是"下载不完整"，
      *     但下载是完整的）。
      */
-    let has_sha1 = !expected_sha1.is_empty();
+    let has_hash = expected.is_some();
     if task_size > 0 && total_written != task_size {
-        if has_sha1 {
+        if has_hash {
             /*
              * 记一句日志（不报错）：长度与清单记录不符这事本身值得知道 ——
-             * 如果哪天 SHA1 也没兜住，这行日志就是唯一线索。
+             * 如果哪天哈希也没兜住，这行日志就是唯一线索。
              */
             say!(
                 "[IEML/download] 长度与清单记录不符（记录 {task_size}，实际 {total_written}）\
-                 —— 有 SHA1，以 SHA1 为准：{url}"
+                 —— 有 {}，以它为准：{url}",
+                expected.algo()
             );
         } else {
             let diff = if total_written < task_size {
@@ -1627,6 +2548,41 @@ pub fn describe_busy(op: &str, path: &Path, e: &std::io::Error) -> String {
         e.kind(),
         e.raw_os_error()
     )
+}
+
+/// **把一个 IO 错误变成"会说真话"的那一句**（判据 1 的文案部分）。
+///
+/// ## 为什么必须做（这个仓库的硬规矩：文案要说真话）
+///
+///   磁盘满（`ERROR_DISK_FULL = 112`）与权限拒绝（`ACCESS_DENIED = 5`）
+///   以前都只报一句笼统的 `写入文件失败：…`。用户能拿到的**唯一线索**
+///   就是那句话 —— 而他需要知道的是"**该去清盘**"还是"**该换个目录**"。
+///
+///   ⇒ 这两档各加一句前置提示（`（磁盘空间不够）` / `（没有写入权限）`），
+///     其余错误原样返回（**一个字都不动** ——
+///     下游有字符串匹配依赖这些文案，见 `run_round` 里数 `repaired_files`
+///     那条 `contains("校验失败")`）。
+///
+///   ★ 判据用的是 `raw_os_error`，所以**必须在包装之前**判 ——
+///     `io::Error::new` 会把 `raw_os_error` 变成 `None`
+///     （新错误的 `kind` 保留，但原始 errno 丢了）。
+///     这正是为什么 `create_part` / `open_part_append` 里
+///     "是不是占用"的判定要拿**原始** `e` 做。
+fn hinted_io(e: std::io::Error) -> std::io::Error {
+    let class = FailureClass::from_parts(None, e.raw_os_error());
+    // `Busy` 不在这里加提示：它的文案由 `describe_busy` 记进日志，
+    // 而错误本身会被重试掉（落不了位才是最终结果，那时 os error 32
+    // 已经说清了是"另一个程序正在使用此文件"）。
+    let hint = match e.raw_os_error() {
+        Some(c) if crate::domain::failure::is_disk_full_errno(c) => "（磁盘空间不够）",
+        Some(c) if crate::domain::failure::is_permission_errno(c) => "（没有写入权限）",
+        _ => {
+            // 非致命（含 Busy）原样返回 —— 不动既有文案
+            let _ = class;
+            return e;
+        }
+    };
+    std::io::Error::new(e.kind(), format!("{hint}{e}"))
 }
 
 /// 解析 `Content-Range: bytes 100-199/200` 里的起始偏移。
@@ -1685,7 +2641,20 @@ async fn download_chunked(
     part: &Path,
     total: u64,
     cancel: &CancelToken,
+    label: String,
+    cap: crate::domain::archive_guard::ByteCap,
 ) -> Result<u64> {
+    /*
+     * ★★ 第二阶段 A：**建连前的体积闸门**（分片这条路）。
+     *
+     *   能走到这里说明 `probe_content_length` 拿到了服务端宣告的大小 ——
+     *   那个数就已经超限的话，一条连接都不该建（一个声明 8 GiB 的"图标"）。
+     *   ★ 单连接那条路有同一道（那边用的是任务记录里的 `task.size`）。
+     */
+    if cap.rejected_by_declared_size(total) {
+        return Err(cap_exceeded_error(&label, cap, total));
+    }
+
     let spans = plan_chunks(total, chunk_count(), MIN_CHUNK);
     if spans.is_empty() {
         return Ok(0);
@@ -1779,6 +2748,8 @@ async fn download_chunked(
             let part = part.to_path_buf();
             let cancel = cancel.clone();
             let span = *span;
+            // ★ 第二阶段 A：`label` 也要进每个段的协程（超限文案要点名是哪个文件）
+            let label = label.clone();
             handles.push(tokio::spawn(async move {
                 let expected = span.len();
                 let mut got = 0u64;
@@ -1809,7 +2780,7 @@ async fn download_chunked(
                         if dead.lock().map(|d| d[si]).unwrap_or(false) {
                             continue;
                         }
-                        match download_range(&sources[si], &part, span, got, total, &cancel).await {
+                        match download_range(&sources[si], &part, span, got, total, &cancel, label.clone(), cap).await {
                             Ok(n) => {
                                 got += n;
                                 round_progress += n;
@@ -1924,12 +2895,40 @@ async fn download_range(
     already: u64,
     total: u64,
     cancel: &CancelToken,
+    label: String,
+    cap: crate::domain::archive_guard::ByteCap,
 ) -> Result<u64> {
     let seg = segment_path(part, span.idx);
     let from = span.start + already;
     if from > span.end {
         return Ok(0); // 这一段已经齐了
     }
+    /*
+     * ★★ 第二阶段 A：**分片路径的体积闸门**。
+     *
+     *   分片这条路同样要判 —— 而且这里有个单连接路径没有的漏洞形状：
+     *   服务端**无视 Range** 把整份吐回来（不老实的中转就这么干）。
+     *   下面虽然按 `want` 截断，但字节是**先收进内存**再截的：一份 4 GiB 的
+     *   响应体照样能把内存/磁盘拖死。所以计量必须在这里也挂上。
+     *
+     *   · 起始口径 = `span.start + already`（这一段在**整份文件**里的位置，
+     *     `already` 由调用方累加传入）—— 于是"这一段续传了多少"也算进去；
+     *   · 超过"整份文件的大小上限" ⇒ 删段 + 致命返回。
+     */
+    let mut meter = match crate::domain::archive_guard::ByteMeter::new(cap)
+        .starting_at(span.start.saturating_add(already))
+    {
+        Ok(m) => m,
+        Err((limit, got)) => {
+            let _ = tokio::fs::remove_file(&seg).await;
+            say!(
+                "[IEML/download] ★ 分片 {} 的落点已经超过体积上限，丢掉这一段：{label} \
+                 （位置 {got} 字节，上限 {limit} 字节）",
+                span.idx
+            );
+            return Err(cap_exceeded_error(&label, cap, got));
+        }
+    };
     /*
      * ★★★★ 2026-10-01：**只要缺的那一段，不要把尾巴也要回来**。
      *
@@ -2075,6 +3074,21 @@ async fn download_range(
             }
         };
         let take = (chunk.len() as u64).min(want - written) as usize;
+        /*
+         * ★★ 第二阶段 A：分片路径的**流式累计**（与单连接那条同形）。
+         *   口径 = 这一段在整份文件里的起点 + 这一段已写 + 这次要写的字节。
+         *   判在写盘之前，超限的字节一个都不落。
+         */
+        if let Err((limit, got)) = meter.add(take as u64) {
+            drop(file);
+            let _ = tokio::fs::remove_file(&seg).await;
+            say!(
+                "[IEML/download] ★ 分片 {} 收到超过体积上限的数据，已断流并删掉该段：{label} \
+                 （落点 {got} 字节，上限 {limit} 字节）—— {url}",
+                span.idx
+            );
+            return Err(cap_exceeded_error(&label, cap, got));
+        }
         file.write_all(&chunk[..take]).await?;
         written += take as u64;
     }
@@ -2140,6 +3154,28 @@ pub async fn sha256_of_file(path: &Path) -> Result<String> {
     use tokio::io::AsyncReadExt;
     let mut f = tokio::fs::File::open(path).await?;
     let mut hasher = sha2::Sha256::new();
+    let mut buf = vec![0u8; 256 * 1024];
+    loop {
+        let n = f.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hex(&hasher.finalize()))
+}
+
+/// 计算文件的 SHA-512（Modrinth 同时发布 SHA-1 与 SHA-512 —— 见 [`ExpectedHash`]）。
+///
+/// ★ 与 `sha256_of_file` 是同一个形状：`sha2 = "0.10"` 已经在依赖里，
+///   所以"把强哈希接上"这一步的**计算侧**本来就只差这一个函数。
+///   本阶段不接线（见 [`ExpectedHash`] 的说明），但函数留着 —— 下一阶段
+///   要给 `modrinth.rs` 传 sha512 时，不必再写第二遍。
+pub async fn sha512_of_file(path: &Path) -> Result<String> {
+    use sha2::Digest as _;
+    use tokio::io::AsyncReadExt;
+    let mut f = tokio::fs::File::open(path).await?;
+    let mut hasher = sha2::Sha512::new();
     let mut buf = vec![0u8; 256 * 1024];
     loop {
         let n = f.read(&mut buf).await?;
@@ -2252,7 +3288,8 @@ impl BatchOptions {
 /// 并发下载一批文件。
 ///
 /// 三段式：
-///   ① `dedup_pass` 把"同 SHA1 的重复文件"拆出来（只下一个，其余本地复制）
+///   ① `dedup_pass` 按**目标路径**（第一判据）与内容哈希（第二判据）
+///      拆出"只需本地复制"的副本
 ///   ② 网络任务按 `concurrency` 并发下，失败按降并发补下（PCL2 的降级策略）
 ///   ③ **网络任务全部结束后**才做本地复制
 ///
@@ -2282,6 +3319,15 @@ pub async fn download_batch(tasks: Vec<DownloadTask>, opts: BatchOptions) -> Res
 
     let mut pending: Vec<DownloadTask> = network_tasks;
     let mut failed: Vec<(String, String)> = Vec::new();
+    // ★★ **带处置档位的失败清单**（判据 1），跨轮累积
+    //
+    //   ★ 与 `failed` 并存：后者是"字符串元组"的老接口（`installer.rs` /
+    //     `commands_real.rs` 按元组读），前者多带一个 `class`。
+    //     两条一起维护是**有意**的取舍 —— 改老接口要动 3 个文件的读点，
+    //     而这一阶段的纪律是"改动面最小、判据最清楚"。
+    let mut failures_all: Vec<DownloadFailure> = Vec::new();
+    // ★★ 判据 3：**没有校验值、因此未经校验**的落位文件，跨轮累积
+    let mut unverified: Vec<UnverifiedFile> = Vec::new();
     let mut round = 0u32;
     /*
      * ★★ 收尾诊断（2026-09-17）。
@@ -2343,8 +3389,18 @@ pub async fn download_batch(tasks: Vec<DownloadTask>, opts: BatchOptions) -> Res
         }
 
         let round_t0 = std::time::Instant::now();
-        let (still_failed, failures, was_paused, unstarted) = run_round(
-            pending,
+        /*
+         * ★★ **为什么先 `mem::take` 再传**（而不是直接 `run_round(pending, ..)`）：
+         *
+         *   直接传会把 `pending` **move 走**，而循环条件
+         *   （`while !pending.is_empty()`）下一轮还要读它 ——
+         *   借用检查直接拒绝（实测：`borrow of moved value: pending`）。
+         *   `run_round` 本来就**只消费**这一批任务，所以"传一份、留下一个空壳"
+         *   语义完全一致，而且 `pending` 在循环里始终是"已初始化"的。
+         */
+        let this_round_maybe: Vec<DownloadTask> = std::mem::take(&mut pending);
+        let (still_failed, failures, was_paused, unstarted, round_failures, round_unverified) = run_round(
+            this_round_maybe,
             concurrency,
             opts.source,
             &opts.cancel,
@@ -2356,9 +3412,79 @@ pub async fn download_batch(tasks: Vec<DownloadTask>, opts: BatchOptions) -> Res
             round,
         )
         .await;
+        /*
+         * ★★ 判据 3：**"没有校验值"的清单要跨轮累积**（不是每轮重置）。
+         *
+         *   一个文件只会在某一轮里落位一次，所以这里直接 extend 不会重复；
+         *   而 `round_unverified` **每轮都是新的一份**（`run_round` 里新建的
+         *   `Arc<Mutex<Vec<..>>>`）。
+         */
+        unverified.extend(round_unverified);
         // ★ 记在 await 之后、任何 return 之前 —— 暂停那条分支也会 return，
         //   而"暂停前这一轮花了多久"同样是有用的信息。
         round_ms.push(round_t0.elapsed().as_millis() as u64);
+
+        /*
+         * ★★ 判据 1 的落地（四）：**致命失败立刻结束整个批次**。
+         *
+         *   审计：*A fatal failure must fail the batch with a useful message
+         *   naming the artifact* + *Disk-full and permission errors are not
+         *   retryable. Surface them immediately; retrying just makes the UI
+         *   lie for longer.*
+         *
+         *   为什么必须在**批次层**也拦一道：`download_one_locked` 只能让
+         *   "这一个文件"立刻失败，而批次层的 3 轮补下（每轮之间还有
+         *   0.8→15 秒退避）会把**剩下的所有任务**再造一遍 ——
+         *   磁盘满的时候那等于一边失败一边重试几十个文件。
+         *
+         *   ⇒ 一旦本轮出现**致命**失败，就把剩下的任务全部收进最终失败清单，
+         *     立刻跳出补下循环（`pending` 清空 + `round` 拉到上限）。
+         *   ★ 判据用 `FailureClass`，不是字符串 —— 见 `DownloadFailure`。
+         */
+        let fatal = round_failures.iter().filter(|f| f.class.is_fatal()).count();
+        if fatal > 0 {
+            /*
+             * ★ 这里**不能** `std::mem::take(&mut pending)`：`pending` 是循环条件
+             *   在读的变量，而 `break` 语句会把"take 之后的值"重新赋回 ——
+             *   于是下一轮（虽然不会来）的读会被判成读一个已 move 的值。
+             *   ⇒ 改成"在循环末尾用 `halted` 清空"（见下面的 `if halted`）。
+             */
+            let unstarted_n = unstarted.len();
+            say!(
+                "[IEML/download] 本轮出现 {fatal} 个**致命**失败（磁盘满 / 权限 / 校验反复不符），\
+                 立刻结束：不再补下 {} 个文件（本轮另有 {unstarted_n} 个没轮到）\
+                 —— 重试治不好这些错",
+                still_failed.len()
+            );
+            /*
+             * ★ 没轮到的那些也算"处理完了"（结果：没跑），否则进度条永远差一截。
+             *   判据与 `download_batch` 末尾"重试到最后的失败也算处理完"同源 ——
+             *   分母是计划数，分子必须能追平。
+             *   ★ 这里放掉 `unstarted`（后面不再需要它：批次已经决定结束）。
+             */
+            stats
+                .processed_files
+                .fetch_add(unstarted_n as u64, Ordering::Relaxed);
+            drop(unstarted);
+            failures_all.extend(round_failures.iter().cloned());
+            failures_all.extend(still_failed.iter().map(|t| DownloadFailure {
+                label: t.label.clone(),
+                reason: "因为本轮出现致命失败（磁盘满 / 权限 / 校验反复不符），这一批已停止".into(),
+                class: FailureClass::Fatal,
+            }));
+            failed = failures
+                .into_iter()
+                .chain(still_failed.iter().map(|t| {
+                    (
+                        t.label.clone(),
+                        "因为本轮出现致命失败（磁盘满 / 权限 / 校验反复不符），这一批已停止"
+                            .to_string(),
+                    )
+                }))
+                .collect();
+            round += 1;
+            break;
+        }
 
         /*
          * ★★ **被暂停** → 把"还没开始的"和"这一轮失败的"合成续下清单，
@@ -2384,6 +3510,7 @@ pub async fn download_batch(tasks: Vec<DownloadTask>, opts: BatchOptions) -> Res
                 processed_count(&stats),
                 rest.len()
             );
+            failures_all.extend(round_failures);
             emit(
                 &opts,
                 &stats,
@@ -2399,6 +3526,8 @@ pub async fn download_batch(tasks: Vec<DownloadTask>, opts: BatchOptions) -> Res
                 finished_files: stats.finished_files.load(Ordering::Relaxed) as usize,
                 skipped_files: stats.skipped_files.load(Ordering::Relaxed) as usize,
                 failed: failures,
+                failures: failures_all,
+                unverified,
                 total_bytes,
                 elapsed_ms: started.elapsed().as_millis() as u64,
                 processed_files: processed_count(&stats) as usize,
@@ -2409,6 +3538,7 @@ pub async fn download_batch(tasks: Vec<DownloadTask>, opts: BatchOptions) -> Res
             });
         }
 
+        failures_all.extend(round_failures);
         failed = failures;
         pending = still_failed;
         round += 1;
@@ -2492,8 +3622,30 @@ pub async fn download_batch(tasks: Vec<DownloadTask>, opts: BatchOptions) -> Res
                 stats
                     .finished_bytes
                     .fetch_add(copy.task.size, Ordering::Relaxed);
+                /*
+                 * ★★ 判据 3：**本地复制的副本也可能是"没有校验值"的**。
+                 *
+                 *   复制本身不校验（`std::fs::copy` 只搬字节）—— 原件对不对
+                 *   由原件那条任务负责。所以"有没有校验值"按副本自己那条任务算：
+                 *   它没有校验值时，落位之后同样**无法证明**它是对的。
+                 */
+                if copy.task.expected_hash().is_none() {
+                    stats.unverified_files.fetch_add(1, Ordering::Relaxed);
+                    unverified.push(UnverifiedFile {
+                        label: copy.task.label.clone(),
+                        path: copy.task.path.clone(),
+                        length_checked: copy.task.size > 0,
+                    });
+                }
             }
-            Err(e) => failed.push((copy.task.label.clone(), e.to_string())),
+            Err(e) => {
+                failed.push((copy.task.label.clone(), e.to_string()));
+                failures_all.push(DownloadFailure {
+                    label: copy.task.label.clone(),
+                    reason: e.to_string(),
+                    class: e.class(),
+                });
+            }
         }
         /*
          * ★★ 本地复制**也必须计入进度**。
@@ -2544,11 +3696,57 @@ pub async fn download_batch(tasks: Vec<DownloadTask>, opts: BatchOptions) -> Res
         }
     }
 
+    /*
+     * ★★ 判据 3 的收尾：**"没有校验值"这件事必须在日志里点名。**
+     *
+     *   审计第 102 行：`None` is a real case and must not silently become
+     *   "skip verification and assume success"。
+     *   计数是给界面与报告用的（`DownloadOutcome::unverified`），
+     *   但日志也要留一句 —— 用户报"某个 mod 明明装上了却进不去"时，
+     *   这行是第一条线索。
+     */
+    if !unverified.is_empty() {
+        let no_len = unverified.iter().filter(|u| !u.length_checked).count();
+        say!(
+            "[IEML/download] 这一批有 {} 个文件**没有校验值**（上游没发布哈希），\
+             它们是未经校验就落位的；其中 {no_len} 个连长度都没比过（size=0）",
+            unverified.len()
+        );
+    }
+
+    /*
+     * ★★ 判据 3 收尾：**一条明确的"这一批结束了"事件，阶段是 `done`。**
+     *
+     *   审计要求阶段必须能分开（`downloading` / `verifying` / `complete` /
+     *   `failed` / `cancelled`），而"结束"这一档**必须是最后一条** ——
+     *   否则界面最后看到的状态会停在"正在下"（一个已经跑完的批次）。
+     *   ★ 它与 `emit` 发的那几条不同：那些是"重试第 N 轮"之类的中途播报。
+     */
+    (opts.on_progress)(DownloadProgress {
+        finished_files: processed_count(&stats) as usize,
+        total_files,
+        finished_bytes: stats.finished_bytes.load(Ordering::Relaxed),
+        total_bytes,
+        bytes_per_second: 0,
+        current_file: if unverified.is_empty() {
+            String::new()
+        } else {
+            format!("其中 {} 个文件没有校验值，未经校验", unverified.len())
+        },
+        skipped_files: stats.skipped_files.load(Ordering::Relaxed) as usize,
+        failed_files: failures_all.len(),
+        source: opts.source.as_str().to_string(),
+        retry_round: round,
+        phase: ProgressPhase::Done,
+    });
+
     Ok(DownloadOutcome {
         peak_connections: conn_stats::peak(),
         finished_files: stats.finished_files.load(Ordering::Relaxed) as usize,
         skipped_files: stats.skipped_files.load(Ordering::Relaxed) as usize,
         failed,
+        failures: failures_all,
+        unverified,
         total_bytes,
         elapsed_ms: started.elapsed().as_millis() as u64,
         // ★ 与进度事件的分子**同一个判据** —— 于是"最后一条进度的分母"
@@ -2569,41 +3767,142 @@ struct CopyJob {
     task: DownloadTask,
 }
 
-/// 去重：同一 SHA1 只下一次，其余文件记为"从原件的落盘路径复制"。
+/// 去重。
 ///
-/// 纯函数（不碰网络、不写盘），便于单测锁定两条不变量：
-///   ① 副本一定排在原件之后（批次末尾统一复制，见 `download_batch` ③）
-///   ② **目标路径相同就直接丢弃** —— 见下面的 ★
+/// ## ★★ 2026-10：**第一判据从"内容哈希"改成了"目标路径"**
 ///
-/// ★ 同一个 hash 可能对应**同一个落盘路径**（内容寻址的资源文件就是
-///   `objects/<前两位>/<sha1>`，3598 个资源文件里同一个 hash 常被两个名字引用）。
-///   这种情况下"复制副本"其实是 `copy(X, X)`，Windows 会直接回
-///   `os error 32（另一个程序正在使用此文件）`，而文件其实早就下好了。
-///   实测：1.20.1 固定有 23 个这样的条目，看起来像杀毒软件锁文件，
-///   其实是自己复制到自己。
+///   审计在 Queue 那一节里写着：
+///
+///   > **Deduplicate by destination path** and by (URL, destination). The same
+///   > library is requested by several profiles; the same asset blob appears
+///   > under several logical paths.
+///
+///   而原来的实现**只按 SHA1 去重**（内容哈希是第一判据）。这个顺序错位的
+///   真实后果（有 `文件:行号` 证据）：
+///
+///   ```text
+///     任务 A：path=P, sha1=H1       ← 正常解析出来的那条
+///     任务 B：path=P, sha1=""       ← `.mrpack` 没给哈希的条目 /
+///                                      commands_real.rs:10818 的补齐路径
+///   ```
+///
+///   两个任务**同一个目标路径、不同哈希**（一个是 H1、一个是空）——
+///   按内容哈希去重时它们**看起来是两个不同的文件**，于是两个 worker 同时
+///   写同一个 P：一个 `create_part`（截断）一个 `open_part_append`（追加），
+///   各自 rename 到 P。结果是**"长度对、内容错"**，而空哈希那条**发现不了**
+///   （它本来就不校验）。⇒ 这就是"去重键应该是目标路径"的直接理由。
+///
+/// ## 现在的判据顺序
+///
+///   ① **目标路径**（第一判据，见上）：同路径只留一条；
+///   ② 内容哈希（第二判据，**保留**）：同内容不同路径 → 本地复制。
+///      它仍然有独立价值：多加载器共享同一批 libraries、以及内容寻址的
+///      资源文件（`objects/<前两位>/<sha1>`）被多个名字引用 —— 实测能省 30%+
+///      流量（ADR-002）。
+///
+/// ## 同路径时保留哪一条（要有理由）
+///
+///   `keep_rank` 的取舍，按优先级：
+///     ① **有校验值**的优先 —— 一条要校验、一条不校验时，保留要校验的那条
+///        （它落位之后我们**能证明**它是对的；反过来则永远是"未校验"）。
+///        这正是审计点名的那一对（有哈希 vs 空哈希），必须保留有哈希的。
+///     ② 都有（或都没有）校验值时，**先出现的**优先 —— 与原行为一致
+///        （`download_batch` 的输入顺序对调用方是可预期的）。
+///
+///   ★ 被丢弃的那条**不一定**真的重复：判据是"同路径"。
+///     但同一个路径本来就只容得下一个文件，两条都下既浪费又会打架 ——
+///     这正是"按目标路径去重"的意思。
+///
+/// ## `sort_large_first` 与"副本排在原件之后"
+///
+///   ★ 副本仍然排在**原件之后**（`copies` 在批次末尾统一复制，见
+///     `download_batch` ③）—— 这个次序意图有历史原因（踩过 os error 32：
+///     副本在原件还在写的时候去读它）。`sort_large_first` 也一个字不动。
 fn dedup_pass(tasks: Vec<DownloadTask>) -> (Vec<DownloadTask>, Vec<CopyJob>) {
-    let mut seen: HashMap<String, PathBuf> = HashMap::new();
     let mut network: Vec<DownloadTask> = Vec::new();
     let mut copies: Vec<CopyJob> = Vec::new();
 
+    /*
+     * ① 第一判据：**规范化后的目标路径**。
+     *    键用 `path_key`（统一分隔符 + 规范化父目录 + Windows 小写化），
+     *    与路径锁用的是**同一个**函数 —— 两处判据必须一致，
+     *    否则"锁住 P"与"去重 P"会指向两个不同的字符串。
+     */
+    let mut by_path: HashMap<PathBuf, usize> = HashMap::new();
+    // ② 第二判据：内容哈希（同内容、不同路径 → 复制）
+    let mut seen_hash: HashMap<String, PathBuf> = HashMap::new();
+
     for t in tasks {
-        if !t.sha1.is_empty() {
-            if let Some(first) = seen.get(&t.sha1) {
-                if *first == t.path {
-                    // 同内容 + 同路径 = 同一个文件，什么都不用做
-                    continue;
+        let key = path_key(&t.path);
+        if let Some(&at) = by_path.get(&key) {
+            if keep_rank(&t) > keep_rank(&network[at]) {
+                /*
+                 * 新来的这条更值得保留（它有校验值、旧的那条没有）→ 顶掉旧的。
+                 *
+                 * ★ 两步簿记都必须做，否则"内容哈希 → 原件路径"那张索引会
+                 *   指着一个**不再会被下载的路径**（那样副本会从一个永远
+                 *   不存在的文件上复制，Windows 报 os error 2）。
+                 */
+                let old = std::mem::replace(&mut network[at], t);
+                if !old.sha1.is_empty() {
+                    seen_hash.remove(&old.sha1);
                 }
+                if !network[at].sha1.is_empty() {
+                    seen_hash.insert(network[at].sha1.clone(), network[at].path.clone());
+                }
+                continue;
+            }
+            /*
+             * 旧的那条更值得保留（或一样）→ 这一条直接丢弃：
+             * 同一个目标路径只容得下一个文件。
+             *
+             * ★ 为什么要**点名**（而不是静默 `continue`）：这个分支以前
+             *   就是"同内容 + 同路径 = 什么都不用做"（那是对的），
+             *   但现在它也可能是"同路径、**不同内容**" —— 那种情况下
+             *   被丢掉的那条**本来会写坏文件**，值得在日志里留一行。
+             */
+            say!(
+                "[IEML/download] 目标路径重复，丢弃一条：{}（保留 {}）",
+                t.label,
+                network[at].label
+            );
+            continue;
+        }
+
+        // 这个路径是第一次见
+        if !t.sha1.is_empty() {
+            /*
+             * ② 第二判据：这条路径的新文件，内容是不是**已经在别处下过**。
+             *    是 → 记成"从原件本地复制"（省一次网络请求）。
+             *    ★ 副本仍排在原件之后（批次末尾统一做，见 `download_batch` ③）。
+             */
+            if let Some(first) = seen_hash.get(&t.sha1) {
                 copies.push(CopyJob {
                     source: first.clone(),
                     task: t,
                 });
                 continue;
             }
-            seen.insert(t.sha1.clone(), t.path.clone());
+            seen_hash.insert(t.sha1.clone(), t.path.clone());
         }
         network.push(t);
+        // 索引是在 push 之后取的：`by_path` 记的是**在 network 里的下标**
+        let at = network.len() - 1;
+        by_path.insert(key, at);
     }
     (network, copies)
+}
+
+/// 同一个目标路径出现两条任务时，**哪一条更值得保留**（判据见 `dedup_pass`）。
+///
+///   · 有校验值的 > 没有校验值的（前者落位后**能被证明**是对的）；
+///   · 都有 / 都没有 → 平手（先出现的优先）。
+fn keep_rank(t: &DownloadTask) -> u8 {
+    if t.expected_hash().is_some() {
+        1
+    } else {
+        0
+    }
 }
 
 /// 自适应起步：先起多少个任务之后才开始看吞吐（太小会把起步饿死）。
@@ -2660,14 +3959,18 @@ fn looks_throttled(task_size: u64, got: u64) -> bool {
 ///   * `.1` 失败详情（标签 + 原因）
 ///   * `.2` ★★ **这一轮是不是被暂停打断的**（与「跑完了只剩失败」区分开）
 ///   * `.3` 暂停时**还没开始**的任务（原顺序，可直接续下）
+///   * `.4` ★ 带处置档位的失败清单（判据 1）
+///   * `.5` ★ **没有校验值、因此未经校验**的落位文件（判据 3）
 ///
-/// 抽成别名是因为四元组写在签名里读不出哪个是哪个（而 `.2` 与 `.3`
+/// 抽成别名是因为六元组写在签名里读不出哪个是哪个（而 `.2` 与 `.3`
 /// 的含义恰恰**不能搞混**：一个是"为什么停"，一个是"还剩什么"）。
 type RoundResult = (
     Vec<DownloadTask>,
     Vec<(String, String)>,
     bool,
     Vec<DownloadTask>,
+    Vec<DownloadFailure>,
+    Vec<UnverifiedFile>,
 );
 
 /// 跑一轮：对 `tasks` 按 `concurrency` 并发下载。
@@ -2709,6 +4012,17 @@ async fn run_round(
     let failed: Arc<tokio::sync::Mutex<Vec<(String, String)>>> =
         Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let failed_tasks: Arc<tokio::sync::Mutex<Vec<DownloadTask>>> =
+        Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    // ★★ 带处置档位的失败清单（判据 1）
+    let failures: Arc<tokio::sync::Mutex<Vec<DownloadFailure>>> =
+        Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    // ★★ **没有校验值、因此未经校验就落位**的文件（判据 3）
+    //
+    //   收的是 (`label`, `path`, `length_checked`)。
+    //   ★ 为什么在 `run_round` 收而不是在 `download_one_locked` 里收：
+    //     那里是**逐文件**的（没有批次上下文），而这里手里有 `stats`
+    //     与 `failed` 这些批次级的状态 —— 汇总信息属于批次。
+    let unverified: Arc<tokio::sync::Mutex<Vec<UnverifiedFile>>> =
         Arc::new(tokio::sync::Mutex::new(Vec::new()));
     /*
      * ★★ 自适应启动节流（PCL2 的 `StartManager` 简化版）。
@@ -2802,8 +4116,8 @@ async fn run_round(
                     )
                     .await
                     {
-                        // 取消 → 返回空的四元组（调用方会因为 cancel 立刻退出）
-                        return (Vec::new(), Vec::new(), false, Vec::new());
+                        // 取消 → 返回空的结果（调用方会因为 cancel 立刻退出）
+                        return (Vec::new(), Vec::new(), false, Vec::new(), Vec::new(), Vec::new());
                     }
                     waited += 1;
                 }
@@ -2817,6 +4131,8 @@ async fn run_round(
         let on_progress = Arc::clone(on_progress);
         let failed = Arc::clone(&failed);
         let failed_tasks = Arc::clone(&failed_tasks);
+        let failures = Arc::clone(&failures);
+        let unverified = Arc::clone(&unverified);
 
         handles.push(tokio::spawn(async move {
             let _permit = permit;
@@ -2858,10 +4174,48 @@ async fn run_round(
                 failed_files: failed.lock().await.len(),
                 source: source.as_str().to_string(),
                 retry_round: round,
+                phase: ProgressPhase::Downloading,
             });
 
+            /*
+             * ★★ 判据 3：**"校验中"这一档必须能被看见。**
+             *
+             *   这条回调会从 `download_one_locked` 的**两处**被调用：
+             *     · 判"已存在的文件对不对"之前（那条路一条网络请求都不发，
+             *       旧代码在这段时间里完全静默 —— 界面像卡住了）；
+             *     · 下载完之后算校验值之前（几百 MB 的包体在这里要读一遍盘）。
+             *
+             *   ★ 这一档的进度数字**不动**（与上面那条"正在连接"同一个理由：
+             *     不许把没完成的事算进进度）。它改变的是**阶段**，
+             *     而阶段正是审计要的"verifying 不能不可见"。
+             */
+            let phase_reporter = |phase: ProgressPhase, file: &str| {
+                on_progress(DownloadProgress {
+                    finished_files: processed_count(&stats) as usize,
+                    total_files,
+                    finished_bytes: stats.finished_bytes.load(Ordering::Relaxed),
+                    total_bytes,
+                    bytes_per_second: run_speed(
+                        stats.finished_bytes.load(Ordering::Relaxed),
+                        round_started,
+                    ),
+                    current_file: file.to_string(),
+                    skipped_files: stats.skipped_files.load(Ordering::Relaxed) as usize,
+                    // ★ 这里**不能** `failed.lock().await`：本闭包是**同步**的
+                    //   （`Fn`，不是 async），拿不到那个锁。
+                    //   用原子计数代替 —— 它本来就是给"这一批失败了多少"用的。
+                    failed_files: stats.failures_total.load(Ordering::Relaxed) as usize,
+                    source: source.as_str().to_string(),
+                    retry_round: round,
+                    phase,
+                });
+            };
+
             // 这一轮里全是网络任务 —— 本地复制已经在批次末尾单独做过（见 CopyJob）
-            let outcome = download_one(&task, source, &cancel).await;
+            let expected = task.expected_hash();
+            let outcome =
+                download_one_locked(source::global(), &task, source, &cancel, Some(&phase_reporter))
+                    .await;
 
             match outcome {
                 Ok(skipped) => {
@@ -2871,6 +4225,40 @@ async fn run_round(
                         stats.finished_files.fetch_add(1, Ordering::Relaxed);
                     }
                     stats.finished_bytes.fetch_add(task.size, Ordering::Relaxed);
+                    /*
+                     * ★★ 判据 3：**没有校验值就落位的文件要被数出来**。
+                     *
+                     *   两个来源都要算：
+                     *     · 这一轮**下载**下来的（`!skipped` 且没有校验值）；
+                     *     · **已存在被跳过**的（`skipped` 且没有校验值 ——
+                     *       它正是审计点名的那条"静默路径"：
+                     *       `verify_existing` 在 `size == 0` 时返回 Ok）。
+                     *   ★ 只有"没有校验值"才算；有校验值的跳过是**校验过的**，
+                     *     不该出现在这张清单里（那才是"如实"）。
+                     */
+                    if expected.is_none() {
+                        /*
+                         * "比过长度" = 任务知道大小（`size > 0`）。
+                         * ★ 这是**诚实的下界**：`size == 0` 时连长度都没比过。
+                         */
+                        let length_checked = task.size > 0;
+                        stats.unverified_files.fetch_add(1, Ordering::Relaxed);
+                        say!(
+                            "[IEML/download] {} **没有校验值** → 未经校验{}（{}）",
+                            task.label,
+                            if skipped { "，按已存在跳过" } else { "就落位" },
+                            if length_checked {
+                                "只比过长度"
+                            } else {
+                                "连长度都没有（size=0）"
+                            }
+                        );
+                        unverified.lock().await.push(UnverifiedFile {
+                            label: task.label.clone(),
+                            path: task.path.clone(),
+                            length_checked,
+                        });
+                    }
                     /*
                      * 成功/跳过 → 这个任务**处理完了**。
                      *
@@ -2896,7 +4284,24 @@ async fn run_round(
                     if e.to_string().contains("校验失败") {
                         stats.repaired_files.fetch_add(1, Ordering::Relaxed);
                     }
+                    /*
+                     * ★★ 判据 1：**把处置档位带进清单**。
+                     *
+                     *   `download_one_locked` 已经在 `AllSourcesFailed` 里
+                     *   带上了它（那里才知道真正的错误是什么）；
+                     *   其它变体就地判一次（`NetError::class`）。
+                     */
+                    let class = match &e {
+                        NetError::AllSourcesFailed { class, .. } => *class,
+                        other => other.class(),
+                    };
+                    stats.failures_total.fetch_add(1, Ordering::Relaxed);
                     failed.lock().await.push((label.clone(), e.to_string()));
+                    failures.lock().await.push(DownloadFailure {
+                        label: label.clone(),
+                        reason: e.to_string(),
+                        class,
+                    });
                     failed_tasks.lock().await.push(task.clone());
                     // ★ 失败**不算处理完** —— 它会被重试，等最终结果出来再算
                 }
@@ -2921,6 +4326,7 @@ async fn run_round(
                     failed_files: fcount,
                     source: source.as_str().to_string(),
                     retry_round: round,
+                    phase: ProgressPhase::Downloading,
                 });
             }
         }));
@@ -2943,7 +4349,11 @@ async fn run_round(
      *   暂停也可能刚好停在最后一个任务之后（remaining 为空）。
      *   所以暂停状态由第二个返回的 `bool` 单独表达。
      */
-    (t, f, paused, remaining)
+    let mut round_failures = failures.lock().await.clone();
+    // ★ 排一下序让报告与测试可复现（并发完成的顺序本来就不确定）
+    round_failures.sort_by(|a, b| a.label.cmp(&b.label));
+    let round_unverified = unverified.lock().await.clone();
+    (t, f, paused, remaining, round_failures, round_unverified)
 }
 
 /// 进度节流：16ms 一次（60fps 上限）。
@@ -2999,6 +4409,14 @@ fn emit(
         failed_files,
         source: source.as_str().to_string(),
         retry_round: round,
+        /*
+         * ★ 这一档叫"正在下"而不是"完成"：`emit` 也被用在
+         * "重试第 N 轮"这类**批次还没跑完**的时刻（见 `download_batch` 里的
+         * 调用点）。真正的收尾事件由 `download_batch` 末尾的
+         * `ProgressPhase::Done` 那一条负责 —— 那一档的判据是
+         * "这一批已经决定结束"（跑完 / 暂停 / 因致命失败停手）。
+         */
+        phase: ProgressPhase::Downloading,
     });
 }
 
@@ -3425,7 +4843,16 @@ mod tests {
          *   这条测试要钉的是"单源短读也必须报错"，而不是多源轮转 ——
          *   多源轮转另有 `multi_source_round_robin` 那条。
          */
-        let err = download_chunked(&server.url(), &[], &part, TOTAL, &CancelToken::new()).await;
+        let err = download_chunked(
+            &server.url(),
+            &[],
+            &part,
+            TOTAL,
+            &CancelToken::new(),
+            "测试包体".to_string(),
+            crate::domain::archive_guard::ByteCap::unlimited(),
+        )
+        .await;
 
         assert!(
             err.is_err(),
@@ -3580,7 +5007,16 @@ mod tests {
         let (part, dir) = tmp_part("multi-source");
         // 两个候选：坏的在前面（模拟"首选那条正好是个坏节点"）
         let cands = vec![bad.url(), good.url()];
-        let outcome = download_chunked(&bad.url(), &cands, &part, TOTAL, &CancelToken::new()).await;
+        let outcome = download_chunked(
+            &bad.url(),
+            &cands,
+            &part,
+            TOTAL,
+            &CancelToken::new(),
+            "测试包体".to_string(),
+            crate::domain::archive_guard::ByteCap::unlimited(),
+        )
+        .await;
 
         let good_hits = good.ranges().len();
         let bad_hits = bad.ranges().len();
@@ -3667,9 +5103,18 @@ mod tests {
             start: SEG_START,
             end: SEG_END,
         };
-        let n = download_range(&server.url(), &part, span, 0, TOTAL, &CancelToken::new())
-            .await
-            .expect("这一段应当能下完");
+        let n = download_range(
+            &server.url(),
+            &part,
+            span,
+            0,
+            TOTAL,
+            &CancelToken::new(),
+            "测试包体".to_string(),
+            crate::domain::archive_guard::ByteCap::unlimited(),
+        )
+        .await
+        .expect("这一段应当能下完");
 
         assert_eq!(
             n, SPAN,
@@ -3814,12 +5259,14 @@ mod tests {
             &manager,
             &server.url(),
             &part,
-            "",
+            &ExpectedHash::None,
             &CancelToken::new(),
             100,     // existing
             0,       // proven_bps
             false,   // switchable
             200,     // task_size
+            "测试",
+            crate::domain::archive_guard::ByteCap::unlimited(),
         )
         .await
         .expect("对不上就重下一份，应该成功");
@@ -3859,12 +5306,14 @@ mod tests {
             &manager,
             &server.url(),
             &part,
-            "",
+            &ExpectedHash::None,
             &CancelToken::new(),
             0,
             0,
             false,
             286_235, // 任务记录 286 KB（实测的 gson 那一档）
+            "测试",
+            crate::domain::archive_guard::ByteCap::unlimited(),
         )
         .await
         .expect_err("只回 146 字节必须判失败");
@@ -3930,12 +5379,14 @@ mod tests {
             &manager,
             &server.url(),
             &part,
-            &real_sha1,
+            &ExpectedHash::Sha1(real_sha1.clone()),
             &CancelToken::new(),
             0,
             0,
             false,
             real_len + 1,
+            "测试",
+            crate::domain::archive_guard::ByteCap::unlimited(),
         )
         .await;
 
@@ -3956,6 +5407,174 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /* ================= ★★ 第二阶段 A：体积上限在引擎里真的生效 ================= */
+
+    /// ★★ **端到端（引擎级）**：一个只允许 50 字节的任务，服务端给 100 字节 ⇒
+    ///     ① 必须**失败**，错误文案点名"超过体积上限"（说真话）；
+    ///     ② **临时文件必须被删掉**（超限的临时文件不是"进度"，留着会被当续传起点）；
+    ///     ③ 落盘的那一份绝不能留下任何字节。
+    ///
+    ///   ★ 走的是**单连接**这条写盘路径（`download_to_part` → `download_single`）：
+    ///     任务的 `size`（声明值）小于上限，所以建连前那道闸门放行 ——
+    ///     拦下它的是**流式累计**那道（也就是唯一能兜住"服务器不报
+    ///     Content-Length"的那道）。分片那条路的同一道闸门由
+    ///     `download_range` 里的 meter 守着（夹具更贵，见报告）。
+    #[tokio::test]
+    async fn over_cap_response_is_killed_and_part_is_deleted() {
+        const CAP: u64 = 50;
+        // 服务端给 100 字节，而闸门只允许 50 —— 连"声明大小"都超了上限，
+        // 所以最先触发的是**建连前**那道（`rejected_by_declared_size`）：
+        // 这正是"别先下满再发现"。
+        let server = FakeServer::start(|_idx, _range| (200, vec![], vec![7u8; 100]));
+        let (part, dir) = tmp_part("cap");
+
+        let mut task = DownloadTask::new(
+            dir.join("file.bin"),
+            server.url(),
+            String::new(),
+            100, // 声明 100 字节 > 上限 50
+            "图标 故意超限.bin".to_string(), // 类别 Image；下面用显式值覆盖
+        );
+        task.max_bytes = Some(CAP);
+        assert_eq!(task.byte_cap().max_bytes, Some(CAP), "显式值必须优先");
+
+        let cancel = CancelToken::new();
+        let err = download_one(&task, Source::Mojang, &cancel)
+            .await
+            .expect_err("声明 100 字节 > 上限 50 ⇒ 必须失败");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("体积上限"),
+            "★ 错误必须说真话（超过体积上限）：{msg}"
+        );
+        assert!(msg.contains("故意超限"), "要点名是哪个文件：{msg}");
+        assert!(
+            !part.exists(),
+            "★ 超限时不能留下临时文件（留着会被当成续传进度）"
+        );
+        assert!(
+            !dir.join("file.bin").exists(),
+            "★ 超限的响应体一个字节都不许落成正式文件"
+        );
+        assert_eq!(server.ranges().len(), 0, "建连前就该拦下，一个请求都不该发");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★★ `cap_of` 的**三态**（引擎里真正解析闸门的那一份实现）：
+    ///     ① 显式 `Some(n)` ⇒ 用 n；
+    ///     ② `None` + 认得的标签 ⇒ 该类别的默认上限（**不是"不设上限"**）；
+    ///     ③ `None` + 不认得的标签 ⇒ `Unknown`（**最紧的 64 MiB**）。
+    ///   同一份测试在判据层（`domain/archive_guard.rs`）也有一版 ——
+    ///   两处都钉住，是因为这里才是引擎真正调用的那个函数。
+    #[test]
+    fn cap_of_resolves_the_three_states() {
+        use crate::domain::archive_guard::{default_limit_for, ArtifactClass};
+
+        let mk = |label: &str, max_bytes: Option<u64>| {
+            let mut t = DownloadTask::new(
+                PathBuf::from("x.bin"),
+                "https://example.com/x".into(),
+                String::new(),
+                0,
+                label.to_string(),
+            );
+            t.max_bytes = max_bytes;
+            t
+        };
+
+        // ① 显式值优先
+        assert_eq!(
+            cap_of(&mk("Java 17.0.10 运行时", Some(1234))).max_bytes,
+            Some(1234)
+        );
+        // ② 未给 ⇒ 按标签推
+        assert_eq!(
+            cap_of(&mk("Java 17.0.10 运行时", None)).max_bytes,
+            Some(default_limit_for(ArtifactClass::JavaRuntime)),
+            "Java 标签必须拿到 1 GiB 那一档（否则真机上下不动 Java）"
+        );
+        assert_eq!(
+            cap_of(&mk("客户端 1.20.1.jar", None)).max_bytes,
+            Some(default_limit_for(ArtifactClass::ClientJar))
+        );
+        // ③ 认不出来 ⇒ 最紧的一档，且是**真闸门**
+        let unknown = cap_of(&mk("谁知道这是什么", None));
+        assert_eq!(
+            unknown.max_bytes,
+            Some(default_limit_for(ArtifactClass::Unknown))
+        );
+        assert_eq!(unknown.describe(), "64 MiB");
+        assert!(
+            unknown.over_limit(65 * 1024 * 1024),
+            "未知类别必须是真闸门（不是 None）"
+        );
+        // `DownloadTask::new` 造出来的任务**天生就带闸门**（不是 None）
+        assert_eq!(
+            mk("图标 pack.png", None).byte_cap().describe(),
+            "8 MiB",
+            "构造函数不填 Some 也必须能解析出类别默认档"
+        );
+    }
+
+    /// ★★ **续传不许绕过上限**（引擎级）：`ByteMeter::starting_at(盘上已有字节)`。
+    ///
+    ///   形状：上限 100 MB，第一轮下到 90 MB 断了。若 meter 只算这一轮新收的
+    ///   字节，那么"再下 90 MB"两轮加起来 180 MB 都不会被判超限 —— 上限被绕过。
+    ///   起始口径 = 整份文件的落点，所以第二轮补到 100 MB 就到顶。
+    #[test]
+    fn resume_meter_cannot_be_bypassed() {
+        use crate::domain::archive_guard::{ByteCap, ByteMeter};
+        const MB: u64 = 1024 * 1024;
+        let cap = ByteCap {
+            max_bytes: Some(100 * MB),
+        };
+
+        // 第一轮：0 → 90 MB
+        let mut first = ByteMeter::new(cap).starting_at(0).unwrap();
+        first.add(90 * MB).expect("第一轮 90 MB 没超限");
+
+        // 第二轮续传：盘上已有 90 MB —— 初值必须是 90 MB
+        let mut second = ByteMeter::new(cap)
+            .starting_at(90 * MB)
+            .expect("90 MB 残留可以接着下");
+        assert!(second.add(10 * MB).is_ok(), "补到 100 MB 正好到顶");
+        assert!(
+            second.add(1).is_err(),
+            "★ 两轮加起来 100 MB + 1 必须被拦（续传不是绕过上限的后门）"
+        );
+
+        // 盘上残留本身超限 ⇒ 开局就拒
+        assert!(ByteMeter::new(cap).starting_at(120 * MB).is_err());
+    }
+
+    /// ★★ **超限必须是"致命"，不许被重试 3×3 轮**（这条测试直接问引擎的分类器）。
+    ///
+    ///   为什么值得单开一条：我第一版的文案是"响应体超过这个类别的体积上限：…"，
+    ///   而 `domain::failure::classify_message` 里致命那一组认的是
+    ///   `磁盘满/权限/校验/大小不对/没下完/…` —— **一个都不匹配**，
+    ///   于是这条错误被判成 `Retryable`：3 轮退避 + 换源重下 + 批次层再 3 轮，
+    ///   十几秒后给用户看到同一句话（审计原话：retrying just makes the UI lie
+    ///   for longer）。现在文案里带上判据认得的那几个词，这条测试钉住它。
+    #[test]
+    fn over_cap_error_is_fatal_not_retryable() {
+        use crate::domain::archive_guard::{ArtifactClass, ByteCap};
+        let cap = ByteCap::for_class(ArtifactClass::Image);
+        let err = cap_exceeded_error("图标 故意超限.png", cap, 999 * 1024 * 1024);
+        assert_eq!(
+            err.class(),
+            FailureClass::Fatal,
+            "★ 超限必须判成致命（否则会白烧 3×3 轮重试与退避）：{err}"
+        );
+        assert!(
+            err.fatal_without_trying_other_sources(),
+            "★ 也不该去换源重下同一份超限的东西"
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("体积上限"), "文案要给人看得懂的原因：{msg}");
+        assert!(msg.contains("故意超限"), "要点名是哪个文件：{msg}");
+    }
+
     /// 长度对不上（少了）→ 必须失败，**不许**把半份文件当成功交上去。
     ///   这一条守着"没有 SHA1 的任务"（任务表里确实有这种：整合包文件缺 sha1 字段）。
     #[tokio::test]
@@ -3969,12 +5588,14 @@ mod tests {
             &manager,
             &server.url(),
             &part,
-            "",
+            &ExpectedHash::None,
             &CancelToken::new(),
             0,
             0,
             false,
             200,
+            "测试",
+            crate::domain::archive_guard::ByteCap::unlimited(),
         )
         .await
         .expect_err("半份文件不许当成功");
@@ -3995,12 +5616,14 @@ mod tests {
             &manager,
             &server.url(),
             &part,
-            "",
+            &ExpectedHash::None,
             &CancelToken::new(),
             0,
             0,
             false,
             256,
+            "测试",
+            crate::domain::archive_guard::ByteCap::unlimited(),
         )
         .await
         .expect("长度一致就该成功");
@@ -4019,12 +5642,14 @@ mod tests {
             &manager,
             &server.url(),
             &part,
-            "",
+            &ExpectedHash::None,
             &CancelToken::new(),
             0,
             0,
             false,
             0,
+            "测试",
+            crate::domain::archive_guard::ByteCap::unlimited(),
         )
         .await
         .expect("大小未知时不该因为长度判失败");
@@ -4052,12 +5677,14 @@ mod tests {
             &manager,
             &server.url(),
             &part,
-            "",
+            &ExpectedHash::None,
             &CancelToken::new(),
             60,
             0,
             false,
             100,
+            "测试",
+            crate::domain::archive_guard::ByteCap::unlimited(),
         )
         .await
         .expect("偏移与总大小都对 → 续传成功");
@@ -4086,12 +5713,14 @@ mod tests {
             &manager,
             &server.url(),
             &part,
-            "",
+            &ExpectedHash::None,
             &CancelToken::new(),
             500,
             0,
             false,
             80,
+            "测试",
+            crate::domain::archive_guard::ByteCap::unlimited(),
         )
         .await
         .expect("416 之后应当自己重下成功");
@@ -4333,6 +5962,690 @@ mod tests {
         let (net, copies) = dedup_pass(vec![mk("a"), mk("b"), mk("c")]);
         assert_eq!(net.len(), 3);
         assert!(copies.is_empty());
+    }
+
+    /* ==================================================================
+     * 判据 2：**去重键是目标路径**（不是内容哈希）+ 每路径一把锁
+     * ================================================================== */
+
+    /// ★★★★ **这一条守的就是审计点名的那个竞态。**
+    ///
+    ///   同一个目标路径、**不同哈希**（一条有、一条空）：
+    ///
+    ///   ```text
+    ///     任务 A：path=P, sha1=H1     ← 正常解析出来的那条
+    ///     任务 B：path=P, sha1=""     ← .mrpack 没给哈希 / commands_real.rs:10818
+    ///   ```
+    ///
+    ///   按**内容哈希**去重时它们看起来是两个不同文件 ⇒ 两个 worker 同时写 P：
+    ///   一个 `create_part`（截断）、一个 `open_part_append`（追加），各自 rename。
+    ///   结果是**"长度对、内容错"**，而空哈希那条**发现不了**（它不校验）。
+    ///
+    ///   ⇒ 判据：**同一个目标路径只许留下一条任务**，并且留下的必须是
+    ///     **有哈希的那条**（它落位后我们**能证明**它是对的）。
+    #[test]
+    fn same_path_different_hash_keeps_only_one_task() {
+        let shared = PathBuf::from("mods/sodium.jar");
+        let with_hash = DownloadTask::new(
+            shared.clone(),
+            "https://cdn.modrinth.com/sodium.jar".into(),
+            "H1".into(),
+            10,
+            "mods/sodium.jar（有哈希）".into(),
+        );
+        let without_hash = DownloadTask::new(
+            shared.clone(),
+            "https://example.invalid/sodium.jar".into(),
+            String::new(),
+            0,
+            "mods/sodium.jar（没哈希）".into(),
+        );
+
+        // ① 有哈希的在前：留下的当然是它
+        let (net, copies) = dedup_pass(vec![with_hash.clone(), without_hash.clone()]);
+        assert_eq!(
+            net.len(),
+            1,
+            "★ 同一个目标路径只许留下**一条**任务 —— 两条会让两个 worker 同时写它"
+        );
+        assert!(copies.is_empty(), "同路径不是「复制」关系");
+        assert_eq!(net[0].sha1, "H1", "留下的是有哈希的那条");
+
+        // ② ★ 反过来（没哈希的在前）：仍然必须留下**有哈希**的那条
+        //    —— "先出现的优先"这一条不适用于"一条有哈希、一条没有"
+        let (net2, copies2) = dedup_pass(vec![without_hash, with_hash]);
+        assert_eq!(net2.len(), 1, "顺序反过来也只留一条");
+        assert!(
+            net2[0].expected_hash().is_some(),
+            "★★ 必须保留**有校验值**的那条：换成没哈希的那条，
+             这个文件落位之后就永远无法被证明是对的了（这正是审计那条 \
+             「None 不能悄悄等于成功」的现场）"
+        );
+        assert_eq!(net2[0].sha1, "H1");
+        assert!(copies2.is_empty());
+    }
+
+    /// 同内容、同路径：只下一次（老行为，仍然要成立 —— 1.20.1 有 23 个这样的条目）
+    #[test]
+    fn same_hash_same_path_still_deduped() {
+        let p = PathBuf::from("assets/objects/6e/6ea4e448");
+        let mk = |label: &str| {
+            DownloadTask::new(p.clone(), "https://r/6e".into(), "6ea4e448".into(), 9227, label.into())
+        };
+        let (net, copies) = dedup_pass(vec![mk("a"), mk("b")]);
+        assert_eq!(net.len(), 1);
+        assert!(copies.is_empty());
+    }
+
+    /// 同路径但写成了不同的字符串形状（`\` vs `/`、大小写）→ **必须当成同一个路径**。
+    ///
+    ///   ★ 这是"锁与去重用同一个 `path_key`"的意义所在：拿原样字符串当键，
+    ///     锁就漏了 —— 而漏掉的正是"两个 worker 写同一个文件"。
+    #[test]
+    fn path_key_normalizes_separators_and_case() {
+        // 不需要盘上真实存在：父目录 canonicalize 失败时退回"只统一分隔符+小写"
+        let a = path_key(Path::new("Mods/Sub/Sodium.JAR"));
+        let b = path_key(Path::new("mods\\sub\\sodium.jar"));
+        let c = path_key(Path::new("mods/sub/sodium.jar"));
+        if cfg!(windows) {
+            assert_eq!(a, b, "★ 反斜杠与正斜杠必须归一（Windows 上两种都有人写）");
+            assert_eq!(b, c, "★ 大小写必须归一（NTFS 默认大小写不敏感）");
+        } else {
+            // Unix 上大小写是**有意义**的，不许合并
+            assert_eq!(b, c);
+            assert_ne!(a, c, "Unix 上 Sodium.JAR 与 sodium.jar 是两个文件");
+        }
+    }
+
+    /// ★ 路径锁的簿记**不许泄漏**（map 大小必须恒等于"正在写的路径数"）。
+    ///
+    ///   判据是纯逻辑的：拿两把锁、放掉、再确认条目不在了。
+    ///   （不需要 tokio 运行时 —— `get` / `release` 都是同步的。）
+    #[test]
+    fn path_lock_registry_does_not_leak_entries() {
+        let locks = PathLocks::new();
+        let p1 = PathBuf::from("a/one.jar");
+        let p2 = PathBuf::from("b/two.jar");
+
+        let l1 = locks.get(&p1);
+        let l2 = locks.get(&p2);
+        assert_eq!(locks.len(), 2, "两条路径 → 两个条目");
+        // ★ 同一个键必须拿到**同一个** Arc（否则锁就不互斥了）
+        assert!(Arc::ptr_eq(&l1, &locks.get(&p1)), "同一个路径必须是同一把锁");
+
+        drop(l1);
+        locks.release(&p1);
+        assert_eq!(locks.len(), 1, "放掉的条目必须被删掉（否则 map 会一直长）");
+
+        drop(l2);
+        locks.release(&p2);
+        assert_eq!(locks.len(), 0, "全部放掉之后 map 必须是空的");
+    }
+
+    /// ★ 还有别人拿着这把锁时，`release` **不许**把条目删掉
+    ///   （删了就会有人拿到一把"全新的锁"→ 互斥当场失效）。
+    #[test]
+    fn path_lock_release_keeps_entry_while_still_held() {
+        let locks = PathLocks::new();
+        let p = PathBuf::from("a/held.jar");
+        let first = locks.get(&p);
+        let second = locks.get(&p); // 另一个持有者
+        assert!(Arc::ptr_eq(&first, &second));
+
+        drop(first);
+        locks.release(&p);
+        assert_eq!(locks.len(), 1, "★ 还有人拿着 → 条目不能删（删了互斥就没了）");
+
+        drop(second);
+        locks.release(&p);
+        assert_eq!(locks.len(), 0);
+    }
+
+    /* ==================================================================
+     * 判据 3：没有校验值 ≠ 校验通过
+     * ================================================================== */
+
+    /// ★★★★ **审计第 102 行的那一条**：`None` 不许悄悄等于成功。
+    ///
+    ///   现场（`commands_real.rs:10818-10820`）：
+    ///   `DownloadTask::new(dest, url, String::new(), 0, path)` —— `sha1="" size=0`。
+    ///   老实现下 `verify_existing` 走 `if task.size == 0 || len == task.size { Ok }`
+    ///   ⇒ **任何已存在的文件**都算缓存命中 ⇒ `download_one_with` 直接
+    ///   `return Ok(true)`（跳过）—— 一个内容完全不对的文件会被当成"下好了"。
+    ///
+    ///   ⇒ 新判据：这一档返回 [`VerifyOutcome::Unverified`]（**照旧不重下**，
+    ///     但**必须说出来**：`length_checked = false` 表示连长度都没比过）。
+    #[tokio::test]
+    async fn existing_file_without_any_hash_is_reported_unverified_not_ok() {
+        let dir = std::env::temp_dir().join(format!("ieml-unverified-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("mystery.jar");
+        // 一个"内容随便、长度也不知道对不对"的已存在文件
+        std::fs::write(&target, b"whatever the user left here").unwrap();
+
+        let task = DownloadTask::new(
+            target.clone(),
+            "https://example.invalid/mystery.jar".into(),
+            String::new(),
+            0, // ★ size=0：这正是 `commands_real.rs` 那条补齐路径的形状
+            "mystery.jar".into(),
+        );
+
+        match verify_existing(&task, &task.expected_hash()).await {
+            VerifyOutcome::Unverified { length_checked } => {
+                assert!(
+                    !length_checked,
+                    "size=0 时**连长度都没比过** —— 必须如实说 false"
+                );
+            }
+            VerifyOutcome::Ok => panic!(
+                "★ `size == 0` 且没有校验值时返回 Ok 就是审计点名的那条「悄悄成功」：\
+                 任何已存在的文件都会被当成缓存命中"
+            ),
+            _ => panic!("这一档必须是 Unverified"),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 反向：**有校验值**且对得上 → 仍然是 `Ok`（别把正常缓存命中改坏）
+    #[tokio::test]
+    async fn existing_file_with_matching_hash_is_still_ok() {
+        let dir = std::env::temp_dir().join(format!("ieml-verified-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("good.jar");
+        let body = b"the right bytes\n".to_vec();
+        std::fs::write(&target, &body).unwrap();
+
+        let sha1 = {
+            use sha1::{Digest, Sha1};
+            let mut h = Sha1::new();
+            h.update(&body);
+            h.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>()
+        };
+        let task = DownloadTask::new(
+            target.clone(),
+            "https://example.invalid/good.jar".into(),
+            sha1,
+            body.len() as u64,
+            "good.jar".into(),
+        );
+        assert!(
+            matches!(
+                verify_existing(&task, &task.expected_hash()).await,
+                VerifyOutcome::Ok
+            ),
+            "SHA1 对得上就是缓存命中"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **无校验值但知道大小、且长度对得上** → 仍然是 `Unverified`，
+    ///   但 `length_checked = true`（"用长度兜了一层"这件事要说准）。
+    #[tokio::test]
+    async fn unverified_with_matching_length_says_length_checked() {
+        let dir = std::env::temp_dir().join(format!("ieml-unv-len-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("sized.bin");
+        std::fs::write(&target, vec![7u8; 128]).unwrap();
+
+        let task = DownloadTask::new(
+            target.clone(),
+            "https://example.invalid/sized.bin".into(),
+            String::new(),
+            128, // 任务知道大小
+            "sized.bin".into(),
+        );
+        match verify_existing(&task, &task.expected_hash()).await {
+            VerifyOutcome::Unverified { length_checked } => assert!(length_checked),
+            _ => panic!("没有校验值就是 Unverified（哪怕长度对得上）"),
+        }
+
+        // 长度**对不上** → 那是确定的失败（原来的 Mismatch 行为不许丢）
+        let bad = DownloadTask::new(
+            target.clone(),
+            "https://example.invalid/sized.bin".into(),
+            String::new(),
+            999,
+            "sized.bin".into(),
+        );
+        assert!(
+            matches!(
+                verify_existing(&bad, &bad.expected_hash()).await,
+                VerifyOutcome::Mismatch { .. }
+            ),
+            "无校验值 + 长度不符 ⇒ 必须判失败（长度是唯一的判据）"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 明确声明"这个源没有发布校验值"（`without_verification`）——
+    ///   与"我们没解析出来"（`sha1=""` 但没声明）在**类型上**是同一档，
+    ///   但落进 `unverified` 清单的行为一致（两档都不校验、都要如实上报）。
+    #[test]
+    fn without_verification_declares_none() {
+        let t = DownloadTask::new(
+            PathBuf::from("x.jar"),
+            "https://x/y".into(),
+            "SOMEHASH".into(),
+            5,
+            "x".into(),
+        )
+        .without_verification();
+        assert!(t.expected_hash().is_none(), "声明之后就是「确实没有校验值」");
+        assert!(t.sha1.is_empty(), "同时把老口径的字段清掉，避免两条判据打架");
+    }
+
+    /// ★ `ExpectedHash` 的三态语义（判据 1 的 sha512 形状先立住）
+    #[tokio::test]
+    async fn expected_hash_three_states() {
+        let dir = std::env::temp_dir().join(format!("ieml-eh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("h.bin");
+        let body = b"hello\n".to_vec();
+        std::fs::write(&f, &body).unwrap();
+
+        let sha1 = {
+            use sha1::{Digest, Sha1};
+            let mut h = Sha1::new();
+            h.update(&body);
+            h.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>()
+        };
+        let sha512 = {
+            use sha2::Digest as _;
+            let mut h = sha2::Sha512::new();
+            h.update(&body);
+            h.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>()
+        };
+
+        assert_eq!(ExpectedHash::Sha1(sha1.clone()).verify_file(&f).await, Some(true));
+        assert_eq!(ExpectedHash::Sha512(sha512).verify_file(&f).await, Some(true));
+        assert_eq!(
+            ExpectedHash::None.verify_file(&f).await,
+            None,
+            "★ 没有校验值 ⇒ 返回 None（= 无从判断），**不是** true"
+        );
+        // 错的哈希必须 false
+        assert_eq!(
+            ExpectedHash::Sha1("0".repeat(40)).verify_file(&f).await,
+            Some(false)
+        );
+        assert_eq!(ExpectedHash::from_sha1(""), ExpectedHash::None);
+        assert_eq!(
+            ExpectedHash::from_sha1(&sha1),
+            ExpectedHash::Sha1(sha1.clone())
+        );
+        assert_eq!(ExpectedHash::Sha1(sha1).algo(), "SHA1");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /* ==================================================================
+     * 判据 1：**错误分类**（致命立刻结束，不吃 3×3 预算）
+     * ================================================================== */
+
+    /// ★★★★ **404 不许吃满 `3 × 3` 次预算**（审计的 "fatal: 404/403"）。
+    ///
+    ///   ## 修之前是什么样
+    ///
+    ///   `NetError::is_retryable()` 的实现是 `!matches!(self, Cancelled)`
+    ///   —— **除取消全可重试**。于是"这个地址上没有这个文件"这个**确定的结论**
+    ///   要花 `MAX_FILE_RETRIES(3) × MAX_BATCH_ROUNDS(3) = 9` 次请求，
+    ///   每轮之间还有 0.6→10 秒的退避。
+    ///   ★ 而同一个仓库的**元数据路径早就是对的**（`get_text_with_headers`：
+    ///     一次 4xx 就返回）—— 只有下载这条路漏改了。
+    ///
+    ///   ## 这条测试断言什么
+    ///
+    ///     ① 那个 404 地址**只被请求了一次**（不是 3 次、更不是 9 次）；
+    ///     ② 但候选源列表**照旧走完**，第二个地址成功了。
+    ///
+    ///   ★ ② 是有意的：`fatal_without_trying_other_sources` 把
+    ///     "与 URL 相关的 4xx"排除在外 —— 候选源之间可能是**完全不同的仓库**
+    ///     （Mojang 的库 + BMCLAPI 就是不同的路径），一条路上 404 的文件
+    ///     在另一条路上真的有。那不是"重试"，是"换个地方找"。
+    #[tokio::test]
+    async fn fatal_404_does_not_burn_the_retry_budget() {
+        let server = FakeServer::start(|_idx, _range| (404, vec![], Vec::new()));
+
+        let dir = std::env::temp_dir().join(format!("ieml-404-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("gone.jar");
+
+        let task = DownloadTask::new(
+            target.clone(),
+            server.url(),
+            String::new(),
+            4096,
+            "gone.jar".into(),
+        );
+
+        let manager = SourceManager::for_test();
+        let err = download_one_with(&manager, &task, Source::Mojang, &CancelToken::new())
+            .await
+            .expect_err("404 必须报错");
+
+        let hits = server.ranges().len();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("404"),
+            "★ 错误信息必须保留状态码（上层要能分辨「确实没有」与「网络不好」）：{msg}"
+        );
+        assert!(
+            hits <= 1,
+            "★ 404 是**确定的失败**，同一个地址只许请求一次；实际请求了 {hits} 次 \
+             —— 修之前这里会走满 `MAX_FILE_RETRIES(3) × MAX_BATCH_ROUNDS(3) = 9` 次 \
+             加退避（`is_retryable` 当时是「除取消全可重试」）"
+        );
+        assert!(!target.exists(), "失败时不许留下成品文件");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★★ 404 是**致命**的，但"换一条**不同**的地址"是另一回事：
+    ///   候选源之间可能是完全不同的仓库（Mojang 的库 + BMCLAPI 就是不同的路径），
+    ///   一条路上 404 的文件在另一条路上真的有。
+    ///
+    ///   ⇒ `fatal_without_trying_other_sources` 把"与 URL 相关的 4xx"排除在外：
+    ///     同一个 URL 一次就收场（上一条测试钉着），但候选列表照旧走完。
+    ///   ★ 这条测试证明"照旧走完"是真的会发生 —— 否则那句注释就只是意图。
+    #[tokio::test]
+    async fn a_404_on_one_candidate_still_tries_the_next_one() {
+        const TOTAL: u64 = 64 * 1024;
+        // 好地址：一个"完整实现"的替身（HEAD 报真实大小、GET 给整份）
+        let (good, _peak) = start_full(TOTAL, std::time::Duration::ZERO);
+        let bad = FakeServer::start(|_idx, _range| (404, vec![], Vec::new()));
+
+        let dir = std::env::temp_dir().join(format!("ieml-404-alt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("alt.jar");
+
+        /*
+         * ★ 用**查询串**把"好地址"与"坏地址"分开 —— `FakeServer::url()` 忽略
+         *   路径（见那里的说明），而 `source::candidates_with` 会把
+         *   `task.urls` 原样收进来（它按**整个 URL** 判重，所以带查询串的
+         *   那一条是**另一个候选**）。
+         */
+        let mut task = DownloadTask::new(
+            target.clone(),
+            bad.url(), // 主地址：404
+            String::new(),
+            TOTAL,
+            "alt.jar".into(),
+        );
+        task.urls = vec![format!("{}?alt=1", good.url())];
+
+        let manager = SourceManager::for_test();
+        let out = download_one_with(&manager, &task, Source::Mojang, &CancelToken::new()).await;
+
+        assert!(
+            out.is_ok(),
+            "★ 坏地址 404 之后必须去试下一个候选（换路径/换仓库是有意义的）：{:?}",
+            out.err().map(|e| e.to_string())
+        );
+        assert!(target.is_file(), "第二个候选成功了，文件必须落位");
+        assert_eq!(
+            tokio::fs::metadata(&target).await.map(|m| m.len()).unwrap_or(0),
+            TOTAL
+        );
+        assert!(
+            bad.ranges().len() <= 1,
+            "坏地址仍然只许请求一次（换源不等于重试同一个地址）"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★★★★ **校验不符必须拒绝，而且最终文件绝不创建。**
+    ///
+    ///   审计："A body that hashes wrong is rejected and the final file is never
+    ///   created"（八个必测项里的第 2 条）。
+    ///
+    ///   这条同时钉住两条纪律：
+    ///     ① 校验是在**改成正式名字之前**做的（`<target>.part` 上算完哈希才 rename）
+    ///        —— 否则"坏文件 + 正确文件名"会被别的代码（启动流程 / 完整性校验）
+    ///        当成好文件用；
+    ///     ② 校验不符时 **`.part` 也要被删掉**（留着它下一轮会被当成
+    ///        "断点续传的进度"）。
+    #[tokio::test]
+    async fn hash_mismatch_is_rejected_and_no_final_file_is_created() {
+        // 服务端给的内容是错的（和期望的哈希对不上）
+        let server = FakeServer::start(|_idx, _range| (200, vec![], vec![b'B'; 512]));
+        let dir = std::env::temp_dir().join(format!("ieml-badhash-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("corrupt.jar");
+
+        let task = DownloadTask::new(
+            target.clone(),
+            server.url(),
+            // 一个**肯定不等于**那 512 个 'B' 的哈希
+            "0".repeat(40),
+            512,
+            "corrupt.jar".into(),
+        );
+
+        let manager = SourceManager::for_test();
+        let err = download_one_with(&manager, &task, Source::Mojang, &CancelToken::new())
+            .await
+            .expect_err("哈希对不上必须报错");
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("校验失败"),
+            "★ 错误信息必须点明「校验失败」（下游 `run_round` 正是靠这句文案 \
+             数 `repaired_files`）：{msg}"
+        );
+        assert!(
+            !target.exists(),
+            "★★ 校验不符时**最终文件绝不能创建** —— 一个内容错误的 \
+             `corrupt.jar` 会被启动流程当成好文件用"
+        );
+        assert!(
+            !part_path(&target).exists(),
+            "★ 坏 `.part` 必须删掉：留着它下一轮会被当成「断点续传的进度」，\
+             而它的内容是错的"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★★★★ **同一个目标路径只许被写一次**（判据 2 的引擎级断言）。
+    ///
+    ///   ## 为什么两个方向都要测（这一条是"尺子"）
+    ///
+    ///   ① **同路径**：两个任务并发下同一个文件 → 服务器只该收到 **1 次** GET；
+    ///   ② **不同路径（对照组）**：同样的两个任务、只是落点不同 →
+    ///      服务器**必须**收到 2 次 GET。
+    ///
+    ///   ★ ② 是这条测试的价值所在：如果我只测①，那么"服务器请求数是 1"
+    ///     既可能是**路径锁**起了作用，也可能是**假服务器/客户端根本没并发**
+    ///     （这个仓库被这种"看起来像结论的数字"骗过三次）。
+    ///     有了②，"请求数 = 1"才是**判据**而不是巧合。
+    ///
+    ///   ## 为什么要绕过 `download_batch`
+    ///
+    ///   `dedup_pass`（判据 2 的另一半）会把同路径的两条任务**提前**合成一条 ——
+    ///   那样就测不到锁了。所以这里直接并发调两次 `download_one_with`：
+    ///   那才是"两个 worker 同时写同一个文件"的真实形状
+    ///   （`installer.rs` 与 `commands_real.rs` 都会直接调它）。
+    #[tokio::test]
+    async fn two_workers_on_the_same_path_write_it_once() {
+        const TOTAL: u64 = 64 * 1024;
+
+        /// 跑一对任务，返回服务器收到的 GET 次数
+        async fn run_pair(same_path: bool, tag: &str) -> (usize, PathBuf, std::path::PathBuf) {
+            // ★ 每个请求停 300ms：让"两条任务同时开跑"这件事真的发生
+            let (server, _peak) = start_full(TOTAL, std::time::Duration::from_millis(300));
+            let url = server.url();
+
+            let dir = std::env::temp_dir().join(format!("ieml-once-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let target = dir.join("same.bin");
+            let other = dir.join("other.bin");
+
+            let t1 = DownloadTask::new(target.clone(), url.clone(), String::new(), TOTAL, format!("{tag} A"))
+                .without_verification();
+            let t2 = DownloadTask::new(
+                if same_path { target.clone() } else { other },
+                url.clone(),
+                String::new(),
+                TOTAL,
+                format!("{tag} B"),
+            )
+            .without_verification();
+
+            // ★ 两个独立的取消令牌要先绑成变量：`&CancelToken::new()` 这种临时值
+            //   活不过 `join!`（编译器当场拒绝）
+            let c1 = CancelToken::new();
+            let c2 = CancelToken::new();
+            let (a, b) = tokio::join!(
+                download_one(&t1, Source::Mojang, &c1),
+                download_one(&t2, Source::Mojang, &c2),
+            );
+            assert!(a.is_ok(), "A 应当成功：{:?}", a.err().map(|e| e.to_string()));
+            assert!(b.is_ok(), "B 应当成功：{:?}", b.err().map(|e| e.to_string()));
+
+            // ★ 只数真正的 GET（`start_full` 的 HEAD 是大小探测，不算下载）
+            let gets = server
+                .ranges()
+                .iter()
+                .filter(|r| r.is_none())
+                .count();
+            (gets, target, dir)
+        }
+
+        // ① 同路径：只许写一次
+        let (gets_same, target, dir) = run_pair(true, "same").await;
+        println!("  同路径：服务器收到 {gets_same} 次 GET");
+        assert!(
+            gets_same <= 1,
+            "★★ 同一个目标路径**只许被写一次**：服务器收到了 {gets_same} 次 GET。\
+             两个 worker 同时写同一个 `.part`（一个 `create_part` 截断、\
+             一个 `open_part_append` 追加）会得到「长度对、内容错」的缓存条目 ——\
+             而空哈希那条**发现不了**（审计：One worker per destination path）"
+        );
+        assert_eq!(
+            tokio::fs::metadata(&target).await.map(|m| m.len()).unwrap_or(0),
+            TOTAL,
+            "落位的文件必须是完整的"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // ② ★ 对照组：**不同路径**下，同样的两个任务必须各自下一份
+        let (gets_diff, _, dir2) = run_pair(false, "diff").await;
+        println!("  不同路径（对照）：服务器收到 {gets_diff} 次 GET");
+        assert!(
+            gets_diff >= 2,
+            "★★ **尺子自检**：不同目标路径时服务器必须收到 2 次 GET，实得 {gets_diff} 次。\
+             若这一条不成立，说明「同路径只收到 1 次」**证明不了任何事** ——\
+             那可能只是两条任务没有真的并发（这个仓库被这种假结论骗过三次）"
+        );
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    /// ★★ 判据 3 的引擎级断言：**"校验中"这一档必须至少出现过一次**，
+    ///   而且每一批的最后一条事件必须是 `done`。
+    ///
+    ///   审计：*"Verifying" being invisible is why a hash check over a large
+    ///   store looks like a hang.*
+    #[tokio::test]
+    async fn progress_reports_a_verifying_phase_and_ends_with_done() {
+        let body = b"phase check body\n".to_vec();
+        let want_sha1 = {
+            use sha1::{Digest, Sha1};
+            let mut h = Sha1::new();
+            h.update(&body);
+            h.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>()
+        };
+        let b2 = body.clone();
+        let server = FakeServer::start(move |_idx, _range| (200, vec![], b2.clone()));
+
+        let dir = std::env::temp_dir().join(format!("ieml-phase-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let phases: Arc<std::sync::Mutex<Vec<(ProgressPhase, String)>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = Arc::clone(&phases);
+
+        let mut opts = BatchOptions::new(2, Source::Mojang, CancelToken::new());
+        opts.on_progress = Arc::new(move |p: DownloadProgress| {
+            seen.lock().unwrap().push((p.phase, p.current_file.clone()));
+        });
+
+        let t = DownloadTask::new(
+            dir.join("phased.bin"),
+            server.url(),
+            want_sha1,
+            body.len() as u64,
+            "phased.bin".into(),
+        );
+        download_batch(vec![t], opts).await.expect("应当成功");
+
+        let log = phases.lock().unwrap().clone();
+        assert!(!log.is_empty(), "至少要发过一条进度事件");
+        assert!(
+            log.iter().any(|(p, _)| *p == ProgressPhase::Verifying),
+            "★★ **必须至少上报一次「校验中」** —— 以前这条路径完全静默，\
+             用户把哈希校验看成卡住（审计的 Progress 那一节）：{log:?}"
+        );
+        assert_eq!(
+            log.last().unwrap().0,
+            ProgressPhase::Done,
+            "最后一条事件的阶段必须是 done（否则界面会停在一个已经跑完的批次上）"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★★ 取消之后：**目标目录里不能有成品**（审计第 5 条：
+    ///   "Cancellation mid-batch leaves no final files"）。
+    ///
+    ///   这条是老纪律（`.part` + rename），但它是"取消"这条判据的底线，
+    ///   而且新加的**路径锁**必须不在取消路径上泄漏 —— 所以一起钉住。
+    #[tokio::test]
+    async fn cancelled_download_leaves_no_final_file() {
+        // 每段都只给一半：保证"下不完"，同时留出取消的窗口
+        let server = FakeServer::start(|_idx, _range| (200, vec![], vec![b'C'; 1024]));
+
+        let dir = std::env::temp_dir().join(format!("ieml-cancel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("never.bin");
+
+        let cancel = CancelToken::new();
+        cancel.cancel(); // ★ 一开始就取消：一个请求都不该发
+
+        let mut task = DownloadTask::new(
+            target.clone(),
+            server.url(),
+            "f".repeat(40),
+            4096,
+            "never.bin".into(),
+        );
+        task.allow_chunked = true;
+
+        let manager = SourceManager::for_test();
+        let err = download_one_with(&manager, &task, Source::Mojang, &cancel).await;
+        assert!(
+            matches!(err, Err(super::NetError::Cancelled)),
+            "取消必须原样返回 Cancelled（不能变成别的错误）：{:?}",
+            err.map(|b| b)
+        );
+        assert!(!target.exists(), "★ 取消之后不许留下成品文件");
+        assert!(!part_path(&target).exists(), "也不该留下 .part");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /* ---------- 清理残留 ---------- */

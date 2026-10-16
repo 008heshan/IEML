@@ -5,6 +5,10 @@
 
 /// ★ 中文搜 Mod 的别名表（ADR-016）—— 静态词表 + 纯查表，不碰网络
 pub mod alias;
+/// ★★ **压缩包落盘闸门**（Zip Slip / 绝对路径 / ADS / 保留设备名）+ 按类别的体积上限
+///    —— 全仓库**唯一**一份判据：清单路径与解压条目共用（见 `net::installer`
+///    与 `net::adoptium`）。零 `crate::` 依赖，能用 rustc 单独编译跑断言。
+pub mod archive_guard;
 pub mod bridge_range;
 pub mod combination;
 pub mod crash;
@@ -12,6 +16,10 @@ pub mod crash;
 pub mod dropped;
 /// ★ 别人的目录是**谁的**（官方 / PCL / HMCL / Prism…）—— 只认形状，不碰盘（导入见命令层）
 pub mod external;
+/// ★★ **"这次失败该怎么办"**（2026-10 审计结论：下载路径的重试**完全不分类**）——
+///    纯判定：给 HTTP 状态码与 errno，得出 Fatal / Retryable / Busy。
+///    退避、换源、落盘都在 `net/`，这一份只管判据（于是能被 rustc 单编验证）
+pub mod failure;
 pub mod java;
 /// ★★ 版本隔离（ADR-005 三段判定）—— **规则只在这一份**，平台层与界面都读它的结论
 pub mod isolation;
