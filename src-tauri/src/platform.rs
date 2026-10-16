@@ -2630,6 +2630,49 @@ pub fn instance_catalog_repair(paths: &AppPaths) -> CatalogRepair {
                             .collect::<Vec<_>>()
                     })
                     .collect();
+                /*
+                 * ★★★★ 2026-10-16 二修（用户：「**没消失**」）。
+                 *
+                 *   上一版修掉了"版本 JSON 的文件名 ≠ 目录名"，但真机上那一行**还在**。
+                 *   盘上的真相（逐个 JSON 读过）：
+                 *
+                 *     · `versions/1.20.1-fabric-0.19.3/` 里的 JSON 写的是
+                 *       `id = 1.20.1-fabric-0.19.3`、`inheritsFrom = 1.20.1`；
+                 *     · `versions/pack-al3zun/` 里**一个版本 JSON 都没有** ——
+                 *       整合包实例是"自己的游戏目录 + 借用加载器版本的客户端"，
+                 *       它不以 `inheritsFrom` 的形式挂在版本树上。
+                 *
+                 *   ⇒ **没有任何版本声明继承它**，所以"被继承 ⇒ 标基座"这条规则
+                 *     永远不会轮到它（这不是文件名问题，是判据选错了）。
+                 *
+                 *   ⇒ 换一条**直接**判据：实例标记（`versions/<目录>/.ieml/instance.json`）
+                 *     自己就写着"我用哪个加载器版本当基座"——
+                 *       `mcVersion: 1.20.1` + `loader: {kind: fabric, version: 0.19.3}`
+                 *     按启动器落盘时的同名约定拼出 `1.20.1-fabric-0.19.3`，
+                 *     那个目录就不是独立版本。
+                 *
+                 *   ★ 必须排除"自己就是那个版本"：普通的加载器实例（`26.3-fabric-0.19.5`）
+                 *     标记里写的正是它自己 ⇒ 拼出来的名字等于自己的目录名 ⇒ 跳过，
+                 *     否则会把用户自己的实例标成基座（那就从"多一行"变成"少一行"了）。
+                 */
+                let loader_bases: std::collections::HashSet<String> = disk_names
+                    .iter()
+                    .filter_map(|d| {
+                        let v = paths.instance_marker_value(d)?;
+                        let mc = v.get("mcVersion").and_then(|x| x.as_str())?;
+                        let kind = v.pointer("/loader/kind").and_then(|x| x.as_str())?;
+                        let ver = v.pointer("/loader/version").and_then(|x| x.as_str())?;
+                        if mc.is_empty() || kind.is_empty() || ver.is_empty() {
+                            return None;
+                        }
+                        let base = format!("{mc}-{kind}-{ver}");
+                        if base.eq_ignore_ascii_case(d) {
+                            /* 自己就是那个加载器版本 ⇒ 它是实例本身，不是谁的基座 */
+                            return None;
+                        }
+                        Some(base.to_lowercase())
+                    })
+                    .collect();
                 for dir_name in &disk_names {
                     let lower = dir_name.to_lowercase();
                     /*
@@ -2656,7 +2699,7 @@ pub fn instance_catalog_repair(paths: &AppPaths) -> CatalogRepair {
                         }
                         continue;
                     }
-                    if !parents.contains(&lower)
+                    if (!parents.contains(&lower) && !loader_bases.contains(&lower))
                         || buried.contains(&lower)
                         || paths.is_base_version(dir_name)
                     {

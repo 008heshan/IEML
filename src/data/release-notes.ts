@@ -94,6 +94,20 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.21.1',
+    date: '2026-10-16',
+    headline: '这一版修掉两处一眼看得见的毛病。',
+    groups: [
+      {
+        title: '修复了',
+        items: [
+          '修复了 左侧栏选中项的那根竖条会画成两根，而且两根位置差一点。',
+          '修复了 整合包用的加载器基座会被当成一个独立版本列在版本列表里。',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.21.0',
     date: '2026-10-16',
     headline: '这一版给新闻页配上了版本大图，顺手把几处看着不对的地方改了。',

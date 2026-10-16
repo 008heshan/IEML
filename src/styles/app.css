@@ -272,11 +272,12 @@
     transform var(--dur-slow) var(--ease-out),
     height var(--dur-slow) var(--ease-out);
 }
-/* ★ 每项自己的那根竖条删掉（两条旧规则在下面被覆盖成透明；留着会变成两根） */
-.nav-item[aria-current='page']::before,
-.side-link[aria-current='page']::before {
-  content: none;
-}
+/*
+ * ★ 每项自己那根竖条已经**从源头上删掉**了（见 `.nav-item[aria-current='page']`
+ *   与 `.side-link[aria-current='page']` 两处的说明）—— 这里不再需要"覆盖成
+ *   content: none"的兜底写法：那种写法正是上一版失败的原因（写在了原规则**前面**，
+ *   被后面的同权重规则盖掉，等于没删）。
+ */
 
 /*
  * 名字气泡（图标轨的核心）：
@@ -323,18 +324,17 @@
   font-weight: 600;
   position: relative;
 }
-.nav-item[aria-current='page']::before {
-  content: '';
-  position: absolute;
-  /* ★ 图标轨：小竖条贴在这条轨道自己的左边缘（方块左边还有 12px 的居中留白） */
-  left: calc(-1 * var(--space-3));
-  top: 50%;
-  transform: translateY(-50%);
-  width: 3px;
-  height: 18px;
-  border-radius: var(--radius-full);
-  background: var(--accent);
-}
+/*
+ * ★★ 2026-10-16（用户：「左侧栏的图标位置一个没对齐，并且下面三个还是有两个 tab 条」）：
+ *   这里原来每一项自己画一根小竖条（`::before`）。加了容器级的滑动指示条
+ *   （`.rail-ind`）之后，两者**同时存在** ⇒ 一组里看着"两根条"。
+ *   ★ 而且两根的 x **不一样**：这一根是 `left: calc(-1 * var(--space-3))`（合到 x=0），
+ *     下面那组（`.side-link`）写的是 `left: 2px`（相对自己那格 ⇒ x=14）——
+ *     这就是"一个没对齐"的来源。
+ *   ⇒ 每项自己的竖条一律删掉；"我在哪一页"**只有一条**会滑动的指示条。
+ *   ★ 教训（这个仓库第二次栽在同一件事上）：删除一条老规则时，
+ *     **必须搜一遍同名选择器**——后写的同权重规则会赢，删前面那处等于没删。
+ */
 .nav-item svg {
   width: 17px;
   height: 17px;
@@ -4122,17 +4122,12 @@ tbody tr.clickable:focus-visible {
   font-weight: 600;
   position: relative;
 }
-.side-link[aria-current='page']::before {
-  content: '';
-  position: absolute;
-  left: 2px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 3px;
-  height: 16px;
-  border-radius: var(--radius-full);
-  background: var(--accent);
-}
+/*
+ * ★ 这一项自己的竖条也删了（2026-10-16）：它与容器级的滑动指示条（`.rail-ind`）叠在一起，
+ *   而且它的 `left: 2px` 是相对**自己那格**算的（x=14），滑动条贴的是轨道左边缘（x=0）——
+ *   两根条 + 错开 14px，正是用户说的"没对齐 + 两个 tab 条"。详见 app.css 里
+ *   `.rail-ind` 那一节与 `.nav-item[aria-current]` 上的同一条说明。
+ */
 
 /* ============================================================================
    ★★ 文本与图标的**抗锯齿**（2026-09-23，用户：「文本和图标的抗锯齿再做的好一些」）
