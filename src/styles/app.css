@@ -255,10 +255,24 @@
  *   · 会滑：`transform` / `height` 过渡（不碰 `top`，那会触发重排）。
  *   · 容器必须有 `position: relative`（下面两条）。
  */
+/*
+ * ★★ 2026-10-16 三修（用户：「**上下图标没对齐**」）。
+ *
+ *   给这两条容器加 `width: 100%`（滑动指示条要按容器定位）之后，它们从
+ *   "由 `.sidebar` 的 `align-items: center` 居中的收缩宽度" 变成了**整宽块** ——
+ *   于是里面的 40×40 方块退回**左对齐**（x=0），图标在 64px 轨道里看着偏左；
+ *   而两组又各偏各的，看起来就是"上下没对齐"。
+ *
+ *   ⇒ 容器自己也要"把子项居中"：`display: flex` + `align-items: center`。
+ *     宽度仍然是 100%（指示条照旧贴左边缘 x=0），只是方块回到轨道中线。
+ */
 .sidebar nav,
 .side-links {
   position: relative;
   width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 .rail-ind {
   position: absolute;
@@ -959,12 +973,15 @@
   color: var(--text-primary);
 }
 .side-link svg {
-  width: 14px;
-  height: 14px;
+  /* ★★ 2026-10-16 四修（用户：「上下图标没对齐」）：量出来两组图标尺寸不同 ——
+     上面主导航 17px、下面「新闻/更新日志/关于」14px（原来是"次级文字链接"，
+     刻意小一号）。它们现在是同一条轨道里的平级入口，尺寸必须一样。 */
+  width: 17px;
+  height: 17px;
   flex: 0 0 auto;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.9;
+  stroke-width: 2;
   stroke-linecap: round;
 }
 
