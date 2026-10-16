@@ -2501,6 +2501,36 @@
   margin-bottom: 2px;
 }
 
+/*
+ * 「整合包有 N 个文件没下下来」那一块（2026-10-16 事故修复）。
+ *
+ * ★ 为什么要有它：这条信息以前**根本不存在** —— 界面报"安装完成"，
+ *   用户进游戏才被包自带的「Missing Mods」窗口告知缺了什么。
+ *   所以这块要能被看清：**文件名**是用户唯一能拿去网站自己找的线索，
+ *   不能挤成一行灰字。
+ */
+.pack-missing-list {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-4);
+  list-style: disc;
+  display: grid;
+  gap: 2px;
+}
+.pack-missing-name {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+.pack-missing-why {
+  margin-left: var(--space-2);
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+}
+.pack-missing-more {
+  margin-top: var(--space-1);
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+}
+
 /* 滑块 */
 .range {
   -webkit-appearance: none;

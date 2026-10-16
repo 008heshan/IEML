@@ -465,6 +465,7 @@ mod tests {
             skipped: vec![],
             project_id: Some("probe-pack".into()),
             version_id: Some("old-version".into()),
+            missing: vec![],
             files,
         }
     }

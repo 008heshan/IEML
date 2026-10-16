@@ -31,7 +31,7 @@ import {
 } from '../ui/Icons';
 import { useRealApi } from '../hooks/useRealApi';
 // ★ 整合包身份与"有没有新版"（ADR-025 第 4 条）的类型 —— 只借类型，不自己拼结论
-import type { PackInfo, PackUpdateVerdict } from '../bridge/tauri';
+import type { PackInfo, PackScanSummary, PackUpdateVerdict } from '../bridge/tauri';
 // ★ 导出为整合包（ADR-024）：弹窗在 AppShell 里挂载，这里只负责打开它
 import { openExportModpack } from '../components/ExportModpackModal';
 import { installGame } from '../flows/install';
@@ -73,6 +73,15 @@ export function InstanceOverview() {
    * 读不到（不是整合包 / 记录没有）就是 null —— 界面显示一个破折号，不编。
    */
   const [pack, setPack] = useState<PackInfo | null>(null);
+  /**
+   * ★★ 2026-10-16（用户报的"漏下 mod 却报安装完成"）：**记录 / 清单的状态**。
+   *
+   *   `pack`（`pack_info`）只认**安装记录** —— 而事故现场那个实例
+   *   （`.ieml/` 里有 `pack-files.json`、没有记录）在界面上于是**什么都不显示**，
+   *   用户明明缺着 5 个 mod 却找不到任何入口。
+   *   `scan` 立刻回"有没有记录/清单、缺几个"，界面据此决定摆不摆按钮。
+   */
+  const [plan, setPlan] = useState<PackScanSummary | null>(null);
   useEffect(() => {
     if (!api || !inst) return;
     let alive = true;
@@ -83,10 +92,24 @@ export function InstanceOverview() {
         setUpdateVerdict(null);
       }
     });
+    void api.pack
+      .scan(inst.config.slug)
+      .then((s) => {
+        if (alive) setPlan(s);
+      })
+      .catch(() => {
+        // 读不到就当"没有整合包记录"（与 `pack` 为 null 同一档）
+        if (alive) setPlan(null);
+      });
     return () => {
       alive = false;
     };
   }, [api, inst]);
+  /**
+   * 有没有"整合包"这一块可显示：安装记录**或**这一次的清单（`pack-files.json`）。
+   *   ★ 事故现场正是只有清单、没有记录的那种，所以两个都要认。
+   */
+  const hasPackInfo = pack !== null || plan !== null;
   /** 检查 / 补齐共用一个忙碌位：它们是同一件事的两步，界面上也只有一个按钮 */
   const [busy, setBusy] = useState(false);
   /** ★ 检查整合包完整性时用它显示忙碌态（ADR-025） */
@@ -361,10 +384,11 @@ export function InstanceOverview() {
         {/*
           ★★ 2026-09-28（ADR-025）：**检查整合包完整性**。
             装完发现少了几个 Mod 时，用户在这里能看见"缺哪些"，而不是进游戏才知道。
-            没有安装记录（不是整合包装的）时**不显示这个按钮** —— 摆一个点了没用的
-            按钮比不摆更糟。
+            ★ 2026-10-16：判据从"有安装记录"放宽成"**有记录或清单**" ——
+              事故现场那个实例（`.ieml/` 里只有 `pack-files.json`）以前
+              连这个按钮都不出现，用户缺着 5 个 mod 却找不到入口。
         */}
-        {pack ? (
+        {hasPackInfo ? (
           <Button
             size="sm"
             variant="ghost"
@@ -390,6 +414,44 @@ export function InstanceOverview() {
             }}
           >
             检查整合包完整性
+          </Button>
+        ) : null}
+        {/*
+          ★★ 2026-10-16（用户报的"漏下 mod 却报安装完成"）：**重新下载缺失的**。
+
+            事故里缺的那 5 个 mod（Balm / FallingTree / FTB Teams / Fabrication /
+            Paintings ++）连下载地址都没解析出来，所以它们在盘上根本没有文件 ——
+            "检查完整性"会说"缺 5 个"，但**没有地方能把它们补回来**。
+            这个按钮就是那个入口：后端会**重新去要一次地址**再下（见 `repair_pack_install`）。
+
+            ★ 一条只在这里说的规矩：`missing_count === 0` 时**不显示** ——
+              摆一个"没有缺失"的按钮是噪音；而"全都要人工下"时后端会给解释，
+              这里照样显示（点了会看到为什么补不了）。
+        */}
+        {(plan?.missing_count ?? 0) > 0 ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            loading={busy}
+            onClick={() => {
+              if (!api || !inst) return;
+              setBusy(true);
+              void api.pack
+                .repair(inst.config.slug, state.prefs.downloadSource)
+                .then((r) => {
+                  toast(
+                    r.failed.length === 0 ? 'ok' : 'warning',
+                    r.failed.length === 0 ? '补好了' : '有一部分没补上',
+                    r.summary,
+                  );
+                  // ★ 补完要重读状态：界面上那个"缺 N 个"跟着变（不重读就是旧数字）
+                  void api.pack.scan(inst.config.slug).then(setPlan).catch(() => {});
+                })
+                .catch((e) => toast('err', '补齐失败', e instanceof Error ? e.message : String(e)))
+                .finally(() => setBusy(false));
+            }}
+          >
+            重新下载缺失的
           </Button>
         ) : null}
         {/*
@@ -525,6 +587,19 @@ export function InstanceOverview() {
           icon={verifyResult.ok ? <IconCheck /> : <IconAlert />}
         >
           {verifyResult.text}
+        </Note>
+      ) : null}
+
+      {/*
+        ★★ 2026-10-16（用户报的"漏下 mod 却报安装完成"）：**缺的那几个要看得见**。
+
+          事故里这句话根本不存在 —— 界面说"安装完成"，游戏里才弹「Missing Mods」。
+          后端算好的人话（`missing_summary`，点名 3 个 + 总数）原样显示，
+          界面不自己拼措辞（拼两遍一定有一次不一致）。
+      */}
+      {(plan?.missing_count ?? 0) > 0 && plan?.missing_summary ? (
+        <Note tone="warning" icon={<IconAlert />}>
+          {plan.missing_summary}
         </Note>
       ) : null}
 

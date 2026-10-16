@@ -29,8 +29,22 @@ import { ResourceCenterBody, VersionPicker } from '../components/ResourceBrowser
 import { autoMemory, compareVersion, isSnapshotVersion, knownVersions } from '../domain';
 // ★ C-26：取消不是故障 —— 判据只有一处（见 `domain/cancel.ts` 的说明）
 import { isCancellation } from '../domain/cancel';
+/*
+ * ★★ 2026-10-16 事故（"漏下 mod 却报安装完成"）用到的两条纯规则：
+ *   · `missingSummary` —— 后端 `missing_summary` 的同一套措辞（这里只在
+ *     后端没给（老版本 / 演示模式）时兜底）；
+ *   · `repairEntry`    —— "要不要给「重新下载」按钮、怎么说"，
+ *     全是只能人工下的那种**不许给按钮**（点了必然失败）。
+ *   两者都有 `tests/pack-missing.test.mjs` 钉着。
+ */
+import { missingSummary, repairEntry } from '../domain/pack-missing';
 import type { Instance } from '../domain';
-import type { ModrinthVersion, ModpackInstallResult, ResourceKindName } from '../bridge/tauri';
+import type {
+  ModrinthVersion,
+  ModpackInstallResult,
+  PackMissingFile,
+  ResourceKindName,
+} from '../bridge/tauri';
 import { registerTaskReplay } from '../flows/install';
 
 /**
@@ -583,6 +597,24 @@ function ModpackTab({
    */
   const [mcFilter, setMcFilter] = useState('');
   const [loaderFilter, setLoaderFilter] = useState('');
+  /**
+   * ★★ 2026-10-16（用户报的"漏下 mod 却报安装完成"）：**这一次装完之后还缺哪几个**。
+   *
+   *   事故里这条信息根本不存在 —— 界面报"整合包装好了"，游戏里才弹
+   *   「Missing Mods」（Balm / FallingTree / FTB Teams / Fabrication /
+   *   Paintings ++）。根因是 CurseForge 的解析地址阶段把失败的条目丢了。
+   *   ★ 缺失时**不跳走**：留在这一屏把"缺哪几个、为什么、怎么补"说完，
+   *     否则用户只看到一句 toast 一闪而过，接着就是游戏里的弹窗。
+   */
+  const [packMissing, setPackMissing] = useState<PackMissingFile[]>([]);
+  /** 正在"重新下载缺失的"（复用补齐命令，它现在会重新去要地址） */
+  const [repairingMissing, setRepairingMissing] = useState(false);
+  /**
+   * 这一次安装用的 slug（`finishPackInstall` 收到它时记下来）。
+   *   ★ "重新下载缺失的"要一个**已经建好的实例**才能补 —— 缺文件时我们
+   *     照样把实例建出来（文件都在盘上，补上的就是缺的那几个）。
+   */
+  const selectedSlugRef = useRef<string | null>(null);
   /*
    * ★★ 2026-09-23：整合包的**来源**（Modrinth / CurseForge）。
    *   用户：「PCL 的整合包可以用 curseforge 啊」—— 它本来就是一个来源选项，
@@ -1229,6 +1261,8 @@ function ModpackTab({
     packName: string,
     slug: string,
   ) {
+    // ★ 记住这一次的 slug：「重新下载缺失的」要用它（见上面的说明）
+    selectedSlugRef.current = slug;
     /*
      * ★★ **被暂停就不算装完**（P0-3）：不许建实例、不许说"安装完成"。
      *
@@ -1286,15 +1320,66 @@ function ModpackTab({
     await createInstance(inst);
 
     patch({ status: 'done', percent: 100, detail: '安装完成' });
+    /*
+     * ★★ 2026-10-16：**"装完了"与"装全了"是两件事**。
+     *
+     *   事故：清单里 338 项，其中 5 个（Balm / FallingTree / FTB Teams /
+     *   Fabrication / Paintings ++）的下载地址没解析出来 ⇒ 下载 333 个全成功
+     *   ⇒ 这里报"整合包装好了"，而游戏里弹出包自带的「Missing Mods」。
+     *
+     *   所以：缺了就说缺了，并且**留在这一屏**给出「重新下载缺失的」入口。
+     *   文案用后端算好的那一句（`missing_summary`），界面不自己拼措辞。
+     */
+    const missing = result.missing_files ?? [];
+    setPackMissing(missing);
+    const entry = repairEntry(missing);
     toast(
-      'ok',
-      '整合包装好了',
-      `${packName} · ${result.mc_version}${
-        result.loader_kind ? ` + ${result.loader_kind}` : ''
-      } · ${result.mod_files} 个文件 + ${result.override_files} 个配置`,
+      missing.length > 0 ? 'warning' : 'ok',
+      missing.length > 0 ? `装好了，但有 ${missing.length} 个 mod 没下下来` : '整合包装好了',
+      missing.length > 0
+        ? `${result.missing_summary ?? ''}${entry.detail ? ` ${entry.detail}` : ''}`
+        : `${packName} · ${result.mc_version}${
+            result.loader_kind ? ` + ${result.loader_kind}` : ''
+          } · ${result.mod_files} 个文件 + ${result.override_files} 个配置`,
     );
+    /*
+     * ★ 缺文件时**不跳走**（也不收掉安装页）：跳走等于把"还缺哪几个"
+     *   从屏幕上抹掉，用户下一次看到它就只能在游戏里 —— 那正是这次事故的样子。
+     *   ★ 实例照样建（`createInstance` 已经在上面跑过了）：文件都在盘上，
+     *     「重新下载缺失的」需要一个**已登记的实例**才能补。
+     */
+    if (missing.length > 0) {
+      patch({ status: 'done', percent: 100, detail: `还缺 ${missing.length} 个文件` });
+      return;
+    }
     setSelected(null);
     go('versions');
+  }
+
+  /**
+   * **重新下载缺失的那几个**（2026-10-16 事故修复的界面入口）。
+   *
+   *   ★ 走的是后端 `repair_pack_install` —— 它现在会先把"当初连地址都没解析出来"
+   *     的条目**重新去要一次地址**再下（与安装时同一份实现、同一套重试）。
+   *   ★ 逐条回报：补好的、没补上的（带原因）都如实说，不静默。
+   */
+  async function redownloadMissing(slug: string) {
+    if (!api) {
+      toast('warning', '演示模式', '浏览器里无法真实下载');
+      return;
+    }
+    setRepairingMissing(true);
+    try {
+      const r = await api.pack.repair(slug, state.prefs.downloadSource);
+      toast(r.failed.length === 0 ? 'ok' : 'warning', '重新下载完成', r.summary);
+      // ★ 补完重读一次状态：还缺哪些要**以盘上为准**，不能用刚才那张旧表
+      const s = await api.pack.scan(slug).catch(() => null);
+      if (s && s.missing_count === 0) setPackMissing([]);
+    } catch (e) {
+      toast('err', '重新下载失败', e instanceof Error ? e.message : String(e));
+    } finally {
+      setRepairingMissing(false);
+    }
   }
 
   /*
@@ -1398,6 +1483,53 @@ function ModpackTab({
   }
 
   /*
+   * ★★ 2026-10-16（用户报的"漏下 mod 却报安装完成"）：**装完之后缺的那几个**。
+   *
+   *   事故形状：界面报"整合包装好了"，游戏里弹包自带的「Missing Mods」
+   *   （Balm / FallingTree / FTB Teams / Fabrication / Paintings ++）。
+   *   根因是 CurseForge 解析下载地址那一段把失败的条目丢了 ——
+   *   这一块就是"丢的那几个"被摆到台面上的地方：
+   *     · 名字、原因（逐条）；
+   *     · 「重新下载缺失的」入口（后端会重新去要地址再下）；
+   *     · 全都要人工下时**不给按钮**，只解释为什么（`repairEntry` 判）。
+   *
+   *   ★ 抽成一份是因为它要在**两个视图**里出现：装完还没离开的那一屏
+   *     （`installTarget`）与整合包列表那一屏（用户返回列表后仍然看得见）。
+   */
+  const missingPanel =
+    packMissing.length > 0 ? (
+      <Note tone="warning" icon={<IconAlert />}>
+        <div>{missingSummary(packMissing)}</div>
+        {repairEntry(packMissing).show ? (
+          <div style={{ marginTop: 'var(--space-2)' }}>
+            <Button
+              size="sm"
+              loading={repairingMissing}
+              onClick={() => {
+                const slug = selectedSlugRef.current;
+                if (!slug) return;
+                void redownloadMissing(slug);
+              }}
+            >
+              重新下载缺失的
+            </Button>
+          </div>
+        ) : null}
+        <ul className="pack-missing-list">
+          {packMissing.slice(0, 8).map((m) => (
+            <li key={m.path}>
+              <span className="pack-missing-name">{m.name}</span>
+              <span className="pack-missing-why">{m.reason}</span>
+            </li>
+          ))}
+        </ul>
+        {packMissing.length > 8 ? (
+          <div className="pack-missing-more">还有 {packMissing.length - 8} 个没列出来</div>
+        ) : null}
+      </Note>
+    ) : null;
+
+  /*
    * ★★ 2026-09-23（用户：「整合包安装为什么没做单开一页的设计」）：
    *   选中一个整合包之后，**整页切成安装页**（列表与筛选都让位），带返回。
    *   与资源那四条同一个观感；安装实现仍是下面这一份，没有第二套。
@@ -1409,6 +1541,8 @@ function ModpackTab({
         <div className="row" style={{ gap: 'var(--space-2)', alignItems: 'center', marginBottom: 'var(--space-3)' }}>
           <h2 className="section-title">安装整合包</h2>
         </div>
+        {/* 装完之后如果要"留在这一屏"（缺文件时就是这样），这一块必须在这里 */}
+        {missingPanel}
 
         <div className="res-detail">
           <div className="res-detail-head">
@@ -1534,6 +1668,8 @@ function ModpackTab({
 
   return (
     <div style={{ marginTop: 'var(--space-4)' }}>
+      {/* ★ 缺的那几个在两个视图里都要看得见（见上面 `missingPanel` 的说明） */}
+      {missingPanel}
       {/*
         ★★ 2026-09-23 用户（截图）：「**整合包页做成这样的排版**」——
           照资源页那套：

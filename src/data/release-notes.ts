@@ -94,6 +94,19 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.21.2',
+    date: '2026-10-16',
+    headline: '这一版修掉整合包少数文件没下下来的问题。',
+    groups: [
+      {
+        title: '修复了',
+        items: [
+          '修复了 整合包少数 mod 没下下来却不提示，现在会重试并告诉你还缺哪几个。',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.21.1',
     date: '2026-10-16',
     headline: '这一版修掉两处一眼看得见的毛病。',

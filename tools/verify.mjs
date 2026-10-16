@@ -202,6 +202,26 @@ results.push([
 ]);
 
 /*
+ * ★★ **整合包"缺了哪几个 mod"的判据**（2026-10-16，用户报的真 bug）。
+ *
+ *   事故：整合包 `Better MC [FABRIC] - BMC2` 装完之后，游戏里弹出包**自带的**
+ *   「Missing Mods」窗口（Balm / FallingTree / FTB Teams / Fabrication /
+ *   Paintings ++），而启动器这边报了「安装完成」；实例目录 `.ieml/` 里
+ *   **什么都没有**，事后连"本来该装什么"都查不出来。
+ *
+ *   为什么这是门禁：这条链上的错全是**沉默**的 ——
+ *     · 缺的东西没人报（界面上一切正常）；
+ *     · 报的条数不对（少算几条，看起来像"都齐了"）；
+ *     · 给出一个**点了必然失败**的「重试」按钮（作者禁止第三方下载的那些）。
+ *   三种都不报错，只是让人上当。规则在 `src/domain/pack-missing.ts`
+ *   （与 Rust `domain/pack_plan.rs` 镜像），这里钉住边界。
+ */
+results.push([
+  '整合包缺失清单',
+  run('整合包缺失清单', 'node', ['--test', 'tests/pack-missing.test.mjs']),
+]);
+
+/*
  * ★★ **`Backend` 只许有扁平方法**（2026-10-15 真机踩过）。
  *
  *   用户截了张图：MC 新闻页上写着「这次没能取到：…news.load is not a function」。

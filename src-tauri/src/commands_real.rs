@@ -123,6 +123,10 @@ fn paused_pack_result(
         completion: None,
         // ★ 同理：没走到"对齐"那一步，就不该报一个空的升级结果
         update: None,
+        // ★ 还没走完计划 ⇒ 谈不上"清单里缺哪几个"（说 0 会让界面显示"没缺东西"）
+        missing_files: Vec::new(),
+        missing_count: 0,
+        missing_summary: String::new(),
     }
 }
 
@@ -8067,6 +8071,16 @@ struct PackPlan {
     overrides_dir: String,
     /// 包**自己**带没带 Fabric API（带了就绝不动它，见 `has_fabric_api` 的说明）
     pack_has_api_library: bool,
+    /*
+     * ★★ 2026-10-16（事故修复）：**这一次该装的全部条目**、以及其中**没弄到手的**。
+     *
+     *   以前 `PackPlan` 只有 `tasks`（解析成功的那些）—— 于是"哪些没解析出来"
+     *   这件事出了这个函数就消失了。现在两条清单都带出去：
+     *     · `all_files` → 落盘成 `<实例>/.ieml/pack-files.json`（可复查、可只重下缺的）；
+     *     · `missing`   → 回传到界面（"有 N 个没下下来"）并写进安装记录。
+     */
+    all_files: Vec<domain::pack_plan::PackPlanFile>,
+    missing: Vec<domain::pack_plan::MissingFile>,
 }
 
 /// 盘上**已经写出的**包体字节数（`.part` 与分片 `.part.N` 都算）。
@@ -8384,6 +8398,9 @@ pub async fn modpack_install(
     };
     let game_dir = state.paths().game_dir_of(&slug);
     let (tasks, skipped) = modrinth::mrpack_download_tasks(&idx, &game_dir);
+    // ★ 清单里的条目全留下（`.mrpack` 每条都带地址，所以缺失清单一般是空的）
+    let all_files = pack_files_from_tasks(&tasks, &game_dir);
+    let missing = domain::pack_plan::plan_missing(&all_files);
     let plan = PackPlan {
         mc_version,
         loader_kind,
@@ -8392,6 +8409,8 @@ pub async fn modpack_install(
         skipped,
         overrides_dir: "overrides".to_string(),
         pack_has_api_library: idx.has_fabric_api(),
+        all_files,
+        missing,
     };
     install_pack_plan(
         plan,
@@ -8585,6 +8604,178 @@ pub async fn cf_modpack_install(
     .await
 }
 
+/// CF 文件信息**解析不出来时试几次**（2026-10-16 事故修复）。
+///
+/// ★ 为什么必须有重试：整合包一次要问几百次 CF 接口（走镜像，并发 48），
+///   一两次超时/限流完全正常。以前**一次不成就永久放弃**那个文件 ——
+///   而它既不会进任务表、也没有重试轮（下载器的重试只覆盖"已经在表里"的文件），
+///   于是那一条就这么没了。实测事故：338 项里少了 5 个。
+///
+/// ★ 为什么是 3：镜像单次约 700 ms，3 次 + 退避 ≈ 最坏 4 秒/条；
+///   只有**已经失败**的那些才走第 2、3 次，正常路径仍是 1 次。
+const MAX_RESOLVE_ATTEMPTS: u32 = 3;
+
+/// 问一次 CF 接口拿某个文件的下载地址，**失败会退避重试**。
+///
+/// ★ 与批量下载器那套重试（`download_batch` 的 `MAX_BATCH_ROUNDS`）是**两回事**：
+///   那一套只重试"已经在任务表里"的文件。这一步失败的文件**根本没进任务表** ——
+///   所以它必须有自己的一份重试，否则就是"一次失败 = 这个 mod 永远装不上"。
+async fn resolve_cf_file_with_retry(project_id: u32, file_id: u32) -> Result<curseforge::CfFile, NetError> {
+    let mut last: Option<NetError> = None;
+    for attempt in 1..=MAX_RESOLVE_ATTEMPTS {
+        match curseforge::modpack_file(project_id, file_id).await {
+            Ok(f) => {
+                if attempt > 1 {
+                    say!(
+                        "[IEML/modpack] 文件 {file_id} 第 {attempt} 次问到了下载地址（前 {} 次失败）",
+                        attempt - 1
+                    );
+                }
+                return Ok(f);
+            }
+            Err(e) => {
+                if attempt > 1 {
+                    say!("[IEML/modpack] 文件 {file_id} 第 {attempt} 次仍然失败：{e}");
+                }
+                last = Some(e);
+                if attempt < MAX_RESOLVE_ATTEMPTS {
+                    // 退避 0.5s → 1.0s（不接取消令牌：这一步短，且取消由外层负责）
+                    tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
+                }
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| NetError::Other("问不到这个文件的下载地址".to_string())))
+}
+
+/// 下载任务表 → "这一次要装的全部条目"（**纯转换**）。
+///
+/// ★ 拖进来的 `.mrpack` 走这条：清单里**直接给下载地址**，没有 CF 身份，
+///   所以 `project_id` / `file_id` 留 0（于是"缺了能不能自动重试"如实回答"不能"）。
+///   ★ 地址为空的条目同样会被留下 —— 那正是"该装却没地址"的形状。
+fn pack_files_from_tasks(
+    tasks: &[download::DownloadTask],
+    game_dir: &std::path::Path,
+) -> Vec<domain::pack_plan::PackPlanFile> {
+    tasks
+        .iter()
+        .map(|t| {
+            let mut f = domain::pack_plan::PackPlanFile::new(
+                t.path
+                    .strip_prefix(game_dir)
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_else(|_| t.label.clone()),
+                t.url.clone(),
+            );
+            f.sha1 = t.sha1.clone();
+            f.size = t.size;
+            f
+        })
+        .collect()
+}
+
+/// CF 文件 → 落盘的相对路径（与 `curseforge::modpack_download_tasks` **同一套拼法**）。
+///
+/// ★ 必须共用同一句兜底（`cf-<文件 id>.jar`）：解析失败时我们也要能说出
+///   "本来是打算装哪个文件"，两处拼法不一致的话，清单里的路径就对不上盘上的名字。
+fn cf_mod_path(file: &curseforge::CfFile) -> String {
+    let name = if file.file_name.trim().is_empty() {
+        format!("cf-{}.jar", file.id)
+    } else {
+        file.file_name.clone()
+    };
+    format!("mods/{name}")
+}
+
+/// 反向转换：安装记录里的缺失条目 → `domain::pack_plan` 的口径。
+///
+/// ★ 给 `pack_scan` 用（只有记录、没有清单的老实例也要能报"缺哪几个"）。
+fn missing_record_entries_to_plan(
+    entries: &[domain::pack_record::MissingEntry],
+) -> Vec<domain::pack_plan::MissingFile> {
+    entries
+        .iter()
+        .map(|e| domain::pack_plan::MissingFile {
+            path: e.path.clone(),
+            name: if e.name.trim().is_empty() {
+                domain::pack_plan::file_label(&e.path)
+            } else {
+                e.name.clone()
+            },
+            reason: e.reason.clone(),
+            retryable: e.retryable,
+        })
+        .collect()
+}
+
+/// 当前时刻的 Unix 秒（**取不到就 0，不 panic** —— 时间戳不该把安装搞挂）。
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// 缺失清单（`domain::pack_plan` 的口径）→ 安装记录里的那几条。
+///
+/// ★ 两张表字段名刻意不同（一个有 `reason` 原话、一个带 `attempts` 计数），
+///   所以这里是一次**显式**转换，而不是把同一个结构当两种用。
+fn missing_record_entries(
+    missing: &[domain::pack_plan::MissingFile],
+) -> Vec<domain::pack_record::MissingEntry> {
+    missing
+        .iter()
+        .map(|m| domain::pack_record::MissingEntry {
+            path: m.path.clone(),
+            name: m.name.clone(),
+            reason: m.reason.clone(),
+            // 解析阶段固定试 `MAX_RESOLVE_ATTEMPTS` 次（失败才进这张表）
+            attempts: MAX_RESOLVE_ATTEMPTS,
+            retryable: m.retryable,
+        })
+        .collect()
+}
+
+/// 写"这一次的完整清单"到 `<实例>/.ieml/pack-files.json`（见 `domain::pack_plan`）。
+///
+/// ★ 与安装记录同一个目录：那是**启动器自己的东西**，游戏不读它，
+///   整合包导出（走游戏目录那棵树）也带不上它。
+///
+/// ★ `pub`：集成测试直接调它验"清单真的落盘了" —— 这一整块在安装流程深处
+///   （要联网下几百个文件），只在单测里拼数据是**验不到落盘那一跳**的。
+pub fn write_pack_plan_manifest(
+    paths: &crate::platform::AppPaths,
+    slug: &str,
+    manifest: &domain::pack_plan::PackPlanManifest,
+) -> Result<(), String> {
+    let p = domain::pack_record::PackRecord::manifest_path_for(&paths.instance_dir(slug));
+    if let Some(parent) = p.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("建目录失败（{}）：{e}", parent.display()))?;
+    }
+    let text = serde_json::to_string_pretty(manifest)
+        .map_err(|e| format!("序列化整合包清单失败：{e}"))?;
+    std::fs::write(&p, text).map_err(|e| format!("写入失败（{}）：{e}", p.display()))
+}
+
+/// 读回"这一次的完整清单"（`None` = 这个实例没有清单：不是整合包装的，
+/// 或者是更早的版本装的 —— 那时还没有这份东西）。
+///
+/// ★ `pub`：与 [`write_pack_plan_manifest`] 同一条理由（集成测试要验往返）。
+pub fn read_pack_plan_manifest(
+    paths: &crate::platform::AppPaths,
+    slug: &str,
+) -> Option<domain::pack_plan::PackPlanManifest> {
+    let p = domain::pack_record::PackRecord::manifest_path_for(&paths.instance_dir(slug));
+    let text = std::fs::read_to_string(&p).ok()?;
+    match serde_json::from_str(&text) {
+        Ok(m) => Some(m),
+        Err(e) => {
+            say!("[IEML/modpack] 整合包清单读不了（{}）：{e}", p.display());
+            None
+        }
+    }
+}
+
 /// 从一份 CF 清单做出 `PackPlan`：**并发逐个问接口**拿每个文件的地址。
 ///
 /// ★ 抽成函数是因为有**两条路**要用它：在线装（`cf_modpack_install`）与
@@ -8609,12 +8800,63 @@ async fn cf_plan_from_manifest(
     let total = refs.len();
     let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let note_every = (total / 20).max(1);
+    /*
+     * ★★ 2026-10-16（用户报的"漏下 mod 却报安装完成"）：**这一次要装的每一条都要留住**。
+     *
+     *   以前这里的产物只有一张"解析成功"的任务表，解析失败的条目
+     *   连路径都没留下 ⇒ 事故里那 5 个 mod 事后无从查起。
+     *   现在每问完一条就往这里放一条 `PackPlanFile`（地址可能是空串）——
+     *   它最终会落进 `<实例>/.ieml/pack-files.json`。
+     */
+    let planned: std::sync::Arc<Mutex<Vec<domain::pack_plan::PackPlanFile>>> =
+        std::sync::Arc::new(Mutex::new(Vec::new()));
     let resolved = futures_util::stream::iter(refs.into_iter().map(|(pid, fid)| {
         let done = done.clone();
         let app = app.clone();
         let task_id = task_id.to_string();
+        let planned = planned.clone();
         async move {
-            let r = curseforge::modpack_file(pid, fid).await;
+            let r = resolve_cf_file_with_retry(pid, fid).await;
+            /*
+             * ★ 先把它记进"这一次要装的文件"表 —— **无论成不成**。
+             *   路径口径与 `modpack_download_tasks` 一致（`mods/<文件名>`）：
+             *   文件名是上游给的，我们只做同样的路径清洗，不去猜。
+             */
+            {
+                let (path, url, sha1, size, why) = match &r {
+                    Ok(f) => (
+                        cf_mod_path(f),
+                        f.download_url.clone().unwrap_or_default(),
+                        f.sha1(),
+                        f.file_length,
+                        String::new(),
+                    ),
+                    /*
+                     * ★ 解析不出来时**路径仍然拼得出来**：CF 的文件名可以缺，
+                     *   那就用 `cf-<文件 id>.jar`（与 `modpack_download_tasks`
+                     *   的兜底完全同一句）。地址留空 —— 空串在这里的含义是
+                     *   "该装、但地址没解析出来"，不是"不用装"。
+                     */
+                    Err(e) => (
+                        format!("mods/cf-{fid}.jar"),
+                        String::new(),
+                        String::new(),
+                        0,
+                        e.to_string(),
+                    ),
+                };
+                if let Ok(mut g) = planned.lock() {
+                    g.push(domain::pack_plan::PackPlanFile {
+                        path,
+                        url,
+                        sha1,
+                        size,
+                        project_id: pid,
+                        file_id: fid,
+                        reason: why,
+                    });
+                }
+            }
             let n = done.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             if n % note_every == 0 || n == total {
                 let _ = app.emit(
@@ -8674,29 +8916,39 @@ async fn cf_plan_from_manifest(
     }
 
     /*
-     * ★ 查不到的条目**不阻断**：一个 200 文件的包里有一两个被上游删了很正常，
-     *   整包装不上才是坏事。查不到的进 `skipped`（由 `modpack_download_tasks` 报出来）。
+     * ★★ 查不到的条目**不阻断**（一个 200 文件的包里有一两个被上游删了很正常，
+     *   整包装不上才是坏事）—— 但**必须逐条说清是哪个、为什么**。
+     *
+     *   2026-10-16 事故：这里以前只有一个 `lookup_failed` 计数，文件 id 与错误
+     *   全进日志（而启动器不写日志文件）⇒ 出了这个函数就什么都不剩，
+     *   那 5 个 mod 于是"既不在任务表、也不在记录里"，事后无从查起。
+     *   现在：`reasons` 按文件 id 留下原因，交给下面拼进 `skipped` 与缺失清单。
      */
     let mut by_file: std::collections::HashMap<u32, curseforge::CfFile> =
         std::collections::HashMap::new();
-    let mut lookup_failed = 0usize;
+    let mut reasons: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
     for (fid, r) in resolved {
         match r {
             Ok(f) => {
                 by_file.insert(fid, f);
             }
             Err(e) => {
-                lookup_failed += 1;
-                say!("[IEML/modpack] 文件 {fid} 的信息查不到：{e}");
+                say!(
+                    "[IEML/modpack] 文件 {fid} 的信息查不到（已试 {MAX_RESOLVE_ATTEMPTS} 次）：{e}"
+                );
+                reasons.insert(fid, e.to_string());
             }
         }
     }
-    if lookup_failed > 0 {
-        say!("[IEML/modpack] CF 整合包有 {lookup_failed} 个文件查不到信息（已如实跳过）");
+    if !reasons.is_empty() {
+        say!(
+            "[IEML/modpack] CF 整合包有 {} 个文件的下载地址没解析出来（已记进缺失清单）",
+            reasons.len()
+        );
     }
 
     let game_dir = state.paths().game_dir_of(slug);
-    let (tasks, skipped) = curseforge::modpack_download_tasks(manifest, &by_file, &game_dir);
+    let (tasks, mut skipped) = curseforge::modpack_download_tasks(manifest, &by_file, &game_dir);
     if tasks.is_empty() {
         return Err(
             "这个整合包清单里的文件一个都下不了 —— 多数是作者不允许第三方下载。\n\
@@ -8704,6 +8956,28 @@ async fn cf_plan_from_manifest(
              再把这个 zip **拖进启动器窗口**即可安装。"
                 .to_string(),
         );
+    }
+    /*
+     * ★★ **没解析出地址的条目要单独说**（不能混在"路径越界"那一类里）。
+     *
+     *   `modpack_download_tasks` 只会说"文件 <id>（没查到信息）"—— 而用户
+     *   需要的是"哪个 mod 没下下来"。原因表在手上，这里补成
+     *   `<文件名>（没拿到下载地址：<上游原话>）`。
+     */
+    let planned_files = match planned.lock() {
+        Ok(g) => g.clone(),
+        // 锁中毒（别的线程 panic 过）也要给出结论，不能用 unwrap 把安装整死
+        Err(p) => p.into_inner().clone(),
+    };
+    /*
+     * ★ 原因写在**条目自己身上**（`PackPlanFile::reason`），不靠事后从路径反查：
+     *   反查要认 `cf-<id>.jar` 这种兜底名，一旦上游给了文件名就对不上了。
+     */
+    let missing = domain::pack_plan::plan_missing(&planned_files);
+    for m in &missing {
+        if !skipped.iter().any(|s| s.contains(&m.name)) {
+            skipped.push(format!("{}（{}）", m.name, m.reason));
+        }
     }
     // ★ 包**自己**带没带 Fabric API：CF 的文件名就是最终落盘的 jar 名，判据与 mrpack 同一套
     let pack_has_api_library = tasks.iter().any(|t| {
@@ -8723,6 +8997,8 @@ async fn cf_plan_from_manifest(
         skipped,
         overrides_dir: manifest.overrides.clone(),
         pack_has_api_library,
+        all_files: planned_files,
+        missing,
     }))
 }
 
@@ -8804,6 +9080,8 @@ pub async fn pack_install_local(
         };
         let game_dir = state.paths().game_dir_of(&slug);
         let (tasks, skipped) = modrinth::mrpack_download_tasks(&idx, &game_dir);
+        let all_files = pack_files_from_tasks(&tasks, &game_dir);
+        let missing = domain::pack_plan::plan_missing(&all_files);
         PackPlan {
             mc_version,
             loader_kind,
@@ -8812,6 +9090,8 @@ pub async fn pack_install_local(
             skipped,
             overrides_dir: "overrides".to_string(),
             pack_has_api_library: idx.has_fabric_api(),
+            all_files,
+            missing,
         }
     } else {
         let manifest = curseforge::parse_modpack_bytes(&bytes).map_err(|_| {
@@ -9343,6 +9623,10 @@ async fn install_pack_plan(
             paused_stage: installed.paused_stage.clone(),
             completion: None,
             update: None,
+            // ★ 还没走到计划那一步 ⇒ 缺什么都还谈不上（见 `paused_pack_result`）
+            missing_files: Vec::new(),
+            missing_count: 0,
+            missing_summary: String::new(),
         });
     }
 
@@ -9372,6 +9656,9 @@ async fn install_pack_plan(
                     paused_stage: Some(stage),
                     completion: None,
                     update: None,
+                    missing_files: Vec::new(),
+                    missing_count: 0,
+                    missing_summary: String::new(),
                 });
             }
             let ver = loader_version.clone().unwrap_or_default();
@@ -9421,6 +9708,60 @@ async fn install_pack_plan(
         .collect();
     // ★ 记录里的版本号：给不出就"未知"（**不编**）。成功路径与失败路径共用这一个值。
     let pack_version_for_record = pack_version.unwrap_or_else(|| "未知".to_string());
+
+    /*
+     * ---------- ③′ ★★ 留下**这一次的完整清单**（2026-10-16 事故修复） ----------
+     *
+     * 事故形状：CF 整合包有 5 个 mod 的下载地址**没解析出来**，那些条目
+     * 从任务表里彻底消失 ⇒ 下载 333 个全部成功、收尾校验说"都在"、
+     * 界面报"安装完成"，而游戏里弹「Missing Mods」。事后去查：
+     * `.ieml/` 下只有 `natives/` 与 `instance.json`，**没有任何清单** ——
+     * "这个包本来该装什么"根本查不出来，更不可能只重下缺的那几个。
+     *
+     * ⇒ 现在安装**一开始**（拿到完整计划之后、下载之前）就写两份东西到实例目录：
+     *   · `.ieml/pack-files.json` —— 清单里的**每一条**（路径 / 地址 / SHA1 /
+     *     大小 / CF 的 project_id·file_id），含那些没弄到地址的条目；
+     *   · 安装记录 `pack-record.json`（成功与失败两条路都写）里多一份
+     *     `missing`：哪几条、为什么、试了几次、能不能重试。
+     *
+     * 目的就是"以后能复查、能只重下缺的那几个" —— 而不是像现在这样事后什么都查不到。
+     */
+    let (plan_all_files, plan_missing) = (plan.all_files, plan.missing);
+    if !plan_missing.is_empty() {
+        say!(
+            "[IEML/modpack] 清单里的 {} 个文件没解析出下载地址（会写进 pack-files.json）：{}",
+            plan_missing.len(),
+            plan_missing
+                .iter()
+                .take(3)
+                .map(|m| m.name.clone())
+                .collect::<Vec<_>>()
+                .join("、")
+        );
+    }
+    let plan_manifest = domain::pack_plan::build_manifest(
+        &instance_display_name(&state.paths(), &slug),
+        &pack_version_for_record,
+        &source,
+        plan_all_files.clone(),
+        now_unix(),
+    );
+    if let Err(e) = write_pack_plan_manifest(&state.paths(), &slug, &plan_manifest) {
+        // 写不下清单**不阻断安装**（游戏本体已经好了）—— 但要说出来：
+        // 下载失败那条路的报错里承诺过"可以补齐"，那要靠这份清单。
+        say!("[IEML/modpack] 写清单失败（不影响这一次安装）：{e}");
+    } else {
+        say!(
+            "[IEML/modpack] 已记下这一次的清单：{} 个文件（其中 {} 个没拿到地址）→ {}",
+            plan_manifest.total,
+            plan_manifest.missing.len(),
+            domain::pack_record::PackRecord::manifest_path_for(&state.paths().instance_dir(&slug))
+                .display()
+        );
+    }
+    // ★ 安装记录里也要有这几条（"检查整合包完整性"就是读记录）
+    let record_missing: Vec<domain::pack_record::MissingEntry> =
+        missing_record_entries(&plan_missing);
 
     /*
      * ★★ 这个实例**原先装过整合包吗** —— 有旧记录 ⇒ 这一次就是一次**升级**。
@@ -9557,6 +9898,7 @@ async fn install_pack_plan(
             record_files.clone(),
             identity.0.clone(),
             identity.1.clone(),
+            record_missing.clone(),
         );
         if let Err(e) = write_pack_record(&state.paths(), &slug, &rec) {
             say!("[IEML/modpack] 写安装记录失败：{e}");
@@ -9730,6 +10072,7 @@ async fn install_pack_plan(
         record_files.clone(),
         identity.0.clone(),
         identity.1.clone(),
+        record_missing.clone(),
     );
     let completion = match write_pack_record(&state.paths(), &slug, &record) {
         Ok(()) => {
@@ -9777,6 +10120,10 @@ async fn install_pack_plan(
         completion,
         // ★ 这一次是不是升级（原先就装过整合包 ⇒ 按新清单对齐过）
         update,
+        // ★★ 2026-10-16：清单里**没弄到手**的那几个（事故修复，见 pack_plan 模块说明）
+        missing_files: plan_missing.clone(),
+        missing_count: plan_missing.len(),
+        missing_summary: domain::pack_plan::missing_summary(&plan_missing),
     })
 }
 
@@ -9974,6 +10321,18 @@ pub struct ModpackInstallResult {
     /// `None` = 全新安装（没碰任何已有文件）；`Some` = 按新清单对齐过，
     /// `summary` 里说清"新增/更新/移除各几个、移除的放哪了"。
     pub update: Option<crate::domain::pack_update::AppliedUpdate>,
+    /*
+     * ★★ 2026-10-16（用户报的"漏下 mod 却报安装完成"）：**清单里没弄到手的那几个**。
+     *
+     *   它们是"该装、但下载地址没解析出来"的条目（接口查不到 / 作者禁止分发）。
+     *   以前这些条目从计划里彻底消失 ⇒ 界面报"安装完成"、游戏里弹「Missing Mods」。
+     *   现在一路回传到界面：**有 N 个没下下来**，并给出「重新下载缺失的」入口。
+     */
+    pub missing_files: Vec<crate::domain::pack_plan::MissingFile>,
+    /// 上面那个表的条数（界面排版用，省得自己 `.length` 两处口径）
+    pub missing_count: usize,
+    /// 后端算好的一句人话（界面直接用，不自己拼措辞）
+    pub missing_summary: String,
 }
 
 /* ====================== 整合包完整性（ADR-025 的 Completion 阶段） ====================== */
@@ -10000,6 +10359,12 @@ fn build_pack_record(
      */
     project_id: Option<String>,
     version_id: Option<String>,
+    /*
+     * ★★ **清单里没弄到手的那几条**（2026-10-16 事故修复）。
+     *   它们不在 `files` 里（没地址就下不了），但必须留下来 ——
+     *   否则「检查整合包完整性」会说"文件都在"，而游戏里弹「Missing Mods」。
+     */
+    missing: Vec<crate::domain::pack_record::MissingEntry>,
 ) -> crate::domain::pack_record::PackRecord {
     crate::domain::pack_record::PackRecord {
         schema: 1,
@@ -10016,6 +10381,7 @@ fn build_pack_record(
         skipped,
         project_id,
         version_id,
+        missing,
         files,
     }
 }
@@ -10153,11 +10519,79 @@ fn read_pack_record(
     serde_json::from_str(&text).map_err(|e| format!("整合包记录读不了（{}）：{e}", p.display()))
 }
 
+/// 没有安装记录时，**拿这一次的清单**（`pack-files.json`）拼一份最小记录。
+///
+/// ★★ 为什么需要（2026-10-16 事故现场的形状）：
+///   真机那个 `pack-al3zun` 实例的 `.ieml/` 里**什么都没有**（记录和清单都没有），
+///   于是「检查整合包完整性」这个按钮压根不出现、`verify` / `repair` 也无从下手
+///   —— 用户明明缺着 5 个 mod，界面上却没有任何入口。
+///
+///   清单里已经有"每条要装什么"（路径 / 地址 / sha1 / 大小），
+///   所以能拼出一份够用的记录：**校验与补齐只需要这些字段**。
+///   包名与版本号如实留空/未知（**不编**）。
+fn record_from_plan_manifest(
+    paths: &crate::platform::AppPaths,
+    slug: &str,
+    manifest: &domain::pack_plan::PackPlanManifest,
+) -> crate::domain::pack_record::PackRecord {
+    crate::domain::pack_record::PackRecord {
+        schema: 1,
+        name: instance_display_name(paths, slug),
+        version: manifest.version.clone(),
+        source: manifest.source.clone(),
+        mc_version: String::new(),
+        loader_kind: None,
+        loader_version: None,
+        installed_at: manifest.written_at,
+        skipped: Vec::new(),
+        project_id: None,
+        version_id: None,
+        missing: missing_record_entries(&manifest.missing),
+        files: manifest
+            .files
+            .iter()
+            .filter(|f| f.has_url())
+            .map(|f| crate::domain::pack_record::PackFile {
+                path: f.path.clone(),
+                url: f.url.clone(),
+                sha1: f.sha1.clone(),
+                size: f.size,
+            })
+            .collect(),
+    }
+}
+
+/// 这个实例的整合包记录：**优先安装记录**，没有就用这一次的清单拼一份。
+///
+/// `Ok(None)` = 两份都没有 ⇒ 认不出它本来是哪个整合包（如实说）。
+fn load_pack_record_or_plan(
+    paths: &crate::platform::AppPaths,
+    slug: &str,
+) -> Result<Option<crate::domain::pack_record::PackRecord>, String> {
+    match read_pack_record(paths, slug) {
+        Ok(r) => Ok(Some(r)),
+        Err(why) => match read_pack_plan_manifest(paths, slug) {
+            Some(m) => {
+                say!(
+                    "[IEML/modpack] 没有安装记录（{why}）—— 用这一次的清单（{} 条）顶上",
+                    m.total
+                );
+                Ok(Some(record_from_plan_manifest(paths, slug, &m)))
+            }
+            None => Ok(None),
+        },
+    }
+}
+
 /// 这个版本是不是从整合包装出来的（ADR-025 第 3 条：用于「是否为整合包」判定）
+///
+/// ★★ 2026-10-16：记录读不到时**退回清单**（见 [`load_pack_record_or_plan`]）。
+///   否则事故现场那种实例（`.ieml/` 里什么都没有）在界面上连"检查完整性"
+///   的入口都不会出现 —— 用户只能眼睁睁看着游戏弹「Missing Mods」。
 #[tauri::command]
 pub fn pack_info(slug: String, state: State<'_, AppState>) -> Option<PackInfo> {
     let paths = state.paths();
-    let r = read_pack_record(&paths, slug.trim()).ok()?;
+    let r = load_pack_record_or_plan(&paths, slug.trim()).ok().flatten()?;
     Some(PackInfo {
         name: r.name,
         version: r.version,
@@ -10170,11 +10604,62 @@ pub fn pack_info(slug: String, state: State<'_, AppState>) -> Option<PackInfo> {
     })
 }
 
+/// 「这个实例的整合包记录 / 清单是个什么状态」—— **不读盘、立刻返回**。
+///
+/// ★★ 为什么需要它（2026-10-16）：`pack_info` 只认**安装记录**，而事故现场
+///   那个实例连记录都没有（只有新版的 `pack-files.json`）。
+///   界面据此决定"有没有整合包这块、要不要摆按钮" ——
+///   没有这一步的话，用户缺着 5 个 mod 却在界面上找不到任何入口。
+///   ★ 它只报"有没有、有几条、缺几条"，**不做校验**（那是 `verify_pack_install`，
+///     要读几百个文件，不该在打开页面时跑）。
+#[derive(serde::Serialize)]
+pub struct PackScanSummary {
+    /// 有没有安装记录（`pack-record.json`）
+    pub has_record: bool,
+    /// 有没有这一次的完整清单（`pack-files.json`）
+    pub has_plan: bool,
+    /// 清单里一共几条（清单优先，没有清单时用记录的）
+    pub file_count: usize,
+    /// 安装当时**没解析出下载地址**的条数
+    pub missing_count: usize,
+    /// 后端算好的一句人话（缺 0 个时是空串）
+    pub missing_summary: String,
+}
+
+#[tauri::command]
+pub fn pack_scan(slug: String, state: State<'_, AppState>) -> PackScanSummary {
+    let paths = state.paths();
+    let slug = slug.trim().to_string();
+    let record = read_pack_record(&paths, &slug).ok();
+    let plan = read_pack_plan_manifest(&paths, &slug);
+    let missing = if let Some(m) = &plan {
+        m.missing.clone()
+    } else {
+        record
+            .as_ref()
+            .map(|r| missing_record_entries_to_plan(&r.missing))
+            .unwrap_or_default()
+    };
+    PackScanSummary {
+        has_record: record.is_some(),
+        has_plan: plan.is_some(),
+        file_count: plan
+            .as_ref()
+            .map(|m| m.total)
+            .or_else(|| record.as_ref().map(|r| r.files.len()))
+            .unwrap_or(0),
+        missing_count: missing.len(),
+        missing_summary: domain::pack_plan::missing_summary(&missing),
+    }
+}
+
 /// ★★ **检查这个整合包装全了没有**（ADR-025 的 Completion 第 1 条）。
 ///
 ///   `check_hashes = true` 时逐文件算 SHA1（几百 MB 的包会花几秒）——
 ///   默认只比"在不在、大小对不对"（那已经能抓住绝大多数情况：下载中断、
 ///   被杀软删掉、磁盘满写了个半截）。
+///
+/// ★ 没有安装记录但有清单时**照样能查**（见 [`load_pack_record_or_plan`]）。
 #[tauri::command]
 pub fn verify_pack_install(
     slug: String,
@@ -10183,7 +10668,12 @@ pub fn verify_pack_install(
 ) -> Result<crate::domain::pack_record::VerifyReport, String> {
     let paths = state.paths();
     let slug = slug.trim().to_string();
-    let record = read_pack_record(&paths, &slug)?;
+    let Some(record) = load_pack_record_or_plan(&paths, &slug)? else {
+        return Err(format!(
+            "这个实例没有任何整合包记录或清单（{}）—— 认不出它本来是哪个整合包，也就无从校验。",
+            crate::domain::pack_record::PackRecord::path_for(&paths.instance_dir(&slug)).display()
+        ));
+    };
     // ★ 校验的是"这个实例**实际使用**的游戏目录"（隔离与否由判定决定）
     Ok(record.verify(&paths.game_dir_of(&slug), check_hashes.unwrap_or(false)))
 }
@@ -10197,61 +10687,224 @@ pub struct RepairResult {
     pub failed: Vec<String>,
     /// 清单里没给下载地址的（补不了，如实说）
     pub no_source: Vec<String>,
+    /// ★★ 这一次**重新去要过下载地址**的条数（2026-10-16 事故新增）
+    ///
+    ///   事故里缺的那几个 mod 连地址都没有（解析阶段就没弄到手），
+    ///   所以"补齐"必须包含"再去要一次地址"这一步。0 = 没有这类条目。
+    pub retried_lookup: usize,
+    /// ★ 这一次**真的动手试过**的条数（界面据此说"试了 N 个、好了 M 个"）
+    pub attempted: usize,
+    /// ★ 后端算好的一句人话（界面直接用，不自己拼措辞）
+    pub summary: String,
+}
+
+/// 从盘上重新要一次下载地址（CF 整合包专用）—— **不碰安装记录**，只解析。
+///
+///   条目形状来自 `pack-files.json` / 安装记录的 `missing`：路径 + CF 身份。
+///   有身份 ⇒ 问接口（带重试，与安装时同一份实现）；
+///   没身份（拖进来的 `.mrpack` 又没地址）⇒ 如实说"要自己去包网站下"。
+async fn resolve_url_again(
+    entries: &[(String, u32, u32)],
+) -> Vec<(String, Option<String>, String)> {
+    let mut out = Vec::new();
+    for (path, pid, fid) in entries {
+        if *pid == 0 || *fid == 0 {
+            out.push((
+                path.clone(),
+                None,
+                "清单里没给下载地址，也没有 CurseForge 身份 —— 只能去包的网站自己下".to_string(),
+            ));
+            continue;
+        }
+        match resolve_cf_file_with_retry(*pid, *fid).await {
+            Ok(f) => match f.download_url.clone().filter(|u| !u.trim().is_empty()) {
+                Some(u) => out.push((path.clone(), Some(u), String::new())),
+                None => out.push((
+                    path.clone(),
+                    None,
+                    "这个文件的作者不允许第三方下载 —— 只能去 CurseForge 网站自己下".to_string(),
+                )),
+            },
+            Err(e) => out.push((
+                path.clone(),
+                None,
+                format!("重新问下载地址也失败了（{e}）"),
+            )),
+        }
+    }
+    out
 }
 
 /// ★★ **补齐缺失的文件**（ADR-025 的 Completion 第 2 条）。
 ///
 ///   "下载源已失效的给出警告而非静默失败" —— 所以这里逐条回报成功与失败，
 ///   失败的带原因（`failed`），没地址的单独列（`no_source`）。
+///
+/// ## 2026-10-16 事故后新增的一半：**连地址都没有的那些也要能补**
+///
+///   以前这里只处理"记录里有地址、盘上却没文件"的情况。而事故里缺的那 5 个
+///   mod **根本没有地址**（解析阶段就没弄到手）⇒ 它们在记录里只以
+///   `missing` 的形式存在 ⇒ 老的补齐逻辑对它们**完全无能为力**，
+///   用户按了"补齐"还是缺。现在：
+///
+///     ① 先读 `pack-files.json`（这一次的完整清单）与本记录的 `missing`，
+///        把所有"没地址"的条目**重新去要一次地址**（与安装时同一份实现，带重试）；
+///     ② 要到了就下（按路径落盘），要不回来就**逐条说为什么**；
+///     ③ 再走原来的"盘上缺了但有地址的"那条路。
+///
+///   ★ 没有安装记录但有 `pack-files.json` 的实例（例如更早的版本装的）也能补 ——
+///     这正是事故现场的形状：`.ieml/` 里什么都没有，用户无从下手。
 #[tauri::command]
 pub async fn repair_pack_install(
     slug: String,
+    source: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<RepairResult, String> {
     let paths = state.paths();
     let slug = slug.trim().to_string();
-    let record = read_pack_record(&paths, &slug)?;
     let game = paths.game_dir_of(&slug);
-    // 先校验（不算哈希：补齐只需要知道"在不在"）
-    let report = record.verify(&game, false);
-    let mut repaired = Vec::new();
-    let mut failed = Vec::new();
+    let src = parse_source(&source.unwrap_or_default());
+    let cancel = CancelToken::new();
 
-    let src = parse_source(""); // 自动：官方优先、失败换镜像（与安装时一致）
-    for path in report.repairable() {
-        let Some(f) = record.files.iter().find(|f| f.path == path) else {
-            continue;
-        };
-        let dest = game.join(f.path.replace('/', std::path::MAIN_SEPARATOR_STR));
-        if let Some(parent) = dest.parent() {
-            let _ = std::fs::create_dir_all(parent);
+    // 记录可能不存在（老实例 / 事故现场）—— **不因此报错**，能补多少补多少。
+    // ★ 没有记录但有清单时，清单顶上（见 `load_pack_record_or_plan`）。
+    let manifest = read_pack_plan_manifest(&paths, &slug);
+    let record = load_pack_record_or_plan(&paths, &slug)?;
+
+    /*
+     * ---------- ① 没弄到地址的条目：重新要一次 ----------
+     *
+     * 两张来源合成一张表（按路径去重，记录里的优先 —— 它带 `attempts` 与原因）：
+     *   · 安装记录的 `missing`（有 CF 身份的那几个能不能重试由 `retryable` 说）
+     *   · `pack-files.json` 里"没有地址"的条目
+     */
+    let mut unresolved: Vec<(String, u32, u32)> = Vec::new();
+    if let Some(m) = &manifest {
+        for f in m.files.iter().filter(|f| !f.has_url()) {
+            unresolved.push((f.path.clone(), f.project_id, f.file_id));
         }
-        let task = download::DownloadTask::new(
-            dest,
-            f.url.clone(),
-            f.sha1.clone(),
-            f.size,
-            f.path.clone(),
-        );
-        // ★ 取消令牌：补齐是一次性动作（用户中断整件事时它跟着取消）
-        let cancel = CancelToken::new();
-        match download::download_one(&task, src, &cancel).await {
-            Ok(_) => {
-                say!("[IEML/modpack] 补齐：{}", f.path);
-                repaired.push(f.path.clone());
-            }
-            Err(e) => {
-                // ★ 源失效**不静默**：逐条记下原因，交回界面
-                say!("[IEML/modpack] 补齐失败：{} —— {e}", f.path);
-                failed.push(format!("{}：{e}", f.path));
+    }
+    if let Some(r) = &record {
+        for e in &r.missing {
+            if !unresolved.iter().any(|(p, _, _)| *p == e.path) {
+                // 记录里没有 CF 身份 ⇒ 用 0/0 表示"问不了"，下面如实报
+                unresolved.push((e.path.clone(), 0, 0));
             }
         }
     }
 
+    let mut repaired: Vec<String> = Vec::new();
+    let mut failed: Vec<String> = Vec::new();
+    let mut no_source: Vec<String> = Vec::new();
+    let retried_lookup = unresolved.len();
+    // ①里每个条目都会"重新要一次地址"（无论成不成）⇒ 都算试过
+    let mut attempted = retried_lookup;
+
+    if retried_lookup > 0 {
+        say!(
+            "[IEML/modpack] 补齐：有 {retried_lookup} 个条目当初没拿到下载地址，重新去要一次"
+        );
+        for (path, url, why) in resolve_url_again(&unresolved).await {
+            let Some(url) = url else {
+                say!("[IEML/modpack] 补齐：{path} 仍然下不了 —— {why}");
+                failed.push(format!("{path}：{why}"));
+                no_source.push(path);
+                continue;
+            };
+            let dest = game.join(path.replace('/', std::path::MAIN_SEPARATOR_STR));
+            if let Some(parent) = dest.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            // ★ SHA1 / 大小这次拿不到（清单里当时就没解析出来）⇒ 交给下载器
+            //   按地址下、不校验哈希（`sha1` 空串 = 不校验，这是既有语义）
+            let task = download::DownloadTask::new(dest, url, String::new(), 0, path.clone());
+            match download::download_one(&task, src, &cancel).await {
+                Ok(_) => {
+                    say!("[IEML/modpack] 补齐（重问地址）：{path}");
+                    repaired.push(path);
+                }
+                Err(e) => {
+                    say!("[IEML/modpack] 补齐失败（重问地址）：{path} —— {e}");
+                    failed.push(format!("{path}：{e}"));
+                }
+            }
+        }
+    }
+
+    /*
+     * ---------- ② 盘上缺了、但记录里有地址的（原有那条路） ----------
+     *
+     * ★ 没有记录就没什么可验的 —— 但那不算错误：①已经尽力了。
+     */
+    if let Some(r) = &record {
+        let report = r.verify(&game, false);
+        for path in report.repairable() {
+            // ①里已经处理过的路径不重复下（同一个文件不要下两遍）
+            if repaired.contains(&path) {
+                continue;
+            }
+            attempted += 1;
+            let Some(f) = r.files.iter().find(|f| f.path == path) else {
+                continue;
+            };
+            let dest = game.join(f.path.replace('/', std::path::MAIN_SEPARATOR_STR));
+            if let Some(parent) = dest.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let task = download::DownloadTask::new(
+                dest,
+                f.url.clone(),
+                f.sha1.clone(),
+                f.size,
+                f.path.clone(),
+            );
+            match download::download_one(&task, src, &cancel).await {
+                Ok(_) => {
+                    say!("[IEML/modpack] 补齐：{}", f.path);
+                    repaired.push(f.path.clone());
+                }
+                Err(e) => {
+                    // ★ 源失效**不静默**：逐条记下原因，交回界面
+                    say!("[IEML/modpack] 补齐失败：{} —— {e}", f.path);
+                    failed.push(format!("{}：{e}", f.path));
+                }
+            }
+        }
+    }
+
+    if record.is_none() && manifest.is_none() {
+        return Err(format!(
+            "这个实例没有任何安装记录或清单（{}）—— 认不出它本来是哪个整合包、该有哪些文件。\n\
+             处理办法：重新装一次这个整合包（或者把整合包文件拖进启动器窗口）。",
+            crate::domain::pack_record::PackRecord::path_for(&paths.instance_dir(&slug)).display()
+        ));
+    }
+
+    let summary = if repaired.is_empty() && failed.is_empty() {
+        "没有要补的文件 —— 清单里的文件都在盘上。".to_string()
+    } else if failed.is_empty() {
+        format!("补好了 {} 个文件。", repaired.len())
+    } else if repaired.is_empty() {
+        format!(
+            "{} 个文件仍然没补上（原因逐条写在下面）—— 多数是作者不允许第三方下载，\
+             需要去整合包网站自己下。",
+            failed.len()
+        )
+    } else {
+        format!(
+            "补好了 {} 个，还有 {} 个没补上（原因逐条写在下面）。",
+            repaired.len(),
+            failed.len()
+        )
+    };
+
     Ok(RepairResult {
         repaired,
         failed,
-        no_source: report.no_source,
+        no_source,
+        retried_lookup,
+        attempted,
+        summary,
     })
 }
 

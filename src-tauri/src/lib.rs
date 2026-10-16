@@ -624,6 +624,8 @@ pub fn run() {    /*
             commands_real::export_modpack,
             /* ★★ 整合包完整性（ADR-025 的 Completion 阶段：校验 + 补齐 + 记录） */
             commands_real::pack_info,
+            /* ★★ 2026-10-16：记录/清单的状态（界面据此决定摆不摆按钮） */
+            commands_real::pack_scan,
             commands_real::verify_pack_install,
             commands_real::repair_pack_install,
             /* ★★ 整合包有没有新版本 / 原地升级（ADR-025 第 4 条） */

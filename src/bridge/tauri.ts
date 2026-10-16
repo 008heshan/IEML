@@ -2056,6 +2056,11 @@ export interface PackVerifyReport {
   /** 缺失**且**清单里没给地址的（补不了，界面要单独说） */
   no_source: string[];
   skipped_at_install: string[];
+  /**
+   * ★★ 安装当时**没解析出下载地址**的条目（带原因与能否重试）。
+   *   事故里这几个正是"游戏弹窗点名、而启动器说装完了"的那些。
+   */
+  missing_at_install?: PackMissingFile[];
   /** 装全了吗 */
   complete: boolean;
   /** ★ 一句人话（**后端算好的**，界面直接用，不自己拼措辞） */
@@ -2063,19 +2068,62 @@ export interface PackVerifyReport {
 }
 
 export interface PackRepairResult {
+  /** 补下来的（相对路径） */
   repaired: string[];
+  /** 补不下来的（相对路径 + 原因）—— **逐条说，不静默** */
   failed: string[];
+  /** 清单里没给下载地址的（补不了，如实说） */
   no_source: string[];
+  /**
+   * ★★ 这一次**重新去要过下载地址**的条数（2026-10-16 事故新增）。
+   *
+   *   事故里缺的那几个 mod 连地址都没有（解析阶段就没弄到手），
+   *   所以"补齐"包含"再去要一次地址"这一步。0 = 没有这一类。
+   */
+  retried_lookup: number;
+  /** ★ 这一次真的动手试过的条数（界面据此说"试了 N 个、好了 M 个"） */
+  attempted: number;
+  /** ★ 一句人话（**后端算好的**，界面直接用） */
+  summary: string;
 }
 
+/** 「这个实例的整合包记录 / 清单是个什么状态」（**不读盘**，见 `pack.scan`） */
+export interface PackScanSummary {
+  /** 有没有安装记录（`pack-record.json`） */
+  has_record: boolean;
+  /** 有没有这一次的完整清单（`pack-files.json`） */
+  has_plan: boolean;
+  /** 清单里一共几条 */
+  file_count: number;
+  /** 安装当时**没解析出下载地址**的条数 */
+  missing_count: number;
+  /** ★ 一句人话（缺 0 个时是**空串**，界面据此不显示这一条） */
+  missing_summary: string;
+}
 export const pack = {
   /** 这个版本是不是从整合包装的（不是 → null，别编） */
   info: (slug: string) => call<PackInfo | null>('pack_info', { slug }),
+  /**
+   * ★★ 记录 / 清单的状态（**不读盘、立刻返回**）—— 2026-10-16 事故新增。
+   *
+   *   界面据此决定"有没有整合包这一块、要不要摆按钮"。
+   *   只用 `info()` 的话，**没有安装记录**的实例（例如只有新版 `pack-files.json`
+   *   的那种，正是事故现场的形状）在界面上连入口都不出现。
+   */
+  scan: (slug: string) => call<PackScanSummary>('pack_scan', { slug }),
   /** 校验完整性；`checkHashes` = 逐文件算 SHA1（几百 MB 会花几秒） */
   verify: (slug: string, checkHashes = false) =>
     call<PackVerifyReport>('verify_pack_install', { slug, checkHashes }),
-  /** 补齐缺失的（源失效会逐条报失败，不静默） */
-  repair: (slug: string) => call<PackRepairResult>('repair_pack_install', { slug }),
+  /**
+   * 补齐缺失的（源失效会逐条报失败，不静默）。
+   *
+   * ★★ 2026-10-16（用户报的"漏下 mod 却报安装完成"）：这条命令现在**还会**
+   *   把"当初连下载地址都没解析出来"的条目重新去要一次地址再下 ——
+   *   那才是事故里缺的那 5 个 mod 的形状。于是它同时是"重新下载缺失的"入口。
+   *   `source` 跟设置里的下载源走（缺省 = 后端自动挑）。
+   */
+  repair: (slug: string, source?: string) =>
+    call<PackRepairResult>('repair_pack_install', { slug, source: source ?? null }),
   /**
    * ★★ 问平台：这个整合包有没有新版本（ADR-025 第 4 条）。
    *
@@ -2196,6 +2244,30 @@ export interface ModpackInstallResult {
    *   有值 = 按新清单对齐过，`summary` 里说清"新增/更新/移除各几个、移除的放哪了"。
    */
   update?: PackUpdateApplied | null;
+  /**
+   * ★★ 2026-10-16（用户报的"漏下 mod 却报安装完成"）：**清单里没弄到手的那几个**。
+   *
+   *   它们是"该装、但下载地址没解析出来"的条目（上游接口查不到 / 作者禁止分发）。
+   *   以前这些条目从计划里彻底消失 ⇒ 界面报"安装完成"、游戏里弹「Missing Mods」。
+   *   现在一路回传到这里：界面要**说出**有 N 个没下下来，并给「重新下载缺失的」入口。
+   */
+  missing_files?: PackMissingFile[];
+  /** 上面那个表的条数（省得界面自己 `.length` 出第二套口径） */
+  missing_count?: number;
+  /** ★ 后端算好的一句人话（界面直接用，不自己拼措辞） */
+  missing_summary?: string;
+}
+
+/** 一条"该装、但没弄到手"的清单条目（与 Rust `domain::pack_plan::MissingFile` 一一对应） */
+export interface PackMissingFile {
+  /** 相对游戏目录的路径（`mods/xxx.jar`） */
+  path: string;
+  /** 给用户看的名字（通常是 jar 文件名） */
+  name: string;
+  /** 为什么没弄到手（上游原话尽量保留） */
+  reason: string;
+  /** 还能再试吗（有 CurseForge 身份的能；作者禁止分发的不能） */
+  retryable: boolean;
 }
 
 /** 一次"整包升级"实际做了什么（与 Rust 的 `AppliedUpdate` 一一对应） */

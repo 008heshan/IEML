@@ -85,13 +85,53 @@ pub struct PackRecord {
     pub project_id: Option<String>,
     #[serde(default)]
     pub version_id: Option<String>,
+    /// ★★ **清单里那些"没解析出下载地址"的条目**（2026-10-16 事故新增）。
+    ///
+    ///   事故形状：CurseForge 整合包每个文件要先用 `project_id` + `file_id`
+    ///   问一次接口换地址，接口查不到的条目**从任务表里彻底消失**，
+    ///   于是记录里也没有它们 ⇒ 「检查完整性」报"全都在"，游戏里却弹
+    ///   「Missing Mods」。
+    ///
+    ///   现在把它们记在这里：`path` / `url` 与正常文件同形（地址是空串），
+    ///   另外带 `attempts`（试了几次）与 `reason`（为什么没成）——
+    ///   界面上"缺哪几个、为什么缺"就有据可查，不再只是一个计数。
+    ///
+    ///   ★ 老记录没有这个字段 ⇒ `serde(default)` 读成空表（不升 schema）。
+    #[serde(default)]
+    pub missing: Vec<MissingEntry>,
     pub files: Vec<PackFile>,
+}
+
+/// 一条**当时没弄到手**的清单条目（见 [`PackRecord::missing`]）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct MissingEntry {
+    /// **相对游戏目录**的路径（与 [`PackFile::path`] 同一口径）
+    pub path: String,
+    /// 给用户看的名字（通常是 jar 文件名）
+    #[serde(default)]
+    pub name: String,
+    /// 为什么没成（上游原话尽量保留）
+    pub reason: String,
+    /// 试了几次（联网解析地址时）
+    #[serde(default)]
+    pub attempts: u32,
+    /// 还能再试吗（有 CF 身份的能，作者禁止分发的不能）
+    #[serde(default)]
+    pub retryable: bool,
 }
 
 impl PackRecord {
     /// 记录文件的路径（**实例目录**下，见模块说明）
     pub fn path_for(instance_dir: &Path) -> PathBuf {
         instance_dir.join("pack-record.json")
+    }
+
+    /// 这一次安装的**完整清单**的路径（`pack-files.json`，与记录同处）。
+    ///
+    /// ★ 与记录的差别见 `domain::pack_plan` 的模块说明：记录只装得下
+    ///   "有地址"的文件，而清单连"当时没解析出地址"的那些也留着。
+    pub fn manifest_path_for(instance_dir: &Path) -> PathBuf {
+        crate::domain::pack_plan::PackPlanManifest::path_for(instance_dir)
     }
 
     /// 校验：清单里的文件在不在、大小对不对
@@ -137,12 +177,25 @@ impl PackRecord {
             present += 1;
         }
 
-        let complete = missing.is_empty() && wrong_size.is_empty() && wrong_hash.is_empty();
+        /*
+         * ★★ **"当时就没弄到手"的条目也算没装全**（2026-10-16 事故）。
+         *
+         *   以前它们不在记录里 ⇒ `complete` 是 true ⇒ 界面说"文件都在"，
+         *   而游戏里弹「Missing Mods」。现在只要清单里有条目没解析出地址，
+         *   这里就**不许**说完整 —— 否则我们说的和游戏说的不一样，
+         *   而用户会先信我们。
+         */
+        let unresolved = self.missing.len();
+        let complete =
+            missing.is_empty() && wrong_size.is_empty() && wrong_hash.is_empty() && unresolved == 0;
         let summary = {
             if complete {
                 format!("整合包的 {} 个文件都在（{} 个校验通过）", self.files.len(), present)
             } else {
                 let mut parts = Vec::new();
+                if unresolved > 0 {
+                    parts.push(format!("{unresolved} 个当时没解析出下载地址"));
+                }
                 if !missing.is_empty() {
                     parts.push(format!("缺 {} 个", missing.len()));
                 }
@@ -171,6 +224,7 @@ impl PackRecord {
             wrong_hash,
             no_source,
             skipped_at_install: self.skipped.clone(),
+            missing_at_install: self.missing.clone(),
             complete,
             summary,
         }
@@ -195,6 +249,12 @@ pub struct VerifyReport {
     pub no_source: Vec<String>,
     /// 安装当时就跳过的条目（那时就说了原因）
     pub skipped_at_install: Vec<String>,
+    /// ★★ 安装当时**没解析出下载地址**的条目（带原因与能否重试）。
+    ///
+    ///   事故里这几个正是"游戏弹窗点名、而启动器说装完了"的那些 —— 见
+    ///   [`PackRecord::missing`]。界面必须把它们列出来（不能只报一个计数）。
+    #[serde(default)]
+    pub missing_at_install: Vec<MissingEntry>,
     /// 装全了吗
     pub complete: bool,
     /// 一句人话（界面直接用这个，不自己拼）
@@ -245,6 +305,7 @@ mod tests {
             skipped: vec![],
             project_id: Some("test-pack".into()),
             version_id: Some("ver-1".into()),
+            missing: vec![],
             files,
         }
     }
@@ -382,5 +443,55 @@ mod tests {
         assert_eq!(back.name, "测试包");
         assert_eq!(back.files.len(), 1);
         assert_eq!(back.files[0].path, "mods/a.jar");
+    }
+
+    /// ★★ **事故判据**：清单里有一条"当时没解析出下载地址" ⇒ 记录**不许**说装全了。
+    ///
+    ///   2026-10-16 真机：`mods/` 里 333 个 jar 都在、缺的 5 个 mod
+    ///   （Balm / FallingTree / FTB Teams / Fabrication / Paintings ++）
+    ///   压根不在记录里 ⇒ 校验报 complete ⇒ 界面上看不到任何问题，
+    ///   而游戏里弹「Missing Mods」。这条断言钉住"我们说的和游戏说的一样"。
+    #[test]
+    fn entries_that_never_resolved_make_the_pack_incomplete() {
+        let d = tmp("unresolved");
+        std::fs::create_dir_all(d.join("mods")).unwrap();
+        std::fs::write(d.join("mods/here.jar"), b"AAA").unwrap();
+
+        let mut r = rec(vec![file("mods/here.jar", 3)]);
+        r.missing = vec![MissingEntry {
+            path: "mods/balm-fabric-7.2.1.jar".into(),
+            name: "balm-fabric-7.2.1.jar".into(),
+            reason: "文件 4741360 的信息查不到：网络超时".into(),
+            attempts: 3,
+            retryable: true,
+        }];
+
+        let report = r.verify(&d, false);
+        assert!(
+            !report.complete,
+            "有没解析出来的条目却说装全了 —— 这正是那次事故的形状"
+        );
+        assert_eq!(report.missing_at_install.len(), 1);
+        assert_eq!(report.missing_at_install[0].name, "balm-fabric-7.2.1.jar");
+        assert_eq!(report.missing_at_install[0].attempts, 3);
+        assert!(
+            report.summary.contains("1 个当时没解析出下载地址"),
+            "总结要说清这一类：{}",
+            report.summary
+        );
+        // ★ 它们**不在** files 里 ⇒ 不参与"缺 N 个"（那个数说的是磁盘对账）
+        assert!(report.missing.is_empty(), "磁盘上文件都在：{:?}", report.missing);
+    }
+
+    /// 老记录（没有 `missing` 字段）读回来是空表，语义不变。
+    #[test]
+    fn an_old_record_without_missing_entries_still_verifies_clean() {
+        let d = tmp("oldrec");
+        std::fs::create_dir_all(d.join("mods")).unwrap();
+        std::fs::write(d.join("mods/a.jar"), b"AAA").unwrap();
+        let old = r#"{"schema":1,"name":"n","version":"v","source":"modrinth","mc_version":"1.20.1","installed_at":0,"files":[{"path":"mods/a.jar","url":"","sha1":"","size":3}]}"#;
+        let r: PackRecord = serde_json::from_str(old).unwrap();
+        assert!(r.missing.is_empty());
+        assert!(r.verify(&d, false).complete, "老记录没有这一项 ⇒ 行为与以前一致");
     }
 }
