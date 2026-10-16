@@ -1154,7 +1154,21 @@ function ModpackTab({
       const doInstall = () =>
         isCf && cfIds
           ? api.modpack.cfInstall(
-              { ...cfIds, name: packName, slug, taskId, instanceName: packName, source: src },
+              {
+                ...cfIds,
+                name: packName,
+                slug,
+                taskId,
+                instanceName: packName,
+                source: src,
+                /*
+                 * ★★ 2026-10-17（用户：「启动器，整合包版本图标应该显示整合包
+                 *   自己的封面」）：**把平台封面一起交下去**。
+                 *   CF 的包体里**从来没有**图标文件 ⇒ 不传这张，
+                 *   装完之后界面上永远只有自绘的方块。
+                 */
+                iconUrl: pack.icon ?? undefined,
+              },
               (e) => {
                 patch({
                   detail: e.stage,
@@ -1198,6 +1212,19 @@ function ModpackTab({
                  */
                 projectId: pack.id,
                 versionId: first.id,
+                /*
+                 * ★★ 2026-10-17（用户：「启动器，整合包版本图标应该显示整合包
+                 *   自己的封面」）：**把平台封面一起交下去**。
+                 *
+                 *   `.mrpack` 的规范里**没有图标**（根下只有 `modrinth.index.json`
+                 *   与 `overrides/`）—— 作者没往包里放图时，这一张是唯一来源。
+                 *   而这个 URL **早就在手上**（搜索结果里的 `h.icon_url`，
+                 *   卡片上那张图用的就是它）。
+                 *
+                 *   ★ 后端只在"包里抽不到作者图标"时才会去抓它（连请求都不发），
+                 *     所以传下去不会多一次网络往返。
+                 */
+                iconUrl: pack.icon ?? undefined,
                 /*
                  * ★★★★ 2026-10-01：**把包体的 sha1 传下去**。
                  *

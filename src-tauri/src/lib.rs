@@ -515,8 +515,10 @@ pub fn run() {    /*
             commands_real::check_mod_updates,
             /* ★ Mod 图标：从 jar 里解（本地，按 mtime 缓存） */
             commands_real::mod_icons,
-            /* ★ 整合包图标：装包时从包体里抽出来留下的作者图标 */
+            /* ★ 整合包封面：包体里的作者图标 / 平台 API 的封面，两条来源 + 一个读取口 */
             commands_real::pack_icons,
+            /* ★★ 老实例的封面兜底（按记录里的 project_id 反查一次，有界） */
+            commands_real::pack_icons_backfill,
             /* -------- Java 运行时 -------- */
             commands_real::java_query,
             commands_real::java_install,

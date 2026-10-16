@@ -1535,6 +1535,15 @@ export const modpack = {
       projectId?: string;
       versionId?: string;
       /**
+       * ★★ **平台上的封面地址**（2026-10-17，用户：「启动器，整合包版本图标应该
+       *   显示整合包自己的封面」）。
+       *
+       *   `.mrpack` 的规范里**没有图标**（根下只有 `modrinth.index.json` 与
+       *   `overrides/`），所以包里抽不到时它就是唯一的来源 ——
+       *   而界面在搜索结果里本来就有这个 URL（`h.icon_url`）。
+       */
+      iconUrl?: string;
+      /**
        * ★★★★ 2026-10-01：**包体的 SHA1**（`files[].hashes.sha1`）。
        *
        *   原来包体**完全不校验**，于是"下下来了但内容坏了"只会在解压时暴露成
@@ -1566,6 +1575,8 @@ export const modpack = {
         packVersion: opts.packVersion ?? null,
         projectId: opts.projectId ?? null,
         versionId: opts.versionId ?? null,
+        /* ★ 2026-10-17：平台封面（包里抽不到作者图标时用它） */
+        iconUrl: opts.iconUrl ?? null,
         /* ★ 2026-10-01：包体的 sha1 —— 有它，坏包在下载阶段就被发现 */
         packSha1: opts.packSha1 ?? null,
         concurrency: opts.concurrency ?? null,
@@ -1599,6 +1610,15 @@ export const modpack = {
       source?: 'auto' | 'mojang' | 'bmclapi';
       /** ★ 包版本：写进安装记录（ADR-025）；给不出就不传，记录里写"未知" */
       packVersion?: string;
+      /**
+       * ★★ **平台上的封面地址**（2026-10-17）。
+       *
+       *   ★ 对 CF 这条路不是"锦上添花"而是**唯一来源**：CF 的整合包 zip 里
+       *     只有 `manifest.json` + `modlist.html` + `overrides/`，
+       *     **从来没有图标文件**。界面在搜索结果里就有它（`h.icon_url`，
+       *     后端的 CF 搜索把它映射成 `logo.thumbnailUrl`）。
+       */
+      iconUrl?: string;
       concurrency?: number;
     },
     onProgress?: (e: ModpackProgressEvent) => void,
@@ -1621,6 +1641,8 @@ export const modpack = {
         instanceName: opts.instanceName,
         source: opts.source ?? 'bmclapi',
         packVersion: opts.packVersion ?? null,
+        /* ★ 2026-10-17：CF 的包里没有图标，这一张是唯一来源 */
+        iconUrl: opts.iconUrl ?? null,
         concurrency: opts.concurrency ?? null,
       });
     } finally {
@@ -2679,16 +2701,33 @@ export function createTauriBackend(): Backend {
     },
 
     /**
-     * ★★ **整合包作者的图标**（2026-09-30，用户：「整合包显示整合包自己的图标」）。
+     * ★★ **整合包的封面**（2026-09-30 起，2026-10-17 扩到两条来源）。
      *
-     * 返回 `版本 id → data:image/png;base64,…`，**只含真的有图标的那些**。
-     * 装包时从包体里抽出来存成 `<版本目录>/.ieml/pack-icon.png`（见 Rust 侧
-     * `install_pack_plan`），这里读回来编码。
+     * 返回 `版本 id → data:<真实 MIME>;base64,…`，**只含真的有封面的那些**。
+     *
+     * 存的是 `<版本目录>/.ieml/pack-icon.png`：装包时**包体里作者放的那张优先**，
+     * 抽不到才去抓平台 API 的封面（Modrinth `icon_url` / CF `logo`）——
+     * 两条来源汇到同一个文件，见 Rust 侧 `store_pack_cover`。
      *
      * ★ 一次拿全部：版本列表一屏也就几个包，而"一个包一条命令"会让渲染发 N 次 IPC。
      */
     async packIcons() {
       return call<Record<string, string>>('pack_icons', {});
+    },
+
+    /**
+     * ★★ **老实例的封面兜底**（2026-10-17）。
+     *
+     * 安装时落封面是这一版才有的 —— 之前装好的实例里 `.ieml/` 没有封面
+     * （而"平台上有封面"这条信息当初也没落盘）。这里按**安装记录里的 `project_id`**
+     * 反查一次平台、抓下来存成同一份 `pack-icon.png`（Rust 侧有界：一次最多 4 个、
+     * 已有封面的不发请求、网不通就停）。
+     *
+     * 返回**这次真的补上了封面的 slug**：空表 = 没有要补的
+     * （那就**不必**再读一遍 `packIcons()`）。
+     */
+    async packIconsBackfill() {
+      return call<string[]>('pack_icons_backfill', {});
     },
 
     /**

@@ -193,12 +193,22 @@ export interface Backend {
    */
   modIcons(slug: string): Promise<Record<string, string>>;
   /**
-   * 整合包作者的图标，`版本 id → data:` URI`（**只含真的有图标的那些**）。
+   * 整合包的封面，`版本 id → data:` URI`（**只含真的有封面的那些**）。
    *
-   * ★ 装包时从包体里抽出来留下的（作者放在包根目录的那张图），不联网。
-   *   作者没放图标的包不在结果里 —— 界面退回自绘的版本图标。
+   * ★ 两条来源汇到同一个文件：装包时**包体里作者放的那张优先**，
+   *   抽不到才去抓平台 API 的封面（Modrinth `icon_url` / CF `logo`）。
+   *   一张都没有的包不在结果里 —— 界面退回自绘的版本图标。
    */
   packIcons(): Promise<Record<string, string>>;
+  /**
+   * ★★ **老实例的封面兜底**：按安装记录里的 `project_id` 反查一次平台。
+   *
+   * 返回**这次真的补上了封面的 slug**（空表 = 没有要补的 ⇒ 不必重读 `packIcons`）。
+   * ★ 它只在"没有可用封面 + 记录认得出平台身份"时才发请求，且一次最多试 4 个
+   *   （见 Rust 侧 `pack_icons_backfill`：启动时会跟着 `packIcons` 跑一次，
+   *    用户不用做任何事，代价有界）。
+   */
+  packIconsBackfill(): Promise<string[]>;
   /**
    * **按版本目录名删除**（不依赖账本记录）。默认进回收站。
    *

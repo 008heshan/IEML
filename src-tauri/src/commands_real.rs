@@ -1460,17 +1460,24 @@ pub struct ModRemote {
 ///
 /// ★★ **整合包作者的图标**（2026-09-30，用户：「这两个地方的整合包显示整合包自己的图标」）。
 ///
-/// 读 `<版本目录>/.ieml/pack-icon.png`（装包时从包体里抽出来留下的，见
-/// `install_pack_plan` 的 ④′），返回 `版本 id → data:` URI`。
+/// 读 `<版本目录>/.ieml/pack-icon.png`（装包时留下的，见 [`store_pack_cover`]），
+/// 返回 `版本 id → data:` URI`。
 ///
-/// ★ 只会返回**真的有图标**的那些 —— 作者没放图标的包不在键里，
+/// ★ 只会返回**真的有图标**的那些 —— 没有的包不在键里，
 ///   界面退回自绘的版本图标（那本来就是"没有真图标"时的样子）。
-/// ★ 一次读全部：版本列表一屏也就几个包，而且这个文件很小（≤2 MB，通常几十 KB）。
+/// ★ 一次读全部：版本列表一屏也就几个包，而且这个文件很小（≤8 MiB，通常几十 KB）。
 ///   做成"一个包一条命令"会让列表渲染发 N 次 IPC。
+///
+/// ★★ 2026-10-17：这里也过一遍 [`crate::domain::pack_icon::validate`] ——
+///   ① **MIME 按真实字节给**（原来是写死的 `image/png`，而落盘的可能是 JPEG，
+///      浏览器不保证嗅探 `data:` URI 的内容 ⇒ 那种封面会渲染成破图）；
+///   ② 盘上那份万一不是图片（旧版本留下的、或者被别的东西覆盖过），
+///      **不当封面**（否则界面拿到一段 HTML 当图，比没有封面更难看，还查不出原因）。
 #[tauri::command]
 pub fn pack_icons(state: State<'_, AppState>) -> std::collections::HashMap<String, String> {
     use base64::Engine as _;
     let paths = state.paths();
+    let cap = crate::domain::pack_icon::cap();
     let mut out = std::collections::HashMap::new();
     let Ok(rd) = std::fs::read_dir(&paths.instances) else {
         return out;
@@ -1480,18 +1487,270 @@ pub fn pack_icons(state: State<'_, AppState>) -> std::collections::HashMap<Strin
         if !dir.is_dir() {
             continue;
         }
-        let icon = dir.join(crate::platform::LAUNCHER_SUBDIR).join("pack-icon.png");
+        let icon = dir
+            .join(crate::platform::LAUNCHER_SUBDIR)
+            .join(crate::domain::pack_icon::PACK_ICON_FILE);
         let Ok(bytes) = std::fs::read(&icon) else {
             continue;
         };
-        if bytes.is_empty() {
+        let Ok(kind) = crate::domain::pack_icon::validate(&bytes, cap) else {
             continue;
-        }
+        };
         let slug = e.file_name().to_string_lossy().to_string();
         let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-        out.insert(slug, format!("data:image/png;base64,{b64}"));
+        out.insert(slug, format!("data:{};base64,{}", kind.mime(), b64));
     }
     out
+}
+
+/*
+ * ====================== 整合包封面：唯一的落盘口（2026-10-17） ======================
+ *
+ * ★★ 用户原话：「**启动器，整合包版本图标应该显示整合包自己的封面**」。
+ *
+ * 缺口是**来源只有一条**：原来只在装包时从包体根目录抽 `icon.png`
+ * （`modrinth::extract_pack_icon`），而 Modrinth 的 `.mrpack` 规范里根本没有图标、
+ * CurseForge 的 `.zip` 里也从来没有 —— 抽不到就什么都不剩，界面退回自绘图标。
+ * 而平台上的封面（Modrinth `icon_url` / CF `logo`）界面上早就拿得到，
+ * 只是从来没往下传、也没落过盘。
+ *
+ * 现在**两条来源汇到同一个文件、同一个读取口**（`pack_icons` 上面那个）：
+ *   ① 包体根目录里作者放的那张（离线就有，不发请求）；
+ *   ② 平台 API 的封面（Modrinth `icon_url` / CF `logo.thumbnailUrl`）+ 老实例按
+ *      安装记录里的 `project_id` 反查（见 [`pack_icons_backfill`]）。
+ *
+ * ★ 为什么不把封面塞进版本 JSON：`pack-icons` 这套的形状就是"**一个文件 + 一条命令**"
+ *   （见 `pack_icons` 的说明）—— 版本 JSON 是"读盘就能得出"的东西，
+ *   往里塞 base64 会让每次扫描都背着几百 KB，也把"不做缓存"的约定破掉。
+ */
+
+/// 抓一张**远端封面**：候选源回退（镜像优先、官方兜底）+ 体积上限 + 只认图片。
+///
+/// ★ 为什么不是"一条 URL 发一次"：封面挂在第三方 CDN 上
+///   （Modrinth 的 `cdn.modrinth.com`、CF 的 `media.forgecdn.net`），
+///   而这台机器上 `media.forgecdn.net` 是**时通时不通**的
+///   （见 `net/curseforge` 模块头那张表），`candidate_urls` 早就为此备了
+///   mcimirror 变体。封面与包体走**同一个换源纪律**，不另立一条单发的路。
+///
+/// ★ 取不到就 `None`（调用方如实记一句）：封面缺了不影响任何主流程。
+async fn fetch_pack_cover(url: &str, preferred: Source) -> Option<Vec<u8>> {
+    let cap = crate::domain::pack_icon::cap();
+    let mut last: Option<String> = None;
+    for (src, candidate) in mirror::candidate_urls(url, preferred) {
+        match crate::net::get_bytes_capped(&candidate, cap).await {
+            Ok(bytes) => {
+                /*
+                 * ★ 拿到字节还要**当场认一遍**（是图片、不超限）——
+                 *   远端回一段 HTML 错误页是常态，那不是"封面"。
+                 *   验收标准与落盘那一处**共用** `pack_icon::validate`。
+                 */
+                if let Ok(kind) = crate::domain::pack_icon::validate(&bytes, cap) {
+                    say!(
+                        "[IEML/modpack] 封面抓到了（{}，{} 字节，来源 {}）",
+                        kind.mime(),
+                        bytes.len(),
+                        src.as_str()
+                    );
+                    return Some(bytes);
+                }
+                last = Some(format!("{candidate} 回来的不是图片"));
+            }
+            Err(e) => last = Some(format!("{candidate}：{e}")),
+        }
+    }
+    if let Some(why) = last {
+        say!("[IEML/modpack] 封面没抓到：{why}");
+    }
+    None
+}
+
+/// 把选中的封面写进 `<实例>/.ieml/pack-icon.png`（**唯一一条写口**）。
+///
+/// 判定（哪张算数、多大算合法）全在 [`crate::domain::pack_icon::pick_icon`] 里，
+/// 这里只负责落盘。返回用的是哪条来源（写日志、排查用）；一张都不合法就是 `None`
+/// —— **不是错误**：界面退回自绘的版本图标。
+async fn write_pack_cover(
+    paths: &crate::platform::AppPaths,
+    slug: &str,
+    archive_icon: Option<&[u8]>,
+    api_icon: Option<&[u8]>,
+) -> Option<crate::domain::pack_icon::IconOrigin> {
+    let choice = crate::domain::pack_icon::pick_icon(archive_icon, api_icon)?;
+    let dest = paths
+        .instance_dir(slug)
+        .join(crate::domain::pack_icon::PACK_ICON_FILE);
+    if let Some(parent) = dest.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    match tokio::fs::write(&dest, choice.bytes).await {
+        Ok(()) => Some(choice.origin),
+        // ★ 写不下来**不影响安装**：少一张封面而已，如实记一句
+        Err(e) => {
+            say!("[IEML/modpack] 封面写不下来（不影响安装）：{e}");
+            None
+        }
+    }
+}
+
+/// 装包那条路：包体就在手上 —— 先抽包里的作者图标，**能用就不发那个请求**；
+/// 抽不到（或抽出来的不是图片）才去抓平台封面。
+///
+/// ★ `api_icon_url` 由界面给（它在列表里本来就有那个 URL），后端不去自己找：
+///   多一次"按 id 反查"就是多一次可以失败的网络往返，而答案一模一样。
+async fn store_pack_cover(
+    paths: &crate::platform::AppPaths,
+    slug: &str,
+    archive_icon: Option<Vec<u8>>,
+    api_icon_url: Option<&str>,
+    preferred: Source,
+) -> Option<crate::domain::pack_icon::IconOrigin> {
+    let archive_usable = archive_icon
+        .as_deref()
+        .map(crate::domain::pack_icon::is_usable)
+        .unwrap_or(false);
+    let api_icon = if archive_usable {
+        None
+    } else {
+        match api_icon_url.map(str::trim).filter(|u| !u.is_empty()) {
+            Some(url) => fetch_pack_cover(url, preferred).await,
+            None => None,
+        }
+    };
+    write_pack_cover(paths, slug, archive_icon.as_deref(), api_icon.as_deref()).await
+}
+
+/// ★★ **老实例的封面兜底**（2026-10-17）。
+///
+/// ## 为什么需要它
+///
+///   安装时落封面这条线是**新加的** —— 在这个版本之前装好的实例，
+///   `.ieml/` 里要么没有 `pack-icon.png`（包体里本来就没图），要么有但只是
+///   作者塞进包里的那张。而"平台上有封面"这条信息**当初根本没落盘**
+///   （那时界面也没把它传下来）。所以对老实例只有一个办法：
+///   **按安装记录里的 `project_id` 再问一次平台**。
+///
+/// ## 为什么做成"自动跑一次"而不是一个按钮
+///
+///   用户报的现象就是「图标应该是封面」—— 给他一个"要自己点一下才有封面"的按钮，
+///   等于把缺口留在他眼前。所以跟前端那**唯一一次** `pack_icons()` 一起跑
+///   （见 `AppContext` 里那段），用户不用做任何事。
+///
+/// ## 代价必须是有界的（三个界，缺一不可）
+///
+///   ① **只在没有可用封面时才动**：已经有 `pack-icon.png` 且是真图片 ⇒ 跳过，
+///      **连请求都不发**（绝大多数实例走这一条，跑起来就是几次 `read`）；
+///   ② **一次最多试 `MAX_PER_RUN` 个**：装上十个老整合包也不会一起打出去；
+///   ③ **取不到地址就停**（`break`，不是 `continue`）：那说明这会儿网不通，
+///      剩下的多半也一样 —— 继续试只是把启动拖慢。
+///
+/// ## 只有"在线装的两条源"能兜底
+///
+///   记录里有 `project_id` 才认得出它在平台上是谁：
+///     · `modrinth` → `GET /project/{id}` 的 `icon_url`
+///     · `curseforge` → `GET /v1/mods/{id}` 的 `logo`
+///     · `local`（拖进来的包）**给不出身份** —— 如实跳过，
+///       它唯一的来源是包体里那张（装的时候已经抽过了）。
+///
+///   返回**这次真的补上了封面的那些 slug**（前端据此决定要不要把图标重读一遍）。
+///
+/// ★ 返回 `Result` 是 tauri 对"带引用的异步命令"的要求（`State<'_, …>` 是引用）；
+///   这条路**不会失败**：补不上就是补不上，空表即可 —— 所以永远是 `Ok`。
+#[tauri::command]
+pub async fn pack_icons_backfill(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    /// 一次最多试几个（见上面"代价必须是有界的"）
+    const MAX_PER_RUN: usize = 4;
+
+    let paths = state.paths();
+    let cap = crate::domain::pack_icon::cap();
+    let mut out: Vec<String> = Vec::new();
+
+    let Ok(rd) = std::fs::read_dir(&paths.instances) else {
+        return Ok(out);
+    };
+    /*
+     * ★ 排序：`read_dir` 的顺序是文件系统给的（不确定），而"一次最多试 4 个"
+     *   要有个**稳定的**口径 —— 否则同一个用户在两次启动里补的是不同的 4 个。
+     */
+    let mut dirs: Vec<std::path::PathBuf> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.sort();
+
+    let mut tried = 0usize;
+    for dir in dirs {
+        if tried >= MAX_PER_RUN {
+            break;
+        }
+        let Some(slug) = dir.file_name().map(|n| n.to_string_lossy().to_string()) else {
+            continue;
+        };
+        // ① 已经有能用的封面 ⇒ 不动、也不问平台
+        let dest = paths
+            .instance_dir(&slug)
+            .join(crate::domain::pack_icon::PACK_ICON_FILE);
+        if let Ok(b) = std::fs::read(&dest) {
+            if crate::domain::pack_icon::validate(&b, cap).is_ok() {
+                continue;
+            }
+        }
+        // ② 认得出它在平台上是谁吗（拖进来的包认不出 —— 如实跳过）
+        let Ok(record) = read_pack_record(&paths, &slug) else {
+            continue;
+        };
+        let Some(project) = record
+            .project_id
+            .clone()
+            .filter(|p| !p.trim().is_empty())
+        else {
+            continue;
+        };
+        let url = match record.source.as_str() {
+            "modrinth" => match crate::modrinth::project(&project).await {
+                Ok(p) => p.icon_url,
+                Err(e) => {
+                    say!("[IEML/modpack] 补封面时问不到「{}」的封面地址：{e}", record.name);
+                    break; // ③ 网不通就别接着问别的了
+                }
+            },
+            "curseforge" => {
+                let Ok(id) = project.trim().parse::<u32>() else {
+                    continue;
+                };
+                match crate::net::curseforge::project(id).await {
+                    Ok(m) => m.logo.and_then(|l| l.best_url()),
+                    Err(e) => {
+                        say!("[IEML/modpack] 补封面时问不到「{}」的封面地址：{e}", record.name);
+                        break;
+                    }
+                }
+            }
+            // 认不出的来源（`local` 等）：给不出封面地址，跳过
+            _ => continue,
+        };
+        tried += 1;
+        let Some(url) = url.map(|u| u.trim().to_string()).filter(|u| !u.is_empty()) else {
+            continue; // 平台也没给它封面 —— 这很正常，不是错
+        };
+        /*
+         * ★ 这里没有"用户在设置里选的源"可跟（这是启动时的一次兜底），
+         *   所以按产品的默认口径走国内镜像优先 —— 而 `candidate_urls`
+         *   对第三方 CDN 本来就把镜像写在前面，`preferred` 只影响
+         *   "没有镜像可换的域"那一档。
+         */
+        // 与安装那条路**同一个抓取口 + 同一个落盘口**（判定都在 `pack_icon` 里）
+        if let Some(bytes) = fetch_pack_cover(&url, Source::Bmclapi).await {
+            if write_pack_cover(&paths, &slug, None, Some(&bytes))
+                .await
+                .is_some()
+            {
+                say!("[IEML/modpack] 老实例「{slug}」的封面补上了");
+                out.push(slug);
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// ★★ **Mod 图标**（2026-09-30，用户：「我还要 mod 的图标」，并选定"从 jar 里解"）。
@@ -8292,6 +8551,12 @@ pub async fn modpack_install(
     project_id: Option<String>,
     version_id: Option<String>,
     /*
+     * ★★ 2026-10-17（用户：「启动器，整合包版本图标应该显示整合包自己的封面」）：
+     *   **平台上的封面地址**。`.mrpack` 里没有图标（规范里就没这个字段），
+     *   所以包里抽不到时它是唯一的来源。界面在列表里本来就有这个 URL。
+     */
+    icon_url: Option<String>,
+    /*
      * ★★★★ 2026-10-01：**包体的 SHA1**（界面上早就拿得到
      *   `ModrinthVersion.files[].hashes.sha1`，只是以前没往下传）。
      *
@@ -8427,6 +8692,8 @@ pub async fn modpack_install(
         pack_version,
         project_id,
         version_id,
+        // ★ 界面在列表里拿到的封面地址，一路带到这里（见 `install_pack_plan` 的说明）
+        icon_url,
         concurrency,
         app,
         state,
@@ -8468,6 +8735,14 @@ pub async fn cf_modpack_install(
      *   现在一并写进记录（ADR-025 第 4 条）。
      */
     concurrency: Option<usize>,
+    /*
+     * ★★ 2026-10-17（用户：「启动器，整合包版本图标应该显示整合包自己的封面」）：
+     *   **平台上的封面地址**（CF 的 `logo.thumbnailUrl`，界面在搜索结果里就有）。
+     *   ★ 对 CF 这条路这不是"锦上添花"而是**唯一来源**：CF 的整合包 zip 里
+     *     只有 `manifest.json` + `modlist.html` + `overrides/`，从来没有图标文件 ——
+     *     不抓这一张，"显示整合包自己的封面"这件事在 CF 上永远做不到。
+     */
+    icon_url: Option<String>,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ModpackInstallResult, String> {
@@ -8601,6 +8876,8 @@ pub async fn cf_modpack_install(
         // ★ CF 的身份一直都在手上：项目 id + 文件 id（写进记录，以后查新版用）
         Some(project_id.to_string()),
         Some(file_id.to_string()),
+        // ★ 封面：CF 的包里**从来没有**图标，这张（`logo`）是唯一来源
+        icon_url,
         concurrency,
         app,
         state,
@@ -9156,6 +9433,12 @@ pub async fn pack_install_local(
          */
         project_id,
         version_id,
+        /*
+         * ★ 本地包给不出平台封面（我们不知道它在平台上是谁）——
+         *   它唯一可能的来源是**包体里那张**（`extract_pack_icon` 照样会去抽）。
+         *   如实传 None：没有就退回自绘图标，不编一张。
+         */
+        None,
         concurrency,
         app,
         state,
@@ -9494,6 +9777,13 @@ async fn install_pack_plan(
      */
     project_id: Option<String>,
     version_id: Option<String>,
+    /*
+     * ★★ 2026-10-17：**平台上的封面地址**（Modrinth `icon_url` / CF `logo`）。
+     *   界面上早就拿得到（搜索结果里就有），只是从来没往下传。
+     *   包体里抽得到作者图标时**根本不会用**它（连请求都不发）；
+     *   抽不到才去抓这一张 —— 这正是 CF 的包（包里从来没有图标）唯一的来源。
+     */
+    icon_url: Option<String>,
     concurrency: Option<usize>,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -9930,27 +10220,38 @@ async fn install_pack_plan(
     }
 
     /*
-     * ---------- ④′ 留下**作者的图标** ----------
+     * ---------- ④′ 留下**封面** ----------
      *
      * ★★ 2026-09-30（用户）：「这两个地方的整合包显示**整合包自己的图标**」。
+     * ★★ 2026-10-17（用户）：「**启动器，整合包版本图标应该显示整合包自己的封面**」——
+     *    原来只有"从包体里抽"这一条路，而 Modrinth 的 `.mrpack` 规范里没有图标、
+     *    CurseForge 的 `.zip` 里也从来没有 ⇒ 抽不到就什么都没留下。
+     *    现在两条来源都接上（包体 > 平台 API），判定与落盘都收在
+     *    [`store_pack_cover`] 里 —— 这里只负责"包体字节还在手上"这个时机：
+     *    下几行 `pack_path` 就被删了，图标是**装完就再也拿不到的东西**。
      *
-     *   包体字节就在手上，而图标是**装完就再也拿不到的东西**（`pack_path` 下面几行就删）。
-     *   所以在这里抽出来，存成 `<版本目录>/.ieml/pack-icon.png`：
-     *     · 放在 `.ieml/` 里 —— 那是**启动器自己的东西**，
-     *       游戏不会读它，整合包导出也不会把它当成游戏资源；
-     *     · 只留原始图片字节（不存 data URI），读的时候临时编码。
-     *
-     *   ★ 抽不到（作者没放图标）**不算错**：界面退回自绘的版本图标。
+     * ★ 放 `.ieml/` 里：那是**启动器自己的东西**，游戏不会读它，
+     *   整合包导出也不会把它当成游戏资源。
+     * ★ 一张都拿不到（作者没放、平台也没给）**不算错**：界面退回自绘的版本图标。
      */
-    if let Some(icon) = modrinth::extract_pack_icon(&pack_bytes) {
-        let dest = state.paths().instance_dir(&slug).join("pack-icon.png");
-        if let Some(parent) = dest.parent() {
-            let _ = tokio::fs::create_dir_all(parent).await;
-        }
-        match tokio::fs::write(&dest, &icon).await {
-            Ok(()) => say!("[IEML/modpack] 已留下作者图标（{} 字节）", icon.len()),
-            Err(e) => say!("[IEML/modpack] 作者图标写不下来（不影响安装）：{e}"),
-        }
+    match store_pack_cover(
+        &state.paths(),
+        &slug,
+        modrinth::extract_pack_icon(&pack_bytes),
+        icon_url.as_deref(),
+        /*
+         * ★ 换源口径跟着这次安装走：`src` 是用户在设置里选的下载源。
+         *   （第三方 CDN 那两个候选的顺序由 `candidate_urls` 写死成"镜像在前"，
+         *     所以这里的 `preferred` 真正管的是"没有镜像可换的域"。）
+         */
+        src,
+    )
+    .await
+    {
+        Some(origin) => say!("[IEML/modpack] 封面已留下（来源：{}）", origin.label()),
+        None => say!(
+            "[IEML/modpack] 这个包没有可用的封面（包里没有、平台也没给）—— 界面退回自绘图标"
+        ),
     }
 
     let _ = tokio::fs::remove_file(&pack_path).await;
@@ -11051,6 +11352,34 @@ pub async fn pack_apply_update(
     let src = source.unwrap_or_else(|| "bmclapi".to_string());
     let instance_name = instance_display_name(&paths, &slug);
     /*
+     * ★★ 2026-10-17：升级时**顺手把封面也带上**（用户：「启动器，整合包版本图标
+     *   应该显示整合包自己的封面」）。
+     *
+     *   ★ 已经有可用封面就**不问平台**（`None` 往下传）：升级这条路上
+     *     包里那张会先被抽一遍，抽不到时"没有 API 封面"也**不会删掉旧封面**
+     *     （`write_pack_cover` 在没有候选时直接返回，不碰盘）。
+     *   ★ 还没有封面的（老实例）才问一次 —— 于是"升级一下"也能把封面带出来，
+     *     不必等下次启动那条兜底（`pack_icons_backfill`）。
+     */
+    let cover_on_disk = std::fs::read(
+        paths
+            .instance_dir(&slug)
+            .join(crate::domain::pack_icon::PACK_ICON_FILE),
+    )
+    .map(|b| crate::domain::pack_icon::is_usable(&b))
+    .unwrap_or(false);
+    let icon_url = if cover_on_disk {
+        None
+    } else {
+        match crate::modrinth::project(&project).await {
+            Ok(p) => p.icon_url,
+            Err(e) => {
+                say!("[IEML/modpack] 升级时问不到封面地址：{e}（不影响升级）");
+                None
+            }
+        }
+    };
+    /*
      * ★ 复用 `modpack_install`（同一条路），只是 slug 换成已有的那个实例。
      *   身份也一起传：升级完记录里要认得**同一个包**（否则下次查不了更新）。
      */
@@ -11064,6 +11393,8 @@ pub async fn pack_apply_update(
         Some(v.version_number.clone()),
         Some(project),
         Some(v.id.clone()),
+        // ★ 封面（见上面那段：有旧封面就不问平台）
+        icon_url,
         /*
          * ★ 2026-10-01：升级这条路也**带上包体的 sha1**（与首次安装一致）——
          *   `file.hashes.sha1` 就在这个 `ModrinthVersion` 里。

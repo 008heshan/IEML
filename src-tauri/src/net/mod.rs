@@ -720,6 +720,69 @@ pub async fn get_bytes(url: &str) -> Result<Vec<u8>> {
     Ok(resp.bytes().await?.to_vec())
 }
 
+/// 取一段**有体积上限**的二进制（2026-10-17，整合包封面那条路）。
+///
+/// ## 为什么不能直接用 [`get_bytes`]
+///
+///   `get_bytes` 是 `resp.bytes()` —— **整个响应体一次性进内存**，没有任何上限。
+///   它服务的两个调用点是"MC 新闻的版本大图"（我们自己网站上的图），
+///   而这里要取的是**第三方 API 给的封面 URL**（Modrinth / CF 的 CDN）。
+///   同一个"体积闸门"的纪律对第三方响应体必须同样成立
+///   （`archive_guard` 模块说明第 172 行：*Cap what you accept.*）：
+///   一个被劫持的源回一个无限长的响应体，`bytes()` 会一路吃到内存满。
+///
+/// ## 两道闸门，与下载引擎同一口径
+///
+///   ① **上游自己报的大小**（`Content-Length`）在开始读之前就拒 —— 最省的一次拦截；
+///   ② **流式累计**（`archive_guard::ByteMeter`）—— 上游不报大小、或报小了时**唯一拦得住**的那道。
+///
+///   ★ 上限**不是这里定的**：由调用方按 `ArtifactClass` 取值传进来
+///     （封面那条路传的是 `ArtifactClass::Image` 的 8 MiB）。
+///     这里只负责"照这个数拦"，不负责"这个数是多少"。
+///
+/// ★ 不加 `get_text` 那套 429 退避重试：一次失败就让调用方如实记一句，
+///   封面缺了不影响任何主流程（界面自绘图标）。
+pub async fn get_bytes_capped(
+    url: &str,
+    cap: crate::domain::archive_guard::ByteCap,
+) -> Result<Vec<u8>> {
+    use futures_util::StreamExt as _;
+
+    let resp = api_client().get(url).send().await?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(NetError::Status {
+            status: status.as_u16(),
+            url: url.to_string(),
+        });
+    }
+    // ① 上游宣告的大小就超限 ⇒ 一个字节都别读
+    if let Some(declared) = resp.content_length() {
+        if cap.rejected_by_declared_size(declared) {
+            return Err(NetError::Other(format!(
+                "这个响应体太大了（上游说 {declared} 字节，上限 {}）：{url}",
+                cap.describe()
+            )));
+        }
+    }
+    // ② 流式累计（`Content-Length` 缺失或被谎报时的兜底）
+    let mut meter = crate::domain::archive_guard::ByteMeter::new(cap);
+    let mut out: Vec<u8> = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if meter.add(chunk.len() as u64).is_err() {
+            return Err(NetError::Other(format!(
+                "这个响应体超过了上限 {}（已收 {} 字节）：{url}",
+                cap.describe(),
+                meter.received()
+            )));
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
+}
+
 /* ====================== 第三方 API 的 POST（镜像兜底） ====================== */
 
 /// 发一次 POST（body 原样），**不换源** —— [`post_json_third_party`] 的两条路都用它。

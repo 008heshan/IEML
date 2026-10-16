@@ -94,6 +94,20 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: readonly ReleaseNote[] = [
   {
+    version: '0.21.9',
+    date: '2026-10-17',
+    headline: '这一版让整合包显示自己的封面。',
+    groups: [
+      {
+        title: '优化了',
+        items: [
+          '优化了 安装整合包时会把它自己的封面取下来，版本列表里显示的就是这个包的样子。',
+          '优化了 以前装好的整合包，下次打开启动器也会自动补上封面。',
+        ],
+      },
+    ],
+  },
+  {
     version: '0.21.8',
     date: '2026-10-17',
     headline: '这一版修好了整合包装不上、加载器不显示这两件事。',

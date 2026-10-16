@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 应用上下文
  * ------------------------------------------------------------------
  * 把 store、backend、以及一批跨页共用的动作集中在这里。
@@ -1668,26 +1668,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [launchStarting, setLaunchStarting] = useState(false);
 
   /**
-   * ★★ **整合包作者的图标**（2026-09-30，用户：「这两处的整合包显示整合包自己的图标」）。
+   * ★★ **整合包的封面**（2026-09-30 起，2026-10-17 扩到两条来源）。
    *
-   *   `版本 id → data:` URI`。**只含真的有图标的包** —— 作者没放图标的包不在里面，
-   *   界面退回自绘的版本图标。
+   *   `版本 id → data:` URI`。**只含真的有封面的包** ——
+   *   一张都没有的包不在里面，界面退回自绘的版本图标。
    *
    *   放在全局的理由：它有**两个消费方**（启动页大卡片、版本列表行），
    *   而它一次能拿全部、又不随页面变化 —— 每个页面各查一次就是重复 IPC。
    *   读失败 / 演示模式 = 空表（界面画自绘图标，**不是空白**）。
+   *
+   * ★★ 2026-10-17（用户：「启动器，整合包版本图标应该显示整合包自己的封面」）：
+   *   安装时落封面是这一版才有的 —— **在这个版本之前装好的实例**里那个文件
+   *   要么没有、要么只有"作者塞进包里那张"。所以读完本地之后**再补一次**：
+   *   `packIconsBackfill` 按安装记录里的 `project_id` 反查平台、抓下来存成
+   *   同一份文件（Rust 侧有界：一次最多 4 个、已有封面的不发请求、网不通就停）。
+   *
+   *   ★ 为什么自动跑、不给一个按钮：用户报的现象就是「图标应该是封面」——
+   *     让他自己去点一下才看得到封面，等于把缺口留在他眼前。
+   *   ★ 只在**真的补上了**（返回的 slug 非空）才重读一次图标：
+   *     正常情况下这里是一个空表，代价是"零请求 + 几次 read"。
    */
   const [packIcons, setPackIcons] = useState<Record<string, string>>({});
   useEffect(() => {
     let alive = true;
-    void backend
-      .packIcons()
-      .then((m) => {
-        if (alive && m) setPackIcons(m);
-      })
-      .catch(() => {
-        /* 拿不到就画自绘图标 —— 不编、也不报错 */
-      });
+    const apply = (m: Record<string, string> | null | undefined) => {
+      if (alive && m) setPackIcons(m);
+    };
+    void (async () => {
+      apply(await backend.packIcons().catch(() => null));
+      const filled = await backend.packIconsBackfill().catch(() => null);
+      if (filled && filled.length > 0) {
+        apply(await backend.packIcons().catch(() => null));
+      }
+    })();
     return () => {
       alive = false;
     };

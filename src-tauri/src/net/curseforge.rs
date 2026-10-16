@@ -539,6 +539,19 @@ pub async fn modpack_file(project_id: u32, file_id: u32) -> Result<CfFile> {
     Ok(one.data)
 }
 
+/// 问一次 CF 的**项目**接口（`GET /v1/mods/{modId}`）—— 拿这个包/Mod 的元信息。
+///
+/// ★★ 2026-10-17 加它，只为一件事：**整合包的封面**（`logo`）。
+///   搜索结果里本来就有 `logo`，但那条路要求我们先知道"搜什么"；
+///   而"按 `project_id` 反查"是**老实例兜底封面**唯一能走的路
+///   （安装记录里只有数字 id，没有标题）。
+/// ★ 与 `modpack_file` 同一条路（`api_json` = 只走镜像、不带凭据），
+///   否则"镜像"这条产品决定会在这条路径上静默失效。
+pub async fn project(project_id: u32) -> Result<CfMod> {
+    let one: CfOne<CfMod> = api_json(&format!("/mods/{project_id}")).await?;
+    Ok(one.data)
+}
+
 /// 清单 + 已解析的文件信息 → **下载任务表**（纯函数，可单测）。
 ///
 /// 返回 `(任务, 被跳过的路径与原因)`。跳过的**必须**交回调用方去说：
@@ -728,6 +741,18 @@ pub struct CfLogo {
     pub url: Option<String>,
 }
 
+impl CfLogo {
+    /// 这个 logo 该用哪个地址：**缩略图优先、原图兜底**。
+    ///
+    /// ★ 判据只此一处：搜索结果、项目详情、（2026-10-17 起）**整合包封面**
+    ///   三条路都要做同一个选择 —— 写两遍就是两套口径，早晚不一致。
+    ///   缩略图优先的理由很实在：它本来就是给列表/卡片用的尺寸，
+    ///   原图动辄 1~2 MB，而我们只拿它画一个几十像素的方块。
+    pub fn best_url(&self) -> Option<String> {
+        self.thumbnail_url.clone().or_else(|| self.url.clone())
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct CfLinks {
     #[serde(default)]
@@ -866,10 +891,7 @@ pub async fn search(
                 project_type: kind.key().to_string(),
                 downloads: m.download_count,
                 follows: m.thumbs_up_count,
-                icon_url: m
-                    .logo
-                    .as_ref()
-                    .and_then(|l| l.thumbnail_url.clone().or_else(|| l.url.clone())),
+                icon_url: m.logo.as_ref().and_then(|l| l.best_url()),
                 versions,
                 author: m.authors.first().map(|a| a.name.clone()).unwrap_or_default(),
                 gallery: Vec::new(),
