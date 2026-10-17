@@ -39,12 +39,7 @@ export function filterVersionsForInstance<T extends FilterableVersion>(
     target?: { mcVersion: string } | null;
   },
 ): T[] {
-  if (!opts.target?.mcVersion) return versions;
-  // 整合包是跨世代谱系 —— 不筛（见文件头那张表）
-  if (opts.projectType === 'modpack') return versions;
-
-  const want = opts.target.mcVersion;
-  const kept = versions.filter((v) => (v.game_versions ?? []).includes(want));
+  const kept = strictlyCompatibleVersions(versions, opts);
 
   /*
    * ★ **筛完一个都不剩 ⇒ 退回全量**，而不是显示"无"。
@@ -56,4 +51,42 @@ export function filterVersionsForInstance<T extends FilterableVersion>(
    *     （这与这个仓库一贯的"读不到 ≠ 没有"是同一条规矩。）
    */
   return kept.length > 0 ? kept : versions;
+}
+
+/**
+ * **严格**筛：只留下当前实例真的能装的（**不做**"筛完不剩就退回全量"那一步）。
+ *
+ * ★★ 2026-10-17：取版本那条路要用它 —— "这一份到底有没有能装到当前实例的版本"
+ *   决定**要不要回退去问另一个来源**（`domain/version-sources.ts`）。
+ *   它与 `filterVersionsForInstance` **共用同一段筛选实现**，
+ *   只差最后那一步"退回全量"：判据仍然只有一份，不会出现两套筛选规则。
+ */
+export function strictlyCompatibleVersions<T extends FilterableVersion>(
+  versions: T[],
+  opts: {
+    projectType?: string | null;
+    target?: { mcVersion: string } | null;
+  },
+): T[] {
+  if (!opts.target?.mcVersion) return versions;
+  // 整合包是跨世代谱系 —— 不筛（见文件头那张表）
+  if (opts.projectType === 'modpack') return versions;
+
+  const want = opts.target.mcVersion;
+  return versions.filter((v) => (v.game_versions ?? []).includes(want));
+}
+
+/**
+ * 这一批里**有没有能装到当前实例的**（取版本时"这一份算不算数"的判据）。
+ *
+ * ★ 非空是必要条件：一批里一个都没有时谈不上"有兼容版本"。
+ */
+export function hasCompatibleVersion<T extends FilterableVersion>(
+  versions: T[],
+  opts: {
+    projectType?: string | null;
+    target?: { mcVersion: string } | null;
+  },
+): boolean {
+  return versions.length > 0 && strictlyCompatibleVersions(versions, opts).length > 0;
 }

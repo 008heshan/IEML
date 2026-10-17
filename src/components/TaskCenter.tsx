@@ -118,7 +118,16 @@ export function TaskCenter() {
                   <span className="task-title truncate">{t.title}</span>
                   <span className="task-pct mono">
                     {t.status === 'done'
-                      ? '完成'
+                      ? /*
+                         * ★★★★ 2026-10-17（用户：「装完了但缺 N 个文件」）：
+                         *   `partial` 也算成功（实例照建、任务照旧结束），所以状态是
+                         *   `done` —— 但这时写一个笼统的「完成」就是那句假话的另一个出口。
+                         *   有缺件数时角标直接写「缺 N 个」（与任务标题、toast、
+                         *   页面提示是**同一句判据**：`domain/install-summary.ts`）。
+                         */
+                        t.missingCount && t.missingCount > 0
+                        ? `缺 ${t.missingCount} 个`
+                        : '完成'
                       : t.status === 'failed'
                         ? '失败'
                         : t.status === 'cancelled'

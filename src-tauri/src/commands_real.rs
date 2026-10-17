@@ -123,6 +123,14 @@ fn paused_pack_result(
         completion: None,
         // ★ 同理：没走到"对齐"那一步，就不该报一个空的升级结果
         update: None,
+        /*
+         * ★★ 2026-10-17：这是"**没有结论**"的那条路（暂停 / 提前返回）——
+         *   `tier` 是 `None`：三档说的是"装完了没有"，而**暂停不是其中任何一档**
+         *   （那是另一根轴，前端先看 `paused`。见 `ModpackInstallResult::tier` 的说明）。
+         */
+        tier: None,
+        failed_files: Vec::new(),
+        failed_count: 0,
         // ★ 还没走完计划 ⇒ 谈不上"清单里缺哪几个"（说 0 会让界面显示"没缺东西"）
         missing_files: Vec::new(),
         missing_count: 0,
@@ -916,20 +924,151 @@ pub async fn resource_search(
     }
 
     /*
-     * ★ 数据包要做**二次过滤**：`categories:datapack` 是 Modrinth 给的
-     *   服务端筛选，但它的分类是作者自己打的，可能不准。
-     *   再把"分类里确实带 datapack"的留下 —— 宁可靠一点。
+     * ★★ 数据包要做**二次过滤** —— 但**只对 Modrinth**（2026-10-17 修正）。
      *
-     *   （不做这一步的后果：数据包页里混进普通 Mod，
-     *    用户装进 `datapacks/` 之后游戏根本读不到。）
+     *   两个源的"类型是怎么定下来的"完全不同（判据与证据写在
+     *   `domain::resources::needs_datapack_second_pass` 上）：
+     *
+     *   · **Modrinth**：`categories:datapack` 是**作者自己打的标签**，可能不准
+     *     ⇒ 再收窄一次（宁可靠一点）。不做这一步的后果：数据包页里混进普通 Mod，
+     *     用户装进 `datapacks/` 之后游戏根本读不到。
+     *   · **CurseForge**：类型由 `classId=6945` 保证；而 CF 的**分类**里根本没有
+     *     `datapack` 这个词（2026-10-17 镜像探针实测 8 条：`Miscellaneous` /
+     *     `Mod Support` / `Utility` / `Adventure`，含 `datapack` 的 **0 条**）——
+     *     拿 `"datapack"` 去筛，一条都留不下 ⇒ **CF 的数据包页永远是空的**。
+     *
+     *   ★ 所以判据是「**哪一种资源 × 哪一个来源**」，不是"数据包"一个条件。
      */
-    if k == crate::domain::resources::ResourceKind::Datapack {
+    if crate::domain::resources::needs_datapack_second_pass(
+        k,
+        wanted == ResourceSource::Modrinth,
+    ) {
         resp.hits.retain(|h| {
             h.categories
                 .iter()
                 .any(|c| c.eq_ignore_ascii_case("datapack"))
         });
     }
+    Ok(resp)
+}
+
+/// ★★ 「全部」来源：**一条命令并发查两个源**，各自带着自己的错误回来。
+///
+/// ## 为什么要有这条命令（用户 2026-10-17）
+///
+///   「在 modr 的左边加一个全部，并且默认为全部，这样即使有资源里不允许
+///     第三方下载，也可以得到互补了」。
+///
+///   两个源的内容本来就**互补**：同一个 Mod 可能只在其中一边，
+///   CurseForge 上还有作者禁止第三方分发、我们下不了的条目 ——
+///   而 Modrinth 上那一份可能恰好能下。只选一个源，等于每次都主动放弃一半。
+///
+/// ## 为什么**不在这里合并**
+///
+///   合并 / 去重 / 优先级（"优先用能下载的那一份"）这套判据在前端
+///   `src/domain/resource-merge.ts`，原因很实在：那是本机**唯一能真跑**
+///   的回路（`node --test`）；而 `cargo test --lib` 在这台机器上加载阶段就退出。
+///   判据只能有一份（ADR-051），所以选能跑起来的那一侧。
+///
+///   这一层因此只做两件事：**并发取回来**、**如实带回每一边的错误**。
+///
+/// ## 为什么要带错误回来（而不是"哪个挂了就当它没有"）
+///
+///   一个源超时 / 镜像不通 ≠ 那个源没有这个资源（ADR-050 的教训）。
+///   两边都挂才返回 `Err`；只有一边挂时，界面要能说
+///   "CurseForge 这一源这次没查成"，而不是让用户以为 CF 上真的什么都没有。
+#[derive(Debug, serde::Serialize)]
+pub struct BothSearchResponse {
+    pub modrinth: Option<modrinth::SearchResponse>,
+    pub curseforge: Option<modrinth::SearchResponse>,
+    pub modrinth_error: Option<String>,
+    pub curseforge_error: Option<String>,
+}
+
+/// 把两个源的结果装进响应（**判据只有这一处**，纯函数，有单测）。
+///
+/// ★ 三种情形分得清清楚楚：
+///   · 两边都成 → 两个都在，没有错误；
+///   · 一边挂  → 挂的那侧是 `None` + 它的原因（界面要说"这一源没查成"）；
+///   · 两边都挂 → 整条命令 `Err`（界面只能说"搜索失败"，不能显示空列表
+///     装作"没有结果" —— 那是把"没查成"说成"没有"，ADR-050 的老毛病）。
+fn both_from_results(
+    modrinth: Result<modrinth::SearchResponse, String>,
+    curseforge: Result<modrinth::SearchResponse, String>,
+) -> Result<BothSearchResponse, String> {
+    let (modrinth, modrinth_error) = match modrinth {
+        Ok(v) => (Some(v), None),
+        Err(e) => (None, Some(e)),
+    };
+    let (curseforge, curseforge_error) = match curseforge {
+        Ok(v) => (Some(v), None),
+        Err(e) => (None, Some(e)),
+    };
+    if modrinth.is_none() && curseforge.is_none() {
+        return Err(format!(
+            "两个来源都没查成 —— Modrinth：{}；CurseForge：{}",
+            modrinth_error.as_deref().unwrap_or("（没有原因）"),
+            curseforge_error.as_deref().unwrap_or("（没有原因）")
+        ));
+    }
+    Ok(BothSearchResponse {
+        modrinth,
+        curseforge,
+        modrinth_error,
+        curseforge_error,
+    })
+}
+
+/// ★ 并发查两个源（`source=all` 走这条）。
+///
+/// 两个源的筛选参数**完全一样**地传下去：`mc_version` 与 `loader` 各自交给
+/// `resource_search`，它是唯一解析"这个种类的资源要不要筛加载器"的地方 ——
+/// 这里再判断一次就会与那张表分叉（比如 CF 的 `gameVersions` 混着版本与加载器，
+/// 由 `net::curseforge::mc_versions_of` / `loaders_of` 各取一半，不许在这里当版本号）。
+#[tauri::command]
+pub async fn resource_search_both(
+    kind: String,
+    query: String,
+    mc_version: Option<String>,
+    loader: Option<String>,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<BothSearchResponse, String> {
+    /*
+     * ★ 分页口径：第 N 页 = **各源的第 N 页**（两边同一个 `offset`）。
+     *   合并在前端做，所以这里不要试图把 offset 折半或翻倍。
+     *
+     * ★ `label` 是给日志用的（`query` 要移进两次调用里 —— 两个命令都按值收）。
+     */
+    let label = query.clone();
+    let query_modrinth = resource_search(
+        kind.clone(),
+        query.clone(),
+        mc_version.clone(),
+        loader.clone(),
+        limit,
+        offset,
+        Some("modrinth".to_string()),
+    );
+    let query_curseforge = resource_search(
+        kind,
+        query,
+        mc_version,
+        loader,
+        limit,
+        offset,
+        Some("curseforge".to_string()),
+    );
+    let (mr, cf) = tokio::join!(query_modrinth, query_curseforge);
+    let resp = both_from_results(mr, cf)?;
+    say!(
+        "[IEML/resource] 「{}」全部来源：Modrinth {} 条{}，CurseForge {} 条{}",
+        label,
+        resp.modrinth.as_ref().map(|r| r.hits.len()).unwrap_or(0),
+        if resp.modrinth_error.is_some() { "（这一源没查成）" } else { "" },
+        resp.curseforge.as_ref().map(|r| r.hits.len()).unwrap_or(0),
+        if resp.curseforge_error.is_some() { "（这一源没查成）" } else { "" }
+    );
     Ok(resp)
 }
 
@@ -9757,6 +9896,76 @@ fn dropped_info(
     }
 }
 
+/// ★★ **这一次安装的"骨架"就位了没有** —— 三档判定（`domain::pack_outcome`）的输入。
+///
+/// ## 「骨架」= 包体本身 + 客户端 jar + 加载器就位
+///
+///   这三样齐了，这个实例就**能起来**，缺的只是清单里那些文件
+///   （mod / 资源包 / 光影）⇒ 那属于「装上了但有缺」，**算成功**。
+///   任何一样确认不在盘上 ⇒ 实例起不来 ⇒ 那才是真失败。
+///
+///   三样在这次安装里**各自是什么**（核实过，不是照着名字猜的）：
+///
+///   * **整合包体** = 这一次安装读的那份 `.mrpack` / CF zip（`pack_bytes`）。
+///     判据就是"字节在手上"：清单是**从它里面**解析出来的，解析成功本身
+///     就证明它是一份完整可读的包。
+///   * **客户端 jar** = `installer::plan_tasks` ① 按**基础版本**拼的那个
+///     `versions/<基础版本>/<基础版本>.jar`（**不是**加载器目录里那份 ——
+///     那条注释记着为什么，见 `net/installer.rs` 的 ①）。
+///     `installed.client_jar` 给的就是这个路径。
+///   * **加载器** = 装加载器那一步**自己写下的产物**（确定的事实，不做启发式搜索）：
+///       · Fabric / Quilt 等：`installer::install` 把合并结果写进
+///         `versions/<installed.id>/<installed.id>.json`（ADR-055 的规范目录名）；
+///       · Forge / NeoForge：那个目录是**官方安装器**建的
+///         `versions/{mc}-{kind}-{ver}` —— `run_loader_installer` 自己也按
+///         这个名字找（`:3193` 那一处）。
+///     ★ 这里**刻意不用**启动侧的 `resolve_loader_version_id`：它带一串兜底扫描，
+///       "它没找到"不等于"盘上没有" —— 而那正好会把一个装得好好的整合包判成
+///       骨架缺（= 又变回这次要修的那个 bug）。
+///     ★ 拼不出确切目录名时（例如没给加载器版本号）⇒ `None`（**不算缺**）。
+///
+/// ## 为什么每一格是三态（`Option<bool>`）
+///
+///   `None` = **计划里没有这一项**（这个包不要加载器 / 这个版本的 JSON 里
+///   没有客户端 jar 下载项）⇒ **不算缺**。这个仓库的纪律是"**不知道**不许说成
+///   **没有**"（`hash_choice::UnverifiedReason`、`pack_plan::MissingFile` 同一条）；
+///   反过来做的代价正好是这次要修的那个 bug。
+fn pack_skeleton_state(
+    state: &AppState,
+    mc_version: &str,
+    loader_kind: Option<&str>,
+    loader_version: Option<&str>,
+    installed: &installer::InstalledVersion,
+    pack_bytes: &[u8],
+) -> crate::domain::pack_outcome::SkeletonState {
+    let shared = &state.paths().shared;
+    // 某个版本目录里那份同名 JSON 在不在（"这个版本装好了"的最小事实）
+    let json_in = |dir: &str| {
+        shared
+            .join("versions")
+            .join(dir)
+            .join(format!("{dir}.json"))
+            .is_file()
+    };
+    let loader = match loader_kind.filter(|k| !k.is_empty()) {
+        // 这个包不要加载器 ⇒ 没有"就位"这回事
+        None => Some(true),
+        Some(kind @ ("forge" | "neoforge")) => match loader_version.filter(|v| !v.is_empty()) {
+            Some(v) => Some(json_in(&format!("{mc_version}-{kind}-{v}"))),
+            // 拼不出确切目录名 ⇒ 不知道（不许说成"没有"）
+            None => None,
+        },
+        // Fabric / Quilt（以及其它靠 profile 合并的加载器）：安装器写的就是这个目录
+        Some(_) => Some(json_in(&installed.id)),
+    };
+    crate::domain::pack_outcome::SkeletonState {
+        pack_body: Some(!pack_bytes.is_empty()),
+        // ★ `client_jar` 是 `Option<PathBuf>`：`None` = 计划里没有这一项 ⇒ 不知道
+        client_jar: installed.client_jar.as_ref().map(|p| p.is_file()),
+        loader,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn install_pack_plan(
     plan: PackPlan,
@@ -9917,6 +10126,10 @@ async fn install_pack_plan(
             paused_stage: installed.paused_stage.clone(),
             completion: None,
             update: None,
+            // ★ 暂停 = 没有档位结论（见 `paused_pack_result` 的说明）
+            tier: None,
+            failed_files: Vec::new(),
+            failed_count: 0,
             // ★ 还没走到计划那一步 ⇒ 缺什么都还谈不上（见 `paused_pack_result`）
             missing_files: Vec::new(),
             missing_count: 0,
@@ -9950,6 +10163,10 @@ async fn install_pack_plan(
                     paused_stage: Some(stage),
                     completion: None,
                     update: None,
+                    // ★ 暂停 = 没有档位结论（见 `paused_pack_result` 的说明）
+                    tier: None,
+                    failed_files: Vec::new(),
+                    failed_count: 0,
                     missing_files: Vec::new(),
                     missing_count: 0,
                     missing_summary: String::new(),
@@ -10165,7 +10382,57 @@ async fn install_pack_plan(
     .await
     .map_err(err)?;
 
-    if !outcome.failed.is_empty() {
+    /*
+     * ---------- ③″ 三个结论：全到手 / 装上但有缺 / 骨架没齐 ----------
+     *
+     * ★★ 2026-10-17（用户：「装完了但缺 N 个文件」）：**下载失败不再等于安装失败**。
+     *   判据在 `domain::pack_outcome`（纯逻辑，本机可用 rustc 单编真跑断言）：
+     *     ① 清单里的文件全到手          ⇒ 成功（照旧）；
+     *     ② ≥1 个文件没到手、骨架齐全   ⇒ **算成功**（返回里带：缺哪些 + 原因 + 总数）；
+     *     ③ 骨架没齐                     ⇒ **仍然失败**（`Err`）。
+     *
+     *   ★ 两条纪律：`Err` **只**留给骨架缺（不许拿它当"部分完成"用）；
+     *     骨架缺也**不许**混进"部分完成" —— 那会让一个起不来的实例被建进版本列表。
+     *   ★ 安装记录照旧在**下载之前**就写下了（"一键补齐"的依据就是它）；
+     *     `remaining_files` 那套"用户暂停 ⇒ 可续"一个字都没动 —— 这里走的是
+     *     "没暂停、但有失败"那条路，两件事互不干扰。
+     */
+    let skeleton = pack_skeleton_state(
+        &state,
+        &mc_version,
+        loader_kind.as_deref(),
+        loader_version.as_deref(),
+        &installed,
+        &pack_bytes,
+    );
+    let failed_files: Vec<crate::domain::pack_outcome::PackFailedFile> = outcome
+        .failed
+        .iter()
+        .map(|(label, why)| {
+            crate::domain::pack_outcome::PackFailedFile::new(
+                label.clone(),
+                why.clone(),
+                /*
+                 * ★ "还能再试吗"的判据是 `domain::failure` 那一份 —— 不在这里另写一套
+                 *   （404 / 超上限 ⇒ 再试也一样；超时 / 被占用 ⇒ 值得再试）。
+                 */
+                crate::domain::failure::classify_message(why).is_worth_retrying(),
+            )
+        })
+        .collect();
+    /*
+     * "没到手"的总数 = **下载失败的** + **连地址都没解析出来的**。
+     * ★ 两类不会重叠：没地址的条目从来没有进过任务表（见 `pack_plan` 的说明）。
+     */
+    let mut shortfall: Vec<crate::domain::pack_plan::MissingFile> = plan_missing.clone();
+    shortfall.extend(
+        failed_files
+            .iter()
+            .map(|f| crate::domain::pack_plan::failed_missing(&f.label, &f.reason, f.retryable)),
+    );
+    let tier = crate::domain::pack_outcome::classify_install(&skeleton, shortfall.len());
+
+    if !outcome.failed.is_empty() || !tier.is_success() {
         let sample: Vec<String> = outcome
             .failed
             .iter()
@@ -10178,7 +10445,8 @@ async fn install_pack_plan(
          *   ADR-025 要 Completion 阶段是为了"装不全时能补" —— 而第一版把记录写在
          *   **全部成功之后**，于是"有文件没下下来"这条最需要它的路径上，
          *   记录压根不存在，用户既看不到缺什么，也没法补齐。
-         *   ⇒ 现在：先落记录（含已下的那些），再如实报错。
+         *   ⇒ 现在：先落记录（含已下的那些），再按**骨架齐不齐**决定说
+         *     「还有缺」还是「没装成」。
          */
         let rec = build_pack_record(
             &state.paths(),
@@ -10197,14 +10465,36 @@ async fn install_pack_plan(
         if let Err(e) = write_pack_record(&state.paths(), &slug, &rec) {
             say!("[IEML/modpack] 写安装记录失败：{e}");
         }
-        drop_task(&task_id);
-        return Err(format!(
-            "整合包有 {} 个文件下载失败（重试 {} 轮后仍失败）：{}\n\
-             （已经写下安装记录，可以在版本概览里点「检查整合包完整性」再补齐）",
-            outcome.failed.len(),
-            outcome.retry_rounds,
-            sample.join("；")
-        ));
+        if !tier.is_success() {
+            /*
+             * ★ 骨架没齐 ⇒ 仍然失败。这是**唯一**该返回 `Err` 的那一档：
+             *   实例起不来，报"装好了"只会把用户引到一个必然点不开的版本上。
+             *   ★ 缺的是哪几样要**点名**（不许只说一句"失败了"）；有下载失败时
+             *     把样例带上 —— 一个都没失败就别提下载失败（那会是一句废话）。
+             */
+            drop_task(&task_id);
+            let extra = if outcome.failed.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "；另有 {} 个文件下载失败（重试 {} 轮后仍失败）：{}",
+                    outcome.failed.len(),
+                    outcome.retry_rounds,
+                    sample.join("；")
+                )
+            };
+            return Err(format!(
+                "整合包没装成（骨架缺：{}）{extra}。\n\
+                 （已经写下安装记录；**重装一次这个包**就会跳过已经下好的文件，\
+                  只需补上缺的那几样 —— 它不会从头再下一遍）",
+                skeleton.missing_text(),
+            ));
+        }
+        say!(
+            "[IEML/modpack] ★ 有 {} 个文件没下下来，但骨架齐全（包体 + 客户端 jar + 加载器）\
+             ⇒ 按「装上了但有缺」继续收尾（算成功；缺的那几个可以补齐）",
+            outcome.failed.len()
+        );
     }
 
     // ---------- ④ 解压 overrides ----------
@@ -10425,10 +10715,28 @@ async fn install_pack_plan(
         completion,
         // ★ 这一次是不是升级（原先就装过整合包 ⇒ 按新清单对齐过）
         update,
-        // ★★ 2026-10-16：清单里**没弄到手**的那几个（事故修复，见 pack_plan 模块说明）
-        missing_files: plan_missing.clone(),
-        missing_count: plan_missing.len(),
-        missing_summary: domain::pack_plan::missing_summary(&plan_missing),
+        /*
+         * ★★ 2026-10-17 的**档位结论**：`complete` / `partial`。
+         *   `broken`（骨架缺）走不到这里 —— 那条路在上面已经返回 `Err` 了。
+         */
+        tier: Some(tier),
+        /*
+         * ★ 只列**下载失败**的那一类（地址有、文件没下来），每条带 label + 原因 +
+         *   还能不能再试 —— 前端做"哪些是下载失败"的区分时读它。
+         *   （这两条都是**数据**，不是日志。）
+         */
+        failed_count: failed_files.len(),
+        failed_files,
+        /*
+         * ★★ 2026-10-16（"漏下 mod 却报安装完成"）+ 2026-10-17：**这一次没到手的
+         *   全部条目** —— 现在两类都在里面：
+         *     · 下载地址没解析出来（上游查不到 / 作者禁止分发）；
+         *     · 地址有、但下载失败（重试若干轮后仍失败）。
+         *   `missing_count` 于是就是"还缺几个"那个**唯一**的数（界面不用自己加）。
+         */
+        missing_count: shortfall.len(),
+        missing_summary: crate::domain::pack_plan::missing_summary(&shortfall),
+        missing_files: shortfall,
     })
 }
 
@@ -10627,17 +10935,43 @@ pub struct ModpackInstallResult {
     /// `summary` 里说清"新增/更新/移除各几个、移除的放哪了"。
     pub update: Option<crate::domain::pack_update::AppliedUpdate>,
     /*
-     * ★★ 2026-10-16（用户报的"漏下 mod 却报安装完成"）：**清单里没弄到手的那几个**。
+     * ★★ 2026-10-16（用户报的"漏下 mod 却报安装完成"）+ 2026-10-17：
+     *   **这一次没到手的全部条目** —— 现在两类都在里面：
+     *     · 下载地址没解析出来（接口查不到 / 作者禁止分发）；
+     *     · **地址有、但下载失败**（重试若干轮后仍失败）。
      *
-     *   它们是"该装、但下载地址没解析出来"的条目（接口查不到 / 作者禁止分发）。
      *   以前这些条目从计划里彻底消失 ⇒ 界面报"安装完成"、游戏里弹「Missing Mods」。
      *   现在一路回传到界面：**有 N 个没下下来**，并给出「重新下载缺失的」入口。
+     *   ★ 两类合并成**一张表**是有意的：界面只该有一个"还缺几个"的口径
+     *     （分成两张必然出现两个数）。是哪一类看 `reason` 的前缀。
      */
     pub missing_files: Vec<crate::domain::pack_plan::MissingFile>,
     /// 上面那个表的条数（界面排版用，省得自己 `.length` 两处口径）
     pub missing_count: usize,
     /// 后端算好的一句人话（界面直接用，不自己拼措辞）
     pub missing_summary: String,
+    /*
+     * ★★ 2026-10-17（用户：「装完了但缺 N 个文件」）：**这一次落在哪一档**。
+     *
+     *   `"complete"` = 清单里的文件全到手；
+     *   `"partial"`  = **装上了但有缺**（骨架齐全、≥1 个文件没到手）——
+     *                  **它算成功**：前端据此建实例、进版本列表，
+     *                  并按 `missing_files` 如实说"还缺哪几个"。
+     *
+     *   ★ `null`（`None`）= **这一次没有档位结论**：被暂停、或还没走到收尾就返回了。
+     *     暂停**不是**三档里的任何一档（那是另一根轴，前端先看 `paused`）。
+     *   ★ `"broken"`（骨架没齐）**不会**出现在成功返回里 —— 那条路返回的是 `Err`
+     *     （`Err` 只留给它。两条纪律见 `domain::pack_outcome` 的模块说明）。
+     */
+    pub tier: Option<crate::domain::pack_outcome::PackInstallTier>,
+    /*
+     * ★★ **下载失败**的明细（地址有、文件没下来）：前端要逐条显示"缺了哪些、
+     *   为什么"。这是**数据**，不是日志 —— 2026-10-17 之前这一类只剩最后那句
+     *   `Err` 里的 3 个样例，而整个安装被判失败。
+     */
+    pub failed_files: Vec<crate::domain::pack_outcome::PackFailedFile>,
+    /// 上面那个表的条数
+    pub failed_count: usize,
 }
 
 /* ====================== 整合包完整性（ADR-025 的 Completion 阶段） ====================== */
@@ -13006,5 +13340,70 @@ mod wire_tests {
         );
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /*
+     * ---------- 「全部」来源：两个源的结果怎么装进响应 ----------
+     *
+     * ★★ 2026-10-17（用户）：「在 modr 的左边加一个全部，并且默认为全部，
+     *   这样即使有资源里不允许第三方下载，也可以得到互补了」。
+     *
+     * 这里守两件事：
+     *   ① **一个源挂了不等于"那个源没有"**（挂的那侧是 None + 原因，
+     *      另一侧照常返回 —— 界面据此说"这一源没查成"）；
+     *   ② **两边都挂必须整条失败** —— 返回一个空 hits 的响应会被界面
+     *      渲染成"没有结果"，那就是把"没查成"说成"没有"（ADR-050 的老毛病）。
+     * ③ 顺带把**字段名**钉住：前端 `src/bridge/tauri.ts::BothSearch` 读的是
+     *    `modrinth` / `curseforge` / `modrinth_error` / `curseforge_error`。
+     */
+
+    fn empty_search(source: &str) -> modrinth::SearchResponse {
+        modrinth::SearchResponse {
+            hits: Vec::new(),
+            total_hits: 0,
+            offset: 0,
+            limit: 20,
+            source: source.to_string(),
+            query_alias: None,
+            term_used: None,
+        }
+    }
+
+    #[test]
+    fn both_search_keeps_the_side_that_worked_and_says_why_the_other_did_not() {
+        let resp = both_from_results(
+            Ok(empty_search("modrinth")),
+            Err("镜像不通".to_string()),
+        )
+        .expect("一边挂了不该让整条命令失败");
+        assert!(resp.modrinth.is_some(), "查成的那一侧必须在");
+        assert!(resp.curseforge.is_none());
+        assert_eq!(resp.curseforge_error.as_deref(), Some("镜像不通"));
+        assert!(resp.modrinth_error.is_none());
+    }
+
+    #[test]
+    fn both_search_fails_only_when_both_sides_failed() {
+        let err = both_from_results(Err("官方超时".to_string()), Err("镜像不通".to_string()))
+            .expect_err("两边都挂时不许返回一个空响应（那会被界面显示成「没有结果」）");
+        assert!(err.contains("官方超时"), "两边的原因都要带上：{err}");
+        assert!(err.contains("镜像不通"), "两边的原因都要带上：{err}");
+    }
+
+    /// 跨 IPC 的字段名（前端契约）—— 改字段名必须同步改 `bridge/tauri.ts`。
+    #[test]
+    fn both_search_wire_field_names() {
+        let resp = both_from_results(Ok(empty_search("modrinth")), Ok(empty_search("curseforge")))
+            .expect("两边都成");
+        let v = serde_json::to_value(&resp).expect("序列化");
+        let keys: Vec<&str> = v.as_object().unwrap().keys().map(|s| s.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec!["modrinth", "curseforge", "modrinth_error", "curseforge_error"],
+            "字段名就是前端读的那四个"
+        );
+        assert_eq!(v["modrinth"]["source"], "modrinth");
+        assert_eq!(v["curseforge"]["source"], "curseforge");
+        assert!(v["modrinth_error"].is_null(), "两侧都成时错误字段是 null");
     }
 }

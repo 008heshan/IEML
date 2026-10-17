@@ -45,12 +45,28 @@ import { useTabIndicator } from '../hooks/useTabIndicator';
 import { useApp } from '../state/AppContext';
 import { BASE_LOADER_NAME, compareVersion, isSnapshotVersion, knownVersions } from '../domain';
 import type { BaseLoaderKind, Instance } from '../domain';
+/*
+ * ★★★★ 2026-10-17（用户）：「在 modr 的左边加一个全部，并且默认为全部，
+ *   这样即使有资源里不允许第三方下载，也可以得到互补了」。
+ *
+ *   合并 / 去重 / 优先级（"优先用能下载的那一份"）**不在这里写判据** ——
+ *   全部在 `domain/resource-merge.ts`（纯函数，`node --test` 真跑）。
+ *   这个文件只负责：把"哪几个源要查"交给后端、把回来的两页交给合并层、
+ *   再把 `preferred` 原样传给详情页（安装时按它走对应命令）。
+ */
+import {
+  SOURCE_LABEL,
+  mergeHits,
+  pagesFromBoth,
+  sortHits,
+} from '../domain/resource-merge';
+import type { MergedHit, SearchPages, SourceChoice } from '../domain/resource-merge';
 import type {
   ModrinthHit,
+  ModrinthSearch,
   ModrinthVersion,
   ResourceKindInfo,
   ResourceKindName,
-  ResourceSourceName,
 } from '../bridge/tauri';
 
 export interface ResourceBrowserProps {
@@ -66,18 +82,27 @@ export interface ResourceBrowserProps {
 }
 
 /**
- * 两个来源（ADR-052）。
+ * 来源切换器（**最左边是「全部」，默认选中**，ADR-052）。
  *
- * ★ 界面上必须让用户看得见"现在搜的是哪个库"，而且切换之后要说清
- *   **两边的内容不一样**：Modrinth 与 CurseForge 是两批作者、两套审核，
- *   同一个 Mod 可能只在其中一边。查不到 ≠ 不存在（ADR-050 的教训）。
+ * ★★★★ 2026-10-17（用户）：「在 modr 的左边加一个全部，并且默认为全部，
+ *   这样即使有资源里不允许第三方下载，也可以得到互补了」。
+ *
+ * ★ 界面上仍然要让用户看得见"现在查的是哪几个库"：Modrinth 与 CurseForge
+ *   是两批作者、两套审核，同一个 Mod 可能只在其中一边 ——
+ *   **查不到 ≠ 不存在**（ADR-050 的教训），所以「全部」不是"合并成一个库"，
+ *   而是"两个都查，各自的来源都记着"（由 `domain/resource-merge.ts` 判）。
  */
-const SOURCES: Array<{ key: ResourceSourceName; label: string; hint: string }> = [
-  { key: 'modrinth', label: 'Modrinth', hint: '开源、无需 key' },
+const SOURCES: Array<{ key: SourceChoice; label: string; hint: string }> = [
+  { key: 'all', label: '全部', hint: '两个库一起查 —— 互补，也不会漏掉只在一边的资源' },
+  {
+    key: 'modrinth',
+    label: SOURCE_LABEL.modrinth,
+    hint: '开源、无需 key',
+  },
   {
     key: 'curseforge',
-    label: 'CurseForge',
-    hint: '内容更多；作者可以禁止第三方分发，那样的项目下不了',
+    label: SOURCE_LABEL.curseforge,
+    hint: '内容更多；作者可以禁止第三方分发，那样的项目下不了（「全部」会自动用另一边那份）',
   },
 ];
 
@@ -149,6 +174,7 @@ export function VersionPicker({
   onRetry,
   recommend,
   target,
+  sourceNote,
 }: {
   hit: ModrinthHit;
   versions: ModrinthVersion[] | null;
@@ -194,6 +220,18 @@ export function VersionPicker({
    *     已经由调用方在请求里传了 `loader` —— 两处都筛会让人以为有两套规则。
    */
   target?: { mcVersion: string; loader?: { kind: string } | null } | null;
+  /**
+   * ★★★★ 2026-10-17（取版本互补）：「下面的版本来自哪一份」那一句。
+   *
+   *   判据在 `domain/version-sources.ts::versionSourceNote`（纯函数、有测试），
+   *   这里只负责渲染 —— 界面不拼措辞（与来源显示同一条规矩）。
+   *
+   *   必须说清的理由：`preferred` 那一份没有能装到这个实例的版本时，我们会
+   *   **回退去问另一个源**（"全部"的互补）。这时屏幕上的版本换成另一份了，
+   *   而上面那行「来自 Modrinth + CurseForge」会让人以为列表还是原来那份。
+   *   `null` = 不用多说（单源、且没换过源时就是它）。
+   */
+  sourceNote?: string | null;
 }) {
   if (loading) {
     return (
@@ -307,6 +345,16 @@ export function VersionPicker({
           <b>{hit.title}</b> 的全部版本（{compatibleVersions.length} 个）
         </span>
       </div>
+      {/*
+        ★★ 「这一批版本来自哪一份」（回退时尤其要说 —— 见 props 的说明）。
+          措辞来自 `versionSourceNote`，这里一个字的措辞都不拼。
+          ★ 不新造 CSS 类（`src/styles/*.css` 这一轮不许动）：沿用现成的 `.dim`。
+      */}
+      {sourceNote ? (
+        <div className="dim" style={{ margin: '0 0 var(--space-2) var(--space-2)' }}>
+          {sourceNote}
+        </div>
+      ) : null}
 
       {/*
         ★★ 2026-09-23（用户：「整合包，mod，资源包，数据包，光影，**给版本分类**，
@@ -500,11 +548,23 @@ export function ResourceCenterBody({
   const [kindsError, setKindsError] = useState<string | null>(null);
 
   const [query, setQuery] = useState('');
-  const [hits, setHits] = useState<ModrinthHit[]>([]);
+  /**
+   * ★★ 合并后的结果（每条都带 `provenance`：来自哪个源 / 两个都有 /
+   *   安装该走哪一条）。判据在 `domain/resource-merge.ts`。
+   */
+  const [hits, setHits] = useState<MergedHit[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * ★★ 「全部」下**只有一个源没查成**时的原因。
+   *
+   *   一个源超时/镜像不通 ≠ 那个源没有这个资源（ADR-050）。
+   *   这时结果照常显示（另一边那一份），但必须**说清缺了哪一边** ——
+   *   否则用户会把"这次没查成"读成"CF 上真的没有"。
+   */
+  const [sideError, setSideError] = useState<string | null>(null);
   /*
    * ★★ 中文别名（ADR-016）：命中词表时后端会给一句话（"按 jei 搜的"），
    *   以及这次**实际**用的搜索词。两者都只在"这次搜索真的发生了"之后才有意义，
@@ -512,8 +572,12 @@ export function ResourceCenterBody({
    */
   const [aliasNote, setAliasNote] = useState<string | null>(null);
   const [searchedTerm, setSearchedTerm] = useState('');
-  /** ★ 搜哪个库（ADR-052）：两个源的结果形状一样，但内容不是同一批 */
-  const [source, setSource] = useState<ResourceSourceName>('modrinth');
+  /**
+   * ★★ 查哪几个源（ADR-052）：**默认 `all` = 两个源一起查**（用户 2026-10-17）。
+   *   `all` 只决定"查哪几个"，**不许**当成来源传给任何接口 ——
+   *   版本列表/安装读的是 `provenance.preferred`。
+   */
+  const [source, setSource] = useState<SourceChoice>('all');
   /**
    * ★★ 显示方式（用户：「左是矩阵，右是条形」）—— 只影响 CSS 的列宽（`data-view`），
    *   不重排 DOM、不重取数据（切换是纯显示，不该触发请求）。
@@ -710,7 +774,7 @@ export function ResourceCenterBody({
    *   ★ 顺带与**整合包那一页**统一：它一直就是整屏换掉。
    */
   const load = useCallback(
-    async (opts: { k: ResourceKindName; q: string; src: ResourceSourceName; offset: number }) => {
+    async (opts: { k: ResourceKindName; q: string; src: SourceChoice; offset: number }) => {
       if (!api) return;
       const mine = ++seq.current;
       setLoading(true);
@@ -727,29 +791,62 @@ export function ResourceCenterBody({
        */
       setHits([]);
       setError(null);
+      setSideError(null);
       try {
-        const r = await api.modrinth.resourceSearch({
+        /*
+         * ★ 版本与加载器**叠加**（用户："这俩可以叠加"）——
+         *   两个都不选时传 undefined，让后端只按种类查（那是真的"不限"）。
+         */
+        const common = {
           kind: opts.k,
           query: opts.q,
-          /*
-           * ★ 版本与加载器**叠加**（用户："这俩可以叠加"）——
-           *   两个都不选时传 undefined，让后端只按种类查（那是真的"不限"）。
-           */
           mcVersion: searchVersion || undefined,
           loader: loaderForQuery || undefined,
           limit: PAGE,
           offset: opts.offset,
-          source: opts.src,
-        });
+        };
+        /** 两个源各自这一页；`null` = 这个源这次没查成 */
+        let pages: SearchPages;
+        /** 「这页结果是从哪个词来的」那句话从哪一份里取（哪边有就用哪边） */
+        let lead: ModrinthSearch | null | undefined;
+        let totalHits: number;
+        /** 一边没查成时的原因（**过了迟到守卫**才写进状态，否则旧请求会污染新结果） */
+        let sideErr: string | null = null;
+        if (opts.src === 'all') {
+          /*
+           * ★★ 「全部」：**一条命令并发查两源**（`resource_search_both`）。
+           *   分页是"各源的第 N 页"—— 同一页里两边都取 20 个，
+           *   合并之后可能到 40 条（重复的会合掉）。
+           *   ★ 回包怎么读（哪边挂了 / 总数 / 别名提示来自哪一份）**只有一处判据**：
+           *     `domain/resource-merge.ts::pagesFromBoth`（纯函数、有测试）。
+           */
+          const read = pagesFromBoth(await api.modrinth.resourceSearchBoth(common));
+          pages = read.pages;
+          lead = read.lead;
+          totalHits = read.totalHits;
+          sideErr = read.sideError;
+        } else {
+          const r = await api.modrinth.resourceSearch({ ...common, source: opts.src });
+          pages = opts.src === 'curseforge' ? { curseforge: r.hits } : { modrinth: r.hits };
+          lead = r;
+          totalHits = r.total_hits ?? r.hits.length;
+        }
         if (mine !== seq.current) return; // 迟到的结果丢掉
-        setHits(r.hits);
-        setTotal(r.total_hits ?? r.hits.length);
+        /*
+         * ★★ 合并/去重/优先级**只有一份判据**（`domain/resource-merge.ts`）。
+         *   单源也走它 —— 这样每条结果**永远都带 `provenance`**，
+         *   详情页与安装不用为"单源/全部"分两条路。
+         *   ★ 排序：资源中心这一页没有排序控件，沿用上游给的相关度顺序（`hot`）。
+         */
+        setHits(sortHits(mergeHits(pages), 'hot', (h) => h));
+        setTotal(totalHits);
+        setSideError(sideErr);
         /*
          * ★★ 中文别名（ADR-016）：把"我拿什么去搜的"如实记下来，下面渲染成一句提示。
          *   命中时是 `「物品管理器」是中文叫法，按 jei 搜的`；没命中就是 null。
          */
-        setAliasNote(r.query_alias ?? null);
-        setSearchedTerm(r.term_used ?? opts.q);
+        setAliasNote(lead?.query_alias ?? null);
+        setSearchedTerm(lead?.term_used ?? opts.q);
       } catch (e) {
         if (mine !== seq.current) return;
         setError(e instanceof Error ? e.message : String(e));
@@ -828,7 +925,11 @@ export function ResourceCenterBody({
              否则会出现"列表是 1.20.1 的，点开却是别的版本"。 */
           mcVersion: searchVersion || undefined,
           loader: loaderForQuery || undefined,
-          source,
+          /*
+           * ★★ 来源**读数据里的那一个**（`provenance.preferred`），不是切换器上的值：
+           *   「全部」那一格叫 `all`，拿它去问版本接口一定问不到东西。
+           */
+          source: hit.provenance?.preferred,
         });
         setVersions(list);
       } catch (e) {
@@ -837,7 +938,7 @@ export function ResourceCenterBody({
         setVerLoading(false);
       }
     },
-    [api, kind, searchVersion, loaderForQuery, source],
+    [api, kind, searchVersion, loaderForQuery],
   );
 
   /*
@@ -854,7 +955,21 @@ export function ResourceCenterBody({
      * ★★ 作者禁止第三方分发（CurseForge 专有）→ **提前拦住并说清原因**。
      *   `distribution_allowed === false` 表示作者在 CurseForge 上关掉了
      *   "允许第三方分发"，那种项目的文件 `downloadUrl` 是 null。
+     *
+     * ★★ 「全部」下这一条要**按合并结果**说：两个源都不能直接下载时，
+     *   说"在 CurseForge 上关掉了"就不对了（Modrinth 那一份也下不了）。
+     *   判据只有一份（`provenance.downloadable`，由合并层算）。
      */
+    if (hit.provenance && !hit.provenance.downloadable) {
+      toast(
+        'warning',
+        '两个来源都不能直接下载',
+        `${hit.title} 在收录它的${hit.provenance.sources.length > 1 ? '两个来源' : '来源'}` +
+          `上都下不了（作者关掉了「允许第三方分发」）。` +
+          (hit.page_url ? ` 去项目页自己下：${hit.page_url}` : ' 去项目页自己下载。'),
+      );
+      return;
+    }
     if (hit.distribution_allowed === false) {
       toast(
         'warning',
@@ -978,7 +1093,12 @@ export function ResourceCenterBody({
             ) : null}
           </div>
         ) : null}
-        {/* ★ 来源用现成的 Segmented —— 别再造一套"看起来像分段控件"的东西 */}
+        {/*
+          ★ 来源用现成的 Segmented —— 别再造一套"看起来像分段控件"的东西。
+          ★★ 最左边那一格是「全部」（默认选中，用户 2026-10-17 指定）；
+             选项顺序就是 `SOURCES` 的顺序，**不许在渲染里再排一次**
+             （切换器上"全部在不在最左"是用户点名的位置）。
+        */}
         <Segmented
           label="内容来源"
           size="sm"
@@ -1058,9 +1178,20 @@ export function ResourceCenterBody({
           {error}
           <div className="dim" style={{ marginTop: 4 }}>
             这不等于"没有这个资源" —— 网络或
-            {SOURCES.find((s) => s.key === source)?.label ?? '在线库'} 的问题；
-            也可以换个来源看看（两个库收录的内容不一样）。
+            {source === 'all' ? '两个来源' : SOURCES.find((s) => s.key === source)?.label ?? '在线库'}
+            的问题；也可以换个来源看看（两个库收录的内容不一样）。
           </div>
+        </Note>
+      ) : null}
+
+      {/*
+        ★★ 「全部」下**只有一个源没查成**：结果照常显示（另一边那一份），
+          但必须说清缺的是哪一边 —— 一个源超时/镜像不通 ≠ 那个源没有这个资源
+          （ADR-050）。什么都不说的话，用户会把"这次没查成"读成"CF 上真的没有"。
+      */}
+      {sideError && !error ? (
+        <Note tone="warning" title="有一个来源这次没查成（不等于它没有）">
+          {sideError}
         </Note>
       ) : null}
 
@@ -1143,8 +1274,19 @@ export function ResourceCenterBody({
                   {c}
                 </Chip>
               ))}
-              {hit.distribution_allowed === false ? (
-                <Chip tone="warning">作者不允许第三方下载</Chip>
+              {/*
+                ★ 能不能直接下载 = **合并层的结论**（`provenance.downloadable`）：
+                  两个源都下不了时才算下不了 —— 只要有一边能下，
+                  合并后的那一条就是能下的（用户要的"互补"正是这个）。
+                ★ 卡片上**不放来源徽章**（用户要求保持干净）：
+                  来源在详情页说，那里还能写「两个来源都有」。
+              */}
+              {!hit.provenance.downloadable ? (
+                <Chip tone="warning">
+                  {hit.provenance.sources.length > 1
+                    ? '两个来源都不能直接下载'
+                    : '作者不允许第三方下载'}
+                </Chip>
               ) : null}
             </div>
             <div className="res-card-foot">
@@ -1157,7 +1299,7 @@ export function ResourceCenterBody({
                  *   这里原来是**内联展开**版本列表。现在改成**进独立安装页** ——
                  *   资源信息与几十个版本各占一块，挑版本时能专心（PCL 就是这么分的）。
                  */
-                onClick={() => openResource(hit, kind, source)}
+                onClick={() => openResource(hit, kind, hit.provenance.preferred)}
                 disabled={!instance}
               >
                 {openProject === hit.project_id ? '收起版本' : '选择版本并安装'}

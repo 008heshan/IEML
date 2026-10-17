@@ -81,6 +81,16 @@ export interface TaskItem {
   etaSeconds: number;
   status: 'pending' | 'running' | 'paused' | 'done' | 'failed' | 'cancelled';
   error?: string;
+  /**
+   * ★★★★ 2026-10-17（用户：「装完了但缺 N 个文件」）：**这一次还缺几个**。
+   *
+   *   `partial`（装上了但有缺）**也算成功**（实例照建、任务照旧结束），
+   *   所以任务状态仍然是 `done` —— 但那种卡片上写一个笼统的「完成」
+   *   就是那句假话的另一个出口。有它时角标写「缺 N 个」。
+   *
+   *   `0` / 缺省 = 没有缺件这件事（照旧显示「完成」）。
+   */
+  missingCount?: number;
 }
 
 export interface ToastItem {

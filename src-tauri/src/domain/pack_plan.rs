@@ -104,16 +104,28 @@ impl PackPlanFile {
     }
 }
 
-/// 解析阶段一条**没解析出下载地址**的条目。
+/// 解析/下载阶段一条**没到手**的条目。
+///
+/// ★ 两类原因合在同一张表里（**这是有意的**，2026-10-17）：
+///   · **地址没解析出来**（CF 接口查不到 / 作者禁止分发 / 清单没给地址）——
+///     由 [`plan_missing`] 产出；
+///   · **地址有、但下载失败了**（重试若干轮后仍失败）—— 由 [`failed_missing`] 产出。
+///
+///   界面只认这一张"缺了哪些"的清单；分成两张会让"还缺几个"出现两个口径
+///   （这个仓库反复栽过的形状）。是哪一类看 `reason`。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MissingFile {
-    /// 相对游戏目录的目标路径（CF 的文件名就是最终落盘的 jar 名）
+    /// 相对游戏目录的目标路径（两个源的下载任务标签都是它：`mods/xxx.jar`）
     pub path: String,
     /// 给用户看的名字（通常是 jar 文件名；没有名字时退回 `CF 文件 <id>`）
     pub name: String,
-    /// **为什么**没解析出来 —— 必须带回去，否则又变回"只有计数没有原因"
+    /// **为什么**没到手 —— 必须带回去，否则又变回"只有计数没有原因"。
+    /// 两类原因都写在这里（`没解析出下载地址（…）` / `下载失败（…）`）。
     pub reason: String,
-    /// 还能再试吗（有 CF 身份 ⇒ 能；没有地址又没身份的 ⇒ 只能人工去网站下）
+    /// 还能再试吗。
+    ///   · 没地址的那类：有 CF 身份 ⇒ 能（能重新问一次地址）；否则只能人工去网站下
+    ///     （判据是 [`PackPlanFile::has_curseforge_identity`]）；
+    ///   · 下载失败的那类：由 `domain::failure` 的判据给定（见 [`failed_missing`]）。
     #[serde(default)]
     pub retryable: bool,
 }
@@ -203,6 +215,28 @@ pub fn file_label(path: &str) -> String {
         path.trim().to_string()
     } else {
         last.to_string()
+    }
+}
+
+/// 一条**下载失败**的条目 → 与"没解析出地址"同一张表（[`MissingFile`]）。
+///
+/// ★ 由来（2026-10-17 用户：「装完了但缺 N 个文件」）：下载失败的那几个以前
+///   只活在最后那句 `Err` 的 3 个样例里，而整个安装因此被判失败。
+///   现在它们进"缺了哪些"这一张表，界面照旧有清单可读、可点「重新下载缺失的」。
+///
+/// ★ `retryable` 由**下载失败的判据**（`domain::failure`，调用方算好传进来）
+///   决定，不在这一层另写一套 —— 「再试一次有没有意义」只能有一处口径。
+pub fn failed_missing(label: &str, reason: &str, retryable: bool) -> MissingFile {
+    let why = reason.trim();
+    MissingFile {
+        path: label.trim().to_string(),
+        name: file_label(label),
+        reason: if why.is_empty() {
+            "下载失败（没有更多的错误信息）".to_string()
+        } else {
+            format!("下载失败（{why}）")
+        },
+        retryable,
     }
 }
 
@@ -401,6 +435,26 @@ mod tests {
         assert_eq!(file_label("mods/a.jar"), "a.jar");
         assert_eq!(file_label("mods\\a.jar"), "a.jar");
         assert_eq!(file_label(""), "");
+    }
+
+    /// ★★ 下载失败的那一类也进同一张表（2026-10-17：装上了但有缺 = 算成功）。
+    ///    判据钉住三点：路径照抄（两个源都给相对路径）、名字取最后一段、
+    ///    原因必须**说清是哪一类**（不然用户会以为是我们没找到地址）。
+    #[test]
+    fn a_failed_download_joins_the_same_shortfall_list() {
+        let f = failed_missing("mods/balm-fabric-7.2.1.jar", "连接超时（重试 3 轮）", true);
+        assert_eq!(f.path, "mods/balm-fabric-7.2.1.jar");
+        assert_eq!(f.name, "balm-fabric-7.2.1.jar");
+        assert!(
+            f.reason.starts_with("下载失败（") && f.reason.contains("连接超时"),
+            "{}",
+            f.reason
+        );
+        assert!(f.retryable, "可重试的判据由调用方按 domain::failure 给");
+        // 没有更细的错误信息时也要说人话（不许留一个空括号）
+        let g = failed_missing("mods/x.jar", "   ", false);
+        assert_eq!(g.reason, "下载失败（没有更多的错误信息）");
+        assert!(!g.retryable);
     }
 
     /// 往返：落盘的 JSON 读回来必须一致（以后"只重下缺的那几个"全靠它）。

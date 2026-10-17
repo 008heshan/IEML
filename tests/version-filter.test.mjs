@@ -17,7 +17,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-const { filterVersionsForInstance } = await import('../src/components/version-filter.ts');
+const { filterVersionsForInstance, strictlyCompatibleVersions, hasCompatibleVersion } =
+  await import('../src/components/version-filter.ts');
 
 /** 一个整合包在真机上的形状：同一个包，跨好几个世代各有一串 */
 const PACK = [
@@ -73,4 +74,35 @@ test('缺 game_versions 的条目：不崩，且算作"筛掉"', () => {
 test('projectType 认不出（null）⇒ 按"其余种类"处理（保守：筛）', () => {
   const got = filterVersionsForInstance(PACK, { projectType: null, target: TARGET });
   assert.deepEqual(got.map((v) => v.id), ['b']);
+});
+
+/* ============================================================
+   ★★ 2026-10-17：取版本要回退时用的**严格**判据
+   ------------------------------------------------------------------
+   "这一份到底有没有能装到当前实例的版本" —— 它与上面那个函数
+   **共用同一段筛选实现**，只差最后那一步"筛完不剩就退回全量"。
+   两者必须一起看：退回全量是给**渲染**的（不许凭空说没有），
+   严格筛选是给**要不要换一个源去问**的（`domain/version-sources.ts`）。
+   ============================================================ */
+
+test('★★ 严格筛选：筛完不剩时**不退回全量**（回退判据要的就是这个真相）', () => {
+  const only120 = [{ id: 'x', game_versions: ['1.20'] }];
+  assert.deepEqual(strictlyCompatibleVersions(only120, { projectType: 'mod', target: TARGET }), []);
+  assert.equal(hasCompatibleVersion(only120, { projectType: 'mod', target: TARGET }), false);
+  // 而渲染用的那个仍然退回全量（两条判据的差别就在这一步）
+  assert.equal(filterVersionsForInstance(only120, { projectType: 'mod', target: TARGET }).length, 1);
+});
+
+test('严格筛选：有兼容版本时为真；空列表一律为假', () => {
+  assert.equal(hasCompatibleVersion(PACK, { projectType: 'mod', target: TARGET }), true);
+  assert.equal(hasCompatibleVersion([], { projectType: 'mod', target: TARGET }), false);
+});
+
+test('严格筛选：整合包与"没有目标实例"都**不筛**（与渲染那一条同口径）', () => {
+  assert.equal(hasCompatibleVersion(PACK, { projectType: 'modpack', target: TARGET }), true);
+  assert.deepEqual(
+    strictlyCompatibleVersions(PACK, { projectType: 'modpack', target: TARGET }).map((v) => v.id),
+    ['a', 'b', 'c', 'd'],
+  );
+  assert.equal(hasCompatibleVersion(PACK, { projectType: 'mod', target: null }), true);
 });

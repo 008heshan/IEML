@@ -198,6 +198,24 @@ impl ResourceKind {
     }
 }
 
+/// 搜索结果要不要按 `categories` 里的 `datapack` 做**二次过滤**（只对 Modrinth）。
+///
+/// ## 为什么 CurseForge 那一条**不能**做这一步（2026-10-17，用户报「CF 的数据包页永远是空的」）
+///
+///   * CF 的**类型**由 `classId` 定死（`net::curseforge::class_id`：数据包 = `6945`），
+///     查询本身就只返回数据包，**不需要**再按分类收窄；
+///   * 而 CF 的数据包**分类**里根本没有 `datapack` 这个词 —— 实测
+///     （2026-10-17，镜像 `mod.mcimirror.top/curseforge/v1/mods/search?classId=6945`，
+///     取 8 条）得到的是 `Miscellaneous` / `Mod Support` / `Utility` / `Adventure`，
+///     **含 `datapack` 的 0 条** ⇒ 旧判据把整页筛成空的（用户的现场）。
+///     原因很清楚：CF 的 `categories` 装的是它自己的**内容分类**（界面显示的那几个），
+///     与"这是什么类型的资源"无关（见 `curseforge::categories_with_loaders` 的说明）。
+///   * Modrinth 那边不同：`categories:datapack` 是**作者自己打的标签**，
+///     可能不准（甚至与普通 Mod 混在一起），所以只有那一条路需要再收窄一次。
+pub fn needs_datapack_second_pass(kind: ResourceKind, source_is_modrinth: bool) -> bool {
+    source_is_modrinth && kind == ResourceKind::Datapack
+}
+
 /// 把外部的键名解回类型（前端传 `resource_kind` 时用）
 pub fn parse_kind(s: &str) -> Option<ResourceKind> {
     let t = s.trim().to_ascii_lowercase();
@@ -322,6 +340,28 @@ mod tests {
         assert!(!ResourceKind::ResourcePack.needs_loader_filter());
         assert!(!ResourceKind::Shader.needs_loader_filter());
         assert!(!ResourceKind::Datapack.needs_loader_filter());
+    }
+
+    /// ★★ 数据包的**二次过滤只对 Modrinth 做**（2026-10-17 用户：「CF 的数据包页
+    ///    永远是空的」）。这一条钉住的是**来源**那一维，别再退回"一律过滤"。
+    #[test]
+    fn the_datapack_second_pass_is_modrinth_only() {
+        assert!(needs_datapack_second_pass(ResourceKind::Datapack, true));
+        assert!(
+            !needs_datapack_second_pass(ResourceKind::Datapack, false),
+            "★ CF 的数据包分类是 Miscellaneous / Mod Support / Utility，\
+             按 datapack 筛会把整页筛空（类型由 classId 保证）"
+        );
+        // 其它种类的资源从来不做这一步
+        for k in [
+            ResourceKind::Mod,
+            ResourceKind::ResourcePack,
+            ResourceKind::Shader,
+            ResourceKind::Modpack,
+        ] {
+            assert!(!needs_datapack_second_pass(k, true), "{} 不做", k.key());
+            assert!(!needs_datapack_second_pass(k, false), "{} 不做", k.key());
+        }
     }
 
     /// 文件名判据：认扩展名，但不认临时文件与禁用文件

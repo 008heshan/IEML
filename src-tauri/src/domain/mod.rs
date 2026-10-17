@@ -42,6 +42,11 @@ pub mod naming;
 ///    多大算合法（跟着 `archive_guard` 的 image 档 8 MiB）、包体与平台两条来源谁优先。
 ///    ★ 零 `crate::` 依赖：本机 `cargo test` 起不来时，这一份能用 rustc 单编真跑断言
 pub mod pack_icon;
+/// ★★ **整合包装完的三个结论**（2026-10-17 用户：「装完了但缺 N 个文件」）——
+///    纯判定：骨架（包体 + 客户端 jar + 加载器）就位了没有、缺了几个文件 ⇒
+///    「全装上 / 装上但有缺（算成功）/ 骨架缺（仍然失败）」三档。
+///    ★ 零 `crate::` 依赖：本机 `cargo test` 起不来时，这一份能用 rustc 单编真跑断言
+pub mod pack_outcome;
 /// ★★ **整合包这一次该装哪些文件、哪些没装上**（2026-10-16 事故：漏下 5 个 mod
 ///    却报安装完成）—— 纯判定，不碰网络；落盘成 `<实例>/.ieml/pack-files.json`
 pub mod pack_plan;

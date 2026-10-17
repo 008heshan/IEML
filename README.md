@@ -2,7 +2,7 @@
 
 从零构建的 Minecraft 启动器。快、小、好用。
 
-**当前版本：`0.21.9`** — 改动见应用内「更新日志」页（侧栏底部）。
+**当前版本：`0.21.10`** — 改动见应用内「更新日志」页（侧栏底部）。
 
 真实可运行的桌面应用，460+ 项 Rust 测试 + 前端测试，真实下载和真实启动都跑通过。
 
@@ -14,7 +14,7 @@ pnpm dev              # 浏览器开发，?demo=1 给演示实例
 pnpm desktop:dev      # 桌面版
 pnpm desktop:build    # 打包 exe + NSIS，并逐字节复制到桌面
                       #   → src-tauri/target/release/ieml.exe
-                      #   → src-tauri/target/release/bundle/nsis/IEML_0.21.9_x64-setup.exe
+                      #   → src-tauri/target/release/bundle/nsis/IEML_0.21.10_x64-setup.exe
 pnpm verify           # 一键验证：类型 + 测试 + 端到端 + 构建 + 静态门禁
 ```
 

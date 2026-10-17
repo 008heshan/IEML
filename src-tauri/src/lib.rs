@@ -489,6 +489,12 @@ pub fn run() {    /*
             /* ★★ 社区资源子系统：Mod / 资源包 / 光影 / 数据包共用一套抽象 */
             commands_real::resource_kinds,
             commands_real::resource_search,
+            /*
+             * ★★ 「全部」来源（用户 2026-10-17）：一条命令**并发**查两个源，
+             *   各自带回自己的错误。合并/去重/优先级在前端
+             *   `src/domain/resource-merge.ts`（那套判据要能真跑）。
+             */
+            commands_real::resource_search_both,
             /* ★ 取"兼容当前实例的版本"（两个源共用一条命令，ADR-052） */
             commands_real::resource_versions,
             /*

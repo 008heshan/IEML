@@ -27,6 +27,27 @@ import { InstallComposer } from '../components/InstallComposer';
 import { Pager } from '../components/Pager';
 import { ResourceCenterBody, VersionPicker } from '../components/ResourceBrowser';
 import { autoMemory, compareVersion, isSnapshotVersion, knownVersions } from '../domain';
+/*
+ * ★★★★ 2026-10-17（用户）：「在 modr 的左边加一个全部，并且默认为全部，
+ *   这样即使有资源里不允许第三方下载，也可以得到互补了」。
+ *
+ *   整合包这一页与资源中心**共用同一份判据**（`domain/resource-merge.ts`）：
+ *   合并、去重、优先级、排序都在那里，这里只负责"查哪些源、把结果画出来"。
+ */
+import { mergeHits, pagesFromBoth, sortHits } from '../domain/resource-merge';
+import type { MergedHit, SourceChoice } from '../domain/resource-merge';
+/*
+ * ★★★★ 2026-10-17（取版本互补 —— `resource-merge` 留下的那个缺口）：
+ *   合并后取版本原来只走 `preferred`（能下载的那一份）；那一份没有能装到当前
+ *   实例的版本（或问不到）时界面显示「无」，而另一个来源明明有。
+ *   判据在 `domain/version-sources.ts`（纯函数，可注入假 fetch 真跑）。
+ */
+import { lookupVersionsFrom, versionSourcesToTry, versionSourceNote } from '../domain/version-sources';
+/*
+ * ★「这一份有没有能装到当前实例的版本」= 版本列表筛选的**同一段实现**
+ *   （`hasCompatibleVersion` → `strictlyCompatibleVersions`），不另写一套口径。
+ */
+import { hasCompatibleVersion } from '../components/version-filter';
 // ★ C-26：取消不是故障 —— 判据只有一处（见 `domain/cancel.ts` 的说明）
 import { isCancellation } from '../domain/cancel';
 /*
@@ -38,6 +59,16 @@ import { isCancellation } from '../domain/cancel';
  *   两者都有 `tests/pack-missing.test.mjs` 钉着。
  */
 import { missingSummary, repairEntry } from '../domain/pack-missing';
+/*
+ * ★★★★ 2026-10-17（用户：「装完了但缺 N 个文件」）：收尾那三句话的**唯一判据**。
+ *
+ *   后端现在给档位结论（`tier` = `complete` / `partial` / `null`），
+ *   而 `partial` **也算成功**（实例照建）—— 于是"任务卡片标题 / toast /
+ *   页面提示"三处都必须说"装好了，但缺 N 个"，**不许**说"安装完成"。
+ *   三处各写各的必然分叉，所以算一次、三处取同一个值。
+ */
+import { installSummary } from '../domain/install-summary';
+import type { InstallSummary } from '../domain/install-summary';
 /*
  * ★★ 2026-10-17（用户：「curseforge 的整合包，不显示整合包的模组加载器类型」）：
  *   整合包卡片上"加载器"那一格的判据（值 → 规范串 | **null**）。
@@ -578,6 +609,12 @@ interface PackCard {
    *   数据一直是有的，是这一页没接。现在有图用图、没图退回那个色块。
    */
   icon: string | null;
+  /**
+   * ★★ 合并后的那条命中（**来源信息在里面**：来自哪个源 / 两个都有 /
+   *   安装该走哪一条）。卡片上不显示来源（用户要求保持干净）——
+   *   它服务于"点开之后取哪一份的版本列表"。
+   */
+  hit: MergedHit;
 }
 
 function ModpackTab({
@@ -626,6 +663,14 @@ function ModpackTab({
    *     否则用户只看到一句 toast 一闪而过，接着就是游戏里的弹窗。
    */
   const [packMissing, setPackMissing] = useState<PackMissingFile[]>([]);
+  /**
+   * ★★★★ 2026-10-17：这一次收尾的**档位结论 + 三处文案**（`install-summary.ts` 算好的）。
+   *
+   *   页面提示那一块（`missingPanel`）的小标题与小标题下方那句都取它 ——
+   *   与任务卡片、toast 用的是**同一个值**，所以三处不可能各说各的。
+   *   补全之后（`redownloadMissing` 里）跟着 `packMissing` 一起清掉。
+   */
+  const [packOutcome, setPackOutcome] = useState<InstallSummary | null>(null);
   /** 正在"重新下载缺失的"（复用补齐命令，它现在会重新去要地址） */
   const [repairingMissing, setRepairingMissing] = useState(false);
   /**
@@ -638,8 +683,17 @@ function ModpackTab({
    * ★★ 2026-09-23：整合包的**来源**（Modrinth / CurseForge）。
    *   用户：「PCL 的整合包可以用 curseforge 啊」—— 它本来就是一个来源选项，
    *   资源搜索那条路（`resourceSearch`）早就支持两个源。
+   *
+   * ★★★★ 2026-10-17：**默认改成「全部」**（两个源一起查）——
+   *   用户：「在 modr 的左边加一个全部，并且默认为全部，这样即使有资源里
+   *   不允许第三方下载，也可以得到互补了」。五个资源页签同一套。
    */
-  const [packSource, setPackSource] = useState<'modrinth' | 'curseforge'>('modrinth');
+  const [packSource, setPackSource] = useState<SourceChoice>('all');
+  /**
+   * ★★ 「全部」下只有一个源没查成时的原因（说清缺了哪一边，
+   *   不许把"这次没查成"说成"那个源没有"）。
+   */
+  const [packSideError, setPackSideError] = useState<string | null>(null);
   /*
    * 版本选项：**玩家自己装着的版本 + 内置正式版表**（新到旧）。
    * ★ 为什么不去拉线上清单：那个下拉只是"筛整合包"，为它等一次网络往返不值；
@@ -723,21 +777,45 @@ function ModpackTab({
        *   所以"选 26.2"只改了标签、**查询没带筛选**。
        *   （当时的判据只断言了"标签变了 + 列表重新加载"，没断言"结果真的变了"，
        *     所以它没有抓住。这次断言补硬：筛完的**结果集必须不同**。）
+       *
+       * ★★★★ 2026-10-17：**「全部」（默认）走两源并发那条命令**，
+       *   合并/去重/优先级交给 `domain/resource-merge.ts`。
+       *   ★ 分页仍然是"各源的第 N 页"：两边同一个 offset，合并后再排序。
        */
-      const r = await api.modrinth.resourceSearch({
-        kind: 'modpack',
+      const common = {
+        kind: 'modpack' as const,
         query: query || '',
         mcVersion: mcFilter || undefined,
         loader: loaderFilter || undefined,
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
+      };
+      let merged: MergedHit[];
+      let totalHits: number;
+      if (packSource === 'all') {
+        /*
+         * ★ 回包怎么读（哪边挂了 / 总数 / 别名提示来自哪一份）**只有一处判据**：
+         *   `domain/resource-merge.ts::pagesFromBoth`（纯函数、有测试）。
+         *   总数取两源**较大的那个**：第 N 页在"任一源还有第 N 页"时就得能翻；
+         *   相加是编的（同一条资源可能两边都在）。
+         */
+        const read = pagesFromBoth(await api.modrinth.resourceSearchBoth(common));
+        merged = mergeHits(read.pages);
+        totalHits = read.totalHits;
+        if (mine === seq.current) setPackSideError(read.sideError);
+      } else {
         // ★ 来源由用户选（Modrinth / CurseForge）—— 见上面那段说明
-        source: packSource,
-      });
+        const r = await api.modrinth.resourceSearch({ ...common, source: packSource });
+        merged = mergeHits(
+          packSource === 'curseforge' ? { curseforge: r.hits } : { modrinth: r.hits },
+        );
+        totalHits = r.total_hits ?? 0;
+        if (mine === seq.current) setPackSideError(null);
+      }
       if (mine !== seq.current) return; // ★ 迟到的结果丢掉（否则旧来源的结果会盖掉新的）
-      setTotal(r.total_hits ?? 0);
+      setTotal(totalHits);
       setPacks(
-        r.hits.map((h) => ({
+        merged.map((h) => ({
           /*
            * ★★ 2026-09-24（C-1 修复）：这里原来写的是 `h.slug || h.project_id` ——
            *   而 **CurseForge 命中的 `slug` 是字符串**（`all-the-mods-10` 这种），
@@ -782,6 +860,12 @@ function ModpackTab({
           downloads: h.downloads > 1000 ? `${Math.round(h.downloads / 1000)}k` : String(h.downloads),
           weight: 'medium' as const,
           icon: h.icon_url ?? null,
+          /*
+           * ★ 合并后的那条命中（来源在里面）—— 点开之后取哪一份的版本列表
+           *   由它决定（`provenance.preferred`），**不是**切换器上的那一格
+           *   （「全部」那一格叫 `all`，问不动任何接口）。
+           */
+          hit: h,
         })),
       );
     } catch (e) {
@@ -832,16 +916,16 @@ function ModpackTab({
     setPage(0);
   }, [query, mcFilter, loaderFilter]);
 
-  const sorted = useMemo(() => {
-    const list = [...packs];
-    if (sort === 'downloads') {
-      return list.sort(
-        (a, b) => parseFloat(b.downloads.replace('k', '')) - parseFloat(a.downloads.replace('k', '')),
-      );
-    }
-    if (sort === 'new') return list.reverse();
-    return list;
-  }, [packs, sort]);
+  /*
+   * ★★★★ 2026-10-17：排序**改用资源中心那份判据**（`domain/resource-merge.ts`
+   *   的 `sortHits`），不再在这里手写。
+   *
+   *   原来这里是 `parseFloat(b.downloads.replace('k',''))` ——
+   *   拿**显示用的字符串**（`12k`）当数值比：`1.5M` 那种会被算成 1.5，
+   *   而两个源合并之后同值更多，"稳定"这件事更要紧（同值保持合并后的原顺序）。
+   *   现在直接比 `hit.downloads`（真数值），且三种排序**两个页签同一套**。
+   */
+  const sorted = useMemo(() => sortHits(packs, sort, (p) => p.hit), [packs, sort]);
 
   /*
    * ★★ 2026-09-23 用户：「**整合包安装为什么没做单开一页的设计**」——
@@ -878,60 +962,99 @@ function ModpackTab({
     installTarget ? { to: '整合包列表', onClick: () => setInstallTarget(null) } : null,
   );
   const [targetVersions, setTargetVersions] = useState<ModrinthVersion[] | null>(null);
+  /**
+   * ★★★★ 2026-10-17（取版本互补）：「这一批版本来自哪一份」那一句
+   *   （`versionSourceNote` 算好的；`null` = 不用多说）。
+   */
+  const [targetVersionsNote, setTargetVersionsNote] = useState<string | null>(null);
   /** 页面里点了「安装这个版本」时选中的那一个（null = 用最新那个） */
   const [pickedVersion, setPickedVersion] = useState<ModrinthVersion | null>(null);
 
   useEffect(() => {
     if (!installTarget || !api) return;
     setTargetVersions(null);
+    setTargetVersionsNote(null);
     /*
      * ★★ 2026-09-24（C-1 修复）：这里原来调 `api.modrinth.versions(installTarget.id)` ——
      *   于是**来源选了 CurseForge 也照样去问 Modrinth**：CF 的数字 project id
      *   在 Modrinth 上查出的是别的项目（或者 404），真机表现就是报告里那句
      *   「来自 Modrinth」+「这个整合包没有可下载的版本」。
      *   现在走 source-aware 的 `resource_versions`（CF → `curseforge::files`）。
+     *
+     * ★★★★ 2026-10-17：**再往前一步 —— 一份问不出来就换另一份**。
+     *
+     *   「全部」下这个包可能被两个源同时收录，而合并层只把 `preferred`
+     *   （能下载的那一份）交给安装页。那一份**没有能装到这个实例的版本**、
+     *   或干脆问不到时，旧行为是显示「无」—— 而另一个来源明明有。
+     *   这正是「全部」要解决的互补问题，所以按 `versionSourcesToTry` 的顺序问下去。
+     *
+     *   ★ 三条不许含糊的（判据在 `domain/version-sources.ts`，有测试）：
+     *     ① **换源要换身份**：每个目标带它**自己那一份**的 `project_id`
+     *        （拿 Modrinth 的 id 去问 CF = 把"拿错了标识"说成"上游没有"）；
+     *     ② **两源的版本不混在一张表里**：换源是"换一批"，所以换成功了
+     *        必须在这一页说清这一批来自哪个来源；
+     *     ③ **两个源都问了才叫真的没有**。
      */
-    void api.modrinth
-      .resourceVersions({
-        kind: 'modpack',
+    const loader = target?.loader?.kind;
+    void lookupVersionsFrom<ModrinthVersion>({
+      targets: versionSourcesToTry(installTarget.hit.provenance, {
+        source: installTarget.hit.provenance.preferred,
         projectId: installTarget.id,
-        source: packSource,
-        /*
-         * ★★★★ 2026-09-30（用户）：「**整合包下载……一点反应也没有**」。
-         *
-         *   这一格（"这个包有哪些版本可以装"）原来**不带实例信息**去问，
-         *   于是 Modrinth 把项目的**全部**版本都返回：真机实测 Sodium 有
-         *   **256 个版本 / 107 KB（gzip 后）**，镜像要 **3.2 秒**才传完。
-         *
-         *   而带上"装到哪个实例"的 MC 版本与加载器之后：
-         *     256 条 → **11 条，5.7 KB，0.22 秒**（快 14 倍）。
-         *
-         *   ★ 这不是"少显示几个"：**不兼容当前实例的版本本来就不该出现在这里**
-         *     —— 选了也装不上，而列出来只会让人点错。
-         *   ★ 没选实例时（`target` 为空）照旧不带过滤：那时"有哪些版本"
-         *     本身就是要给用户看的信息。
-         */
-        /*
-         * ★★★★ 2026-10-08（用户：「**少世代分组的大版本**」）。
-         *
-         *   这里原来带 `mcVersion: target.mcVersion` 去问接口 —— 那是
-         *   2026-09-30 为 Mod 做的性能优化（真机实测 256 条 → 11 条）。
-         *
-         *   但对**整合包**它是错的：整合包的"版本"本来就是跨世代的一条谱系
-         *   （同一个包在 1.16 / 1.18 / 1.20 / 1.21 上各有一串），
-         *   按当前实例的 MC 版本一过滤，**整个谱系只剩一组**
-         *   —— 用户看到的就是「37 个版本」却只有一个 `1.20` 分组。
-         *
-         *   ⇒ 这里只按**加载器**过滤（整合包必须匹配加载器，那是硬约束），
-         *     **不按 MC 版本**；而"装到当前实例的那一条要不要高亮/过滤"
-         *     交给 `VersionPicker`（它有 `project_type` 与 `target`，
-         *     能按种类分别处理，见那边的 `filterByTarget`）。
-         */
-        ...(target?.loader?.kind ? { loader: target.loader.kind } : {}),
+      }),
+      fetch: (t) =>
+        api.modrinth.resourceVersions({
+          kind: 'modpack',
+          projectId: t.projectId,
+          source: t.source,
+          /*
+           * ★★★★ 2026-09-30（用户）：「**整合包下载……一点反应也没有**」。
+           *
+           *   这一格（"这个包有哪些版本可以装"）原来**不带实例信息**去问，
+           *   于是 Modrinth 把项目的**全部**版本都返回：真机实测 Sodium 有
+           *   **256 个版本 / 107 KB（gzip 后）**，镜像要 **3.2 秒**才传完。
+           *
+           *   而带上"装到哪个实例"的 MC 版本与加载器之后：
+           *     256 条 → **11 条，5.7 KB，0.22 秒**（快 14 倍）。
+           *
+           *   ★ 这不是"少显示几个"：**不兼容当前实例的版本本来就不该出现在这里**
+           *     —— 选了也装不上，而列出来只会让人点错。
+           *   ★ 没选实例时（`target` 为空）照旧不带过滤：那时"有哪些版本"
+           *     本身就是要给用户看的信息。
+           */
+          /*
+           * ★★★★ 2026-10-08（用户：「**少世代分组的大版本**」）。
+           *
+           *   这里原来带 `mcVersion: target.mcVersion` 去问接口 —— 那是
+           *   2026-09-30 为 Mod 做的性能优化（真机实测 256 条 → 11 条）。
+           *
+           *   但对**整合包**它是错的：整合包的"版本"本来就是跨世代的一条谱系
+           *   （同一个包在 1.16 / 1.18 / 1.20 / 1.21 上各有一串），
+           *   按当前实例的 MC 版本一过滤，**整个谱系只剩一组**
+           *   —— 用户看到的就是「37 个版本」却只有一个 `1.20` 分组。
+           *
+           *   ⇒ 这里只按**加载器**过滤（整合包必须匹配加载器，那是硬约束），
+           *     **不按 MC 版本**；而"装到当前实例的那一条要不要高亮/过滤"
+           *     交给 `VersionPicker`（它有 `project_type` 与 `target`，
+           *     能按种类分别处理，见那边的 `filterByTarget`）。
+           */
+          ...(loader ? { loader } : {}),
+        }),
+      /*
+       * ★ "这一份算不算数" = 有没有能装到这个实例的版本（与列表筛选同一份判据）。
+       *   整合包在 `version-filter` 里**不按 MC 版本筛**，所以这里实际等于
+       *   "这个源有没有给出兼容加载器的版本"。
+       */
+      usable: (list) => hasCompatibleVersion(list, { projectType: 'modpack', target }),
+    })
+      .then((got) => {
+        setTargetVersions(got.versions);
+        setTargetVersionsNote(versionSourceNote(installTarget.hit.provenance, got));
       })
-      .then(setTargetVersions)
-      .catch(() => setTargetVersions([]));
-  }, [installTarget, api, packSource, target]);
+      .catch(() => {
+        setTargetVersions([]);
+        setTargetVersionsNote(null);
+      });
+  }, [installTarget, api, target]);
 
   /**
    * 装一个整合包。
@@ -1269,29 +1392,13 @@ function ModpackTab({
       const result = await doInstall();
 
       /*
-       * ★★ **被暂停就不算装完**（P0-3）：不许建实例、不许说"安装完成"。
+       * ★ 装完才建实例（失败不会在列表里留下一个起不来的空壳）。
        *
-       *   老行为是：暂停之后照样往下跑、照样建实例、提示"整合包装好了"，
-       *   而 `instances.json` 里多出一个**起不来**的空壳。
-       *   现在如实标记「已暂停」，任务中心的「继续」用同一套参数接着下。
+       * ★★ 2026-10-17：**暂停 / 缺件 / 装全了这三件事的文案只在
+       *   `finishPackInstall` 里算一次**（`domain/install-summary.ts`）。
+       *   这里原来还有一份一模一样的 `result.paused` 分支（同一个判断、
+       *   同一句 toast 写两遍）—— 两份文案迟早会分叉，删掉它。
        */
-      if (result.paused) {
-        patch({
-          status: 'paused',
-          detail:
-            result.remaining_files > 0
-              ? `已暂停 · 还剩 ${result.remaining_files} 个文件`
-              : '已暂停',
-        });
-        toast(
-          'info',
-          '已暂停',
-          `${packName} 还剩 ${result.remaining_files} 个文件没下，点「继续」接着装`,
-        );
-        return; // `finally` 会把 installing 放回 false
-      }
-
-      // ★ 装完才建实例（失败不会在列表里留下一个起不来的空壳）
       await finishPackInstall(result, patch, packName, slug);
     } catch (e) {
       /*
@@ -1339,23 +1446,36 @@ function ModpackTab({
     // ★ 记住这一次的 slug：「重新下载缺失的」要用它（见上面的说明）
     selectedSlugRef.current = slug;
     /*
+     * ★★★★ 2026-10-17：**三处文案只算一次**（判据在 `domain/install-summary.ts`，
+     *   纯函数、有测试）。它先看 `paused`（暂停不属于三档），再看 `tier`，
+     *   最后看缺件数据 —— 于是"任务卡片 / toast / 页面提示"不可能各说各的。
+     */
+    const missing = result.missing_files ?? [];
+    const summary = installSummary({
+      tier: result.tier ?? null,
+      paused: result.paused,
+      remainingFiles: result.remaining_files,
+      pausedStage: result.paused_stage,
+      missingCount: result.missing_count ?? missing.length,
+      failedCount: result.failed_count ?? (result.failed_files?.length ?? 0),
+      missing,
+    });
+    const entry = repairEntry(missing);
+    /** 任务卡片角标上的那个数（0 = 不显示角标） */
+    const shortfall = summary.kind === 'partial' ? (result.missing_count ?? missing.length) : 0;
+
+    /*
      * ★★ **被暂停就不算装完**（P0-3）：不许建实例、不许说"安装完成"。
      *
      *   老行为是：暂停之后照样往下跑、照样建实例、提示"整合包装好了"，
      *   而 `instances.json` 里多出一个**起不来**的空壳。
      *   现在如实标记「已暂停」，任务中心的「继续」用同一套参数接着下。
+     *   ★ 文案同样是 summary 给的：暂停时它说"已暂停 · 还剩 N 个文件"
+     *     （或点名"哪一步还没做完"），**不会**说成缺件。
      */
-    if (result.paused) {
-      patch({
-        status: 'paused',
-        detail:
-          result.remaining_files > 0 ? `已暂停 · 还剩 ${result.remaining_files} 个文件` : '已暂停',
-      });
-      toast(
-        'info',
-        '已暂停',
-        `${packName} 还剩 ${result.remaining_files} 个文件没下，点「继续」接着装`,
-      );
+    if (summary.kind === 'paused') {
+      patch({ status: 'paused', phase: summary.detail, detail: summary.detail, missingCount: 0 });
+      toast('info', summary.title, `${packName} ${summary.detail}`);
       return;
     }
 
@@ -1394,37 +1514,59 @@ function ModpackTab({
     };
     await createInstance(inst);
 
-    patch({ status: 'done', percent: 100, detail: '安装完成' });
     /*
-     * ★★ 2026-10-16：**"装完了"与"装全了"是两件事**。
+     * ★★★★ 2026-10-17（用户：「装完了但缺 N 个文件」）：**"装完了"与"装全了"
+     *   是两件事**，而后端现在把这件事说清楚了（`tier`）。
      *
      *   事故：清单里 338 项，其中 5 个（Balm / FallingTree / FTB Teams /
      *   Fabrication / Paintings ++）的下载地址没解析出来 ⇒ 下载 333 个全成功
-     *   ⇒ 这里报"整合包装好了"，而游戏里弹出包自带的「Missing Mods」。
+     *   ⇒ 旧代码报"安装完成"，而游戏里弹出包自带的「Missing Mods」。
      *
-     *   所以：缺了就说缺了，并且**留在这一屏**给出「重新下载缺失的」入口。
-     *   文案用后端算好的那一句（`missing_summary`），界面不自己拼措辞。
+     *   现在：
+     *     · `partial`（骨架齐全、有文件没到手）⇒ **任务卡片标题、角标、
+     *       toast、页面提示四处一起说"装好了，但缺 N 个文件"**，
+     *       并**留在这一屏**给出名单与「重新下载缺失的」入口；
+     *     · `paused` 走上面那条（说"已暂停"，不说缺件）；
+     *     · 只有 `complete`（后端核对过"清单里的文件全到手"）才敢说装好了。
+     *   ★ 一句"安装完成"都不许再出现在 partial 上 —— 由
+     *     `tests/install-summary.test.mjs` 直接钉着。
      */
-    const missing = result.missing_files ?? [];
-    setPackMissing(missing);
-    const entry = repairEntry(missing);
+    patch({
+      status: 'done',
+      percent: 100,
+      /* ★ 标题里保留包名（卡片上就这一处能看见它是哪个包），后面接 summary 那一句 */
+      title: summary.kind === 'partial' ? `整合包 ${packName} · ${summary.title}` : `整合包 ${packName}`,
+      phase: summary.detail,
+      detail: summary.detail,
+      /* ★ 状态角标：partial 时写"缺 N 个"，而不是一个笼统的"完成" */
+      missingCount: shortfall,
+    });
     toast(
-      missing.length > 0 ? 'warning' : 'ok',
-      missing.length > 0 ? `装好了，但有 ${missing.length} 个 mod 没下下来` : '整合包装好了',
-      missing.length > 0
-        ? `${result.missing_summary ?? ''}${entry.detail ? ` ${entry.detail}` : ''}`
+      summary.warn ? 'warning' : 'ok',
+      summary.title,
+      summary.kind === 'partial'
+        ? /*
+           * 缺的那几个**必须点名**：优先用**后端算好的那一句**
+           * （`missing_summary`，与 `missingSummary` 是同一套措辞），
+           * 后端没给（老版本 / 演示模式）时才用前端那份镜像。
+           * 后面接 `entry.detail`：它把"能再试的"与"只能自己去下的"分开说。
+           */
+          `${(result.missing_summary ?? '').trim() || missingSummary(missing)}${
+            entry.detail ? ` ${entry.detail}` : ''
+          }`
         : `${packName} · ${result.mc_version}${
             result.loader_kind ? ` + ${result.loader_kind}` : ''
           } · ${result.mod_files} 个文件 + ${result.override_files} 个配置`,
     );
+    setPackMissing(missing);
+    setPackOutcome(summary);
     /*
      * ★ 缺文件时**不跳走**（也不收掉安装页）：跳走等于把"还缺哪几个"
      *   从屏幕上抹掉，用户下一次看到它就只能在游戏里 —— 那正是这次事故的样子。
      *   ★ 实例照样建（`createInstance` 已经在上面跑过了）：文件都在盘上，
      *     「重新下载缺失的」需要一个**已登记的实例**才能补。
      */
-    if (missing.length > 0) {
-      patch({ status: 'done', percent: 100, detail: `还缺 ${missing.length} 个文件` });
+    if (summary.stay) {
       return;
     }
     setSelected(null);
@@ -1449,7 +1591,11 @@ function ModpackTab({
       toast(r.failed.length === 0 ? 'ok' : 'warning', '重新下载完成', r.summary);
       // ★ 补完重读一次状态：还缺哪些要**以盘上为准**，不能用刚才那张旧表
       const s = await api.pack.scan(slug).catch(() => null);
-      if (s && s.missing_count === 0) setPackMissing([]);
+      if (s && s.missing_count === 0) {
+        setPackMissing([]);
+        // ★ 缺的都补上了 ⇒ 那块提示（连同它的小标题）一起收掉
+        setPackOutcome(null);
+      }
     } catch (e) {
       toast('err', '重新下载失败', e instanceof Error ? e.message : String(e));
     } finally {
@@ -1571,11 +1717,22 @@ function ModpackTab({
    *   ★ 抽成一份是因为它要在**两个视图**里出现：装完还没离开的那一屏
    *     （`installTarget`）与整合包列表那一屏（用户返回列表后仍然看得见）。
    */
+  /*
+   * ★ 入口给不给的那个判据（点了必然失败的不给按钮）只有一份：`repairEntry`。
+   *   文案（`label`）与 `install-summary` 带出来的那份是**同一个常量**，所以
+   *   两处取哪个都行 —— 这里优先取 summary 的（它就是三处共用的那一句的来源）。
+   */
+  const missingEntry = repairEntry(packMissing);
   const missingPanel =
     packMissing.length > 0 ? (
-      <Note tone="warning" icon={<IconAlert />}>
+      /*
+       * ★★ 小标题取 `install-summary` 那一句（与任务卡片 / toast **同一句话**）——
+       *   它说的是"装好了，但缺 N 个文件"，而不是含糊的"有东西没下下来"。
+       *   下面那句仍然用后端算好的措辞（`missingSummary`：点名 3 个 + 总数）。
+       */
+      <Note tone="warning" icon={<IconAlert />} title={packOutcome?.title ?? undefined}>
         <div>{missingSummary(packMissing)}</div>
-        {repairEntry(packMissing).show ? (
+        {missingEntry.show ? (
           <div style={{ marginTop: 'var(--space-2)' }}>
             <Button
               size="sm"
@@ -1586,7 +1743,8 @@ function ModpackTab({
                 void redownloadMissing(slug);
               }}
             >
-              重新下载缺失的
+              {/* ★ 文案只有一份（`REPAIR_ENTRY_LABEL`，由 `install-summary` 带出来） */}
+              {packOutcome?.action ?? missingEntry.label}
             </Button>
           </div>
         ) : null}
@@ -1722,6 +1880,11 @@ function ModpackTab({
             }
             /* ★ 传给它，好让"整合包不筛 MC 版本、其余筛"这条判据有依据（见那边的对照表） */
             target={target}
+            /*
+             * ★★ 这一批版本**来自哪一份**（回退时尤其要说 —— 见 `version-sources.ts`）。
+             *   措辞由 `versionSourceNote` 算好，这里一个字的措辞都不拼。
+             */
+            sourceNote={targetVersionsNote}
             onPick={(v) => {
               /*
                * ★★ 2026-09-24（C-5 修复）：**把版本当参数传进去**，不再
@@ -1786,6 +1949,10 @@ function ModpackTab({
             位置也照资源页（筛选右边、排序前面）。
             ★ 后端这一轮给 `ResourceKind` 补了 `modpack`，CurseForge 的 classId=4471，
               所以这一排**不是摆设**：切过去真的查 CF 的整合包。
+
+          ★★★★ 2026-10-17：**最左边加「全部」并设为默认**（用户原话见 ModpackTab
+            里 `packSource` 那段）—— 与资源中心那排**同一个顺序、同一个默认**，
+            两个页签看起来必须一致（两处不同款正是上一次那个 bug 的成因）。
         */}
         <Segmented
           label="来源"
@@ -1793,6 +1960,7 @@ function ModpackTab({
           value={packSource}
           onChange={setPackSource}
           options={[
+            { value: 'all', label: '全部' },
             { value: 'modrinth', label: 'Modrinth' },
             { value: 'curseforge', label: 'CurseForge' },
           ]}
@@ -1917,6 +2085,17 @@ function ModpackTab({
           }
         >
           {error}
+        </Note>
+      ) : null}
+
+      {/*
+        ★★ 「全部」下**只有一个源没查成**：结果照常显示（另一边那一份），
+          但要说清缺的是哪一边 —— 一个源超时/镜像不通 ≠ 那个源没有这个包
+          （ADR-050 的教训）。不说的话，用户会把"这次没查成"读成"CF 上真的没有"。
+      */}
+      {packSideError && !error ? (
+        <Note tone="warning" title="有一个来源这次没查成（不等于它没有）">
+          {packSideError}
         </Note>
       ) : null}
 

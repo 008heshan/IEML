@@ -27,6 +27,17 @@
  *   这里判的是"我们当初有没有能力把它下下来" —— 下载**开始前**就该知道的事。
  */
 
+/**
+ * 「重新下载缺失的」这个入口的**文案**（唯一一份）。
+ *
+ * ★★ 2026-10-17：以前这句字面量在三个地方各写了一遍（`repairEntry` 的 `label`、
+ *   安装页那个按钮的正文、`missingSummary` 那句话里的引号内文字）——
+ *   改一处就会三处不一致。而"按钮上写什么"与"提示里说点哪个按钮"**必须同字**，
+ *   否则用户照着提示找不到那个按钮。
+ *   ⇒ 收成一个常量，`install-summary.ts`（三处文案的唯一判据）也取它。
+ */
+export const REPAIR_ENTRY_LABEL = '重新下载缺失的';
+
 /** 一条"该装、但没弄到手"的清单条目（与 Rust `MissingFile` 一一对应） */
 export interface MissingFile {
   /** 相对游戏目录的路径（`mods/xxx.jar`） */
@@ -87,7 +98,7 @@ export function missingSummary(missing: ReadonlyArray<MissingFile>): string {
   if (list.length === 0) return '';
   const sample = list.slice(0, 3).map((m) => m.name);
   const more = list.length > sample.length ? ` 等 ${list.length} 个` : '';
-  return `整合包有 ${list.length} 个文件没下下来：${sample.join('、')}${more}。可以点「重新下载缺失的」再试一次。`;
+  return `整合包有 ${list.length} 个文件没下下来：${sample.join('、')}${more}。可以点「${REPAIR_ENTRY_LABEL}」再试一次。`;
 }
 
 /**
@@ -141,7 +152,7 @@ export function repairEntry(missing: ReadonlyArray<MissingFile>): {
     manual > 0 ? `（另有 ${manual} 个要你自己去整合包网站下）` : '';
   return {
     show: true,
-    label: '重新下载缺失的',
+    label: REPAIR_ENTRY_LABEL,
     detail: `有 ${retryable} 个可以再试一次${tail}。`,
   };
 }

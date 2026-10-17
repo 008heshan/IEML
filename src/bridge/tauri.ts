@@ -206,6 +206,50 @@ export interface LoaderRow {
   stable: boolean;
 }
 
+/**
+ * 一个源能不能直接下载（合并层算的，见 `ResourceProvenance`）
+ */
+export interface SourceAvailability {
+  source: ResourceSourceName;
+  downloadable: boolean;
+  /**
+   * ★★★★ 2026-10-17：**这一份在这个源里的项目 id**（两个平台各一套，不能混用）。
+   *
+   *   由合并层填（`domain/resource-merge.ts` 手上有两个源的原始命中，各带自己的
+   *   `project_id`）。取版本时要用它：`preferred` 那一份没有能装到当前实例的版本
+   *   时，**回退去问另一个源** —— 而 Modrinth 的 base62 id 拿去问 CurseForge
+   *   只会得到"上游没有"（这条错在 C-1 修过一次：拿 slug / 拿错的 id 去问，
+   *   把"我们拿错了标识"说成"上游没发布"）。
+   *
+   *   `undefined` = 合并层没记下身份（老数据）⇒ 那一个源**跳过**，
+   *   绝不许拿别的源的 id 去问它。
+   */
+  project_id?: string;
+}
+
+/**
+ * ★★★★ 2026-10-17：这条结果的**来源** —— 合并层的**内部字段**（后端不下发）。
+ *
+ * 用户：「在 modr 的左边加一个全部……这样即使有资源里不允许第三方下载，
+ * 也可以得到互补了」。⇒ 「全部」下两个源的结果会合成一张表，
+ * 而"它来自哪里 / 两边都有 / 该走哪一条命令"必须是**数据的属性**，
+ * 不能让界面靠"现在切换器停在哪一格"去猜（切到「全部」之后那一格叫 `all`，
+ * 拿它去问版本接口是一定问不到的）。
+ *
+ * 算它的判据只有一份：`src/domain/resource-merge.ts`（纯函数，
+ * `tests/resource-merge.test.mjs` 钉着）。
+ */
+export interface ResourceProvenance {
+  /** 这条结果出现在哪些源（1 个或 2 个，按固定顺序） */
+  sources: ResourceSourceName[];
+  /** 安装 / 取版本该走哪一条（永远在 `sources` 里） */
+  preferred: ResourceSourceName;
+  /** 还有没有任何一份能直接下载 */
+  downloadable: boolean;
+  /** 逐源能不能下载（详情页要如实说清是哪一边下不了） */
+  availability: SourceAvailability[];
+}
+
 export interface ModrinthHit {
   project_id: string;
   slug: string;
@@ -227,6 +271,14 @@ export interface ModrinthHit {
   distribution_allowed?: boolean | null;
   /** 项目页地址（去原站看一眼） */
   page_url?: string | null;
+  /**
+   * ★ 来源（**合并层加的**内部字段，后端**不下发**）。
+   *
+   * 单源搜索时也可能被合并层补上（`mergeHits` 对单源也跑一遍），
+   * 这样详情页永远读得到"来自哪个源、该走哪条命令"，两条路不用分叉。
+   * `undefined` = 老路径（根本没经过合并层）—— 那时界面退回切换器上的那个源。
+   */
+  provenance?: ResourceProvenance;
 }
 
 export interface ModrinthSearch {
@@ -247,6 +299,25 @@ export interface ModrinthSearch {
   query_alias?: string | null;
   /** 这次**实际**拿去搜的词（可能和用户输入的不一样） */
   term_used?: string | null;
+}
+
+/**
+ * ★★★★ 2026-10-17：「全部」来源这一次的结果 —— **两个源各自一页**，各自带错误。
+ *
+ * 用户：「在 modr 的左边加一个全部，并且默认为全部，这样即使有资源里不允许
+ * 第三方下载，也可以得到互补了」。
+ *
+ * ★ 这里**不合并**：合并/去重/优先级那套判据在前端纯函数
+ *   `src/domain/resource-merge.ts`（那是本机唯一能真跑的回路）。
+ *   这一层只负责"两个源都问过、各自的结果与理由都带回来"。
+ * ★ 一边没查成时 `*_error` 有值、那一侧为 `null` —— 界面**不许**把
+ *   "没查成"说成"那个源没有"（ADR-050）。两边都挂时后端直接返回 Err。
+ */
+export interface BothSearch {
+  modrinth: ModrinthSearch | null;
+  curseforge: ModrinthSearch | null;
+  modrinth_error: string | null;
+  curseforge_error: string | null;
 }
 
 export interface ModrinthVersion {
@@ -827,6 +898,30 @@ export const modrinth = {
       limit: opts.limit ?? 20,
       offset: opts.offset ?? 0,
       source: opts.source ?? 'modrinth',
+    }),
+
+  /**
+   * ★★★★ 「全部」来源：**一条命令并发查两个源**，各自带回自己的错误。
+   *
+   * 用户 2026-10-17：「在 modr 的左边加一个全部，并且默认为全部……」。
+   * ★ 这里**不合并** —— 合并/去重/优先级（"优先用能下载的那一份"）在
+   *   `src/domain/resource-merge.ts`（纯函数，`node --test` 真跑）。
+   */
+  resourceSearchBoth: (opts: {
+    kind: ResourceKindName;
+    query: string;
+    mcVersion?: string;
+    loader?: string;
+    limit?: number;
+    offset?: number;
+  }) =>
+    call<BothSearch>('resource_search_both', {
+      kind: opts.kind,
+      query: opts.query,
+      mcVersion: opts.mcVersion ?? null,
+      loader: opts.loader ?? null,
+      limit: opts.limit ?? 20,
+      offset: opts.offset ?? 0,
     }),
 
   /**
@@ -2270,15 +2365,66 @@ export interface ModpackInstallResult {
   /**
    * ★★ 2026-10-16（用户报的"漏下 mod 却报安装完成"）：**清单里没弄到手的那几个**。
    *
-   *   它们是"该装、但下载地址没解析出来"的条目（上游接口查不到 / 作者禁止分发）。
-   *   以前这些条目从计划里彻底消失 ⇒ 界面报"安装完成"、游戏里弹「Missing Mods」。
-   *   现在一路回传到这里：界面要**说出**有 N 个没下下来，并给「重新下载缺失的」入口。
+   *   ★★ 2026-10-17：这一份现在**语义变宽**了 —— 它是"**没到手的全部条目**"：
+   *     · 下载地址没解析出来（上游查不到 / 作者禁止分发）；
+   *     · **地址有、但下载失败**（重试若干轮后仍失败）。
+   *   ⇒ `missing_count` 就是"还缺几个"那个**唯一**的数（界面不用自己加）。
+   *   而"哪几个是下载失败"要看下面的 `failed_files`（那是另一根轴）。
    */
   missing_files?: PackMissingFile[];
   /** 上面那个表的条数（省得界面自己 `.length` 出第二套口径） */
   missing_count?: number;
   /** ★ 后端算好的一句人话（界面直接用，不自己拼措辞） */
   missing_summary?: string;
+  /**
+   * ★★★★ 2026-10-17（用户：「装完了但缺 N 个文件」）：**这一次装成了什么样**。
+   *
+   *   后端把"有几个文件没下来"与"这个包根本起不来"分成了两件事
+   *   （判据在 `src-tauri/src/domain/pack_outcome.rs::classify_install`）：
+   *
+   *   | 取值 | 事实 | 结果 |
+   *   |---|---|---|
+   *   | `'complete'` | 清单里的文件全到手 | 成功（照旧） |
+   *   | `'partial'`  | **≥1 个没到手，但骨架齐全**（包体 + 客户端 jar + 加载器） | **仍然算成功**：实例照建 |
+   *   | `null`       | **没有档位结论**（暂停 / 提前返回走这一档） | 界面**先看 `paused`** |
+   *
+   *   ★ 两条纪律（前端据此说人话，见 `src/domain/install-summary.ts`）：
+   *     ① `partial` 时**不许**说"安装完成" —— 要说"装好了，但缺 N 个文件"，
+   *        并给出缺的名单与「重新下载缺失的」入口；
+   *     ② `tier === null` **不是**"完整"**也不是**"缺件"：先看 `paused`，
+   *        暂停时说的是"已暂停"（文件还在盘上等着续传），别把暂停说成缺件。
+   *   ★ 可选（`?`）：老后端不发这个字段时按 `null` 处理，界面不会崩。
+   */
+  tier?: PackInstallTier;
+  /**
+   * ★★ **下载失败**的那一类（地址有、文件没下来），每条带名字 + 原因 + 能不能再试。
+   *
+   *   `reason` 是**下载引擎的原话**（已经带上重试轮数等上下文）；
+   *   "还能不能再试"的判据是 `domain::failure` 那一份（后端算好）。
+   *   ★ `missing_files` 里也含这几条（那一份挂的是给用户看的人话措辞）。
+   */
+  failed_files?: PackFailedFile[];
+  /** 上面那个表的条数（**别拿它当"缺了几个"** —— 那个数是 `missing_count`） */
+  failed_count?: number;
+}
+
+/**
+ * 这一次安装的档位结论（与 Rust `domain::pack_outcome::PackInstallTier` 一一对应）。
+ *
+ * ★ `pack_outcome.rs` 里还有第三档 `broken`（骨架没齐）—— 它**永远不会**出现在
+ *   成功返回里：调用方按 `is_success()` 把它翻成了 `Err`（"起不来"必须是失败）。
+ *   所以界面这一侧只有 `complete` / `partial` / `null` 三种取值。
+ */
+export type PackInstallTier = 'complete' | 'partial' | null;
+
+/** 一条**下载失败**的条目（与 Rust `domain::pack_outcome::PackFailedFile` 一一对应） */
+export interface PackFailedFile {
+  /** 任务标签：`.mrpack` 给的是清单里的路径（`mods/xxx.jar`），CF 给的是文件名 */
+  label: string;
+  /** 为什么没下来（下载引擎的原话，已带重试轮数等上下文） */
+  reason: string;
+  /** 还能再试吗（判据是 `domain::failure`，不在界面另写一套） */
+  retryable: boolean;
 }
 
 /** 一条"该装、但没弄到手"的清单条目（与 Rust `domain::pack_plan::MissingFile` 一一对应） */
